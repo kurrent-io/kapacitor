@@ -18,9 +18,14 @@ using WireMock.Server;
 namespace Capacitor.Cli.Tests.Unit.Commands;
 
 /// <summary>
-/// Topology-specific coverage for the Step-3 <c>default_visibility</c> stamp on historical
-/// import (docs/superpowers/specs/2026-07-20-unified-agent-install-and-import-design.md,
-/// "Change 2 → Visibility") and the <c>autoSkipExclusions</c> non-interactive guarantee.
+/// Topology-specific coverage for the <c>default_visibility</c> stamp on historical import and
+/// the <c>autoSkipExclusions</c> non-interactive guarantee.
+///
+/// <para>Two specs meet here. The Step-3 default is
+/// docs/superpowers/specs/2026-07-20-unified-agent-install-and-import-design.md, "Change 2 →
+/// Visibility", which left each source's force-private handling alone and scoped the unification
+/// out; AI-2222 is that unification, so <c>ForcePrivate</c> now stamps <c>private</c> at every
+/// source and on every status. What used to be a per-source split is one row.</para>
 /// Driven through each source's real <c>ImportSessionAsync</c> / <see cref="ImportCommand.ImportChainsAsync"/>
 /// / <see cref="ImportCommand.HandleImport"/> entry point — never through the private
 /// per-source <c>BuildSessionStartPayload</c> builders in isolation — per the spec's own
@@ -157,8 +162,8 @@ public class ImportVisibilityTests : IDisposable {
 
     // =====================================================================
     // Section B — orchestrator-level (ImportCommand.HandleImport): the
-    // chainDefaultVisibility = forcePrivate ? null : defaultVisibility
-    // precedence derived in HandleImport itself, not just forwarded by
+    // chainDefaultVisibility = forcePrivate ? "private" : defaultVisibility
+    // resolution made in HandleImport itself, not just forwarded by
     // ImportChainsAsync.
     // =====================================================================
 
@@ -198,14 +203,11 @@ public class ImportVisibilityTests : IDisposable {
     }
 
     [Test]
-    public async Task HandleImport_chain_forcePrivate_zeroes_default_visibility_even_when_transcript_batch_fails_after_session_start() {
-        // Mirrors the spec's "chain force-private precedence" scenario: forcePrivate:true +
-        // a non-null defaultVisibility, with the failure landing AFTER session-start succeeds
-        // (transcript batch 500s) — before session-end / importedSessionIds is ever reached.
-        // Because HandleImport derives chainDefaultVisibility = forcePrivate ? null : defaultVisibility
-        // up front, the session-start POST must never carry the default regardless of what
-        // happens downstream — there is no post-hoc privatization to fall back on for a session
-        // that never finishes.
+    public async Task HandleImport_chain_forcePrivate_stamps_private_even_when_transcript_batch_fails_after_session_start() {
+        // The scenario the stamp exists for: forcePrivate:true with a non-null defaultVisibility,
+        // failing AFTER session-start succeeds (transcript batch 500s) and so before session-end /
+        // importedSessionIds — which is what SetVisibilityNoneForAll reads, so this session is
+        // never privatized post-hoc. An omitted field would leave it org-visible for good.
         _server.Given(Request.Create().WithPath("/api/sessions/*/last-line").UsingGet())
             .RespondWith(Response.Create().WithStatusCode(404));
         _server.Given(Request.Create().WithPath("/hooks/session-start*").UsingPost())
@@ -234,7 +236,7 @@ public class ImportVisibilityTests : IDisposable {
         await Assert.That(exitCode).IsEqualTo(0);
 
         var body = SessionStartBody("claude");
-        await Assert.That(body.ContainsKey("default_visibility")).IsFalse();
+        await Assert.That(body["default_visibility"]?.GetValue<string>()).IsEqualTo("private");
     }
 
     // =====================================================================
@@ -260,7 +262,7 @@ public class ImportVisibilityTests : IDisposable {
         Vendor         = vendor ?? "claude",
     };
 
-    // --- Copilot: no existing forcePrivate handling of its own. ---
+    // --- Copilot ---
 
     [Test]
     public async Task Copilot_new_session_stamps_default_visibility() {
@@ -302,7 +304,7 @@ public class ImportVisibilityTests : IDisposable {
     }
 
     [Test]
-    public async Task Copilot_forcePrivate_suppresses_default_visibility_with_no_existing_private_stamp() {
+    public async Task Copilot_forcePrivate_stamps_private_over_the_step3_default() {
         StubAllHookEndpoints();
         var path = WriteTranscript("copilot-fp.jsonl");
         var c = RoutedClassification("copilot-fp-1", ImportCommand.ClassificationStatus.New,
@@ -312,12 +314,11 @@ public class ImportVisibilityTests : IDisposable {
         var ctx = new ImportContext(client, _server.Url!, ForcePrivate: true, DefaultVisibility: "org_public");
         await new CopilotImportSource(Config.Root).ImportSessionAsync(c, ctx, CancellationToken.None);
 
-        // Copilot has no forcePrivate handling of its own (per the spec) — the field must be
-        // entirely absent, not just missing the org value.
-        await Assert.That(SessionStartBody("copilot").ContainsKey("default_visibility")).IsFalse();
+        await Assert.That(SessionStartBody("copilot")["default_visibility"]?.GetValue<string>())
+            .IsEqualTo("private");
     }
 
-    // --- Gemini: no existing forcePrivate handling of its own. ---
+    // --- Gemini ---
 
     [Test]
     public async Task Gemini_new_session_stamps_default_visibility() {
@@ -349,7 +350,7 @@ public class ImportVisibilityTests : IDisposable {
     }
 
     [Test]
-    public async Task Gemini_forcePrivate_suppresses_default_visibility_with_no_existing_private_stamp() {
+    public async Task Gemini_forcePrivate_stamps_private_over_the_step3_default() {
         StubAllHookEndpoints();
         var path = WriteTranscript("gemini-fp.jsonl");
         var c = RoutedClassification("gemini-fp-1", ImportCommand.ClassificationStatus.New,
@@ -359,10 +360,11 @@ public class ImportVisibilityTests : IDisposable {
         var ctx = new ImportContext(client, _server.Url!, ForcePrivate: true, DefaultVisibility: "org_public");
         await new GeminiImportSource().ImportSessionAsync(c, ctx, CancellationToken.None);
 
-        await Assert.That(SessionStartBody("gemini").ContainsKey("default_visibility")).IsFalse();
+        await Assert.That(SessionStartBody("gemini")["default_visibility"]?.GetValue<string>())
+            .IsEqualTo("private");
     }
 
-    // --- Kiro: no existing forcePrivate handling of its own. ---
+    // --- Kiro ---
 
     [Test]
     public async Task Kiro_new_session_stamps_default_visibility() {
@@ -394,7 +396,7 @@ public class ImportVisibilityTests : IDisposable {
     }
 
     [Test]
-    public async Task Kiro_forcePrivate_suppresses_default_visibility_with_no_existing_private_stamp() {
+    public async Task Kiro_forcePrivate_stamps_private_over_the_step3_default() {
         StubAllHookEndpoints();
         var path = WriteTranscript("kiro-fp.jsonl");
         var c = RoutedClassification("kiro-fp-1", ImportCommand.ClassificationStatus.New,
@@ -404,10 +406,11 @@ public class ImportVisibilityTests : IDisposable {
         var ctx = new ImportContext(client, _server.Url!, ForcePrivate: true, DefaultVisibility: "org_public");
         await new KiroImportSource(Config.Root).ImportSessionAsync(c, ctx, CancellationToken.None);
 
-        await Assert.That(SessionStartBody("kiro").ContainsKey("default_visibility")).IsFalse();
+        await Assert.That(SessionStartBody("kiro")["default_visibility"]?.GetValue<string>())
+            .IsEqualTo("private");
     }
 
-    // --- Pi: HAS existing forcePrivate "private" stamp — must be preserved unchanged. ---
+    // --- Pi ---
 
     [Test]
     public async Task Pi_new_session_stamps_default_visibility() {
@@ -455,9 +458,9 @@ public class ImportVisibilityTests : IDisposable {
         await Assert.That(body["default_visibility"]?.GetValue<string>()).IsEqualTo("private");
     }
 
-    // --- OpenCode: HAS existing forcePrivate "private" stamp; ImportSessionAsync needs a real
-    //     sqlite db (SourceMeta unused), so this goes through Discover+Classify+Import like the
-    //     existing OpenCodeImportSourceTests do, rather than a hand-built classification. ---
+    // --- OpenCode: ImportSessionAsync needs a real sqlite db (SourceMeta unused), so this goes
+    //     through Discover+Classify+Import like the existing OpenCodeImportSourceTests do, rather
+    //     than a hand-built classification. ---
 
     [Test]
     public async Task OpenCode_new_session_stamps_default_visibility() {
@@ -560,8 +563,8 @@ public class ImportVisibilityTests : IDisposable {
         await Assert.That(body["default_visibility"]?.GetValue<string>()).IsEqualTo("private");
     }
 
-    // --- Antigravity: HAS existing forcePrivate "private" stamp; needs SourceMeta["TranscriptPath"]
-    //     (a real file) and tolerates a missing "Children" key (no subagents). ---
+    // --- Antigravity: needs SourceMeta["TranscriptPath"] (a real file) and tolerates a missing
+    //     "Children" key (no subagents). ---
 
     [Test]
     public async Task Antigravity_new_session_stamps_default_visibility() {
@@ -623,10 +626,9 @@ public class ImportVisibilityTests : IDisposable {
         await Assert.That(body["default_visibility"]?.GetValue<string>()).IsEqualTo("private");
     }
 
-    // --- Cursor: no existing inline forcePrivate stamp (privatized post-hoc by the
-    //     orchestrator via privateScopeSessionIds) — new default-visibility mechanism on the
-    //     import path for the first time. Direct-logic coverage plus one full WireMock
-    //     round-trip through HandleImport, per the spec's explicit call-out for Cursor. ---
+    // --- Cursor: the source the 2026-07-20 spec called out, because its live hook has no
+    //     default_visibility injection at all, so the import path is the only one that stamps.
+    //     Direct-logic coverage plus one full WireMock round-trip through HandleImport. ---
 
     [Test]
     public async Task Cursor_new_session_stamps_default_visibility() {
@@ -667,7 +669,7 @@ public class ImportVisibilityTests : IDisposable {
     }
 
     [Test]
-    public async Task Cursor_forcePrivate_suppresses_default_visibility_with_no_existing_inline_private_stamp() {
+    public async Task Cursor_forcePrivate_stamps_private_over_the_step3_default() {
         StubAllHookEndpoints();
         var path = WriteTranscript("cursor-fp.jsonl");
         var c = RoutedClassification("cursor-fp-1", ImportCommand.ClassificationStatus.New,
@@ -681,10 +683,8 @@ public class ImportVisibilityTests : IDisposable {
             )
             .ImportSessionAsync(c, ctx, CancellationToken.None);
 
-        // Cursor stamps no "private" value inline (it's privatized post-hoc by the
-        // orchestrator) — the field must be entirely absent under forcePrivate, same as
-        // Copilot/Gemini/Kiro.
-        await Assert.That(SessionStartBody("cursor").ContainsKey("default_visibility")).IsFalse();
+        await Assert.That(SessionStartBody("cursor")["default_visibility"]?.GetValue<string>())
+            .IsEqualTo("private");
     }
 
     [Test]
@@ -739,43 +739,33 @@ public class ImportVisibilityTests : IDisposable {
     // covered for all 7 sources in Section C — not repeated here.
     // =====================================================================
 
-    /// <summary>
-    /// One routed source's shape for the generic matrix helpers below.
-    /// <see cref="OwnPrivateStamp"/> is true for the 3 sources (Pi, Antigravity,
-    /// OpenCode — see Section C's per-vendor header comments) whose
-    /// BuildSessionStartPayload stamps a literal <c>"private"</c> whenever
-    /// <c>ForcePrivate</c> is true, REGARDLESS of classification status — vs. the
-    /// other 4, which never stamp anything under ForcePrivate (the field is
-    /// simply absent) and only ever omit vs. stamp the Step-3 org default.
-    /// </summary>
+    /// <summary>One routed source's shape for the generic matrix helpers below.</summary>
     sealed record RoutedSourceCase(
         string                                      Vendor,
         Func<IImportSource>                          MakeSource,
-        Func<string, Dictionary<string, object?>>    MakeSourceMeta,
-        bool                                          OwnPrivateStamp);
+        Func<string, Dictionary<string, object?>>    MakeSourceMeta);
 
     RoutedSourceCase CopilotCase() =>
-        new("copilot", () => new CopilotImportSource(Config.Root), p => new() { ["TranscriptPath"] = p }, OwnPrivateStamp: false);
+        new("copilot", () => new CopilotImportSource(Config.Root), p => new() { ["TranscriptPath"] = p });
 
     static RoutedSourceCase GeminiCase() =>
-        new("gemini", () => new GeminiImportSource(), p => new() { ["TranscriptPath"] = p }, OwnPrivateStamp: false);
+        new("gemini", () => new GeminiImportSource(), p => new() { ["TranscriptPath"] = p });
 
     RoutedSourceCase KiroCase() =>
-        new("kiro", () => new KiroImportSource(Config.Root), p => new() { ["TranscriptPath"] = p }, OwnPrivateStamp: false);
+        new("kiro", () => new KiroImportSource(Config.Root), p => new() { ["TranscriptPath"] = p });
 
     RoutedSourceCase PiCase() =>
-        new("pi", () => new PiImportSource(Config.Root), p => new() { ["TranscriptPath"] = p }, OwnPrivateStamp: true);
+        new("pi", () => new PiImportSource(Config.Root), p => new() { ["TranscriptPath"] = p });
 
     static RoutedSourceCase AntigravityCase() =>
-        new("antigravity", () => new AntigravityImportSource(), p => new() { ["TranscriptPath"] = p }, OwnPrivateStamp: true);
+        new("antigravity", () => new AntigravityImportSource(), p => new() { ["TranscriptPath"] = p });
 
     RoutedSourceCase CursorCase() =>
         new("cursor",
             () => new CursorImportSource(Config.Root, 
                 Path.Combine(_tempDir, $"unused-cursor-projects-{Guid.NewGuid():N}"),
                 Path.Combine(_tempDir, $"unused-cursor-workspace-storage-{Guid.NewGuid():N}")),
-            p => new() { ["TranscriptPath"] = p, ["WorkspaceFolder"] = "/Users/me/proj" },
-            OwnPrivateStamp: false);
+            p => new() { ["TranscriptPath"] = p, ["WorkspaceFolder"] = "/Users/me/proj" });
 
     async Task AssertAlreadyLoadedOmitsDefaultVisibility(RoutedSourceCase rc) {
         StubAllHookEndpoints();
@@ -790,7 +780,23 @@ public class ImportVisibilityTests : IDisposable {
         await Assert.That(SessionStartBody(rc.Vendor).ContainsKey("default_visibility")).IsFalse();
     }
 
-    async Task AssertForcePrivateWithPartialStatusUnchanged(RoutedSourceCase rc) {
+    async Task AssertForcePrivateStampsPrivateOnAlreadyLoaded(RoutedSourceCase rc) {
+        StubAllHookEndpoints();
+        var path = WriteTranscript($"{rc.Vendor}-fp-already-matrix.jsonl");
+        var c = RoutedClassification($"{rc.Vendor}-fp-already-matrix-1", ImportCommand.ClassificationStatus.AlreadyLoaded,
+            rc.MakeSourceMeta(path), totalLines: 5, vendor: rc.Vendor);
+
+        using var client = new HttpClient();
+        var ctx = new ImportContext(client, _server.Url!, ForcePrivate: true, DefaultVisibility: "org_public");
+        await rc.MakeSource().ImportSessionAsync(c, ctx, CancellationToken.None);
+
+        // The lifecycle-repair path, which several sources reach through a branch of their own
+        // rather than the one the New/Partial rows exercise.
+        await Assert.That(SessionStartBody(rc.Vendor)["default_visibility"]?.GetValue<string>())
+            .IsEqualTo("private");
+    }
+
+    async Task AssertForcePrivateStampsPrivateOnReplay(RoutedSourceCase rc) {
         StubAllHookEndpoints();
         var path = WriteTranscript($"{rc.Vendor}-fp-replay-matrix.jsonl");
         var c = RoutedClassification($"{rc.Vendor}-fp-replay-matrix-1", ImportCommand.ClassificationStatus.Partial,
@@ -800,16 +806,10 @@ public class ImportVisibilityTests : IDisposable {
         var ctx = new ImportContext(client, _server.Url!, ForcePrivate: true, DefaultVisibility: "org_public");
         await rc.MakeSource().ImportSessionAsync(c, ctx, CancellationToken.None);
 
-        var body = SessionStartBody(rc.Vendor);
-        if (rc.OwnPrivateStamp) {
-            // forcePrivate's own stamp doesn't gate on status — a replay session under
-            // forcePrivate still gets "private", same as New (Section C already pins New).
-            await Assert.That(body["default_visibility"]?.GetValue<string>()).IsEqualTo("private");
-        } else {
-            // No own stamp: forcePrivate never injects anything for a replay status either —
-            // the field stays entirely absent, exactly like the non-forcePrivate Partial case.
-            await Assert.That(body.ContainsKey("default_visibility")).IsFalse();
-        }
+        // Private does not gate on status, unlike the Step-3 default: it is a floor, and
+        // re-asserting it on a replay can only narrow what is already there.
+        await Assert.That(SessionStartBody(rc.Vendor)["default_visibility"]?.GetValue<string>())
+            .IsEqualTo("private");
     }
 
     async Task AssertNullDefaultVisibilityOmitsField(RoutedSourceCase rc) {
@@ -844,22 +844,43 @@ public class ImportVisibilityTests : IDisposable {
     //     forcePrivate with New). OpenCode's own version follows after this table. ---
 
     [Test]
-    public async Task Copilot_forcePrivate_with_partial_status_omits_default_visibility() => await AssertForcePrivateWithPartialStatusUnchanged(CopilotCase());
+    public async Task Copilot_forcePrivate_stamps_private_on_a_replay() => await AssertForcePrivateStampsPrivateOnReplay(CopilotCase());
 
     [Test]
-    public async Task Gemini_forcePrivate_with_partial_status_omits_default_visibility() => await AssertForcePrivateWithPartialStatusUnchanged(GeminiCase());
+    public async Task Gemini_forcePrivate_stamps_private_on_a_replay() => await AssertForcePrivateStampsPrivateOnReplay(GeminiCase());
 
     [Test]
-    public async Task Kiro_forcePrivate_with_partial_status_omits_default_visibility() => await AssertForcePrivateWithPartialStatusUnchanged(KiroCase());
+    public async Task Kiro_forcePrivate_stamps_private_on_a_replay() => await AssertForcePrivateStampsPrivateOnReplay(KiroCase());
 
     [Test]
-    public async Task Pi_forcePrivate_with_partial_status_keeps_existing_private_stamp() => await AssertForcePrivateWithPartialStatusUnchanged(PiCase());
+    public async Task Pi_forcePrivate_stamps_private_on_a_replay() => await AssertForcePrivateStampsPrivateOnReplay(PiCase());
 
     [Test]
-    public async Task Antigravity_forcePrivate_with_partial_status_keeps_existing_private_stamp() => await AssertForcePrivateWithPartialStatusUnchanged(AntigravityCase());
+    public async Task Antigravity_forcePrivate_stamps_private_on_a_replay() => await AssertForcePrivateStampsPrivateOnReplay(AntigravityCase());
 
     [Test]
-    public async Task Cursor_forcePrivate_with_partial_status_omits_default_visibility() => await AssertForcePrivateWithPartialStatusUnchanged(CursorCase());
+    public async Task Cursor_forcePrivate_stamps_private_on_a_replay() => await AssertForcePrivateStampsPrivateOnReplay(CursorCase());
+
+    // --- forcePrivate × AlreadyLoaded: the row AI-2222 added. Several sources answer this
+    //     status from a branch of their own, so neither the New nor the Partial row reaches it. ---
+
+    [Test]
+    public async Task Copilot_forcePrivate_stamps_private_on_an_already_loaded_repair() => await AssertForcePrivateStampsPrivateOnAlreadyLoaded(CopilotCase());
+
+    [Test]
+    public async Task Gemini_forcePrivate_stamps_private_on_an_already_loaded_repair() => await AssertForcePrivateStampsPrivateOnAlreadyLoaded(GeminiCase());
+
+    [Test]
+    public async Task Kiro_forcePrivate_stamps_private_on_an_already_loaded_repair() => await AssertForcePrivateStampsPrivateOnAlreadyLoaded(KiroCase());
+
+    [Test]
+    public async Task Pi_forcePrivate_stamps_private_on_an_already_loaded_repair() => await AssertForcePrivateStampsPrivateOnAlreadyLoaded(PiCase());
+
+    [Test]
+    public async Task Antigravity_forcePrivate_stamps_private_on_an_already_loaded_repair() => await AssertForcePrivateStampsPrivateOnAlreadyLoaded(AntigravityCase());
+
+    [Test]
+    public async Task Cursor_forcePrivate_stamps_private_on_an_already_loaded_repair() => await AssertForcePrivateStampsPrivateOnAlreadyLoaded(CursorCase());
 
     // --- defaultVisibility:null (forcePrivate:false), New: all 7 sources. OpenCode's own
     //     version follows after this table. ---

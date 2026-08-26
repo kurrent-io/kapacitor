@@ -7,6 +7,27 @@ Not release notes. Each entry is written as of the change that produced it and i
 code moves on; where an entry disagrees with the code, the code wins.
 
 
+## `--private` stamps a value
+
+An omitted `default_visibility` is not "no default": the server's generated column reads
+`COALESCE(default_visibility,'org_public') = 'org_public'`, so a session-start that says nothing
+lands as `default:org` — a class two `VisibilitySql` arms admit, one of them provider-independent.
+Six of the nine import sources omitted the field under `--private` and left privacy to the closing
+`SetVisibilityNoneForAll` pass, which meant minutes of org-visibility on a large import and
+permanent exposure for any session whose PUT failed, since those failures are swallowed by design.
+The other three stamped `"private"` in their own payload builder, which is why checking one source
+found it correct.
+
+`ImportContext.VisibilityStampFor(status)` is now the only place that decides, and the chain path
+resolves the same rule into `chainDefaultVisibility`. The two halves are asymmetric on purpose: the
+Step-3 default is a creation default and lands on `New` alone, while `private` is a floor, and
+re-asserting a floor on a replay can only narrow what is already there — so it does not gate on
+status. Every site is therefore a widening and none a narrowing. `SetVisibilityNoneForAll` stays as
+belt-and-braces, still correcting sessions an older CLI created unstamped, but privacy no longer
+depends on it. The 2026-07-20 unified-import spec scoped this expansion out while already arguing
+that post-hoc privatisation is unsafe for a session that fails mid-stream; this is that argument
+applied to the eight other paths.
+
 ## Claude SessionEnd hand-off
 
 Claude Code computes the grace it gives SessionEnd hooks from `settings.json` timeouts only; a

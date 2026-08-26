@@ -211,10 +211,8 @@ internal sealed class GeminiImportSource : IImportSource {
         // would leave the session permanently lifecycle-less. Re-runs are
         // idempotent server-side (deterministic lifecycle event ids).
         var startPayload = BuildSessionStartPayload(classification.SessionId, classification.Meta.FirstTimestamp);
-        // Step 3 visibility stamp — New-only, and never overrides an existing force-private
-        // choice (Gemini has none of its own today; this guard keeps it that way).
-        if (!ctx.ForcePrivate && classification.Status == ImportCommand.ClassificationStatus.New && ctx.DefaultVisibility is not null) {
-            startPayload["default_visibility"] = ctx.DefaultVisibility;
+        if (ctx.VisibilityStampFor(classification.Status) is { } visibility) {
+            startPayload["default_visibility"] = visibility;
         }
 
         var startOk = await PostSyntheticHookAsync(

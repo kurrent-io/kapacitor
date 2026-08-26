@@ -235,8 +235,14 @@ internal sealed class AntigravityImportSource : IImportSource {
         // succeeded). If either lifecycle POST fails, return Failed so a re-run retries the repair
         // instead of reporting a falsely-complete Skipped (mirrors Cursor).
         if (c.Status == ImportCommand.ClassificationStatus.AlreadyLoaded) {
+            var repairPayload = BuildSessionStartPayload(c.SessionId, c.Meta.Cwd, c.Meta.FirstTimestamp);
+
+            if (ctx.VisibilityStampFor(c.Status) is { } repairVisibility) {
+                repairPayload["default_visibility"] = repairVisibility;
+            }
+
             if (!await PostHookAsync(ctx.HttpClient, ctx.BaseUrl, "session-start/antigravity",
-                    BuildSessionStartPayload(c.SessionId, c.Meta.Cwd, c.Meta.FirstTimestamp, ctx.ForcePrivate), ct))
+                    repairPayload, ct))
                 return ImportOutcome.Failed;
 
             // Capture whether the repair actually attached new nested-child content — true
@@ -263,12 +269,9 @@ internal sealed class AntigravityImportSource : IImportSource {
         // Lifecycle-before-transcript (mirrors Gemini): a transcript that advances the
         // watermark past a failed lifecycle POST would leave the session lifecycle-less.
         // Re-runs are idempotent server-side (deterministic lifecycle ids).
-        var startPayload = BuildSessionStartPayload(c.SessionId, c.Meta.Cwd, c.Meta.FirstTimestamp, ctx.ForcePrivate);
-        // Step 3 visibility stamp — New-only (this branch handles New + Partial; AlreadyLoaded
-        // returned above), and never overrides the existing forcePrivate "private" stamp above
-        // (mutually exclusive: this only fires when !ctx.ForcePrivate).
-        if (!ctx.ForcePrivate && c.Status == ImportCommand.ClassificationStatus.New && ctx.DefaultVisibility is not null) {
-            startPayload["default_visibility"] = ctx.DefaultVisibility;
+        var startPayload = BuildSessionStartPayload(c.SessionId, c.Meta.Cwd, c.Meta.FirstTimestamp);
+        if (ctx.VisibilityStampFor(c.Status) is { } visibility) {
+            startPayload["default_visibility"] = visibility;
         }
 
         if (!await PostHookAsync(ctx.HttpClient, ctx.BaseUrl, "session-start/antigravity", startPayload, ct))
@@ -424,14 +427,13 @@ internal sealed class AntigravityImportSource : IImportSource {
 
     // ── payload builders ────────────────────────────────────────────────────────
 
-    static JsonObject BuildSessionStartPayload(string sid, string? cwd, DateTimeOffset? startedAt, bool forcePrivate) {
+    static JsonObject BuildSessionStartPayload(string sid, string? cwd, DateTimeOffset? startedAt) {
         var p = new JsonObject { ["hook_event_name"] = "sessionStart", ["session_id"] = sid };
         if (cwd is not null) p["cwd"] = cwd;
         // fail-open git-root discovery, mirroring ImportChainsAsync
         // so routed imports carry the same workspace_root the file-based path does.
         if (cwd is not null && GitRepository.FindRoot(cwd) is { } workspaceRoot) p["workspace_root"] = workspaceRoot;
         if (startedAt is { } ts) p["started_at"] = ts.ToString("O");
-        if (forcePrivate) p["default_visibility"] = "private";
         p["origin"] = ImportOrigins.Historical;
         return p;
     }

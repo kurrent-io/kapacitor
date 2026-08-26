@@ -277,10 +277,8 @@ internal sealed class CopilotImportSource : IImportSource {
         // permanently lifecycle-less. Re-runs are idempotent server-side
         // (deterministic lifecycle event ids).
         var startPayload = BuildSessionStartPayload(classification.SessionId, cwd, classification.Meta.FirstTimestamp);
-        // Step 3 visibility stamp — New-only, and never overrides an existing force-private
-        // choice (Copilot has none of its own today; this guard keeps it that way).
-        if (!ctx.ForcePrivate && classification.Status == ImportCommand.ClassificationStatus.New && ctx.DefaultVisibility is not null) {
-            startPayload["default_visibility"] = ctx.DefaultVisibility;
+        if (ctx.VisibilityStampFor(classification.Status) is { } visibility) {
+            startPayload["default_visibility"] = visibility;
         }
 
         var startOk = await PostSyntheticHookAsync(

@@ -1342,14 +1342,12 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
             _                                             => (prev.Loaded, prev.Skipped, prev.Failed + 1),
         };
 
-        // The chain path builds its own New-session-start payload (ImportSingleSessionAsync)
-        // and has no ImportContext/ForcePrivate of its own to guard against — so the
-        // force-private precedence is enforced HERE, up front, rather than via a per-call
-        // invariant. Zeroing it out before a New session's session-start POST guarantees a
-        // force-private import never stamps a non-private default, even if the session later
-        // fails mid-stream (before session-end / importedSessionIds, i.e. before the post-hoc
-        // SetVisibilityNoneForAll below would ever see it).
-        var chainDefaultVisibility = forcePrivate ? null : defaultVisibility;
+        // The chain path has no ImportContext, so the same rule ImportContext.VisibilityStampFor
+        // holds for every routed source is applied here instead — and it is a stamp, never an
+        // omission: the server reads an absent default_visibility as org_public, so a force-private
+        // import that says nothing lands org-visible until SetVisibilityNoneForAll reaches it, and
+        // permanently for a session that fails mid-stream and never gets there.
+        var chainDefaultVisibility = forcePrivate ? "private" : defaultVisibility;
 
         if (chains.Count > 0) {
             display.BeginPhase($"Importing {chains.Sum(c => c.Count)} sessions");
@@ -2871,9 +2869,9 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
         if (meta.FirstTimestamp is not null) startHook["started_at"]                = meta.FirstTimestamp.Value.ToString("O");
         if (session.PreviousSessionId is not null) startHook["previous_session_id"] = session.PreviousSessionId;
         if (meta.Slug is not null) startHook["slug"]                                = meta.Slug;
-        // Step 3 visibility stamp (New-only — this branch only runs for ClassificationStatus.New;
-        // Partial returned above). The caller (HandleImport) already zeroed this out under
-        // forcePrivate, so no separate check is needed here.
+        // New-only, because this branch only runs for ClassificationStatus.New (Partial returned
+        // above). The caller resolved force-private into the value itself, so there is nothing
+        // to check for here.
         if (defaultVisibility is not null) startHook["default_visibility"]          = defaultVisibility;
 
         // best-effort git-root discovery from the (already remap-resolved) cwd, so

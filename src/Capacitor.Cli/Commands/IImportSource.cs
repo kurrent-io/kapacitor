@@ -41,17 +41,35 @@ internal sealed record ClassifyContext(
 
 /// <summary>
 /// Dependencies passed to ImportSessionAsync. ForcePrivate carries the
-/// effective --private flag from the orchestrator (so each source can
-/// stamp visibility consistently). DefaultVisibility carries the Step 3
-/// setup visibility choice (or null for standalone `kcap import`) — sources
-/// stamp it onto New sessions only, guarded by !ForcePrivate (see the
-/// unified-agent-install-and-import spec's Visibility section).
+/// effective --private flag from the orchestrator; DefaultVisibility carries
+/// the Step 3 setup visibility choice, or null for standalone `kcap import`.
+/// Neither is read directly by a source — <see cref="VisibilityStampFor"/> is.
 /// </summary>
 internal sealed record ImportContext(
     HttpClient HttpClient,
     string     BaseUrl,
     bool       ForcePrivate,
-    string?    DefaultVisibility = null);
+    string?    DefaultVisibility = null) {
+    /// <summary>
+    /// What to stamp as <c>default_visibility</c> on this session's session-start, or null to
+    /// leave the field off.
+    ///
+    /// <para><b>An omitted stamp is not "no default".</b> The server reads an absent field as
+    /// <c>org_public</c>, so <c>--private</c> has to say <c>private</c> out loud or the session
+    /// lands org-visible and stays that way until the closing privatising pass reaches it —
+    /// permanently, for any session whose PUT fails. One rule in one place because the nine
+    /// sources reached three different answers when each held its own.</para>
+    ///
+    /// <para><b>The two halves are deliberately asymmetric.</b> The Step 3 default is a
+    /// <i>creation</i> default and says nothing about a session that already exists, so it is
+    /// stamped on New alone; <c>private</c> is a floor, and re-asserting a floor on a replay can
+    /// only narrow what is already there.</para>
+    /// </summary>
+    public string? VisibilityStampFor(ImportCommand.ClassificationStatus status) =>
+        ForcePrivate                                        ? "private"
+      : status is ImportCommand.ClassificationStatus.New    ? DefaultVisibility
+      :                                                       null;
+}
 
 internal enum ImportOutcome { Loaded, Resumed, Skipped, Failed }
 

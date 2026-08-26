@@ -189,11 +189,9 @@ internal sealed class OpenCodeImportSource : IImportSource {
         var lineOffset = repair ? checked(c.ResumeFromLine + 1) : 0;
 
         // 1. session-start (lifecycle-before-transcript; idempotent server-side).
-        var startPayload = BuildSessionStartPayload(c.SessionId, c.Meta.Cwd, c.Meta.FirstTimestamp, ctx.ForcePrivate);
-        // Step 3 visibility stamp — New-only, and never overrides the existing forcePrivate
-        // "private" stamp above (mutually exclusive: this only fires when !ctx.ForcePrivate).
-        if (!ctx.ForcePrivate && c.Status == ImportCommand.ClassificationStatus.New && ctx.DefaultVisibility is not null) {
-            startPayload["default_visibility"] = ctx.DefaultVisibility;
+        var startPayload = BuildSessionStartPayload(c.SessionId, c.Meta.Cwd, c.Meta.FirstTimestamp);
+        if (ctx.VisibilityStampFor(c.Status) is { } visibility) {
+            startPayload["default_visibility"] = visibility;
         }
 
         if (!await PostHookAsync(ctx.HttpClient, ctx.BaseUrl, "session-start/opencode", startPayload, ct))
@@ -459,7 +457,7 @@ internal sealed class OpenCodeImportSource : IImportSource {
             ? ln.GetInt32() : null;
     }
 
-    static JsonObject BuildSessionStartPayload(string sid, string? cwd, DateTimeOffset? startedAt, bool forcePrivate) {
+    static JsonObject BuildSessionStartPayload(string sid, string? cwd, DateTimeOffset? startedAt) {
         var p = new JsonObject {
             ["hook_event_name"] = "sessionStart",
             ["session_id"]      = sid,
@@ -470,7 +468,6 @@ internal sealed class OpenCodeImportSource : IImportSource {
         // so routed imports carry the same workspace_root the file-based path does.
         if (cwd is not null && GitRepository.FindRoot(cwd) is { } workspaceRoot) p["workspace_root"] = workspaceRoot;
         if (startedAt is { } ts) p["started_at"] = ts.ToString("O");
-        if (forcePrivate) p["default_visibility"] = "private";
         p["origin"] = ImportOrigins.Historical;
         return p;
     }
