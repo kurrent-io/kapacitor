@@ -2,8 +2,6 @@ using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.Config;
 
-using Capacitor.Cli.Core.Telemetry;
-
 namespace Capacitor.Cli.Commands;
 
 /// <summary>
@@ -20,11 +18,6 @@ public sealed class LoginCommand(ConfigRoot config, ProfileContext profiles, IBr
     /// entry point above needs to build one.</summary>
     internal static async Task<int> HandleAsync(
             string[] args, string? baseUrl, string profile, OnboardingFacade facade, IAuthProgress progress) {
-        // Before any lane is chosen, so a device-flow or headless login carries the key even though
-        // it never opens a loopback listener — the key is a per-run correlation id, not a browser
-        // artifact. No-ops when telemetry is disabled.
-        SetupJoin.Mint();
-
         // Also when there is no keyboard: a redirected stdin cannot press the escape-hatch key, so a
         // loopback wait there can only end in the listener timeout. Not a headless guess - an
         // interactive SSH session has a keyboard and keeps the browser.

@@ -117,14 +117,19 @@ public class SetupJoinTests : IDisposable {
         await Assert.That(text).DoesNotContain(key!);
     }
 
-    // An event with no key must render exactly as it did before this existed.
+    // An event with no key must render exactly as it did before this existed. A non-auth command is
+    // the "no key" state now that setup/login mint in Initialize: it enables telemetry but mints nothing.
     [Test]
     public async Task Debug_output_is_unchanged_for_an_event_with_no_key() {
         Environment.SetEnvironmentVariable("KCAP_TELEMETRY_DEBUG", "1");
         using var console = ConsoleOutput.StartErrorCapture();
 
         try {
-            StartCapturing();
+            var config = new ConfigRoot(_tmp.Path);
+            CliTelemetry.TestSink = new List<TelemetryEvent>();
+            CliTelemetry.Initialize("recap", null, loggedIn: false, config);
+            TelemetryTestGuards.AssertEnabled("recap", config);
+
             CliTelemetry.Capture("cli_test_event", new JsonObject { ["k"] = "v" });
         } finally {
             Environment.SetEnvironmentVariable("KCAP_TELEMETRY_DEBUG", null);

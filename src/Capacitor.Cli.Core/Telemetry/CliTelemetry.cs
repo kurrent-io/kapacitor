@@ -99,6 +99,15 @@ public static class CliTelemetry {
             if (TestSink is null)
                 _client = new TelemetryClient(new HttpClientHandler(), Spool(config), Token, Endpoint);
 
+            // The join key has to be in the shared bag BEFORE cli_first_run fires just below, or that
+            // once-per-device event ships without it and no later run can repair it. Gated to the two
+            // interactive auth commands so it never attaches to a recap or an import — which have no
+            // auth run to correlate — and minted here, ahead of any lane the command later chooses, so
+            // every setup/login lane (loopback, device-code, headless) carries it. No-ops when
+            // telemetry is off, which by this point it is not.
+            if (command is "setup" or "login")
+                SetupJoin.Mint();
+
             // "mcp-server" is the re-initialise long-lived MCP servers perform on top of the
             // denylisted "mcp" (see McpTelemetry) — an agent-spawned, non-interactive process
             // whose stderr no human is watching. kcap-memory/-sessions/-flows/-review

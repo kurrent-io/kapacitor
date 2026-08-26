@@ -97,12 +97,6 @@ sealed class SpectreFirstRunFlowProgress : IFirstRunFlowProgress {
 
 public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBrowserLauncher browser) {
     public async Task<int> HandleAsync(string[] args) {
-        // Before ANY funnel event and before the flag parsing below chooses a lane. cli_setup_started
-        // fires further down, and the device-code, headless and no-browser lanes never construct a
-        // LoopbackBrowser at all — the key is a per-run correlation id, not a browser artifact, and
-        // only the redirect is browser-specific. No-ops when telemetry is disabled.
-        SetupJoin.Mint();
-
         var serverUrlArg     = GetArg(args, "--server-url");
 
         // `kcap setup <tenant>`: a leading positional arg (bare slug or full URL) is treated as the
