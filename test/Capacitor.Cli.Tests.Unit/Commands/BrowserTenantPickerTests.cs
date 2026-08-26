@@ -94,6 +94,19 @@ public class BrowserTenantPickerTests {
         return (picker, time);
     }
 
+    /// <summary>
+    /// Runs a pick that has to sleep between polls. The fake clock only moves when told, so a test
+    /// that awaits the pick outright waits forever on the first interval.
+    /// </summary>
+    static async Task<DiscoveredTenant?> Drive(Task<DiscoveredTenant?> pick, FakeTimeProvider time) {
+        while (!pick.IsCompleted) {
+            time.Advance(TimeSpan.FromSeconds(2));
+            await Task.Yield();
+        }
+
+        return await pick;
+    }
+
     sealed class SilentProgress : IAuthProgress {
         public void Notice(string message) { }
         public void Error(string message) { }
@@ -315,5 +328,57 @@ public class BrowserTenantPickerTests {
             new SilentProgress(), new SilentKeys(), new FakeTimeProvider(DateTimeOffset.UnixEpoch));
 
         await Assert.That(await picker.PickAsync(Two, Context(proxy), cts.Token)).IsNull();
+    }
+
+    /// <summary>
+    /// A poll that did not happen is not a pending answer. Treating them alike holds the run for the
+    /// whole handle lifetime when the proxy goes away after prepare, and the terminal picker is right
+    /// there.
+    /// </summary>
+    [Test]
+    public async Task A_proxy_that_stops_answering_does_not_hold_the_run_to_the_deadline() {
+        var proxy = new StubProxy { Prepared = Ready(DateTimeOffset.UnixEpoch.AddMinutes(10)) };
+        for (var i = 0; i < 20; i++) proxy.Polls.Enqueue(null);
+
+        var (picker, time) = Build(proxy);
+        var picked = await Drive(picker.PickAsync(Two, Context(proxy), CancellationToken.None), time);
+
+        await Assert.That(picked).IsNull();
+        await Assert.That(proxy.Polls_).IsLessThanOrEqualTo(3);
+    }
+
+    /// <summary>A blip is not an outage: the run carries on and still collects the answer.</summary>
+    [Test]
+    public async Task A_single_failed_poll_does_not_abandon_the_browser() {
+        var proxy = new StubProxy { Prepared = Ready(DateTimeOffset.UnixEpoch.AddMinutes(10)) };
+        proxy.Polls.Enqueue(null);
+        proxy.Polls.Enqueue(null);
+        proxy.Polls.Enqueue(new CliPickerResultResponse { Status = "pending" });
+        proxy.Polls.Enqueue(null);
+        proxy.Polls.Enqueue(new CliPickerResultResponse { Status = "selected", Key = "org_b" });
+
+        var (picker, time) = Build(proxy);
+
+        await Assert.That((await Drive(picker.PickAsync(Two, Context(proxy), CancellationToken.None), time))?
+            .OrganizationId).IsEqualTo("org_b");
+    }
+
+    /// <summary>
+    /// The initializer on <c>Tenants</c> does not survive a proxy sending <c>"tenants": null</c>, and
+    /// a throw here would take the whole of setup with it rather than falling back.
+    /// </summary>
+    [Test]
+    public async Task A_prepare_response_with_a_null_tenant_list_falls_back() {
+        var proxy = new StubProxy {
+            Prepared = new CliPickerPrepareResponse {
+                Handle = "h1", PollIntervalSeconds = 1,
+                ExpiresAt = DateTimeOffset.UnixEpoch.AddMinutes(10), Tenants = null!
+            }
+        };
+
+        var (picker, _) = Build(proxy);
+
+        await Assert.That(await picker.PickAsync(Two, Context(proxy), CancellationToken.None)).IsNull();
+        await Assert.That(proxy.Polls_).IsEqualTo(0);
     }
 }

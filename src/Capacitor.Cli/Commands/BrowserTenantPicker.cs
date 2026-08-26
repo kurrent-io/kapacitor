@@ -28,6 +28,8 @@ public sealed class BrowserTenantPicker(
         Func<bool>?         canPrompt  = null
     ) : ITenantPicker {
 
+    const int MaxConsecutivePollFailures = 3;
+
     IAuthProgress Progress => progress ?? ConsoleAuthProgress.Instance;
     IKeyWatcher   Keys     => keys     ?? ConsoleKeyWatcher.Instance;
     TimeProvider  Clock    => time     ?? TimeProvider.System;
@@ -47,7 +49,7 @@ public sealed class BrowserTenantPicker(
             context.ProxyUrl!, context.Bearer!,
             Base64Url.EncodeToString(SHA256.HashData(Encoding.UTF8.GetBytes(secret))), ct);
 
-        if (prepared is null || prepared.Tenants.Length == 0) {
+        if (prepared is null || prepared.Tenants is not { Length: > 0 }) {
             return await FallBackAsync(tenants, context, ct);
         }
 
@@ -90,6 +92,7 @@ public sealed class BrowserTenantPicker(
             TenantPickContext context, CliPickerPrepareResponse prepared, string secret, CancellationToken ct) {
         var interval = TimeSpan.FromSeconds(Math.Clamp(prepared.PollIntervalSeconds, 1, 10));
         var waited   = false;
+        var failures = 0;
 
         try {
             while (!ct.IsCancellationRequested && Clock.GetUtcNow() < prepared.ExpiresAt) {
@@ -107,9 +110,18 @@ public sealed class BrowserTenantPicker(
                     return null;
                 }
 
-                if (Answer(await context.Proxy!.PollPickAsync(context.ProxyUrl!, prepared.Handle, secret, ct))
-                    is { } chosen) {
-                    return chosen.Length == 0 ? null : chosen;
+                var result = await context.Proxy!.PollPickAsync(context.ProxyUrl!, prepared.Handle, secret, ct);
+
+                // A null is a poll that did not happen — any transport or HTTP failure — which is a
+                // different thing from a pending answer, and treating them alike holds a setup for
+                // the whole ten minutes when the proxy goes away after prepare. A few in a row is an
+                // outage rather than a blip, and the terminal picker still works.
+                if (result is null) {
+                    if (++failures >= MaxConsecutivePollFailures) break;
+                } else {
+                    failures = 0;
+
+                    if (Answer(result) is { } chosen) return chosen.Length == 0 ? null : chosen;
                 }
 
                 await Task.Delay(interval, Clock, ct);
@@ -120,7 +132,7 @@ public sealed class BrowserTenantPicker(
             // is the browser-says-yes-terminal-asks-again contradiction the shared deadline exists
             // to prevent. Only when we actually waited: a handle already dead on arrival cannot be
             // carrying a choice made through the browser this call just opened.
-            if (waited && !ct.IsCancellationRequested &&
+            if (waited && failures < MaxConsecutivePollFailures && !ct.IsCancellationRequested &&
                 Answer(await context.Proxy!.PollPickAsync(context.ProxyUrl!, prepared.Handle, secret, ct))
                     is { Length: > 0 } late) {
                 return late;
