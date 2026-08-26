@@ -954,10 +954,23 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
     OnboardingFacade NewFacade(
             ITenantProvisioner? provisioner, ITenantPicker? picker = null, RequestedWorkspace? requested = null) =>
         FacadeOverride?.Invoke(provisioner)
-            ?? new OnboardingFacade(config, StepProgress, browser, picker ?? new SpectreTenantPicker(), provisioner,
+            ?? new OnboardingFacade(config, StepProgress, browser, picker ?? DefaultPicker(browser, () => true), provisioner,
                 WorkspaceGuard(requested)) {
                 KeyWatcher = ConsoleKeyWatcher.Instance
             };
+
+    /// <summary>
+    /// The workspace pick, in the browser where one is reachable and in the terminal otherwise.
+    /// The composite decides per call, since only the completed login knows which it was.
+    /// </summary>
+    /// <summary>
+    /// The workspace pick, in the browser where one is reachable and in the terminal otherwise. The
+    /// composite decides per call, since only the completed login knows which channel it used.
+    /// </summary>
+    static ITenantPicker DefaultPicker(IBrowserLauncher launcher, Func<bool> canPrompt) =>
+        new BrowserTenantPicker(
+            launcher, new SpectreTenantPicker(canPrompt), StepProgress, ConsoleKeyWatcher.Instance,
+            canPrompt: canPrompt);
 
     /// <summary>
     /// Refuses the commit when discovery is about to publish a workspace other than the one
@@ -1245,7 +1258,7 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
                 isInteractive: () => canPrompt, requested: requested)
             : null;
 
-        var result = await NewFacade(provisioner, new SpectreTenantPicker(() => canPrompt), requested)
+        var result = await NewFacade(provisioner, DefaultPicker(browser, () => canPrompt), requested)
             .DiscoverAsync(chosen, forceDevice, CancellationToken.None);
 
         // WorkOS's own signin_completed/tenant_none fire from inside Core — only GitHub is derived here.

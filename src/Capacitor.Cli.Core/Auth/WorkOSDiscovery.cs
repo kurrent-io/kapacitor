@@ -46,7 +46,8 @@ public static class WorkOSDiscovery {
             Func<string, CancellationToken, Task<WorkOSAuthResponse?>>? orglessRefresh = null, // args: refreshToken, ct
             ITenantProvisioner?                             provisioner = null,
             CancellationToken                               ct = default,
-            IAuthProgress?                                  progress = null) {
+            IAuthProgress?                                  progress = null,
+            TenantPickContext?                              pickContext = null) {
         progress ??= ConsoleAuthProgress.Instance;
 
         if (string.IsNullOrEmpty(proxyConfig.WorkOSClientId)) {
@@ -82,7 +83,15 @@ public static class WorkOSDiscovery {
             return await OfferCreateAsync(proxyConfig, auth, orgSwitch, orglessRefresh, provisioner, ct, progress);
         }
 
-        var picked = result.Tenants.Length == 1 ? result.Tenants[0] : await picker.PickAsync(result.Tenants, ct);
+        var picked = result.Tenants.Length == 1
+            ? result.Tenants[0]
+            : await picker.PickAsync(
+                result.Tenants,
+                (pickContext ?? TenantPickContext.None) with {
+                    Bearer      = auth.AccessToken,
+                    ViaLoopback = !auth.ViaDeviceGrant
+                },
+                ct);
         // Not through Failed: the picker has already said why, and a second line here would be the
         // one that contradicts it — "no tenant selected" reads as a choice on a session that had none.
         if (picked is null) return new WorkOSDiscoveryFlow.Failed("No tenant selected.");

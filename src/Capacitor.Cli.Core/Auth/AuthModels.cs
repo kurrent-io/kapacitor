@@ -132,6 +132,15 @@ public record WorkOSAuthResponse {
     // Deliberately does not model authkit_authorization_code: the device grant returns one, it is
     // exchangeable for tokens by another application, and nothing here needs it. Not modelling it is
     // what keeps it out of logs and transcripts.
+
+    /// <summary>
+    /// Whether a device code produced this token rather than the loopback browser. Not a wire field:
+    /// the ladder decides the channel at runtime — the escape-hatch key, a machine with no browser,
+    /// a listener that will not bind — so the flags a caller passed in do not say which was taken.
+    /// True means no browser is reachable here, and anything that would open one should not.
+    /// </summary>
+    [JsonIgnore]
+    public bool ViaDeviceGrant { get; init; }
 }
 
 public record WorkOSUserInfo {
@@ -167,6 +176,10 @@ public sealed record ProxyConfigResponse {
     // AuthKit UI domain. Present (and client id non-empty) when the proxy serves WorkOS discovery.
     [JsonPropertyName("workos_client_id")]      public string? WorkOSClientId      { get; init; }
     [JsonPropertyName("workos_authkit_domain")] public string? WorkOSAuthKitDomain { get; init; }
+
+    // Which shape of /cli/v1/picker/* the proxy serves. Absent (0) is a proxy that predates the
+    // routes, and the browser pick degrades to the terminal one rather than polling a 404.
+    [JsonPropertyName("cli_picker_version")]    public int     CliPickerVersion    { get; init; }
 }
 
 // Auth proxy: POST /discover-tenants (GitHub) and /discover-tenants-workos (WorkOS) response item.

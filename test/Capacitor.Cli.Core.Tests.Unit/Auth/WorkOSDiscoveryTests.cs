@@ -32,7 +32,7 @@ public class WorkOSDiscoveryTests {
              .Returns(Task.FromResult(new Cli.Core.Auth.DiscoveryResult(tenants, DiscoveryError.None)));
 
         var picker = Substitute.For<ITenantPicker>();
-        picker.PickAsync(tenants, Arg.Any<CancellationToken>()).Returns(Task.FromResult<DiscoveredTenant?>(tenants[0])); // eventuous
+        picker.PickAsync(tenants, Arg.Any<TenantPickContext>(), Arg.Any<CancellationToken>()).Returns(Task.FromResult<DiscoveredTenant?>(tenants[0])); // eventuous
 
         var orgless  = new WorkOSAuthResponse { User = new() { Id = "user_x", FirstName = "Ada" }, AccessToken = "acc",  RefreshToken = "rt" };
         var switched = new WorkOSAuthResponse { User = new() { Id = "user_x" }, OrganizationId = "org_a", AccessToken = "acc2", RefreshToken = "rt2" };
@@ -314,7 +314,7 @@ public class WorkOSDiscoveryTests {
              .Returns(Task.FromResult(new Cli.Core.Auth.DiscoveryResult(tenants, DiscoveryError.None)));
 
         var picker = Substitute.For<ITenantPicker>();
-        picker.PickAsync(tenants, Arg.Any<CancellationToken>()).Returns(Task.FromResult<DiscoveredTenant?>(null));
+        picker.PickAsync(tenants, Arg.Any<TenantPickContext>(), Arg.Any<CancellationToken>()).Returns(Task.FromResult<DiscoveredTenant?>(null));
 
         var progress = new RecordingAuthProgress();
         var orgless  = new WorkOSAuthResponse { User = new() { Id = "user_x" }, AccessToken = "acc", RefreshToken = "rt" };
@@ -327,5 +327,51 @@ public class WorkOSDiscoveryTests {
 
         await Assert.That(flow).IsTypeOf<WorkOSDiscoveryFlow.Failed>();
         await Assert.That(progress.Errors).IsEmpty();
+    }
+
+    /// <summary>
+    /// The picker cannot see the login, so discovery is what tells it which channel produced the
+    /// token and hands over the bearer to prepare a pick with. Both halves are pinned here because
+    /// inverting either one opens a browser on a machine that has none, and the picker's own tests
+    /// pass the value in by hand.
+    /// </summary>
+    [Test]
+    [Arguments(true,  false)]
+    [Arguments(false, true)]
+    public async Task DiscoverAsync_tells_the_picker_which_channel_signed_in(bool viaDevice, bool expectLoopback) {
+        var proxyConfig = new ProxyConfigResponse { WorkOSClientId = "client_d", CliPickerVersion = 1 };
+
+        var proxy = Substitute.For<IAuthProxyClient>();
+        DiscoveredTenant[] tenants = [
+            new() { Provider = "WorkOS", OrganizationId = "org_a", Slug = "acme",   Origin = "https://acme.kcap.ai" },
+            new() { Provider = "WorkOS", OrganizationId = "org_b", Slug = "globex", Origin = "https://globex.kcap.ai" }
+        ];
+        proxy.DiscoverWorkOSTenantsAsync(Arg.Any<string>(), Arg.Any<string>())
+             .Returns(Task.FromResult(new Cli.Core.Auth.DiscoveryResult(tenants, DiscoveryError.None)));
+
+        TenantPickContext? seen = null;
+        var picker = Substitute.For<ITenantPicker>();
+        picker.PickAsync(Arg.Any<DiscoveredTenant[]>(), Arg.Any<TenantPickContext>(), Arg.Any<CancellationToken>())
+              .Returns(ci => {
+                  seen = ci.Arg<TenantPickContext>();
+                  return Task.FromResult<DiscoveredTenant?>(tenants[0]);
+              });
+
+        var orgless = new WorkOSAuthResponse {
+            User = new() { Id = "user_x" }, AccessToken = "orgless-token", RefreshToken = "rt",
+            ViaDeviceGrant = viaDevice
+        };
+
+        await WorkOSDiscovery.DiscoverAsync(
+            "https://auth.kcap.ai", proxyConfig, proxy, picker,
+            orglessLogin: ()     => Task.FromResult<WorkOSAuthResponse?>(orgless),
+            orgSwitch:    (_, _) => Task.FromResult<WorkOSAuthResponse?>(
+                new WorkOSAuthResponse { User = new() { Id = "user_x" }, OrganizationId = "org_a", AccessToken = "a2", RefreshToken = "r2" }),
+            pickContext: new TenantPickContext(Proxy: proxy, ProxyUrl: "https://auth.kcap.ai", PickerVersion: 1));
+
+        await Assert.That(seen).IsNotNull();
+        await Assert.That(seen!.ViaLoopback).IsEqualTo(expectLoopback);
+        await Assert.That(seen.Bearer).IsEqualTo("orgless-token");
+        await Assert.That(seen.CanPickInBrowser).IsEqualTo(expectLoopback);
     }
 }

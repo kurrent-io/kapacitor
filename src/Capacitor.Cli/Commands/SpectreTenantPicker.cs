@@ -17,7 +17,7 @@ public class SpectreTenantPicker(Func<bool>? isInteractive = null) : ITenantPick
     }
 
     // Spectre prompts are not cancellable and the CLI never cancels this path.
-    public Task<DiscoveredTenant?> PickAsync(DiscoveredTenant[] tenants, CancellationToken ct) {
+    public Task<DiscoveredTenant?> PickAsync(DiscoveredTenant[] tenants, TenantPickContext context, CancellationToken ct) {
         // Spectre throws from inside a prompt rather than returning, so a session with no terminal
         // has to be turned away before one opens. Naming each tenant is the whole point: the reader
         // is a log, and the way out is to pass the one they wanted.
