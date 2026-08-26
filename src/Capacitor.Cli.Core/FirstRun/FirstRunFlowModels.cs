@@ -156,9 +156,9 @@ public sealed record FirstRunFlowResponse {
     /// its own command; what crosses is a token from a closed set, and one this build does not know is
     /// dropped rather than forwarded — see <see cref="FirstRunFlowOutcomes.MachineActions"/>.</para>
     ///
-    /// <para><b>A list because a second capability must not be a wire break</b>, not because one is
-    /// planned. Entries this build cannot act on are simply left alone: the request stays outstanding and
-    /// the browser goes on saying so, which is the honest state for a CLI too old to perform it.</para>
+    /// <para><b>A list, so adding a capability is not a wire break.</b> Entries this build cannot act on
+    /// are left alone: the request stays outstanding and the browser goes on saying so, which is the honest
+    /// state for a CLI too old to perform it.</para>
     /// </summary>
     [JsonPropertyName("machine_actions")] public List<FirstRunMachineActionResponse>? MachineActions { get; init; }
 }

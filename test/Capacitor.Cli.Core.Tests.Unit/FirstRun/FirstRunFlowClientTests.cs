@@ -95,8 +95,8 @@ public class FirstRunFlowClientTests {
         await Assert.That(body["login_shell_finds_cli"]!.GetValue<bool>()).IsFalse();
     }
 
-    // What decides whether the screen offers to fix a broken PATH at all: the shim is macOS-only, so
-    // the browser draws its button for an explicit macos and nothing else.
+    // An explicit macos is what the browser draws its fix button from; every other value, and no value,
+    // draw none.
     [Test]
     public async Task CreateAsync_reports_the_platform_so_the_screen_knows_what_it_can_offer() {
         using var server = WireMockServer.Start();

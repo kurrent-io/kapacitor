@@ -791,4 +791,67 @@ public class BrowserFirstRunFlowTests {
         await Assert.That(result).IsTypeOf<FirstRunFlowResult.Finished>();
         await Assert.That(h.Channel.ActionReports).IsEmpty();
     }
+
+    [Test]
+    public async Task An_outcome_that_did_not_land_on_the_finishing_tick_is_flushed() {
+        // The per-tick retry needs a next tick and this tick has none, so without the flush a single blip
+        // loses an outcome for a fix that really happened.
+        var h = Build(capabilities: PathShimOnly);
+        h.Channel.ReportStatuses.Enqueue(500);
+        h.Channel.Tail = new(200, Done() with {
+            MachineActions = [new FirstRunMachineActionResponse {
+                Capability = FirstRunMachineCapabilities.PathShim, RequestedAt = Asked
+            }]
+        });
+
+        var result = await Run(h);
+
+        await Assert.That(result).IsTypeOf<FirstRunFlowResult.Finished>();
+        await Assert.That(h.Actions!.Performed.Count).IsEqualTo(1);
+        await Assert.That(h.Channel.ActionReports.Count).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task A_finished_flow_is_not_held_open_by_a_report_that_never_lands() {
+        // The request stays outstanding server-side, which is the honest reading; what must not happen is
+        // reporting a finished flow as abandoned because a report kept failing.
+        var h = Build(capabilities: PathShimOnly);
+
+        for (var i = 0; i < 10; i++) h.Channel.ReportStatuses.Enqueue(500);
+
+        h.Channel.Tail = new(200, Done() with {
+            MachineActions = [new FirstRunMachineActionResponse {
+                Capability = FirstRunMachineCapabilities.PathShim, RequestedAt = Asked
+            }]
+        });
+
+        var result = await Run(h);
+
+        await Assert.That(result).IsTypeOf<FirstRunFlowResult.Finished>();
+
+        // The tick's own attempt plus its two retries, and then it stops.
+        await Assert.That(h.Channel.ActionReports.Count).IsEqualTo(3);
+    }
+
+    [Test]
+    public async Task A_cancel_during_the_action_ends_the_leg_rather_than_finishing_it() {
+        // Every other await here lets the caller's cancel out. Swallowing it would let a cancelled setup
+        // resolve as Finished, reporting a flow as complete that the caller stopped.
+        using var cts = new CancellationTokenSource();
+
+        var h = Build(capabilities: PathShimOnly);
+        h.Actions!.Throws = new OperationCanceledException(cts.Token);
+        h.Channel.Tail = new(200, Done() with {
+            MachineActions = [new FirstRunMachineActionResponse {
+                Capability = FirstRunMachineCapabilities.PathShim, RequestedAt = Asked
+            }]
+        });
+
+        await cts.CancelAsync();
+
+        await Assert.That(async () => await Drive(h.Flow.RunAsync(Server, Report, cts.Token), h.Clock))
+            .Throws<OperationCanceledException>();
+
+        await Assert.That(h.Channel.ActionReports).IsEmpty();
+    }
 }
