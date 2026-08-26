@@ -32,7 +32,7 @@ class SkillsCommand(ConfigRoot config, ProfileContext profiles) {
         var hash = RepoHashHelper.ComputeRepoHash(repo.Owner, repo.RepoName);
 
         var manifestPath = config.Path("skills", hash, Vendor, "manifest.json");
-        var manifest = LoadManifest(manifestPath);
+        if (!TryLoadManifest(manifestPath, out var manifest)) return 1;
 
         using var client = await HttpClientExtensions.CreateAuthenticatedClientAsync(config, profiles, baseUrl);
         var url = $"{baseUrl}/api/repositories/{hash}/skills?vendor={Vendor}"
@@ -78,8 +78,17 @@ class SkillsCommand(ConfigRoot config, ProfileContext profiles) {
         }
 
         var snapshot = dto.Skills ?? [];
-        var plan     = SkillsSyncPlanner.Plan(manifest, snapshot);
-        var root     = SkillsRoot();
+        // Whole-snapshot validation BEFORE any filesystem mutation: acting on a partially-valid
+        // snapshot and recording its etag would prune real skills, write no replacements, and
+        // 304 forever after — refusing outright leaves everything intact and retried in full.
+        var unsafeSlugs = snapshot.Where(s => !SkillsSyncPlanner.IsSafeSlug(s.Slug)).ToList();
+        if (unsafeSlugs.Count > 0) {
+            foreach (var u in unsafeSlugs)
+                await Console.Error.WriteLineAsync($"Refusing snapshot: unsafe slug '{u.Slug}'.");
+            return 1;
+        }
+        var plan = SkillsSyncPlanner.Plan(manifest, snapshot);
+        var root = SkillsRoot();
 
         if (plan.Writes.Count == 0 && plan.Prunes.Count == 0) {
             if (!dryRun) SaveManifest(manifestPath, BuildManifest(dto.Etag, snapshot, root));
@@ -94,12 +103,6 @@ class SkillsCommand(ConfigRoot config, ProfileContext profiles) {
         if (dryRun) return 0;
 
         foreach (var w in plan.Writes) {
-            // The slug becomes a path segment, so it must BE one — a server (or tampered response)
-            // handing out separators or dots must not reach a filesystem operation.
-            if (!SkillsSyncPlanner.IsSafeSlug(w.Slug)) {
-                await Console.Error.WriteLineAsync($"Skipping skill with unsafe slug: {w.Slug}");
-                continue;
-            }
             var dir = SkillDirFor(root, w.Slug);
             Directory.CreateDirectory(dir);
             File.WriteAllText(Path.Combine(dir, "SKILL.md"), SkillsSyncPlanner.RenderSkillFile(w));
@@ -129,23 +132,38 @@ class SkillsCommand(ConfigRoot config, ProfileContext profiles) {
 
     static SkillsManifest BuildManifest(string? etag, SkillSnapshotItem[] snapshot, string root) => new() {
         Etag = etag, SyncedAt = DateTimeOffset.UtcNow,
-        // Unsafe-slug items are skipped by the write loop, so they must not be claimed here either.
-        Skills = [.. snapshot.Where(s => SkillsSyncPlanner.IsSafeSlug(s.Slug)).Select(s => new SkillsManifestEntry {
+        Skills = [.. snapshot.Select(s => new SkillsManifestEntry {
             DocId = s.DocId, Slug = s.Slug, Version = s.Version, ContentHash = s.ContentHash,
             Path = SkillDirFor(root, s.Slug),
         })],
     };
 
-    static SkillsManifest? LoadManifest(string path) {
-        if (!File.Exists(path)) return null;
+    // The manifest is the ownership ledger, and the two failure classes diverge: an unreadable
+    // file may be transient (sharing violation), so the sync ABORTS rather than reconciling
+    // ledger-less over a still-valid file; a corrupt file proceeds from scratch only once the
+    // evidence is genuinely preserved aside — a failed preserve also aborts.
+    static bool TryLoadManifest(string path, out SkillsManifest? manifest) {
+        manifest = null;
+        if (!File.Exists(path)) return true;
+        string text;
         try {
-            return JsonSerializer.Deserialize(File.ReadAllText(path), CapacitorJsonContext.Default.SkillsManifest);
-        } catch {
-            // The manifest is the ownership ledger — losing it silently would strand revoked
-            // directories forever. Keep the evidence aside; the next full sync rebuilds ownership.
-            try { File.Move(path, path + ".corrupt", overwrite: true); } catch { /* best effort */ }
+            text = File.ReadAllText(path);
+        } catch (Exception ex) {
+            Console.Error.WriteLine($"Cannot read skills manifest ({ex.Message}); aborting sync.");
+            return false;
+        }
+        try {
+            manifest = JsonSerializer.Deserialize(text, CapacitorJsonContext.Default.SkillsManifest);
+            return true;
+        } catch (JsonException) {
+            try {
+                File.Move(path, path + ".corrupt", overwrite: true);
+            } catch (Exception ex) {
+                Console.Error.WriteLine($"Corrupt skills manifest could not be preserved ({ex.Message}); aborting sync.");
+                return false;
+            }
             Console.Error.WriteLine($"Warning: corrupt skills manifest moved aside ({path}.corrupt); re-syncing from scratch.");
-            return null;
+            return true;
         }
     }
 

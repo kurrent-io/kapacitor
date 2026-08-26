@@ -17,9 +17,14 @@ static class SessionStartInventory {
             var inv  = HarnessInventory.EvaluateCurrent(config);
             var json = JsonSerializer.Serialize(inv, CapacitorJsonContext.Default.HarnessInventory);
             body["harness_inventory"] = JsonNode.Parse(json);
-            // The CLI's own OS, feeding the server's live applicability gate. Deliberately no
-            // path/heuristic inference — omitted when unrecognized, and unknown EXCLUDES
-            // platform-restricted facts server-side, which beats a wrong guess admitting them.
+        } catch {
+            // best-effort metadata — never break a hook
+        }
+        // The CLI's own OS, feeding the server's live applicability gate. Independent of the
+        // inventory probe (its own best-effort boundary — an inventory failure must not cost the
+        // platform axis), and deliberately no path/heuristic inference: omitted when unrecognized,
+        // and unknown EXCLUDES platform-restricted facts server-side, which beats a wrong guess.
+        try {
             if (HostPlatform.Normalized is { } platform) body["platform"] = platform;
         } catch {
             // best-effort metadata — never break a hook
