@@ -184,6 +184,99 @@ public static class FirstRunFlowOutcomes {
         return requested;
     }
 
+    /// <summary>
+    /// The vendors to scan for importable history: everything in the catalogue except what this
+    /// machine offered and the user did not keep.
+    ///
+    /// <para><b>Only an explicit refusal drops a vendor.</b> The server normalises a harness nothing
+    /// was turned on for out of the decision, so refused and never-offered look identical on the wire
+    /// — but this machine knows which ones it reported, and that is the difference. Getting it wrong
+    /// the other way silently discards history for an agent the user was never asked about.</para>
+    ///
+    /// <para>An unanswered step scans everything: no answer is not a refusal either.</para>
+    /// </summary>
+    public static IReadOnlyList<string> VendorsToImportFrom(
+            FirstRunMachineReport report, FirstRunAgentsAnswer? agents) {
+        var all = HarnessCatalog.All.Select(h => h.VendorId);
+
+        if (agents is null) return [.. all];
+
+        var refused = report.Detected.Where(v => !agents.Records(v)).ToHashSet(StringComparer.Ordinal);
+
+        return [.. all.Where(v => !refused.Contains(v))];
+    }
+
+    /// <summary>The level a wire name means, or null when this build has never heard of it.</summary>
+    public static FirstRunImportLevel? Level(string? name) => name switch {
+        "OnlyMe" => FirstRunImportLevel.OnlyMe,
+        "Shared" => FirstRunImportLevel.Shared,
+        _        => null
+    };
+
+    /// <summary>Who titles, or null when this build has never heard of the answer.</summary>
+    public static FirstRunImportTitles? Titles(string? name) => name switch {
+        "Server" => FirstRunImportTitles.Server,
+        "Local"  => FirstRunImportTitles.Local,
+        "None"   => FirstRunImportTitles.None,
+        _        => null
+    };
+
+    /// <summary>
+    /// The Import decision, or null when there is none to act on.
+    ///
+    /// <para><b>An unreadable window or titles answer voids the whole decision</b>, unlike an
+    /// unreadable level, which costs one repository. Both name what to do with everything selected,
+    /// so guessing either would import the right repositories on the wrong terms — and there is no
+    /// safe guess: assuming a narrower window silently skips history, a wider one silently uploads
+    /// more than was asked for.</para>
+    ///
+    /// <para><b>Both wire fields or neither</b>, as the Agents decision: a decision with no timestamp
+    /// has no identity, and reading half of it would act on a half-made choice.</para>
+    /// </summary>
+    public static FirstRunImportAnswer? Import(FirstRunFlowResponse? view) {
+        if (view?.Import is not { } decision) return null;
+        if (view.ImportDecidedAt is not { } decidedAt) return null;
+        if (!FirstRunImportWindows.IsKnown(decision.Window)) return null;
+        if (Titles(decision.Titles) is not { } titles) return null;
+
+        var seen        = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var choices     = new List<FirstRunImportChoice>();
+        var unreadable  = 0;
+
+        foreach (var entry in decision.Repos ?? []) {
+            if (entry.Owner is not { Length: > 0 } || entry.Name is not { Length: > 0 }) continue;
+
+            if (Level(entry.Level) is not { } level) {
+                unreadable++;
+
+                continue;
+            }
+
+            // Case-insensitively, because git remotes are: two spellings of one repository would
+            // import it twice, at whichever level came second.
+            if (!seen.Add($"{entry.Owner}/{entry.Name}")) continue;
+
+            choices.Add(new FirstRunImportChoice(entry.Owner, entry.Name, level));
+        }
+
+        return new FirstRunImportAnswer(
+            choices, decision.Window, titles, Vendors(decision.Vendors), decidedAt, unreadable);
+    }
+
+    /// <summary>The vendors to filter on. <b>Null survives as null</b> — no filter, not filter-to-
+    /// nothing — and a vendor this build does not know is dropped, which can turn a non-empty list
+    /// into an empty one: importing from nothing beats importing from everything on an answer that
+    /// named neither.</summary>
+    static IReadOnlyList<string>? Vendors(List<string>? vendors) =>
+        vendors is null ? null : [.. HarnessCatalog.All.Select(h => h.VendorId).Where(vendors.Contains)];
+
+    /// <summary>The Import decision behind a finished leg, on the same terms as
+    /// <see cref="Agents(FirstRunFlowResult)"/>: only from a view whose Import step has settled, and
+    /// a dismissed or abandoned leg can carry one — the user answered the screen and then stopped
+    /// watching.</summary>
+    public static FirstRunImportAnswer? Import(FirstRunFlowResult result) =>
+        ViewOf(result) is { } view && IsSettled(view, FirstRunFlowStep.Import) ? Import(view) : null;
+
     /// <summary>The Agents decision behind a finished leg, wherever it ended.
     ///
     /// <para>A dismissed or abandoned leg can carry one: the user answered the screen and then closed
@@ -195,14 +288,15 @@ public static class FirstRunFlowOutcomes {
     /// those would apply a half-made choice. This is the last state polled, so it can still lag the
     /// server by one interval — the CLI applies what it last saw and does not treat
     /// <see cref="FirstRunAgentsAnswer.DecidedAt"/> as a cursor to re-check against.</para></summary>
-    public static FirstRunAgentsAnswer? Agents(FirstRunFlowResult result) {
-        FirstRunFlowResponse? view = result switch {
-            FirstRunFlowResult.Finished finished   => finished.View,
-            FirstRunFlowResult.Dismissed dismissed => dismissed.View,
-            FirstRunFlowResult.Abandoned abandoned => abandoned.View,
-            _                                      => null
-        };
+    public static FirstRunAgentsAnswer? Agents(FirstRunFlowResult result) =>
+        ViewOf(result) is { } view && IsSettled(view, FirstRunFlowStep.Agents) ? Agents(view) : null;
 
-        return view is not null && IsSettled(view, FirstRunFlowStep.Agents) ? Agents(view) : null;
-    }
+    /// <summary>The last state polled, for a leg that reached one. Null for a leg that never got a
+    /// state to report — an unavailable tenant, a rate limit, a create that failed.</summary>
+    static FirstRunFlowResponse? ViewOf(FirstRunFlowResult result) => result switch {
+        FirstRunFlowResult.Finished finished    => finished.View,
+        FirstRunFlowResult.Dismissed dismissed  => dismissed.View,
+        FirstRunFlowResult.Abandoned abandoned  => abandoned.View,
+        _                                       => null
+    };
 }

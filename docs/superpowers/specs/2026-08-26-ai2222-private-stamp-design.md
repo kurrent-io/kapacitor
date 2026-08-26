@@ -129,6 +129,13 @@ The closing pass stays, and its role is now precise: recovery for a session crea
 and a retry for any write this pass lost. A revisited session is therefore written twice, which is
 why the tests assert *which* sessions were privatised rather than how many writes it took.
 
+**And it leaves `--private` with nothing for the in-scope capture to do.** The shared stop's
+`scopedSessionIds` (AI-2231) exists because sharing has no other mechanism: no pass ahead of it —
+widening opens no window to close — and no usable stamp, since `org_public` as a default lands in
+`default:org` rather than the class the predicate admits unconditionally. Under `--private` both of
+those exist, so the capture would add writes and no protection. Mutation-checked in both directions:
+disabling it for the shared stop fails, and disabling it for the private one changes nothing.
+
 ## Tests
 
 `ImportVisibilityTests` is where the deferred behaviour was pinned, so the same file is where the

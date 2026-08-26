@@ -452,6 +452,13 @@ switch (command) {
                 return 1;
         }
     }
+    case "skills": {
+        if (args.Length < 2 || args[1] != "sync") {
+            Console.Error.WriteLine("Usage: kcap skills sync [--dry-run]");
+            return 1;
+        }
+        return await new SkillsCommand(config, profiles).HandleSync(args.Contains("--dry-run"));
+    }
     case "curate": {
         if (args.Length < 2) {
             Console.Error.WriteLine("Usage: kcap curate apply [--dry-run] [--yes]");

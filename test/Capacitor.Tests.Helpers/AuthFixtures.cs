@@ -32,7 +32,7 @@ public static class AuthFixtures {
 
     public static ITenantPicker PickerReturningFirst() {
         var picker = Substitute.For<ITenantPicker>();
-        picker.PickAsync(Arg.Any<DiscoveredTenant[]>(), Arg.Any<CancellationToken>())
+        picker.PickAsync(Arg.Any<DiscoveredTenant[]>(), Arg.Any<TenantPickContext>(), Arg.Any<CancellationToken>())
               .Returns(ci => Task.FromResult<DiscoveredTenant?>(ci.Arg<DiscoveredTenant[]>()[0]));
 
         return picker;

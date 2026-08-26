@@ -29,7 +29,13 @@ public interface ITenantPicker {
     /// left to do; a session that cannot prompt needs to be told how to name one), and only the
     /// picker knows which happened.
     /// </summary>
-    Task<DiscoveredTenant?> PickAsync(DiscoveredTenant[] tenants, CancellationToken ct);
+    /// <param name="context">
+    /// What a picker needs beyond the rows — the bearer, the proxy client and whether a browser is
+    /// reachable. Carried as an argument rather than set on the instance: the seam is built in
+    /// <c>SetupCommand</c> before any login exists, and a "set this first" contract is one a caller
+    /// can silently skip.
+    /// </param>
+    Task<DiscoveredTenant?> PickAsync(DiscoveredTenant[] tenants, TenantPickContext context, CancellationToken ct);
 }
 
 public class TenantDiscovery(IAuthProxyClient proxy, ITenantPicker picker) {
@@ -53,7 +59,7 @@ public class TenantDiscovery(IAuthProxyClient proxy, ITenantPicker picker) {
 
         var picked = result.Tenants.Length == 1
             ? result.Tenants[0]
-            : await picker.PickAsync(result.Tenants, ct);
+            : await picker.PickAsync(result.Tenants, TenantPickContext.None, ct);
 
         if (picked is null) {
             return new(result.Tenants, null, "No tenant selected.", AlreadyReported: true);

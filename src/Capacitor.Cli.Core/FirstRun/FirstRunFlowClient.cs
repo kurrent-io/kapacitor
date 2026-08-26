@@ -21,6 +21,12 @@ public sealed record FirstRunActionReportOutcome(int StatusCode) {
     public bool Recorded => StatusCode is >= 200 and < 300;
 }
 
+/// <summary>One report of what this machine found on disk. A non-2xx is retried on a later tick;
+/// there is nothing to undo, because the server takes the first report and ignores the rest.</summary>
+public sealed record FirstRunImportReportOutcome(int StatusCode) {
+    public bool Recorded => StatusCode is >= 200 and < 300;
+}
+
 /// <summary>The flow routes, as a seam: the loop, the backoff and the guards around them are the
 /// part worth testing, and they should not need a socket to exercise.</summary>
 public interface IFirstRunFlowChannel {
@@ -36,6 +42,11 @@ public interface IFirstRunFlowChannel {
     /// timestamp — the server drops a report that answers a superseded request.</summary>
     Task<FirstRunActionReportOutcome> ReportMachineActionAsync(
         string serverUrl, string flowId, ReportFirstRunMachineActionRequest report, CancellationToken ct);
+
+    /// <summary>Reports what discovery found. The Import screen renders its waiting state until this
+    /// lands, so a machine with no history still has to report — an empty repo list is an answer.</summary>
+    Task<FirstRunImportReportOutcome> ReportImportAsync(
+        string serverUrl, string flowId, ReportFirstRunImportRequest report, CancellationToken ct);
 }
 
 /// <summary>
@@ -106,6 +117,26 @@ public sealed class FirstRunFlowClient(HttpClient http) : IFirstRunFlowChannel {
             using var req = new HttpRequestMessage(
                     HttpMethod.Post,
                     $"{Base(serverUrl)}/api/first-run/flows/{Uri.EscapeDataString(flowId)}/actions") {
+                Content = new StringContent(payload, Encoding.UTF8, "application/json")
+            };
+
+            using var resp = await http.SendAsync(req, ct);
+
+            return new((int)resp.StatusCode);
+        } catch (Exception e) when (IsTransient(e, ct)) {
+            return new(0);
+        }
+    }
+
+    /// <inheritdoc/>
+    public async Task<FirstRunImportReportOutcome> ReportImportAsync(
+            string serverUrl, string flowId, ReportFirstRunImportRequest report, CancellationToken ct) {
+        var payload = JsonSerializer.Serialize(report, CapacitorJsonContext.Default.ReportFirstRunImportRequest);
+
+        try {
+            using var req = new HttpRequestMessage(
+                    HttpMethod.Post,
+                    $"{Base(serverUrl)}/api/first-run/flows/{Uri.EscapeDataString(flowId)}/import") {
                 Content = new StringContent(payload, Encoding.UTF8, "application/json")
             };
 

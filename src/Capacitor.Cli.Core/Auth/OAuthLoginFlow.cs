@@ -693,12 +693,16 @@ public static class OAuthLoginFlow {
         progress.DeviceCode(device.UserCode, shownUri, provider: null,
             prefilled: browserOpened && !string.IsNullOrEmpty(device.VerificationUriComplete));
 
-        return await PollDeviceGrantAsync(
+        var token = await PollDeviceGrantAsync(
             http, $"{apiBase}/user_management/authenticate",
             new() { ["client_id"] = clientId, ["device_code"] = device.DeviceCode },
             CapacitorJsonContext.Default.WorkOSAuthResponse,
             r => (string.IsNullOrEmpty(r.AccessToken) ? null : r, r.Error),
             device, device.IntervalOrDefault, ct, progress, time);
+
+        // Stamped here rather than at the ladder's fall-through points, because this is the one
+        // place every device-code answer passes through.
+        return token is null ? null : token with { ViaDeviceGrant = true };
     }
 
     internal const char EscapeHatchKey = 'd';

@@ -74,7 +74,10 @@ public sealed class LoginCommand(ConfigRoot config, ProfileContext profiles, IBr
     /// told to ask an admin.
     /// </summary>
     OnboardingFacade NewFacade() =>
-        new(config, ConsoleAuthProgress.Instance, browser, new SpectreTenantPicker(),
+        new(config, ConsoleAuthProgress.Instance, browser,
+            // The same composite `kcap setup` uses: one operation must not behave differently
+            // for being reached by a different command.
+            new BrowserTenantPicker(browser, new SpectreTenantPicker(), ConsoleAuthProgress.Instance),
             new SpectreTenantProvisioner(new TenantProvisioningClient(new HttpClient()), ProvisioningEndpoint.Url),
             beforeCommit: null) {
             KeyWatcher = ConsoleKeyWatcher.Instance

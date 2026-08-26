@@ -12,7 +12,13 @@ namespace Capacitor.Cli.Core.Tests.Unit.LocalIpc;
 /// by generous polling deadlines rather than tight tolerances — see
 /// <see cref="Backoff_delay_advances_across_failures_and_resets_after_connected"/> for why a
 /// real clock was chosen there over a <c>FakeTimeProvider</c>).
+///
+/// <para>Runs exclusively (<see cref="NotInParallelAttribute"/>): every test drives a REAL Unix
+/// socket and a loopback-style handshake bounded by small real timeouts. Those bounds assume prompt
+/// connect and event-stream propagation, which the rest of the assembly's socket and thread-pool load
+/// can deny — so this class needs the host to itself.</para>
 /// </summary>
+[NotInParallel]
 public class LocalControlClientTests {
     /// One scripted connection behavior; the server runs them in accept order and repeats
     /// the last script for further connections.
@@ -177,6 +183,9 @@ public class LocalControlClientTests {
     }
     static bool HasConnectedLocked(object gate, List<LocalControlEvent> events) {
         lock (gate) return events.OfType<LocalControlEvent.Connected>().Any();
+    }
+    static int ConnectedCountLocked(object gate, List<LocalControlEvent> events) {
+        lock (gate) return events.OfType<LocalControlEvent.Connected>().Count();
     }
 
     [Test]
@@ -533,9 +542,10 @@ public class LocalControlClientTests {
             FirstSnapshotTimeout = TimeSpan.FromSeconds(10),
         };
         var events = new List<LocalControlEvent>();
+        var gate = new object();
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         var run = Task.Run(async () => {
-            await foreach (var e in client.RunAsync(cts.Token)) events.Add(e);
+            await foreach (var e in client.RunAsync(cts.Token)) { lock (gate) events.Add(e); }
         });
 
         var sw = System.Diagnostics.Stopwatch.StartNew();
@@ -551,6 +561,13 @@ public class LocalControlClientTests {
         var t2 = await WaitForServedAsync(4);             // cycle2's hello+subscribe, after the index1 (~2s) backoff
         await WaitForServedAsync(6);                      // cycle3's hello+subscribe — only reachable within the
                                                             // poll deadline if the schedule actually reset
+
+        // Served counts ACCEPTS, which run ahead of the client: the sixth accept lands before cycle3's
+        // hello/subscribe has been read and its Connected emitted. Wait for the client to surface both
+        // Connected events before cancelling, or the count assertion below races the very handshake it
+        // is meant to observe.
+        var connDeadline = DateTime.UtcNow.AddSeconds(10);
+        while (ConnectedCountLocked(gate, events) < 2 && DateTime.UtcNow < connDeadline) await Task.Delay(5);
 
         cts.Cancel();
         try { await run; } catch (OperationCanceledException) { }

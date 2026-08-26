@@ -46,7 +46,7 @@ public sealed class WizardTenantPicker(IAuthProgress progress) : ITenantPicker {
     public DiscoveredTenant? Pick(DiscoveredTenant[] tenants) =>
         throw new NotSupportedException("The wizard picker is asynchronous — the façade consumes PickAsync.");
 
-    public async Task<DiscoveredTenant?> PickAsync(DiscoveredTenant[] tenants, CancellationToken ct) {
+    public async Task<DiscoveredTenant?> PickAsync(DiscoveredTenant[] tenants, TenantPickContext context, CancellationToken ct) {
         var pending = new TaskCompletionSource<DiscoveredTenant?>(TaskCreationOptions.RunContinuationsAsynchronously);
 
         TaskCompletionSource<DiscoveredTenant?>? displaced;

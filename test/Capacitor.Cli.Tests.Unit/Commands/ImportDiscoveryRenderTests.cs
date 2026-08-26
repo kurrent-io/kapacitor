@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.Core.FirstRun;
 
 namespace Capacitor.Cli.Tests.Unit.Commands;
 
@@ -18,7 +19,8 @@ public class ImportDiscoveryRenderTests {
                 ["b"] = ("EventStore", "kcap"),
                 ["c"] = null,
             },
-            [new DateOnly(2026, 2, 1), null]);
+            [new ImportDiscoveryWindow(FirstRunImportWindows.Last30, new DateOnly(2026, 2, 1)),
+             new ImportDiscoveryWindow(FirstRunImportWindows.Everything, null)]);
 
     [Test]
     public async Task Json_carries_the_repo_totals_the_unmatched_count_and_every_window() {
@@ -63,7 +65,9 @@ public class ImportDiscoveryRenderTests {
     [Test]
     public async Task Text_says_so_when_nothing_could_be_attributed() {
         var summary = ImportDiscoverySummary.Build(
-            [("a", null)], new Dictionary<string, (string Owner, string Name)?> { ["a"] = null }, [null]);
+            [("a", null)],
+            new Dictionary<string, (string Owner, string Name)?> { ["a"] = null },
+            [new ImportDiscoveryWindow(FirstRunImportWindows.Everything, null)]);
 
         await Assert.That(ImportDiscoveryRender.ToText(summary))
                     .Contains("no sessions could be attributed to a repository");

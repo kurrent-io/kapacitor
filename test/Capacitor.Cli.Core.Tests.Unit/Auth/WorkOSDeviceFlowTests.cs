@@ -57,6 +57,8 @@ public class WorkOSDeviceFlowTests {
         // The refresh token is what makes the org switch possible afterwards.
         await Assert.That(result.RefreshToken).IsEqualTo("rt");
         await Assert.That(result.OrganizationId).IsEqualTo("org_a");
+        // The channel, which the browser picker reads to decide whether opening one is any use.
+        await Assert.That(result.ViaDeviceGrant).IsTrue();
     }
 
     /// <summary>

@@ -5,7 +5,9 @@ using System.Text.Json.Nodes;
 using System.Threading.Channels;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Config;
+using Capacitor.Cli.Core.FirstRun;
 using Capacitor.Cli.Core.RepoEvidence;
+using Capacitor.Cli.Core.Setup;
 using Capacitor.Cli.Harness.Claude;
 using Capacitor.Cli.Harness.Cursor;
 using Spectre.Console;
@@ -598,15 +600,47 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
     }
 
     /// <summary>
+    /// How a run ended, for a caller that has to say so.
+    /// </summary>
+    /// <remarks>
+    /// <b>The exit code cannot answer this.</b> <c>HandleImport</c> returns 0 for a run whose sessions
+    /// failed — import is best-effort and the Done grid is where that is reported — so a caller
+    /// deriving success from the exit code calls a partial or total failure a success.
+    /// </remarks>
+    internal sealed record ImportRunOutcome(FinalCounts Counts, int VisibilityFailures) {
+        /// <summary>Anything the user asked for that did not happen.</summary>
+        internal bool AnythingFailed => Counts.Failed > 0 || VisibilityFailures > 0;
+    }
+
+    /// <summary>
+    /// What a discovery run produced.
+    /// </summary>
+    /// <param name="ScannedVendors">The sources actually walked — what was asked for, intersected with
+    /// what this machine has. A caller reporting figures upstream needs this rather than its own
+    /// request, or it claims to have looked somewhere it did not.</param>
+    internal sealed record ImportDiscoveryResult(
+        ImportDiscoverySummary Summary,
+        IReadOnlyList<string>  ScannedVendors);
+
+    /// <summary>
     /// Every "found nothing" exit still reports. Zero sessions is an answer; no output at all is
     /// indistinguishable from the process having died.
     /// </summary>
-    static int WriteEmptyDiscoveryReport(bool asJson) {
-        WriteDiscoveryReport(
-            ImportDiscoverySummary.Build([], new Dictionary<string, (string, string)?>(), DiscoveryWindows()),
-            asJson);
+    static int WriteEmptyDiscoveryReport(
+            Action<ImportDiscoveryResult> sink, IReadOnlyList<string> scanned, DateTimeOffset? windowsAsOf) {
+        sink(new ImportDiscoveryResult(
+            ImportDiscoverySummary.Build(
+                [], new Dictionary<string, (string, string)?>(), DiscoveryWindows(windowsAsOf)),
+            scanned));
 
         return 0;
+    }
+
+    /// <summary>In catalogue order, so two runs of an unchanged machine report the same list.</summary>
+    static IReadOnlyList<string> ScannedVendors(IReadOnlyList<IImportSource> sources) {
+        var walked = sources.Select(s => s.Vendor).ToHashSet(StringComparer.Ordinal);
+
+        return [.. HarnessCatalog.All.Select(h => h.VendorId).Where(walked.Contains)];
     }
 
     static void WriteDiscoveryReport(ImportDiscoverySummary summary, bool asJson) =>
@@ -616,13 +650,14 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
 
     /// <summary>
     /// The <c>--since</c> windows discovery reports totals for, newest first, ending in "everything".
-    /// Callers that offer a different set pass their own to
-    /// <see cref="ImportDiscoverySummary.Build"/> — these are the defaults the CLI itself offers.
+    /// The same keys the first-run flow reports under, so the picker there and this command's own
+    /// output cannot offer different windows.
     /// </summary>
-    internal static IReadOnlyList<DateOnly?> DiscoveryWindows(DateTimeOffset? now = null) {
+    internal static IReadOnlyList<ImportDiscoveryWindow> DiscoveryWindows(DateTimeOffset? now = null) {
         var today = DateOnly.FromDateTime((now ?? DateTimeOffset.UtcNow).UtcDateTime);
 
-        return [today.AddDays(-30), today.AddDays(-90), null];
+        return [.. FirstRunImportWindows.All.Select(
+            key => new ImportDiscoveryWindow(key, FirstRunImportWindows.Since(key, today)))];
     }
 
     /// <summary>
@@ -663,9 +698,16 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
             string?                       defaultVisibility       = null,
             bool                          reimport                = false,
             bool                          skipTitle               = false,
+            bool                          shareWithOrg            = false,
             bool                          discoverOnly            = false,
-            bool                          discoverJson            = false
+            bool                          discoverJson            = false,
+            DateTimeOffset?               windowsAsOf             = null,
+            Action<ImportRunOutcome>?     onFinished              = null,
+            Action<ImportDiscoveryResult>? onDiscovered           = null
         ) {
+        // A caller that wants the figures rather than the rendering says so by handing one over; the
+        // console is the default consumer, not the only one.
+        var discoverySink = onDiscovered ?? (result => WriteDiscoveryReport(result.Summary, discoverJson));
         // Discovery never calls the server and is reached with none configured.
         var baseUrl = profiles.Resolution.ServerUrl ?? "";
 
@@ -697,7 +739,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
                 return 1;
             }
 
-            if (discoverOnly) return WriteEmptyDiscoveryReport(discoverJson);
+            if (discoverOnly) return WriteEmptyDiscoveryReport(discoverySink, [], windowsAsOf);
 
             display.Line("No coding-agent sessions found. Install Claude, Codex, or Cursor and try again.");
 
@@ -742,14 +784,14 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
             // Keep the message aligned with the dead branch lower in this method
             // (cleanup follow-up) so downstream tooling sees consistent output.
             if (filterSession is not null) {
-                if (discoverOnly) return WriteEmptyDiscoveryReport(discoverJson);
+                if (discoverOnly) return WriteEmptyDiscoveryReport(discoverySink, ScannedVendors(sources), windowsAsOf);
 
                 await Console.Error.WriteLineAsync($"Session not found: {NormalizeGuid(filterSession)}");
 
                 return 1;
             }
 
-            if (discoverOnly) return WriteEmptyDiscoveryReport(discoverJson);
+            if (discoverOnly) return WriteEmptyDiscoveryReport(discoverySink, ScannedVendors(sources), windowsAsOf);
 
             display.Line("No transcript files found.");
 
@@ -863,15 +905,15 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
         ReportMissingCwds(sessionCwds, cwdRemap, display);
 
         if (discoverOnly) {
-            WriteDiscoveryReport(
+            discoverySink(new ImportDiscoveryResult(
                 ImportDiscoverySummary.Build(
                     // Each source dates its own sessions: the rule differs per vendor and only the
                     // source knows which one its --since applies.
                     sources.SelectMany((src, i) =>
                         discoveriesPerSource[i].Select(d => (d.SessionId, src.DiscoveryAge(d)))),
                     resolved,
-                    DiscoveryWindows()),
-                discoverJson);
+                    DiscoveryWindows(windowsAsOf)),
+                ScannedVendors(sources)));
 
             return 0;
         }
@@ -1327,13 +1369,17 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
         // deliberately a separate issue, not something this gate covers.
         var privateScopeSessionIds = new ConcurrentBag<string>();
 
-        // Every in-scope session the server already has, captured before the import rather than
-        // from its outcome. This is what privacy actually rests on: a stamp cannot narrow a session
-        // that already exists — see the chainDefaultVisibility site — so for anything this run only
-        // revisits, the closing PUT is the sole mechanism, and an outcome must not decide whether it
-        // runs.
+        // Every in-scope session the server already has, captured before the import rather than from
+        // its outcome. A stamp cannot narrow a session that already exists, and importedSessionIds
+        // gains one only where this run did new work — so for anything this run merely revisits, the
+        // explicit write is the only mechanism there is, and an outcome must not decide whether the
+        // visibility the user chose is applied.
         var scopedSessionIds = new ConcurrentBag<string>();
 
+        // Sessions whose explicit visibility write was lost — part of the run's outcome, because one
+        // the user chose a visibility for that still carries the old one is a failure of the thing
+        // they asked for, whatever the transcript did.
+        var visibilityFailures = 0;
         // Read-only inside the parallel loops below; resolved from the sources actually in play.
         var replayChildContentVendors = byVendor.Values
             .Where(s => s.AttachesChildContentOnReplay)
@@ -1358,21 +1404,6 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
         // for anything this run only revisits.
         var chainDefaultVisibility = forcePrivate ? "private" : defaultVisibility;
 
-        // Status carries both filters by this point: the scope filter ran before classification, and
-        // an excluded source had its status flipped to Excluded — so these three statuses are exactly
-        // the sessions the user selected AND the server already has. Neither a chain resume (which
-        // posts no session-start) nor a routed replay outside the child-content scope reaches the
-        // privatize set any other way.
-        if (forcePrivate) {
-            foreach (var c in classifications) {
-                if (c.Status is ClassificationStatus.New
-                             or ClassificationStatus.Partial
-                             or ClassificationStatus.AlreadyLoaded) {
-                    scopedSessionIds.Add(c.SessionId);
-                }
-            }
-        }
-
         // Close the window before anything is uploaded into it.
         //
         // A stamp cannot narrow a session that already exists, so for one this run revisits the only
@@ -1393,6 +1424,26 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
             if (existing.Count > 0) {
                 display.BeginPhase("Making existing sessions private");
                 await SetVisibilityNoneForAll(httpClient, baseUrl, existing);
+            }
+        }
+
+        // The shared stop only, because it is the only one with nothing else: there is no pass above it
+        // (sharing widens, so it opens no window to close) and no stamp it can use, since org_public as
+        // a default lands in `default:org` rather than the class the predicate admits unconditionally.
+        // Under --private this would add writes and no protection — New is private from creation and
+        // everything else was narrowed above.
+        //
+        // Status carries both filters by this point: the scope filter ran before classification, and an
+        // excluded source had its status flipped to Excluded — so these three statuses are exactly the
+        // sessions the user selected AND the server already has. AlreadyLoaded is the one that matters:
+        // it reaches neither chains nor routed for a file-based source, so nothing else would see it.
+        if (shareWithOrg) {
+            foreach (var c in classifications) {
+                if (c.Status is ClassificationStatus.New
+                             or ClassificationStatus.Partial
+                             or ClassificationStatus.AlreadyLoaded) {
+                    scopedSessionIds.Add(c.SessionId);
+                }
             }
         }
 
@@ -1704,23 +1755,33 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
             }
         }
 
-        // --- --private: mark all imported sessions owner-only ---
+        // --- An explicit visibility for everything this run touched ---
         //
-        // the privatize set is importedSessionIds (chain-phase +
-        // routed-phase "real new work") UNIONED with privateScopeSessionIds (every routed
-        // classification touched this run under --private whose source can attach child content
-        // on a replay, regardless of outcome — see its declaration above). The union — not a
-        // replacement — keeps chain-phase and other routed privatization exactly as before; it
-        // only widens what those sources contribute so privacy no longer depends on the
-        // Loaded/Failed/AlreadyLoaded/SentChildContent accounting used for import counts.
-        if (forcePrivate) {
-            var toPrivatize = new HashSet<string>(importedSessionIds, StringComparer.Ordinal);
-            toPrivatize.UnionWith(privateScopeSessionIds);
-            toPrivatize.UnionWith(scopedSessionIds);
+        // Both stops need one, and for the same reason: the profile default cannot express either.
+        // `none` because an omitted default_visibility coalesces to org-public; `org` because the
+        // default's own `default:org` class is admitted only where the repository's owner matches the
+        // tenant's configured org, which is empty on every provider but GitHubApp — so leaning on it
+        // promises a workspace can read this and delivers owner-only nearly everywhere.
+        //
+        // The set unions three: importedSessionIds (what did new work), privateScopeSessionIds
+        // (routed classifications under --private whose source can attach child content on a replay),
+        // and scopedSessionIds (every in-scope session the server has). Widening, never replacing —
+        // an outcome must not decide whether the visibility the user chose is applied.
+        //
+        // For the private stop this is recovery only: New sessions are private from creation, existing
+        // ones were narrowed before any content moved, and what is left here is a retry for a write
+        // that pass lost. scopedSessionIds is therefore empty under --private, by design.
+        if (ExplicitVisibility(forcePrivate, shareWithOrg) is { } explicitVisibility) {
+            var touched = new HashSet<string>(importedSessionIds, StringComparer.Ordinal);
+            touched.UnionWith(privateScopeSessionIds);
+            touched.UnionWith(scopedSessionIds);
 
-            if (toPrivatize.Count > 0) {
-                display.BeginPhase("Marking imported sessions private");
-                await SetVisibilityNoneForAll(httpClient, baseUrl, [.. toPrivatize]);
+            if (touched.Count > 0) {
+                display.BeginPhase(forcePrivate
+                    ? "Marking imported sessions private"
+                    : "Sharing imported sessions with your workspace");
+                visibilityFailures = await SetVisibilityForAll(
+                    httpClient, baseUrl, [.. touched], explicitVisibility);
             }
         }
 
@@ -1838,6 +1899,8 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
         }
 
         display.WriteDoneGrid(final, doneBySource);
+
+        onFinished?.Invoke(new ImportRunOutcome(final, visibilityFailures));
 
         return 0;
     }
@@ -3088,17 +3151,49 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
     }
 
     /// <summary>
-    /// PUT visibility=none for every imported session id. Failures are logged
-    /// inline (one line per session) but never throw — the import already
-    /// succeeded; users can re-run `kcap hide` for any that failed.
+    /// The visibility to write explicitly over what this run imported, or null to leave each session
+    /// on whatever its <c>default_visibility</c> resolved to.
     /// </summary>
-    internal static async Task SetVisibilityNoneForAll(
+    /// <remarks>
+    /// Refuses both at once rather than picking: they are opposite promises, and a caller asking for
+    /// both has a bug that silently choosing one would hide.
+    ///
+    /// <para><c>org</c> and not the profile default, because leaning on <c>org_public</c> produces the
+    /// <c>default:org</c> class, which the visibility predicate admits only where the repository's
+    /// owner matches the tenant's configured org — empty on every provider but <c>GitHubApp</c>. So the
+    /// default route promises a team can read this and delivers owner-only on most tenants;
+    /// <c>explicit:org</c> is admitted unconditionally.</para>
+    /// </remarks>
+    internal static string? ExplicitVisibility(bool forcePrivate, bool shareWithOrg) {
+        if (forcePrivate && shareWithOrg)
+            throw new ArgumentException("An import cannot be both private and shared with the org.", nameof(shareWithOrg));
+
+        return forcePrivate ? "none" : shareWithOrg ? "org" : null;
+    }
+
+    /// <summary>PUT visibility=none for every imported session id.</summary>
+    internal static Task<int> SetVisibilityNoneForAll(
             HttpClient            httpClient,
             string                baseUrl,
             IReadOnlyList<string> sessionIds
+        ) => SetVisibilityForAll(httpClient, baseUrl, sessionIds, "none");
+
+    /// <summary>
+    /// Failures are logged inline (one line per session) but never throw — the import already
+    /// succeeded; users can re-run `kcap hide` or `kcap share` for any that failed. <b>Returns how
+    /// many were lost</b>, because a caller reporting the run cannot call it a success while a session
+    /// the user chose a visibility for still carries the old one.
+    /// </summary>
+    internal static async Task<int> SetVisibilityForAll(
+            HttpClient            httpClient,
+            string                baseUrl,
+            IReadOnlyList<string> sessionIds,
+            string                visibility
         ) {
+        var lost = 0;
+
         foreach (var sessionId in sessionIds) {
-            var       payload = new JsonObject { ["visibility"] = "none" };
+            var       payload = new JsonObject { ["visibility"] = visibility };
             using var content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json");
 
             try {
@@ -3108,15 +3203,21 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
                 );
 
                 if (!resp.IsSuccessStatusCode) {
+                    lost++;
+
                     await Console.Error.WriteLineAsync(
-                        $"  ! visibility=none failed for {sessionId}: HTTP {(int)resp.StatusCode}"
+                        $"  ! visibility={visibility} failed for {sessionId}: HTTP {(int)resp.StatusCode}"
                     );
                 }
             } catch (Exception ex) {
+                lost++;
+
                 await Console.Error.WriteLineAsync(
-                    $"  ! visibility=none failed for {sessionId}: {ex.Message}"
+                    $"  ! visibility={visibility} failed for {sessionId}: {ex.Message}"
                 );
             }
         }
+
+        return lost;
     }
 }
