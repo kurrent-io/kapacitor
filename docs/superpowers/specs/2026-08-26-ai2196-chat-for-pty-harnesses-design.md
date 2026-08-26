@@ -426,34 +426,44 @@ Lives on `ChatTabViewModel`, sends through the sibling Terminal tab:
 thread. The terminal owns a **send gate** with three pieces of state, all
 mutated only on the UI thread:
 
-- `SendGate` ∈ Open | Closed. **Open exactly while the terminal is in
-  writable `Attached`, as the gate sees it.** It closes in two kinds of
-  place: synchronously, before any await, at the start of the transitions
-  that *begin* while `State` still reads Attached — `TryStartAttemptAsync`
-  (reattach), `RunDetachAsync`, `TeardownAsync` — and inside **every**
-  UI-thread publish of a `State` other than writable Attached (the natural
-  outcomes `FinishAttemptAsync` maps — Detached, Exited, Failed,
-  ConnectionLost — the agent removal that lands `SessionEnded`, `NotFound`,
-  `NoTerminal`), in the same dispatch and before the new state is published.
-  It reopens only inside the publish of a read-write `Attached`, **and only
-  for the attempt that owns the current closure**: an attempt records the
-  epoch value its own opening closure produced, and `OnAttachedAsync`'s
-  publish is discarded unless both its attempt generation and that epoch are
-  still current. The attempt generation alone cannot decide this — a cache
-  removal (`SessionEnded`) and an explicit detach retire nothing today, so a
-  callback still queued for its UI dispatch when either lands would publish
-  a writable `Attached` on top of the closure and reopen a terminal the
-  daemon has already dropped. Only an explicitly started later attempt, with
-  its own epoch, can reopen. To make all of this unforgettable, `State` has
-  one publish point that applies the gate rule; nothing assigns it directly.
-  Neither `State` nor `_client` can serve
+- `SendGate` ∈ Open | Closed, and the **opening token** — a counter whose
+  current value names who may open the gate. Two operations, and only two,
+  advance it, both synchronous on the UI thread:
+  - `BeginAttempt()` — the first thing `TryStartAttemptAsync` does, before
+    any await: closes the gate, allocates a fresh token and hands it to the
+    attempt, which carries it for its whole life.
+  - `Invalidate()` — closes the gate (an already-closed gate still counts:
+    ownership must advance even mid-`Connecting`), allocates a fresh token
+    that no attempt holds, and clears `SendInFlight`. Called at the start of
+    `RunDetachAsync` and `TeardownAsync`, before any await; by the agent
+    removal that lands `SessionEnded`; by the resolve timeout (`NotFound`)
+    and the no-terminal note; and by every terminal outcome
+    `FinishAttemptAsync` publishes (Detached, Exited, Failed, ConnectionLost).
+
+  An attempt's **own** publishes never advance the token: its `Connecting`
+  publish preserves it, and its read-write `Attached` publish **opens the
+  gate iff the token it carries is still current** (a read-only Attached
+  leaves it closed, token untouched). A carried token that is no longer
+  current means an invalidation landed since — a cache removal or an explicit
+  detach retires no attempt generation today, so a callback still queued for
+  its UI dispatch when either lands would otherwise publish a writable
+  `Attached` on top of the closure and reopen a terminal the daemon has
+  already dropped. Only a later, explicitly begun attempt holds a fresh
+  token and can open.
+
+  The pre-`Connecting` window closes the same way: after `TryStartAttemptAsync`
+  awaits the old client's disposal, it re-checks that the token
+  `BeginAttempt` handed it is still current and aborts the attempt otherwise
+  — an invalidation that landed during that await (a removal, a detach) must
+  not be overridden by an attempt that never reached `Connecting`. `State`
+  has one publish point that takes the publisher's token and applies these
+  rules; nothing assigns it directly. Neither `State` nor `_client` can serve
   as the gate on its own: a reattach leaves both `Attached` and live while it
   awaits the old client's disposal, and a detach leaves both unchanged while
   it awaits the detach write — a send started in either window would
   otherwise be accepted against a client on its way out.
-- The **send epoch**, a counter bumped by every closure, which a running
-  delivery re-checks before its CR.
-- `SendInFlight` (bound), true from acceptance until the delivery ends.
+- `SendInFlight` (bound), true from acceptance until the delivery ends. A
+  delivery captures the token at acceptance and re-checks it before its CR.
 
 Two bound projections fold these together for the composer:
 `CanAcceptText` = gate Open ∧ ¬`SendInFlight`, and `SendAvailability` ∈
@@ -462,7 +472,7 @@ gate Closed while `State` still reads Attached. Both raise change
 notifications on every gate, in-flight and state change.
 
 `TrySendText` refuses (false, nothing written) unless `CanAcceptText`;
-otherwise it captures the client and the epoch, sets `SendInFlight`, starts
+otherwise it captures the client and the token, sets `SendInFlight`, starts
 the fault-contained background delivery, and returns true. One transaction
 at a time is the point: two accepted sends inside the 150 ms window would
 interleave as paste A, paste B, CR, CR — Core's client serializes single
@@ -470,21 +480,22 @@ frames, not multi-frame messages — and the TUI would submit both as one
 prompt and spend the second Enter on whatever is up next. Refusing keeps the
 second text in the composer for the user to send again a moment later.
 
-Ownership of `SendInFlight` is one rule: **the closer retires the send.**
-Every closure — an entry-point closure or a state publish — synchronously
-bumps the epoch and clears `SendInFlight`, so a natural exit or an agent
-removal landing during the 150 ms delay kills the pending CR the same way a
-reattach does; the delivery's own completion — success or fault — clears it
-through a UI-thread dispatch that mutates nothing unless the epoch it
-captured is still current and the VM has not been torn down, so a late
-completion can neither clear a newer send nor touch a torn-down VM.
+Ownership of `SendInFlight` is one rule: **whoever advances the token
+retires the send.** `BeginAttempt` and `Invalidate` both clear it
+synchronously as they allocate, so a natural exit, an agent removal or a
+reattach landing during the 150 ms delay kills the pending CR the same way
+(its captured token is no longer current); the delivery's own completion —
+success or fault — clears it through a UI-thread dispatch that mutates
+nothing unless the token it captured is still current and the VM has not
+been torn down, so a late completion can neither clear a newer send nor
+touch a torn-down VM.
 
 The delivery is the daemon's own `PtyHostedAgentRuntime.SendUserInputAsync`
 shape: one write of `TerminalInputEncoder.Paste(text)` — `\r\n` normalized to
 `\n`, one trailing newline dropped, wrapped in bracketed paste (`ESC[200~` …
 `ESC[201~`) so the TUI takes it as one block — then, after a 150 ms
 `TimeProvider` delay, one write of `\r` **to the same captured client, only if
-the send epoch is unchanged**. A stale epoch drops the CR: the paste already
+the token is unchanged**. A stale token drops the CR: the paste already
 went to the old client, and a replacement must never receive a stray Enter.
 A fault in either write is observed and logged once to `Console.Error` and
 ends the delivery (clearing `SendInFlight` under the rule above); it never
@@ -576,12 +587,17 @@ inserts a newline — a view-level key handler on the composer's `TextBox`.
   refused — `State` still reads `Attached` in both windows, `SendCommand`'s
   `CanExecute` is false and the hint reads "Updating the terminal
   connection…" — and the gate reopens only once the new attempt lands
-  read-write `Attached` (a read-only Attached leaves it closed); an attach
-  callback whose UI publish is still queued when the agent is removed (and,
-  separately, when an explicit detach begins) does not reopen: after the
-  queue drains, `State` is still `SessionEnded` (respectively not Attached),
-  `CanAcceptText` is false and a direct `TrySendText` is refused, while a
-  later explicitly started attempt's own Attached does reopen; a reattach
+  read-write `Attached` (a read-only Attached leaves it closed); the token
+  protocol in its three cases — (a) a normal attempt keeps its token across
+  its own `Connecting` publish and opens on `Attached`; (b) a removal, and
+  separately an explicit detach, landing while the attempt is `Connecting`
+  (its attach callback's UI publish still queued) advances ownership, so
+  after the queue drains `State` is `SessionEnded` (respectively not
+  Attached), `CanAcceptText` is false and a direct `TrySendText` is refused;
+  (c) a removal or detach landing during a reattach's pre-`Connecting`
+  old-client disposal (`DisposeGate`) aborts that attempt — it never
+  publishes `Connecting` or `Attached` — while a subsequently, explicitly
+  begun attempt holds a fresh token and does open; a reattach
   whose old-client disposal
   is held open past 150 ms, a detach, or a teardown started during the delay
   sends no CR to any client and clears `SendInFlight` synchronously; an
