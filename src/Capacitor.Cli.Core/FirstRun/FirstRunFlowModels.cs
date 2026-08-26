@@ -55,6 +55,43 @@ public sealed record CreateFirstRunFlowRequest {
     /// it.</para>
     /// </summary>
     [JsonPropertyName("login_shell_finds_cli")] public bool? LoginShellFindsCli { get; init; }
+
+    /// <summary>
+    /// This machine's platform, as a <see cref="FirstRunPlatforms"/> token, or null when it is none the
+    /// flow names.
+    ///
+    /// <para><b>What it buys is an affordance the screen can honestly offer.</b> The PATH fix is
+    /// macOS-only, so the screen draws its button for an explicit <c>macos</c> and nothing else — the
+    /// same shape as the warning itself, which appears only for an explicit
+    /// <see cref="LoginShellFindsCli"/> of false. Null and a known non-macOS platform therefore render
+    /// alike, and only one of them is a claim.</para>
+    /// </summary>
+    [JsonPropertyName("platform")] public string? Platform { get; init; }
+}
+
+/// <summary>One thing the browser is asking this machine to do, as the poll carries it.</summary>
+public sealed record FirstRunMachineActionResponse {
+    [JsonPropertyName("capability")] public string Capability { get; init; } = "";
+
+    /// <summary>The request's identity. Nullable because a payload without one cannot be reported
+    /// against, so it is dropped rather than acted on.</summary>
+    [JsonPropertyName("requested_at")] public DateTimeOffset? RequestedAt { get; init; }
+}
+
+/// <summary>
+/// POST /api/first-run/flows/{id}/actions — what performing a request produced.
+///
+/// <para><b>Two closed-set tokens and the request's timestamp. No detail, and that is deliberate.</b>
+/// <c>ShimEnsureJson</c> carries a <c>Detail</c> that is raw shell stderr on the failed row, and a
+/// composed <c>sudo</c> line; neither crosses. Both belong in the terminal, which is printing them
+/// already, and the screen's copy keys off the outcome token — so the browser needs no free text and the
+/// wire carries none.</para>
+/// </summary>
+public sealed record ReportFirstRunMachineActionRequest {
+    [JsonPropertyName("capability")]   public required string         Capability  { get; init; }
+    [JsonPropertyName("requested_at")] public required DateTimeOffset RequestedAt { get; init; }
+    [JsonPropertyName("outcome")]      public required string         Outcome     { get; init; }
+    [JsonPropertyName("reason")]       public          string?        Reason      { get; init; }
 }
 
 /// <summary>One harness the user turned something on for, as the wire carries it.</summary>
@@ -110,4 +147,18 @@ public sealed record FirstRunFlowResponse {
     /// anything here compares it.</para>
     /// </summary>
     [JsonPropertyName("agents_decided_at")] public DateTimeOffset? AgentsDecidedAt { get; init; }
+
+    /// <summary>
+    /// What the browser is asking this machine to do, and the one field on this response the CLI acts on
+    /// rather than records. Absent or empty means nothing is outstanding.
+    ///
+    /// <para><b>A named capability, never an instruction.</b> The CLI resolves its own binary and composes
+    /// its own command; what crosses is a token from a closed set, and one this build does not know is
+    /// dropped rather than forwarded — see <see cref="FirstRunFlowOutcomes.MachineActions"/>.</para>
+    ///
+    /// <para><b>A list because a second capability must not be a wire break</b>, not because one is
+    /// planned. Entries this build cannot act on are simply left alone: the request stays outstanding and
+    /// the browser goes on saying so, which is the honest state for a CLI too old to perform it.</para>
+    /// </summary>
+    [JsonPropertyName("machine_actions")] public List<FirstRunMachineActionResponse>? MachineActions { get; init; }
 }

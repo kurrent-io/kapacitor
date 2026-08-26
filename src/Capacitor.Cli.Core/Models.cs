@@ -970,6 +970,7 @@ public sealed record CurationApplyResponse {
 [JsonSerializable(typeof(FirstRun.CreateFirstRunFlowRequest))]
 [JsonSerializable(typeof(FirstRun.FirstRunHarnessReport))]
 [JsonSerializable(typeof(FirstRun.FirstRunFlowResponse))]
+[JsonSerializable(typeof(FirstRun.ReportFirstRunMachineActionRequest))]
 [JsonSerializable(typeof(LaunchAgentCommand))]
 // Task 8: reviewer-model launch block + preflight RPC + resolved report wire DTOs.
 [JsonSerializable(typeof(ExplicitReviewerModelLaunch))]

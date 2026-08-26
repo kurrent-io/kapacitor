@@ -111,4 +111,57 @@ public class FirstRunFlowOutcomesTests {
 
         await Assert.That(FirstRunFlowOutcomes.IsFinished(view)).IsTrue();
     }
+
+    static readonly DateTimeOffset Asked = new(2026, 8, 21, 12, 5, 0, TimeSpan.Zero);
+
+    static FirstRunFlowResponse Asking(params FirstRunMachineActionResponse[] actions) =>
+        AllSettled() with { MachineActions = [.. actions] };
+
+    static FirstRunMachineActionResponse Action(string capability, DateTimeOffset? requestedAt) =>
+        new() { Capability = capability, RequestedAt = requestedAt };
+
+    [Test]
+    public async Task Reads_a_request_this_build_can_name() {
+        var requested = FirstRunFlowOutcomes.MachineActions(
+            Asking(Action(FirstRunMachineCapabilities.PathShim, Asked)));
+
+        await Assert.That(requested.Count).IsEqualTo(1);
+        await Assert.That(requested[0].Capability).IsEqualTo(FirstRunMachineCapabilities.PathShim);
+        await Assert.That(requested[0].RequestedAt).IsEqualTo(Asked);
+    }
+
+    [Test]
+    [Arguments("reboot_the_laptop")]
+    [Arguments("PATH_SHIM")]
+    [Arguments("")]
+    public async Task Drops_a_capability_this_build_cannot_name(string capability) =>
+        await Assert.That(FirstRunFlowOutcomes.MachineActions(Asking(Action(capability, Asked)))).IsEmpty();
+
+    [Test]
+    public async Task Drops_a_request_with_no_timestamp() {
+        // The outcome is reported against it, so an unidentifiable request cannot be answered — and
+        // performing it anyway would raise an admin prompt whose result had nowhere to go.
+        var requested = FirstRunFlowOutcomes.MachineActions(
+            Asking(Action(FirstRunMachineCapabilities.PathShim, null)));
+
+        await Assert.That(requested).IsEmpty();
+    }
+
+    [Test]
+    public async Task Keeps_the_first_of_a_capability_named_twice() {
+        // Prompts once. The server folds one request per capability, so this only guards a hand-made body.
+        var requested = FirstRunFlowOutcomes.MachineActions(Asking(
+            Action(FirstRunMachineCapabilities.PathShim, Asked),
+            Action(FirstRunMachineCapabilities.PathShim, Asked.AddMinutes(1))));
+
+        await Assert.That(requested.Count).IsEqualTo(1);
+        await Assert.That(requested[0].RequestedAt).IsEqualTo(Asked);
+    }
+
+    [Test]
+    public async Task Reads_an_absent_or_empty_action_list_as_nothing_outstanding() {
+        await Assert.That(FirstRunFlowOutcomes.MachineActions(AllSettled())).IsEmpty();
+        await Assert.That(FirstRunFlowOutcomes.MachineActions(Asking())).IsEmpty();
+        await Assert.That(FirstRunFlowOutcomes.MachineActions(null)).IsEmpty();
+    }
 }

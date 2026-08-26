@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.Core.FirstRun;
 using Capacitor.Cli.Core.Setup;
 
 namespace Capacitor.Cli.Tests.Unit.Commands;
@@ -313,5 +314,84 @@ public class DaemonShimCommandsTests {
     public async Task Dispatch_unknown_verb_prints_usage() {
         var exit = await DaemonShimCommands.DispatchAsync(["bogus"]);
         await Assert.That(exit).IsEqualTo(1);
+    }
+
+    // --- The flow's entry point: the same ladder, silently ---
+
+    /// <summary>
+    /// The loop that drives this is drawing progress dots on the same stdout, so a line written here
+    /// lands mid-wait and reads as output of the flow's own. The browser gets the DTO instead.
+    /// </summary>
+    [Test]
+    public async Task EvaluateAsync_returns_the_outcome_and_writes_nothing() {
+        using var capture = ConsoleOutput.StartFullCapture();
+
+        var result = await DaemonShimCommands.EvaluateAsync(
+            resolveTarget: () => "/usr/local/lib/kcap", probe: new FakeProbe(true), isMacOs: true);
+
+        await Assert.That(result.Outcome).IsEqualTo(FirstRunMachineActionOutcomes.AlreadyOnPath);
+        await Assert.That(capture.GetCapturedOutput() + capture.GetCapturedError()).IsEmpty();
+    }
+
+    [Test]
+    public async Task EvaluateAsync_refuses_off_macOS_with_the_platform_row() {
+        var result = await DaemonShimCommands.EvaluateAsync(
+            resolveTarget: () => "/usr/local/lib/kcap", probe: new FakeProbe(false), isMacOs: false);
+
+        await Assert.That(result.Outcome).IsEqualTo(FirstRunMachineActionOutcomes.Refused);
+        await Assert.That(result.Reason).IsEqualTo(FirstRunMachineActionReasons.UnsupportedPlatform);
+    }
+
+    // "We could not tell" is not "it failed", and the browser renders them differently.
+    [Test]
+    public async Task EvaluateAsync_refuses_an_unknown_probe_rather_than_installing() {
+        var result = await DaemonShimCommands.EvaluateAsync(
+            resolveTarget: () => "/usr/local/lib/kcap", probe: new FakeProbe(null), isMacOs: true,
+            install: (_, _) => throw new InvalidOperationException("must not install on an unknown probe"));
+
+        await Assert.That(result.Outcome).IsEqualTo(FirstRunMachineActionOutcomes.Refused);
+        await Assert.That(result.Reason).IsEqualTo(FirstRunMachineActionReasons.ProbeUnknown);
+    }
+
+    // Exit 0 only when the terminal now resolves kcap. Derived from the outcome, so the verb's exit
+    // code and the browser's copy cannot come apart.
+    [Test]
+    [Arguments(FirstRunMachineActionOutcomes.AlreadyOnPath,      0)]
+    [Arguments(FirstRunMachineActionOutcomes.Installed,          0)]
+    [Arguments(FirstRunMachineActionOutcomes.InstalledNotOnPath, 1)]
+    [Arguments(FirstRunMachineActionOutcomes.Cancelled,          1)]
+    [Arguments(FirstRunMachineActionOutcomes.Failed,             1)]
+    [Arguments(FirstRunMachineActionOutcomes.Refused,            1)]
+    public async Task The_exit_code_follows_the_outcome(string outcome, int expected) {
+        var dto = new ShimEnsureJson(
+            DaemonShimCommands.Capability, "/usr/local/lib/kcap", true, null, "none", outcome);
+
+        await Assert.That(dto.ExitCode).IsEqualTo(expected);
+    }
+
+    // The document is the contract; a derived convenience must not appear in it.
+    [Test]
+    public async Task The_exit_code_is_not_a_field_of_the_json_document() {
+        var json = JsonSerializer.Serialize(
+            new ShimEnsureJson(DaemonShimCommands.Capability, null, null, null, "none",
+                FirstRunMachineActionOutcomes.Refused, FirstRunMachineActionReasons.NoCliPath),
+            ShimJsonContext.Default.ShimEnsureJson);
+
+        await Assert.That(json).DoesNotContain("exit_code");
+    }
+
+    [Test]
+    public async Task The_flow_host_advertises_only_the_capability_it_can_perform() {
+        await Assert.That(new SetupMachineActions().Capabilities).IsEquivalentTo(
+            new[] { FirstRunMachineCapabilities.PathShim });
+    }
+
+    [Test]
+    public async Task The_flow_host_refuses_a_capability_it_never_advertised() {
+        // The loop filters on Capabilities, so reaching here is a programming error rather than a
+        // server sending something new — which is why it throws instead of reporting an outcome.
+        await Assert.That(async () =>
+                await new SetupMachineActions().PerformAsync("reboot_the_laptop", CancellationToken.None))
+            .Throws<ArgumentOutOfRangeException>();
     }
 }

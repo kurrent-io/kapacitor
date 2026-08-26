@@ -17,12 +17,15 @@ namespace Capacitor.Cli.Core.FirstRun;
 /// <param name="Declined">Vendors turned down locally, outside the flow.</param>
 /// <param name="LoginShellFindsCli">Whether the login shell resolves the CLI, or null when nothing
 /// probed. <b>Null is not false</b> — see the wire model.</param>
+/// <param name="Platform">This machine's platform, or null when it is none the flow names. What decides
+/// whether the screen can offer to fix a broken PATH at all — see <see cref="FirstRunPlatforms"/>.</param>
 public sealed record FirstRunMachineReport(
         string?                                            Machine,
         string?                                            MachineId,
         IReadOnlyDictionary<string, FirstRunHarnessReport> Harnesses,
         IReadOnlyList<string>                              Declined,
-        bool?                                              LoginShellFindsCli) {
+        bool?                                              LoginShellFindsCli,
+        string?                                            Platform = null) {
     /// <summary>Injectable core: detection, the wired-probe and the ledger already resolved, so the
     /// vendor→report mapping is testable without touching the filesystem or PATH.</summary>
     public static FirstRunMachineReport Evaluate(
@@ -31,7 +34,8 @@ public sealed record FirstRunMachineReport(
             AgentDetectionResult detected,
             Func<string, bool>   isWired,
             HarnessOfferLedger   ledger,
-            bool?                loginShellFindsCli) {
+            bool?                loginShellFindsCli,
+            string?              platform = null) {
         var harnesses = new Dictionary<string, FirstRunHarnessReport>(StringComparer.Ordinal);
         var declined  = new List<string>();
 
@@ -52,7 +56,8 @@ public sealed record FirstRunMachineReport(
             Blank(machineId) ? null : machineId,
             harnesses,
             declined,
-            loginShellFindsCli);
+            loginShellFindsCli,
+            platform);
     }
 
     /// <summary>
@@ -80,8 +85,11 @@ public sealed record FirstRunMachineReport(
                 AgentDetection.Detect(inputs),
                 vendor => HarnessIntegrationProbe.IsWired(vendor, inputs),
                 new HarnessOfferStore(config).Load(),
-                loginShellFindsCli);
+                loginShellFindsCli,
+                FirstRunPlatforms.Current());
         } catch (Exception) {
+            // No platform either, though reading it cannot fail: the server drops a block with no
+            // harnesses, no declines and no probe answer, and a lone platform must not be what keeps it.
             return new FirstRunMachineReport(machine, null, new Dictionary<string, FirstRunHarnessReport>(), [], null);
         }
     }

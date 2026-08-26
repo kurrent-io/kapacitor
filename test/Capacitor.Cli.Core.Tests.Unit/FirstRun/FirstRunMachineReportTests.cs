@@ -15,9 +15,11 @@ public class FirstRunMachineReportTests {
             AgentDetectionResult detected,
             Func<string, bool>?  isWired = null,
             HarnessOfferLedger?  ledger  = null,
-            bool?                shell   = null) =>
+            bool?                shell   = null,
+            string?              platform = null) =>
         FirstRunMachineReport.Evaluate(
-            "nostromo", "machine-1", detected, isWired ?? (_ => false), ledger ?? new HarnessOfferLedger(), shell);
+            "nostromo", "machine-1", detected, isWired ?? (_ => false), ledger ?? new HarnessOfferLedger(), shell,
+            platform);
 
     // Key absence is the only way this shape says "we did not look", so every vendor the catalogue
     // knows has to appear — an omitted one reads as unknown and vanishes from BOTH the found list and
@@ -87,5 +89,24 @@ public class FirstRunMachineReportTests {
     [Arguments(false)]
     public async Task Passes_the_login_shell_answer_through_unchanged(bool? shell) {
         await Assert.That(Evaluate(Detection(), shell: shell).LoginShellFindsCli).IsEqualTo(shell);
+    }
+
+    [Test]
+    [Arguments(null)]
+    [Arguments(FirstRunPlatforms.MacOs)]
+    [Arguments(FirstRunPlatforms.Linux)]
+    public async Task Passes_the_platform_through_unchanged(string? platform) {
+        await Assert.That(Evaluate(Detection(), platform: platform).Platform).IsEqualTo(platform);
+    }
+
+    // Every one of the three is a value the browser maps; null is what an unrecognised host reports,
+    // and it draws no fix affordance rather than guessing at one.
+    [Test]
+    public async Task Names_this_host_as_one_of_the_platforms_the_browser_maps() {
+        var current = FirstRunPlatforms.Current();
+
+        await Assert.That(current).IsNotNull();
+        await Assert.That(new[] { FirstRunPlatforms.MacOs, FirstRunPlatforms.Linux, FirstRunPlatforms.Windows })
+                    .Contains(current!);
     }
 }

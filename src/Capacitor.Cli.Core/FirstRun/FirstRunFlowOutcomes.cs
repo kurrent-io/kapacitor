@@ -152,6 +152,38 @@ public static class FirstRunFlowOutcomes {
         return new FirstRunAgentsAnswer(choices, decidedAt, unrecognised);
     }
 
+    /// <summary>
+    /// The actions the browser is asking this machine to perform, filtered to ones this build can name.
+    ///
+    /// <para><b>An unknown capability is dropped, never forwarded.</b> Same rule as the vendor keys, and
+    /// the stakes are higher: this is the one field on the response the CLI acts on rather than records,
+    /// so mapping through a closed set is what keeps "a named capability" from degrading into "whatever
+    /// the server said".</para>
+    ///
+    /// <para><b>A request with no timestamp is dropped too.</b> The outcome is reported against it, so
+    /// one that cannot be identified cannot be answered — and performing it anyway would raise an admin
+    /// prompt whose result had nowhere to go.</para>
+    /// </summary>
+    public static IReadOnlyList<FirstRunMachineActionRequest> MachineActions(FirstRunFlowResponse? view) {
+        if (view?.MachineActions is not { } entries) return [];
+
+        var seen      = new HashSet<string>(StringComparer.Ordinal);
+        var requested = new List<FirstRunMachineActionRequest>();
+
+        foreach (var entry in entries) {
+            if (!FirstRunMachineCapabilities.IsKnown(entry.Capability)) continue;
+            if (entry.RequestedAt is not { } requestedAt) continue;
+
+            // A capability named twice cannot happen against the server this was written for, which folds
+            // one request per capability. Keeping the first is the reading that prompts once.
+            if (!seen.Add(entry.Capability)) continue;
+
+            requested.Add(new FirstRunMachineActionRequest(entry.Capability, requestedAt));
+        }
+
+        return requested;
+    }
+
     /// <summary>The Agents decision behind a finished leg, wherever it ended.
     ///
     /// <para>A dismissed or abandoned leg can carry one: the user answered the screen and then closed

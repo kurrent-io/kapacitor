@@ -87,11 +87,41 @@ sealed class SpectreFirstRunFlowProgress : IFirstRunFlowProgress {
         AnsiConsole.Write(".");
     }
 
+    public void PerformingAction(string capability) {
+        // Breaks the dots first: the line the user is about to read must not arrive appended to them.
+        AnsiConsole.WriteLine();
+        AnsiConsole.MarkupLine(SetupAuthProgress.Indent(capability switch {
+            FirstRunMachineCapabilities.PathShim =>
+                "The browser asked to put kcap on your terminal PATH. "
+              + "[dim]Your Mac will ask for your password.[/]",
+            _ => "The browser asked this machine to do something this version of kcap does not know."
+        }));
+        AnsiConsole.Markup(SetupAuthProgress.Indent("Waiting…"));
+    }
+
     public void WaitEnded() {
         if (!_waiting) return;
 
         _waiting = false;
         AnsiConsole.WriteLine();
+    }
+}
+
+/// <summary>
+/// What this host can do to the machine when the browser asks. One capability, and it reaches the same
+/// ladder <c>kcap daemon shim ensure</c> runs, so the outcome the screen renders is the outcome the
+/// terminal would have printed.
+/// </summary>
+sealed class SetupMachineActions : IFirstRunMachineActions {
+    public IReadOnlyCollection<string> Capabilities { get; } = [FirstRunMachineCapabilities.PathShim];
+
+    public async Task<FirstRunMachineActionResult> PerformAsync(string capability, CancellationToken ct) {
+        if (capability != FirstRunMachineCapabilities.PathShim)
+            throw new ArgumentOutOfRangeException(nameof(capability), capability, "Not a capability this host advertises.");
+
+        var result = await DaemonShimCommands.EvaluateAsync(ct: ct);
+
+        return new FirstRunMachineActionResult(result.Outcome, result.Reason);
     }
 }
 
@@ -995,7 +1025,8 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
                     config, Environment.MachineName, await LoginShellFindsCliAsync());
 
                 result = await new BrowserFirstRunFlow(
-                        new FirstRunFlowClient(http), new SpectreFirstRunFlowProgress(), browser)
+                        new FirstRunFlowClient(http), new SpectreFirstRunFlowProgress(), browser,
+                        actions: new SetupMachineActions())
                     .RunAsync(serverUrl, report, CancellationToken.None);
             }
         } catch (Exception ex) when (ex is not OperationCanceledException) {

@@ -19,8 +19,9 @@ public class FirstRunFlowClientTests {
 
     static FirstRunMachineReport Report(
             string? machine = null, Dictionary<string, FirstRunHarnessReport>? harnesses = null,
-            string[]? declined = null, bool? loginShellFindsCli = null) =>
-        new(machine, machine is null ? null : "machine-1", harnesses ?? [], declined ?? [], loginShellFindsCli);
+            string[]? declined = null, bool? loginShellFindsCli = null, string? platform = null) =>
+        new(machine, machine is null ? null : "machine-1", harnesses ?? [], declined ?? [], loginShellFindsCli,
+            platform);
 
     static string StateBody(string doneStatus) =>
         $$$"""
@@ -92,6 +93,82 @@ public class FirstRunFlowClientTests {
 
         await Assert.That(body["declined"]!.AsArray()[0]!.GetValue<string>()).IsEqualTo("kiro");
         await Assert.That(body["login_shell_finds_cli"]!.GetValue<bool>()).IsFalse();
+    }
+
+    // What decides whether the screen offers to fix a broken PATH at all: the shim is macOS-only, so
+    // the browser draws its button for an explicit macos and nothing else.
+    [Test]
+    public async Task CreateAsync_reports_the_platform_so_the_screen_knows_what_it_can_offer() {
+        using var server = WireMockServer.Start();
+        server.Given(Request.Create().WithPath(CreatePath).UsingPost())
+            .RespondWith(Response.Create().WithStatusCode(200)
+                .WithBody(StateBody("Pending")).WithHeader("Content-Type", "application/json"));
+
+        using var http = new HttpClient();
+
+        await new FirstRunFlowClient(http).CreateAsync(
+            server.Urls[0], FlowId, Report("nostromo", platform: FirstRunPlatforms.MacOs), CancellationToken.None);
+
+        var body = JsonNode.Parse(
+            server.FindLogEntries(Request.Create().WithPath(CreatePath).UsingPost())[0].RequestMessage.Body!)!;
+
+        await Assert.That(body["platform"]!.GetValue<string>()).IsEqualTo("macos");
+    }
+
+    [Test]
+    public async Task ReportMachineActionAsync_posts_the_outcome_to_the_flow_s_actions_route() {
+        using var server = WireMockServer.Start();
+        server.Given(Request.Create().WithPath($"{PollPath}/actions").UsingPost())
+            .RespondWith(Response.Create().WithStatusCode(200)
+                .WithBody(StateBody("Pending")).WithHeader("Content-Type", "application/json"));
+
+        using var http = new HttpClient();
+
+        var outcome = await new FirstRunFlowClient(http).ReportMachineActionAsync(
+            server.Urls[0], FlowId,
+            new ReportFirstRunMachineActionRequest {
+                Capability  = FirstRunMachineCapabilities.PathShim,
+                RequestedAt = new DateTimeOffset(2026, 8, 21, 12, 5, 0, TimeSpan.Zero),
+                Outcome     = FirstRunMachineActionOutcomes.InstalledNotOnPath
+            },
+            CancellationToken.None);
+
+        await Assert.That(outcome.Recorded).IsTrue();
+
+        var body = JsonNode.Parse(
+            server.FindLogEntries(Request.Create().WithPath($"{PollPath}/actions").UsingPost())[0]
+                  .RequestMessage.Body!)!;
+
+        await Assert.That(body["capability"]!.GetValue<string>()).IsEqualTo("path_shim");
+        await Assert.That(body["outcome"]!.GetValue<string>()).IsEqualTo("installed_not_on_path");
+        await Assert.That(body["requested_at"]!.GetValue<string>()).StartsWith("2026-08-21T12:05:00");
+
+        // No free text on this lane: the terminal has the shell error and the sudo line, and the
+        // browser keys its copy off the outcome token.
+        await Assert.That(body.AsObject().ContainsKey("detail")).IsFalse();
+    }
+
+    // A report the server did not accept leaves the request outstanding, which is what makes the
+    // loop's retry self-terminating.
+    [Test]
+    public async Task ReportMachineActionAsync_reports_a_refusal_as_not_recorded() {
+        using var server = WireMockServer.Start();
+        server.Given(Request.Create().WithPath($"{PollPath}/actions").UsingPost())
+            .RespondWith(Response.Create().WithStatusCode(500));
+
+        using var http = new HttpClient();
+
+        var outcome = await new FirstRunFlowClient(http).ReportMachineActionAsync(
+            server.Urls[0], FlowId,
+            new ReportFirstRunMachineActionRequest {
+                Capability  = FirstRunMachineCapabilities.PathShim,
+                RequestedAt = DateTimeOffset.UnixEpoch,
+                Outcome     = FirstRunMachineActionOutcomes.Failed
+            },
+            CancellationToken.None);
+
+        await Assert.That(outcome.StatusCode).IsEqualTo(500);
+        await Assert.That(outcome.Recorded).IsFalse();
     }
 
     // The server draws its one error state from an explicit false, so a probe that never ran must not

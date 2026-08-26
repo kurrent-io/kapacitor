@@ -13,7 +13,15 @@ public sealed record FirstRunCreateOutcome(int StatusCode, FirstRunFlowResponse?
 /// <paramref name="RetryAfter"/> is populated only on a 429, and only when the server sent one.</summary>
 public sealed record FirstRunPollOutcome(int StatusCode, FirstRunFlowResponse? Body, TimeSpan? RetryAfter = null);
 
-/// <summary>The two flow routes, as a seam: the loop, the backoff and the guards around them are the
+/// <summary>One report of a performed action. <paramref name="StatusCode"/> 0 is a transport failure, and
+/// the loop retries the report on the next tick — the action itself is never repeated.</summary>
+public sealed record FirstRunActionReportOutcome(int StatusCode) {
+    /// <summary>Whether the server recorded it. A non-2xx leaves the request outstanding, which is what
+    /// makes the retry self-terminating: the browser stops listing it once this succeeds.</summary>
+    public bool Recorded => StatusCode is >= 200 and < 300;
+}
+
+/// <summary>The flow routes, as a seam: the loop, the backoff and the guards around them are the
 /// part worth testing, and they should not need a socket to exercise.</summary>
 public interface IFirstRunFlowChannel {
     /// <summary>Creates the flow, before the browser is opened, carrying what this machine found on
@@ -23,6 +31,11 @@ public interface IFirstRunFlowChannel {
 
     /// <summary>Reads a flow this caller owns.</summary>
     Task<FirstRunPollOutcome> PollAsync(string serverUrl, string flowId, CancellationToken ct);
+
+    /// <summary>Reports what performing one of the browser's requests produced, against the request's own
+    /// timestamp — the server drops a report that answers a superseded request.</summary>
+    Task<FirstRunActionReportOutcome> ReportMachineActionAsync(
+        string serverUrl, string flowId, ReportFirstRunMachineActionRequest report, CancellationToken ct);
 }
 
 /// <summary>
@@ -48,7 +61,8 @@ public sealed class FirstRunFlowClient(HttpClient http) : IFirstRunFlowChannel {
                 MachineId          = report.MachineId,
                 Harnesses          = new Dictionary<string, FirstRunHarnessReport>(report.Harnesses, StringComparer.Ordinal),
                 Declined           = [.. report.Declined],
-                LoginShellFindsCli = report.LoginShellFindsCli
+                LoginShellFindsCli = report.LoginShellFindsCli,
+                Platform           = report.Platform
             },
             CapacitorJsonContext.Default.CreateFirstRunFlowRequest);
 
@@ -79,6 +93,27 @@ public sealed class FirstRunFlowClient(HttpClient http) : IFirstRunFlowChannel {
             return new((int)resp.StatusCode, await ReadAsync(resp, ct));
         } catch (Exception e) when (IsTransient(e, ct)) {
             return new(0, null);
+        }
+    }
+
+    /// <inheritdoc/>
+    public async Task<FirstRunActionReportOutcome> ReportMachineActionAsync(
+            string serverUrl, string flowId, ReportFirstRunMachineActionRequest report, CancellationToken ct) {
+        var payload = JsonSerializer.Serialize(
+            report, CapacitorJsonContext.Default.ReportFirstRunMachineActionRequest);
+
+        try {
+            using var req = new HttpRequestMessage(
+                    HttpMethod.Post,
+                    $"{Base(serverUrl)}/api/first-run/flows/{Uri.EscapeDataString(flowId)}/actions") {
+                Content = new StringContent(payload, Encoding.UTF8, "application/json")
+            };
+
+            using var resp = await http.SendAsync(req, ct);
+
+            return new((int)resp.StatusCode);
+        } catch (Exception e) when (IsTransient(e, ct)) {
+            return new(0);
         }
     }
 

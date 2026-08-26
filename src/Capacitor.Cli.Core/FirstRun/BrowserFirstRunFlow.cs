@@ -6,12 +6,16 @@ namespace Capacitor.Cli.Core.FirstRun;
 /// the browser is opened so the flow has an owner from its first request, and the URL is composed
 /// here rather than taken from the server — nothing server-supplied reaches the shell-executed open
 /// to validate.</summary>
+/// <param name="actions">What this host can do to the machine when the browser asks. Null performs
+/// nothing, which is the honest state for a host with no such capability — the request stays outstanding
+/// and the screen goes on saying it is waiting.</param>
 public sealed class BrowserFirstRunFlow(
-        IFirstRunFlowChannel  channel,
-        IFirstRunFlowProgress progress,
-        IBrowserLauncher      launcher,
-        TimeProvider?         clock = null,
-        IKeyWatcher?          keys  = null) {
+        IFirstRunFlowChannel     channel,
+        IFirstRunFlowProgress    progress,
+        IBrowserLauncher         launcher,
+        TimeProvider?            clock   = null,
+        IKeyWatcher?             keys    = null,
+        IFirstRunMachineActions? actions = null) {
     readonly TimeProvider _clock = clock ?? TimeProvider.System;
     readonly IKeyWatcher  _keys  = keys ?? ConsoleKeyWatcher.Instance;
 
@@ -120,6 +124,12 @@ public sealed class BrowserFirstRunFlow(
 
         FirstRunFlowResponse? last = null;
 
+        // Keyed on the REQUEST, not the capability, so a second press after an outcome runs again. Two
+        // collections because they guard opposite things: an admin prompt must never be raised twice, and
+        // a report must keep being retried until it lands.
+        var performed = new Dictionary<FirstRunMachineActionRequest, FirstRunMachineActionResult>();
+        var reported  = new HashSet<FirstRunMachineActionRequest>();
+
         while (_clock.GetUtcNow() < deadline) {
             // Polled before the first sleep: a flow the browser has already finished — a resumed link,
             // or a tab that was quicker than this process — should not wait out an interval to be noticed.
@@ -153,6 +163,11 @@ public sealed class BrowserFirstRunFlow(
                     // Healthy again — back to the tight cadence, so a terminal reacts to the human
                     // at the speed the human works at.
                     interval = PollInterval;
+
+                    // Before the finished test, so a request made on the last screen is not abandoned by a
+                    // flow that settles in the same tick — and the finished test then runs again below,
+                    // because the budget can pass while the user answers an admin prompt.
+                    await PerformRequestedAsync(serverUrl, flowId, last!, performed, reported, ct);
 
                     if (FirstRunFlowOutcomes.IsFinished(last!)) return new FirstRunFlowResult.Finished(last!);
 
@@ -188,6 +203,59 @@ public sealed class BrowserFirstRunFlow(
         }
 
         return new FirstRunFlowResult.Abandoned(last);
+    }
+
+    /// <summary>Performs the actions the browser is asking for, and reports each one back. <b>Nothing here
+    /// composes a command from what the server said</b> — a capability token crossed, and the host resolves
+    /// the operation behind it.</summary>
+    async Task PerformRequestedAsync(
+            string                                                               serverUrl,
+            string                                                               flowId,
+            FirstRunFlowResponse                                                 view,
+            Dictionary<FirstRunMachineActionRequest, FirstRunMachineActionResult> performed,
+            HashSet<FirstRunMachineActionRequest>                                reported,
+            CancellationToken                                                    ct) {
+        if (actions is null) return;
+
+        foreach (var request in FirstRunFlowOutcomes.MachineActions(view)) {
+            // An unadvertised capability is left outstanding rather than reported as failed: "this machine
+            // cannot do that" and "it was tried and did not work" are different facts.
+            if (!actions.Capabilities.Contains(request.Capability, StringComparer.Ordinal)) continue;
+
+            if (!performed.TryGetValue(request, out var result)) {
+                // Said before the attempt, not after: the shim prompts for an admin password, and a
+                // password dialog nobody was warned about is indistinguishable from malware.
+                progress.PerformingAction(request.Capability);
+
+                try {
+                    result = await actions.PerformAsync(request.Capability, ct);
+                } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
+                    // The caller is going away; reporting into a cancelled leg would be reporting to nobody.
+                    return;
+                } catch (Exception) {
+                    // `failed` rather than a refusal: something was attempted. A screen left waiting on an
+                    // outcome that threw is the state this lane exists to avoid.
+                    result = new FirstRunMachineActionResult(FirstRunMachineActionOutcomes.Failed, null);
+                }
+
+                // Recorded before the report, so a POST that fails cannot re-raise the prompt.
+                performed[request] = result;
+            }
+
+            if (reported.Contains(request)) continue;
+
+            var outcome = await channel.ReportMachineActionAsync(
+                serverUrl, flowId,
+                new ReportFirstRunMachineActionRequest {
+                    Capability  = request.Capability,
+                    RequestedAt = request.RequestedAt,
+                    Outcome     = result.Outcome,
+                    Reason      = result.Reason
+                },
+                ct);
+
+            if (outcome.Recorded) reported.Add(request);
+        }
     }
 
     /// <summary>Dismisses when a key is down, draining it. Null when there is nothing to dismiss, so

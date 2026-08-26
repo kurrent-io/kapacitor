@@ -31,6 +31,12 @@ public class BrowserFirstRunFlowTests {
         public List<DateTimeOffset> PollTimes  { get; } = [];
         public int                 PollCount  { get; private set; }
 
+        public List<ReportFirstRunMachineActionRequest> ActionReports { get; } = [];
+
+        /// <summary>Status for each report in turn; the last one repeats. A non-2xx is how the retry
+        /// path is driven.</summary>
+        public Queue<int> ReportStatuses { get; } = new();
+
         public Task<FirstRunCreateOutcome> CreateAsync(
                 string serverUrl, string flowId, FirstRunMachineReport report, CancellationToken ct) {
             log.Add("create");
@@ -59,12 +65,23 @@ public class BrowserFirstRunFlowTests {
                 ? outcome with { Body = outcome.Body with { FlowId = flowId } }
                 : outcome);
         }
+
+        public Task<FirstRunActionReportOutcome> ReportMachineActionAsync(
+                string serverUrl, string flowId, ReportFirstRunMachineActionRequest report, CancellationToken ct) {
+            log.Add("report");
+            ActionReports.Add(report);
+
+            return Task.FromResult(new FirstRunActionReportOutcome(
+                ReportStatuses.Count > 0 ? ReportStatuses.Dequeue() : 200));
+        }
     }
 
     sealed class RecordingProgress(Log log) : IFirstRunFlowProgress {
         public string? Url { get; private set; }
         public int Ticks    { get; private set; }
         public int WaitEnds { get; private set; }
+
+        public List<string> Performing { get; } = [];
 
         public void Opening(string setupUrl) {
             Url = setupUrl;
@@ -73,6 +90,35 @@ public class BrowserFirstRunFlowTests {
 
         public void PollTick()  => Ticks++;
         public void WaitEnded() => WaitEnds++;
+
+        public void PerformingAction(string capability) {
+            log.Add("warn");
+            Performing.Add(capability);
+        }
+    }
+
+    /// <summary>A host that can act on the machine. <c>Results</c> is consumed in turn so a retry can be
+    /// given a different answer from the first attempt.</summary>
+    sealed class FakeActions(Log log, params string[] capabilities) : IFirstRunMachineActions {
+        public IReadOnlyCollection<string> Capabilities { get; } = capabilities;
+
+        public Queue<FirstRunMachineActionResult> Results { get; } = new();
+        public List<string>                       Performed { get; } = [];
+
+        /// <summary>Set to throw out of PerformAsync, which the loop has to turn into a reported failure
+        /// rather than an unanswered request.</summary>
+        public Exception? Throws { get; set; }
+
+        public Task<FirstRunMachineActionResult> PerformAsync(string capability, CancellationToken ct) {
+            log.Add("perform");
+            Performed.Add(capability);
+
+            if (Throws is { } ex) throw ex;
+
+            return Task.FromResult(Results.Count > 0
+                ? Results.Dequeue()
+                : new FirstRunMachineActionResult(FirstRunMachineActionOutcomes.Installed, null));
+        }
     }
 
     static FirstRunFlowResponse Running() => new() {
@@ -131,23 +177,29 @@ public class BrowserFirstRunFlowTests {
         FakeTimeProvider    Clock,
         Log                 Log,
         List<string>        Opened,
-        FakeKeys            Keys);
+        FakeKeys            Keys,
+        FakeActions?        Actions);
 
     // No keyboard by default: the escape hatch is one test's subject, and left live it would read the
     // host's own console, where a stray keypress during a CI run would end an unrelated test's wait.
-    static Harness Build(FakeKeys? keys = null) {
+    /// <param name="capabilities">Non-null gives the flow a host that can act, advertising exactly these.
+    /// The fake shares the harness's log, so "performed before reported" is assertable rather than inferred.</param>
+    static Harness Build(FakeKeys? keys = null, string[]? capabilities = null) {
         var log      = new Log();
         var clock    = new FakeTimeProvider(ClockBase);
         var channel  = new FakeChannel(log, clock);
         var progress = new RecordingProgress(log);
         var browser  = new RecordingBrowser();
+        var actions  = capabilities is null ? null : new FakeActions(log, capabilities);
 
         keys ??= new FakeKeys(canWatch: false);
 
         return new(
-            new BrowserFirstRunFlow(channel, progress, browser, clock, keys),
-            channel, progress, clock, log, browser.Urls, keys);
+            new BrowserFirstRunFlow(channel, progress, browser, clock, keys, actions),
+            channel, progress, clock, log, browser.Urls, keys, actions);
     }
+
+    static readonly string[] PathShimOnly = [FirstRunMachineCapabilities.PathShim];
 
     /// <summary>
     /// Runs the flow, pumping the fake clock while it waits.
@@ -574,5 +626,169 @@ public class BrowserFirstRunFlowTests {
 
         await Assert.That(result).IsTypeOf<FirstRunFlowResult.Finished>();
         await Assert.That(h.Keys.Drains).IsEqualTo(0);
+    }
+
+    static readonly DateTimeOffset Asked = new(2026, 8, 21, 12, 5, 0, TimeSpan.Zero);
+
+    /// <summary>A running flow with one outstanding request on it.</summary>
+    static FirstRunFlowResponse Asking(
+            string capability = FirstRunMachineCapabilities.PathShim, DateTimeOffset? requestedAt = null) =>
+        Running() with {
+            MachineActions = [new FirstRunMachineActionResponse {
+                Capability = capability, RequestedAt = requestedAt ?? Asked
+            }]
+        };
+
+    [Test]
+    public async Task An_advertised_request_is_performed_and_reported_against_its_own_timestamp() {
+        var h = Build(capabilities: PathShimOnly);
+        h.Actions!.Results.Enqueue(new(FirstRunMachineActionOutcomes.Cancelled, null));
+        h.Channel.Polls.Enqueue(new(200, Asking()));
+        h.Channel.Tail = new(200, Done());
+
+        await Run(h);
+
+        await Assert.That(h.Actions.Performed).IsEquivalentTo(PathShimOnly);
+        await Assert.That(h.Channel.ActionReports.Count).IsEqualTo(1);
+        await Assert.That(h.Channel.ActionReports[0].Capability).IsEqualTo(FirstRunMachineCapabilities.PathShim);
+        await Assert.That(h.Channel.ActionReports[0].Outcome).IsEqualTo(FirstRunMachineActionOutcomes.Cancelled);
+
+        // The request's own stamp, not the clock's: the server drops a report answering a superseded ask.
+        await Assert.That(h.Channel.ActionReports[0].RequestedAt).IsEqualTo(Asked);
+    }
+
+    [Test]
+    public async Task The_user_is_warned_before_the_action_runs_not_after() {
+        // The shim raises an admin-password dialog. Warned afterwards, it has already appeared.
+        var h = Build(capabilities: PathShimOnly);
+        h.Channel.Polls.Enqueue(new(200, Asking()));
+        h.Channel.Tail = new(200, Done());
+
+        await Run(h);
+
+        await Assert.That(h.Progress.Performing).IsEquivalentTo(PathShimOnly);
+
+        var entries = h.Log.Entries.ToList();
+
+        await Assert.That(entries.IndexOf("warn")).IsGreaterThanOrEqualTo(0);
+        await Assert.That(entries.IndexOf("perform")).IsGreaterThan(entries.IndexOf("warn"));
+        await Assert.That(entries.IndexOf("report")).IsGreaterThan(entries.IndexOf("perform"));
+    }
+
+    [Test]
+    public async Task A_capability_this_host_does_not_advertise_is_left_alone_rather_than_failed() {
+        // Reporting it would tell the screen the fix was tried. It was not, and the request stays
+        // outstanding so a newer CLI can still answer it.
+        var h = Build(capabilities: []);
+        h.Channel.Polls.Enqueue(new(200, Asking()));
+        h.Channel.Tail = new(200, Done());
+
+        await Run(h);
+
+        await Assert.That(h.Actions!.Performed).IsEmpty();
+        await Assert.That(h.Channel.ActionReports).IsEmpty();
+    }
+
+    [Test]
+    public async Task A_capability_this_build_cannot_name_is_never_performed() {
+        // Dropped at the mapping boundary, so a host that happens to advertise the same string still
+        // never sees it: the closed set is what keeps "a named capability" from meaning "whatever
+        // the server said".
+        var h = Build(capabilities: ["reboot_the_laptop"]);
+        h.Channel.Polls.Enqueue(new(200, Asking("reboot_the_laptop")));
+        h.Channel.Tail = new(200, Done());
+
+        await Run(h);
+
+        await Assert.That(h.Actions!.Performed).IsEmpty();
+    }
+
+    [Test]
+    public async Task The_same_request_seen_twice_performs_once() {
+        // The poll returns the request until the report lands, and the report lands after the action.
+        // Without the guard the second sighting raises a second admin prompt for a fix already made.
+        var h = Build(capabilities: PathShimOnly);
+        h.Channel.Polls.Enqueue(new(200, Asking()));
+        h.Channel.Polls.Enqueue(new(200, Asking()));
+        h.Channel.Tail = new(200, Done());
+
+        await Run(h);
+
+        await Assert.That(h.Actions!.Performed.Count).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task A_report_that_did_not_land_is_retried_without_performing_again() {
+        var h = Build(capabilities: PathShimOnly);
+        h.Channel.ReportStatuses.Enqueue(500);
+        h.Channel.Polls.Enqueue(new(200, Asking()));
+        h.Channel.Polls.Enqueue(new(200, Asking()));
+        h.Channel.Tail = new(200, Done());
+
+        await Run(h);
+
+        await Assert.That(h.Actions!.Performed.Count).IsEqualTo(1);
+        await Assert.That(h.Channel.ActionReports.Count).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task A_fresh_request_performs_again() {
+        // A second press after an outcome is a retry, and the timestamp is what says so — the
+        // capability alone cannot tell a retry from the request already answered.
+        var h = Build(capabilities: PathShimOnly);
+        h.Channel.Polls.Enqueue(new(200, Asking()));
+        h.Channel.Polls.Enqueue(new(200, Asking(requestedAt: Asked.AddMinutes(1))));
+        h.Channel.Tail = new(200, Done());
+
+        await Run(h);
+
+        await Assert.That(h.Actions!.Performed.Count).IsEqualTo(2);
+        await Assert.That(h.Channel.ActionReports.Select(r => r.RequestedAt).ToList())
+                    .IsEquivalentTo(new[] { Asked, Asked.AddMinutes(1) });
+    }
+
+    [Test]
+    public async Task An_action_that_throws_is_reported_as_failed() {
+        // A screen waiting on an outcome that never comes is the state this lane exists to avoid.
+        var h = Build(capabilities: PathShimOnly);
+        h.Actions!.Throws = new InvalidOperationException("osascript went missing");
+        h.Channel.Polls.Enqueue(new(200, Asking()));
+        h.Channel.Tail = new(200, Done());
+
+        await Run(h);
+
+        await Assert.That(h.Channel.ActionReports.Count).IsEqualTo(1);
+        await Assert.That(h.Channel.ActionReports[0].Outcome).IsEqualTo(FirstRunMachineActionOutcomes.Failed);
+        await Assert.That(h.Channel.ActionReports[0].Reason).IsNull();
+    }
+
+    [Test]
+    public async Task A_request_riding_the_poll_that_finishes_the_flow_is_still_performed() {
+        // The user presses the button and the browser settles the last step before the next tick. The
+        // request was made, so it is owed an attempt.
+        var h = Build(capabilities: PathShimOnly);
+        h.Channel.Tail = new(200, Done() with {
+            MachineActions = [new FirstRunMachineActionResponse {
+                Capability = FirstRunMachineCapabilities.PathShim, RequestedAt = Asked
+            }]
+        });
+
+        var result = await Run(h);
+
+        await Assert.That(result).IsTypeOf<FirstRunFlowResult.Finished>();
+        await Assert.That(h.Actions!.Performed.Count).IsEqualTo(1);
+        await Assert.That(h.Channel.ActionReports.Count).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task A_host_with_no_actions_performs_nothing_and_still_finishes() {
+        var h = Build();
+        h.Channel.Polls.Enqueue(new(200, Asking()));
+        h.Channel.Tail = new(200, Done());
+
+        var result = await Run(h);
+
+        await Assert.That(result).IsTypeOf<FirstRunFlowResult.Finished>();
+        await Assert.That(h.Channel.ActionReports).IsEmpty();
     }
 }
