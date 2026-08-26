@@ -6,6 +6,22 @@
              x:Class="Capacitor.App.Views.WorkspaceView"
              x:DataType="vm:WorkspaceViewModel"
              Background="{StaticResource KcapCanvasBrush}">
+    <UserControl.Styles>
+        <Style Selector="Button.tab">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="CornerRadius" Value="7" />
+            <Setter Property="Foreground" Value="{StaticResource KcapMutedBrush}" />
+            <Setter Property="FontSize" Value="12.5" />
+            <Setter Property="Padding" Value="12,5" />
+        </Style>
+        <Style Selector="Button.tab.active">
+            <Setter Property="Background" Value="{StaticResource KcapSurfaceRaisedBrush}" />
+            <Setter Property="Foreground" Value="{StaticResource KcapTextBrush}" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+        </Style>
+    </UserControl.Styles>
+
     <Grid RowDefinitions="56,42,*">
         <!-- Header: title over repo leaf · spacer · vendor chip with its family badge ·
              Open-in-web/Stop. Leaving the workspace is the rail's job, not a Back button's. -->
@@ -40,16 +56,17 @@
                     Foreground="{StaticResource KcapDangerBrush}" Padding="10,5" FontSize="12.5" />
         </Grid>
 
-        <!-- Tab strip: one Terminal tab when the daemon reports this session has one; the muted
-             family-aware note in its place otherwise (spec: never names a vendor). -->
+        <!-- Tab strip: Chat and Terminal when the daemon reports this session has a PTY; the muted
+             family-aware note in their place otherwise (it never names a vendor). -->
         <Border Grid.Row="1" BorderBrush="{StaticResource KcapBorderBrush}" BorderThickness="0,1,0,1">
             <Grid Margin="20,0">
-                <!-- Pill tab, active (design canvas): the strip gains Chat beside it with AI-2196. -->
-                <Button x:Name="TerminalTabButton" Content="Terminal" IsVisible="{Binding ShowsTerminalTab}"
-                        HorizontalAlignment="Left" VerticalAlignment="Center"
-                        Background="{StaticResource KcapSurfaceRaisedBrush}" BorderThickness="0"
-                        CornerRadius="7" Foreground="{StaticResource KcapTextBrush}" FontWeight="SemiBold"
-                        FontSize="12.5" Padding="12,5" />
+                <StackPanel Orientation="Horizontal" Spacing="6" IsVisible="{Binding ShowsTerminalTab}"
+                            HorizontalAlignment="Left" VerticalAlignment="Center">
+                    <Button x:Name="ChatTabButton" Content="Chat" Classes="tab" Classes.active="{Binding IsChatActive}"
+                            Command="{Binding ShowChatCommand}" />
+                    <Button x:Name="TerminalTabButton" Content="Terminal" Classes="tab" Classes.active="{Binding IsTerminalActive}"
+                            Command="{Binding ShowTerminalCommand}" />
+                </StackPanel>
                 <TextBlock x:Name="NoTerminalNote" Text="{Binding NoTerminalNote}" IsVisible="{Binding !ShowsTerminalTab}"
                            Foreground="{StaticResource KcapMutedBrush}" FontSize="12.5" VerticalAlignment="Center" />
             </Grid>
@@ -66,64 +83,76 @@
                  invisible on this palette. Focus itself is wired in code-behind on Model
                  assignment — the control only draws the filled caret while focused. -->
             <terminal:TerminalControl x:Name="TerminalHost" IsVisible="{Binding ShowsTerminalTab}"
+                                       IsEnabled="{Binding IsTerminalActive}"
+                                       IsHitTestVisible="{Binding IsTerminalActive}"
+                                       Opacity="{Binding IsTerminalActive, Converter={x:Static views:BoolToOpacityConverter.Instance}}"
+                                       AutomationProperties.IsOffscreenBehavior="{Binding IsTerminalActive, Converter={x:Static views:OffscreenWhenInactiveConverter.Instance}}"
                                        FontFamily="Menlo,Monaco,Consolas,Cascadia Mono,DejaVu Sans Mono,monospace"
                                        CaretBrush="{StaticResource KcapAccentBrush}"
                                        Model="{Binding Terminal.Surface, Converter={x:Static views:TerminalSurfaceModelConverter.Instance}}" />
 
-            <Border IsVisible="{Binding Terminal.State, Converter={x:Static views:TerminalPhaseIsConverter.Instance}, ConverterParameter=Connecting}"
-                    Background="{StaticResource KcapSurfaceBrush}" BorderBrush="{StaticResource KcapBorderBrush}" BorderThickness="1"
-                    CornerRadius="8" Padding="14,8" HorizontalAlignment="Center" VerticalAlignment="Top" Margin="0,14,0,0">
-                <TextBlock Text="Connecting…" Foreground="{StaticResource KcapMutedBrush}" />
-            </Border>
+            <Panel x:Name="TerminalBanners" IsVisible="{Binding IsTerminalActive}">
+                <Border IsVisible="{Binding Terminal.State, Converter={x:Static views:TerminalPhaseIsConverter.Instance}, ConverterParameter=Connecting}"
+                        Background="{StaticResource KcapSurfaceBrush}" BorderBrush="{StaticResource KcapBorderBrush}" BorderThickness="1"
+                        CornerRadius="8" Padding="14,8" HorizontalAlignment="Center" VerticalAlignment="Top" Margin="0,14,0,0">
+                    <TextBlock Text="Connecting…" Foreground="{StaticResource KcapMutedBrush}" />
+                </Border>
 
-            <!-- Owner decision (post-QA): the attach banner overlays the terminal, so a normal
-                 read-write session shows NO banner — explicit detach returns when a use case
-                 earns it. Read-only keeps the banner: it is the only explanation for dead
-                 keystrokes, and Detach is the only action such a session has. -->
-            <Border IsVisible="{Binding Terminal.State, Converter={x:Static views:TerminalReadOnlyBannerVisibleConverter.Instance}}"
-                    Background="{StaticResource KcapWarningDimBrush}" BorderBrush="{StaticResource KcapWarningBrush}"
-                    BorderThickness="1" CornerRadius="8" Padding="12,7" HorizontalAlignment="Center" VerticalAlignment="Top" Margin="0,14,0,0">
-                <StackPanel Orientation="Horizontal" Spacing="10">
-                    <TextBlock x:Name="AttachBannerText"
-                               Text="{Binding Terminal.State.Detail, StringFormat='Read-only: {0}'}"
-                               Foreground="{StaticResource KcapWarningBrush}" VerticalAlignment="Center" />
-                    <Button x:Name="DetachButton" Content="Detach" Command="{Binding Terminal.DetachCommand}" Padding="10,3" FontSize="12" />
-                </StackPanel>
-            </Border>
+                <!-- Owner decision (post-QA): the attach banner overlays the terminal, so a normal
+                     read-write session shows NO banner — explicit detach returns when a use case
+                     earns it. Read-only keeps the banner: it is the only explanation for dead
+                     keystrokes, and Detach is the only action such a session has. -->
+                <Border IsVisible="{Binding Terminal.State, Converter={x:Static views:TerminalReadOnlyBannerVisibleConverter.Instance}}"
+                        Background="{StaticResource KcapWarningDimBrush}" BorderBrush="{StaticResource KcapWarningBrush}"
+                        BorderThickness="1" CornerRadius="8" Padding="12,7" HorizontalAlignment="Center" VerticalAlignment="Top" Margin="0,14,0,0">
+                    <StackPanel Orientation="Horizontal" Spacing="10">
+                        <TextBlock x:Name="AttachBannerText"
+                                   Text="{Binding Terminal.State.Detail, StringFormat='Read-only: {0}'}"
+                                   Foreground="{StaticResource KcapWarningBrush}" VerticalAlignment="Center" />
+                        <Button x:Name="DetachButton" Content="Detach" Command="{Binding Terminal.DetachCommand}" Padding="10,3" FontSize="12" />
+                    </StackPanel>
+                </Border>
 
-            <Border IsVisible="{Binding Terminal.State, Converter={x:Static views:TerminalDetachedOrFailedVisibleConverter.Instance}}"
-                    Background="{StaticResource KcapSurfaceBrush}" BorderBrush="{StaticResource KcapBorderBrush}" BorderThickness="1"
-                    CornerRadius="8" Padding="16,12" HorizontalAlignment="Center" VerticalAlignment="Center">
-                <StackPanel Spacing="10" HorizontalAlignment="Center">
-                    <TextBlock Text="{Binding Terminal.State, Converter={x:Static views:TerminalDetachedOrFailedMessageConverter.Instance}}"
-                               Foreground="{StaticResource KcapTextBrush}" HorizontalAlignment="Center" TextWrapping="Wrap" MaxWidth="380" />
-                    <Button x:Name="ReattachButton" Content="Reattach" Command="{Binding Terminal.ReattachCommand}"
-                            HorizontalAlignment="Center" Background="{StaticResource KcapAccentBrush}" Foreground="#07120E"
-                            FontWeight="SemiBold" Padding="16,5" />
-                </StackPanel>
-            </Border>
+                <Border IsVisible="{Binding Terminal.State, Converter={x:Static views:TerminalDetachedOrFailedVisibleConverter.Instance}}"
+                        Background="{StaticResource KcapSurfaceBrush}" BorderBrush="{StaticResource KcapBorderBrush}" BorderThickness="1"
+                        CornerRadius="8" Padding="16,12" HorizontalAlignment="Center" VerticalAlignment="Center">
+                    <StackPanel Spacing="10" HorizontalAlignment="Center">
+                        <TextBlock Text="{Binding Terminal.State, Converter={x:Static views:TerminalDetachedOrFailedMessageConverter.Instance}}"
+                                   Foreground="{StaticResource KcapTextBrush}" HorizontalAlignment="Center" TextWrapping="Wrap" MaxWidth="380" />
+                        <Button x:Name="ReattachButton" Content="Reattach" Command="{Binding Terminal.ReattachCommand}"
+                                HorizontalAlignment="Center" Background="{StaticResource KcapAccentBrush}" Foreground="#07120E"
+                                FontWeight="SemiBold" Padding="16,5" />
+                    </StackPanel>
+                </Border>
 
-            <Border IsVisible="{Binding Terminal.State, Converter={x:Static views:TerminalPhaseIsConverter.Instance}, ConverterParameter=Exited}"
-                    Background="{StaticResource KcapSurfaceBrush}" BorderBrush="{StaticResource KcapBorderBrush}" BorderThickness="1"
-                    CornerRadius="8" Padding="16,12" HorizontalAlignment="Center" VerticalAlignment="Center">
-                <TextBlock Text="{Binding Terminal.State.ExitCode, StringFormat='Session exited (code {0})'}"
-                           Foreground="{StaticResource KcapTextBrush}" />
-            </Border>
+                <Border IsVisible="{Binding Terminal.State, Converter={x:Static views:TerminalPhaseIsConverter.Instance}, ConverterParameter=Exited}"
+                        Background="{StaticResource KcapSurfaceBrush}" BorderBrush="{StaticResource KcapBorderBrush}" BorderThickness="1"
+                        CornerRadius="8" Padding="16,12" HorizontalAlignment="Center" VerticalAlignment="Center">
+                    <TextBlock Text="{Binding Terminal.State.ExitCode, StringFormat='Session exited (code {0})'}"
+                               Foreground="{StaticResource KcapTextBrush}" />
+                </Border>
 
-            <Border IsVisible="{Binding Terminal.State, Converter={x:Static views:TerminalPhaseIsConverter.Instance}, ConverterParameter=NotFound}"
-                    Background="{StaticResource KcapSurfaceBrush}" BorderBrush="{StaticResource KcapBorderBrush}" BorderThickness="1"
-                    CornerRadius="8" Padding="16,12" HorizontalAlignment="Center" VerticalAlignment="Center">
-                <StackPanel Spacing="10" HorizontalAlignment="Center">
-                    <TextBlock Text="{Binding Terminal.State.Detail}" Foreground="{StaticResource KcapTextBrush}" />
-                    <Button Content="Retry" Command="{Binding Terminal.RetryResolveCommand}" HorizontalAlignment="Center" Padding="14,4" />
-                </StackPanel>
-            </Border>
+                <Border IsVisible="{Binding Terminal.State, Converter={x:Static views:TerminalPhaseIsConverter.Instance}, ConverterParameter=NotFound}"
+                        Background="{StaticResource KcapSurfaceBrush}" BorderBrush="{StaticResource KcapBorderBrush}" BorderThickness="1"
+                        CornerRadius="8" Padding="16,12" HorizontalAlignment="Center" VerticalAlignment="Center">
+                    <StackPanel Spacing="10" HorizontalAlignment="Center">
+                        <TextBlock Text="{Binding Terminal.State.Detail}" Foreground="{StaticResource KcapTextBrush}" />
+                        <Button Content="Retry" Command="{Binding Terminal.RetryResolveCommand}" HorizontalAlignment="Center" Padding="14,4" />
+                    </StackPanel>
+                </Border>
 
-            <Border IsVisible="{Binding Terminal.State, Converter={x:Static views:TerminalPhaseIsConverter.Instance}, ConverterParameter=SessionEnded}"
-                    Background="{StaticResource KcapSurfaceBrush}" BorderBrush="{StaticResource KcapBorderBrush}" BorderThickness="1"
-                    CornerRadius="8" Padding="16,12" HorizontalAlignment="Center" VerticalAlignment="Center">
-                <TextBlock Text="This session has ended." Foreground="{StaticResource KcapMutedBrush}" />
-            </Border>
+                <Border IsVisible="{Binding Terminal.State, Converter={x:Static views:TerminalPhaseIsConverter.Instance}, ConverterParameter=SessionEnded}"
+                        Background="{StaticResource KcapSurfaceBrush}" BorderBrush="{StaticResource KcapBorderBrush}" BorderThickness="1"
+                        CornerRadius="8" Padding="16,12" HorizontalAlignment="Center" VerticalAlignment="Center">
+                    <TextBlock Text="This session has ended." Foreground="{StaticResource KcapMutedBrush}" />
+                </Border>
+            </Panel>
+
+            <!-- The automation peer reports offscreen from the control's OWN IsVisible, so hiding
+                 an ancestor instead would leave the inactive chat announced as onscreen. The flag
+                 lives on the workspace VM, which is not this control's DataContext. -->
+            <views:ChatTabView x:Name="ChatHost" DataContext="{Binding Chat}"
+                               IsVisible="{Binding $parent[views:WorkspaceView].((vm:WorkspaceViewModel)DataContext).IsChatActive}" />
         </Grid>
     </Grid>
 </UserControl>

@@ -1,24 +1,25 @@
 using System.Globalization;
 using Avalonia.Controls;
 using Avalonia.Data.Converters;
+using Avalonia.Threading;
 using Capacitor.App.Services;
+using Capacitor.App.ViewModels;
+using ReactiveUI;
 
 namespace Capacitor.App.Views;
 
 /// The session workspace: DataContext is supplied externally (a plainly-constructed
 /// WorkspaceViewModel) -- same contract as HomeView/MainWindow, this view never builds its own VM.
 ///
-/// TerminalHost hosts SvcSystems.UI.Terminal's own TerminalControl directly (no custom host/
-/// wrapper needed) -- decompile-verified (Task 12 discovery) that TerminalControl already calls
-/// its Model's Resize(width, height, textWidth, textHeight) itself, from BOTH its ModelProperty
-/// change handler (a reattach's fresh Model gets sized to the control's CURRENT bounds
-/// immediately) and its inner surface's own OnSizeChanged (an actual window/pane resize). Task
-/// 11's "the view must call Model.Resize(...) from its bounds-changed handling" obligation is
-/// therefore satisfied by USING the real vendor control rather than by re-implementing what it
-/// already does -- a hand-rolled bounds-changed handler here would only risk double-invoking
-/// Resize with worse (font-metric-unaware) width/height than TerminalControl's own
-/// _consoleTextSize-based computation.
+/// TerminalHost is SvcSystems.UI.Terminal's own TerminalControl, unwrapped: it already calls its
+/// Model's Resize(width, height, textWidth, textHeight) itself, from BOTH its ModelProperty change
+/// handler (a reattach's fresh Model gets sized to the control's CURRENT bounds immediately) and
+/// its inner surface's own OnSizeChanged (an actual window/pane resize). A bounds-changed handler
+/// here would only double-invoke Resize with worse (font-metric-unaware) width/height than the
+/// control's own _consoleTextSize-based computation.
 public partial class WorkspaceView : UserControl {
+    IDisposable? _tabFocus;
+
     // The workspace header doubles as the draggable chrome on its side of the split — see
     // WindowChrome.
     void OnHeaderPointerPressed(object? sender, Avalonia.Input.PointerPressedEventArgs e) =>
@@ -26,12 +27,22 @@ public partial class WorkspaceView : UserControl {
 
     public WorkspaceView() {
         InitializeComponent();
-        // Keyboard focus is a view concern: the control draws its filled caret (and receives
-        // keystrokes) only while focused, and nothing else focuses it when a session opens or
-        // reattaches — Model assignment is exactly the "terminal became live" moment.
+        // The control draws its caret and takes keystrokes only while focused; a Model assignment
+        // is the "terminal became live" moment — but only the Terminal tab may take focus, or a
+        // reattach under the Chat tab would steal it from the composer.
         TerminalHost.PropertyChanged += (_, e) => {
-            if (e.Property == SvcSystems.UI.Terminal.TerminalControl.ModelProperty && TerminalHost.Model is not null)
+            if (e.Property == SvcSystems.UI.Terminal.TerminalControl.ModelProperty && TerminalHost.Model is not null
+                && DataContext is WorkspaceViewModel { IsTerminalActive: true })
                 TerminalHost.Focus();
+        };
+        DataContextChanged += (_, _) => {
+            _tabFocus?.Dispose();
+            _tabFocus = (DataContext as WorkspaceViewModel)?
+                .WhenAnyValue(vm => vm.ActiveTab)
+                .Subscribe(tab => Dispatcher.UIThread.Post(() => {
+                    if (tab == WorkspaceTab.Chat) ChatHost.FocusComposer();
+                    else TerminalHost.Focus();
+                }, DispatcherPriority.Loaded));
         };
     }
 }
