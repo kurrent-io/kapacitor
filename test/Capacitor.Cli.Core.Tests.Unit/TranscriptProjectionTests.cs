@@ -29,7 +29,13 @@ public class TranscriptProjectionTests {
     [Test]
     public async Task WrapAsObject_builds_a_json_object_around_any_value() {
         using var doc = System.Text.Json.JsonDocument.Parse("""[1,"x",null]""");
-        await Assert.That(TranscriptProjectionText.WrapAsObject("input", doc.RootElement)).IsEqualTo("""{"input":[1,"x",null]}""");
-        await Assert.That(TranscriptProjectionText.WrapAsObject("arguments", "raw \"q\"")).IsEqualTo("""{"arguments":"raw "q""}""");
+        var fromElement = TranscriptProjectionText.WrapAsObject("input", doc.RootElement);
+        await Assert.That(fromElement).IsEqualTo("""{"input":[1,"x",null]}""");
+        await Assert.That(System.Text.Json.JsonDocument.Parse(fromElement).RootElement.ValueKind).IsEqualTo(System.Text.Json.JsonValueKind.Object);
+
+        var fromString = TranscriptProjectionText.WrapAsObject("arguments", "raw \"q\"");
+        // Utf8JsonWriter's default encoder escapes a quote as \u0022, not \".
+        await Assert.That(fromString).IsEqualTo("""{"arguments":"raw \u0022q\u0022"}""");
+        await Assert.That(System.Text.Json.JsonDocument.Parse(fromString).RootElement.ValueKind).IsEqualTo(System.Text.Json.JsonValueKind.Object);
     }
 }

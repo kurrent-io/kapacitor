@@ -54,8 +54,13 @@ internal static class TranscriptProjectionText {
         return Encoding.UTF8.GetString(buffer.ToArray());
     }
 
-    // Embeds value verbatim between quotes rather than JSON-escaping it: the caller supplies
-    // text already safe to sit inside a JSON string (e.g. a vendor's own quoted field).
-    public static string WrapAsObject(string property, string value) =>
-        $$"""{"{{property}}":"{{value}}"}""";
+    public static string WrapAsObject(string property, string value) {
+        using var buffer = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(buffer)) {
+            writer.WriteStartObject();
+            writer.WriteString(property, value);
+            writer.WriteEndObject();
+        }
+        return Encoding.UTF8.GetString(buffer.ToArray());
+    }
 }
