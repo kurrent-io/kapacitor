@@ -1,8 +1,10 @@
 using System.Collections.Concurrent;
+using System.Reactive;
 using System.Reactive.Disposables;
 using System.Reactive.Disposables.Fluent;
 using System.Reactive.Linq;
 using Avalonia.Collections;
+using Avalonia.Media;
 using Avalonia.Threading;
 using Capacitor.App.Services;
 using Capacitor.Cli.Core;
@@ -64,6 +66,46 @@ public sealed class ChatTabViewModel : ReactiveObject {
         _                        => "",
     };
 
+    string _composerText = "";
+    public string ComposerText {
+        get => _composerText;
+        set => this.RaiseAndSetIfChanged(ref _composerText, value);
+    }
+
+    public ReactiveCommand<Unit, Unit> SendCommand { get; }
+    public ReactiveCommand<string, Unit> OpenLinkCommand { get; }
+
+    readonly ObservableAsPropertyHelper<string> _composerHint;
+    public string ComposerHint => _composerHint.Value;
+
+    string _vendor = "";
+    IReadOnlyList<HarnessOption> _options = HostedHarnessCatalog.Build(null);
+
+    string _vendorLabel = "";
+    public string VendorLabel { get => _vendorLabel; private set => this.RaiseAndSetIfChanged(ref _vendorLabel, value); }
+
+    string _modelLabel = "default";
+    public string ModelLabel { get => _modelLabel; private set => this.RaiseAndSetIfChanged(ref _modelLabel, value); }
+
+    string _statusText = "";
+    public string StatusText { get => _statusText; private set => this.RaiseAndSetIfChanged(ref _statusText, value); }
+
+    IBrush _statusDot = SessionStatusDots.For("");
+    public IBrush StatusDot { get => _statusDot; private set => this.RaiseAndSetIfChanged(ref _statusDot, value); }
+
+    /// The hint is built from the terminal's own availability, so it is true in the windows
+    /// where State alone would lie (a reattach or detach under way while State reads Attached).
+    internal static string HintFor(SendAvailability availability, TerminalSessionState state, string vendorLabel) => availability switch {
+        SendAvailability.Ready         => $"Reply to {vendorLabel} · Enter sends · Shift+Enter for a new line",
+        SendAvailability.Sending       => "Sending…",
+        SendAvailability.Transitioning => "Updating the terminal connection…",
+        SendAvailability.ReadOnly      => $"Read-only: {state.Detail}",
+        SendAvailability.Connecting    => "Connecting to the terminal…",
+        SendAvailability.Reattach      => "Reattach the terminal to send",
+        SendAvailability.Ended         => "This session has ended",
+        _                              => "No terminal to send to",
+    };
+
     /// Test-only seam: the read in flight, or the last one started. A switch that loses the
     /// in-flight CAS starts no read of its own, so this still points at the previous file's read —
     /// await that, advance one tick, then await again to see the new path's first rows.
@@ -87,7 +129,36 @@ public sealed class ChatTabViewModel : ReactiveObject {
         if (projection is not null)
             _timer = time.CreateTimer(_ => OnTick(), null, PollInterval, PollInterval);
 
-        // Task 12: composer, footer and link members are constructed here.
+        daemon.Snapshots
+            .ObserveOn(RxSchedulers.MainThreadScheduler)
+            .Subscribe(snapshot => {
+                _options = HostedHarnessCatalog.Build(snapshot.Daemon.SupportedVendors);
+                VendorLabel = HostedHarnessCatalog.LabelFor(_options, _vendor);
+            })
+            .DisposeWith(_disposables);
+
+        _composerHint = Observable.CombineLatest(
+                terminal.WhenAnyValue(t => t.SendAvailability, t => t.State, (availability, state) => (availability, state)),
+                this.WhenAnyValue(x => x.VendorLabel),
+                (t, label) => HintFor(t.availability, t.state, label))
+            .ToProperty(this, x => x.ComposerHint, HintFor(terminal.SendAvailability, terminal.State, ""))
+            .DisposeWith(_disposables);
+
+        var canSend = Observable.CombineLatest(
+            this.WhenAnyValue(x => x.ComposerText),
+            terminal.WhenAnyValue(t => t.CanAcceptText),
+            (text, can) => can && !string.IsNullOrWhiteSpace(text));
+        SendCommand = ReactiveCommand.Create(() => {
+            if (_terminal.TrySendText(ComposerText)) ComposerText = "";
+        }, canSend);
+        _disposables.Add(SendCommand);
+
+        OpenLinkCommand = ReactiveCommand.Create<string>(url => {
+            if (!LinkPolicy.IsOpenable(url)) return;
+            try { _opener.Open(url); }
+            catch (Exception ex) { Console.Error.WriteLine($"kcap: open link failed: {ex.Message}"); }
+        });
+        _disposables.Add(OpenLinkCommand);
     }
 
     void OnAgentsChanged(IChangeSet<AgentStatusDto, string> changes) {
@@ -98,6 +169,11 @@ public sealed class ChatTabViewModel : ReactiveObject {
     }
 
     void OnDto(AgentStatusDto dto) {
+        _vendor = dto.Vendor;
+        VendorLabel = HostedHarnessCatalog.LabelFor(_options, dto.Vendor);
+        ModelLabel = HostedHarnessCatalog.ModelLabelFor(dto.Vendor, dto.Model ?? "");
+        StatusText = dto.Status;
+        StatusDot = SessionStatusDots.For(dto.Status);
         if (_projection is not null && dto.TranscriptPath is { } path && path != _path) SwitchPath(path);
     }
 
@@ -106,10 +182,11 @@ public sealed class ChatTabViewModel : ReactiveObject {
         _pendingTools.Clear();
         _path = path;
         _lease = new TailLease(new JsonlTail(path), Interlocked.Increment(ref _generation));
+        var wasWaiting = _phase == ChatTabPhase.Waiting;
         Phase = ChatTabPhase.Waiting;
-        // A switch re-announces the note even when it lands on the phase already showing: the rows
-        // are gone, so the view has to re-read what stands in for them.
-        this.RaisePropertyChanged(nameof(PhaseNote));
+        // The rows are gone, so the view has to re-read what stands in for them even when the phase
+        // is unchanged — and only then, since the setter itself raises the note on a real change.
+        if (wasWaiting) this.RaisePropertyChanged(nameof(PhaseNote));
         OnTick();
     }
 
