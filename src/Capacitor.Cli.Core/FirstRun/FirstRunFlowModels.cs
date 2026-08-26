@@ -213,9 +213,10 @@ public sealed record FirstRunFlowResponse {
     /// The default session visibility the same decision chose, as a canonical
     /// <c>default_visibility</c> value.
     ///
-    /// <para><b>Null means leave the profile alone</b>, and it is null in two situations this build must
-    /// not tell apart: the step is unanswered, and the user declined everything. Neither asks for a
-    /// default.</para>
+    /// <para><b>Null is not a value</b>, and it is null in two situations that are not the same: the step
+    /// was answered and no audience set, and the step was never answered at all. Only the first says
+    /// anything about the profile — see <c>SetupCommand.DecideVisibility</c>, which separates them by
+    /// whether the step settled, because the second has told the machine nothing.</para>
     ///
     /// <para><b>It can name a stop this tenant does not currently offer</b>, because the server's fold
     /// keeps a durable answer as given. Such a value is still the one to write: every stop it can name

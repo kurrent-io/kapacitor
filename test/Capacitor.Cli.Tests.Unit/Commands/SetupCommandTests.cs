@@ -177,9 +177,8 @@ public class SetupCommandTests {
         await Assert.That(decided.Kept).IsFalse();
     }
 
-    // The finding this branch exists for: falling through to the prompt does NOT leave the profile
-    // alone, because the prompt's cursor starts on org_public — so one Return widens an existing
-    // private, on a screen the user already answered.
+    // Falling through to the prompt would not leave the profile alone: its cursor starts on org_public,
+    // so one Return widens an existing private on a screen the user already answered.
     [Test]
     public async Task DecideVisibility_keeps_the_profile_when_the_screen_was_answered_and_left_unset() {
         var decided = SetupCommand.DecideVisibility(VisibilityAnswer(null), current: "private");
