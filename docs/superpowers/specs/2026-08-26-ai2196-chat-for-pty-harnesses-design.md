@@ -311,10 +311,13 @@ templates are per item type (`DataTemplates` keyed on the three shapes).
 Follow-tail is a view concern, stateless across events: on each collection
 change the view decides *was at end* right then, from the `ScrollViewer`'s
 current offset, viewport and **old** extent (the new items have not been
-measured yet), and if so schedules one scroll-to-end after the next layout
-pass (`DispatcherPriority.Loaded`), when the virtualized presenter has
-established the new extent — an immediate `ScrollToEnd` would clamp against
-the old one. A user who has scrolled up keeps their offset untouched.
+measured yet), and if so arms a one-shot `LayoutUpdated` hook — the explicit
+layout-completion seam, when the virtualized presenter has established the
+new extent; an immediate `ScrollToEnd` would clamp against the old one. The
+hook re-checks before scrolling that the offset is still the one captured at
+decision time and does nothing otherwise, so a user who scrolls up in the
+window between the event and the layout pass is not yanked; a user who has
+already scrolled up keeps their offset untouched.
 
 ### Markdown
 
@@ -370,14 +373,16 @@ up. An `IsVisible=false` control is never measured: a workspace opened on Chat
 would then keep the constructor's 80×24 and, through the daemon's min-clamp
 across viewers, shrink the agent's terminal for every other attacher.
 
-Everything else simply is not there when its tab is inactive: the chat
-surface (list, composer, Send) and the terminal's banners and Detach/Reattach
-buttons are `IsVisible=false` — unmeasured, unfocusable, out of the
-automation tree. `TerminalHost` alone, when Chat is active, is disabled,
-non-hit-testable, transparent, and marked
-`AutomationProperties.IsOffscreenBehavior=Offscreen` — the default derives
-"offscreen" from `IsVisible`, so a visible-but-transparent control would
-otherwise be announced beside the chat. Focus follows the tab: the existing
+Everything else is collapsed when its tab is inactive: the chat surface
+(list, composer, Send) and the terminal's banners and Detach/Reattach buttons
+are `IsVisible=false` — still instantiated in the tree, but unmeasured, not
+effectively visible, unfocusable, out of tab navigation, and reported
+offscreen by their automation peers (the default derives that from
+`IsVisible`). `TerminalHost` alone, when Chat is active, stays visible so it
+is measured — disabled, non-hit-testable, transparent, and marked
+`AutomationProperties.IsOffscreenBehavior=Offscreen`, since a
+visible-but-transparent control would otherwise be announced beside the chat.
+Focus follows the tab: the existing
 focus-on-Model-assignment handler runs only while the Terminal tab is active
 (a reattach while Chat is up must not steal the composer's focus); switching
 to Terminal focuses the terminal, switching to Chat — and the first open on
@@ -413,22 +418,37 @@ Lives on `ChatTabViewModel`, sends through the sibling Terminal tab:
   carry the live prompt state anyway.
 
 `TerminalTabViewModel.TrySendText(string text)` → `bool`, synchronous, UI
-thread. It refuses (false, nothing written) unless `State` is `Attached`
-read-write, a client is live, **and no delivery is in flight**; otherwise it
-captures the client and the current **send epoch**, sets `SendInFlight`
-(bound; cleared on the UI thread when the delivery ends, however it ends),
-starts a fault-contained background delivery, and returns true. One
-transaction at a time is the point: two accepted sends inside the 150 ms
-window would interleave as paste A, paste B, CR, CR — Core's client
+thread. The terminal owns a **send gate** with three pieces of state, all
+mutated only on the UI thread:
+
+- `SendGate` ∈ Open | Closed. **Closed synchronously, before any await, at
+  the start of** `TryStartAttemptAsync` (reattach), `RunDetachAsync` and
+  `TeardownAsync`; **reopened only when a later attempt lands `Attached`
+  read-write** (the `OnAttachedAsync` dispatch that sets that state). Neither
+  `State` nor `_client` can serve as the gate: a reattach leaves both
+  `Attached` and live while it awaits the old client's disposal, and a detach
+  leaves both unchanged while it awaits the detach write — a send started in
+  either window would otherwise be accepted against a client on its way out.
+- The **send epoch**, a counter bumped at the same three points, which a
+  running delivery re-checks before its CR.
+- `SendInFlight` (bound), true from acceptance until the delivery ends.
+
+`TrySendText` refuses (false, nothing written) unless `SendGate` is Open and
+`SendInFlight` is false; otherwise it captures the client and the epoch, sets
+`SendInFlight`, starts the fault-contained background delivery, and returns
+true. One transaction at a time is the point: two accepted sends inside the
+150 ms window would interleave as paste A, paste B, CR, CR — Core's client
 serializes single frames, not multi-frame messages — and the TUI would submit
 both as one prompt and spend the second Enter on whatever is up next.
-Refusing keeps the second text in the composer for the user to send again
-a moment later. The send epoch is a counter the VM bumps **synchronously, before
-any await, at the start of** `TryStartAttemptAsync` (reattach), `RunDetachAsync`
-and `TeardownAsync` — the attempt generation cannot serve, because reattach
-bumps it only after awaiting the old client's disposal, and detach never bumps
-it at all; a delayed CR must be dead the instant a detach or reattach begins,
-not when it finishes.
+Refusing keeps the second text in the composer for the user to send again a
+moment later.
+
+Ownership of `SendInFlight` is one rule: **the closer retires the send.**
+Closing the gate (reattach, detach, teardown) synchronously bumps the epoch
+and clears `SendInFlight`; the delivery's own completion — success or fault —
+clears it through a UI-thread dispatch that mutates nothing unless the epoch
+it captured is still current and the VM has not been torn down, so a late
+completion can neither clear a newer send nor touch a torn-down VM.
 
 The delivery is the daemon's own `PtyHostedAgentRuntime.SendUserInputAsync`
 shape: one write of `TerminalInputEncoder.Paste(text)` — `\r\n` normalized to
@@ -437,9 +457,10 @@ shape: one write of `TerminalInputEncoder.Paste(text)` — `\r\n` normalized to
 `TimeProvider` delay, one write of `\r` **to the same captured client, only if
 the send epoch is unchanged**. A stale epoch drops the CR: the paste already
 went to the old client, and a replacement must never receive a stray Enter.
-A fault in either write is observed and logged once to `Console.Error`; it
-never touches VM state (the attach outcome is the transport's own reporting
-channel). The delay is measured against Codex's TUI, which suppresses
+A fault in either write is observed and logged once to `Console.Error` and
+ends the delivery (clearing `SendInFlight` under the rule above); it never
+touches `State` — the attach outcome is the transport's own reporting
+channel. The delay is measured against Codex's TUI, which suppresses
 Enter-as-submit for 120 ms after ingesting a paste and turns a CR inside that
 window into a newline. A single CR, never a retry spray: an interactive launch
 keeps its permission prompts (Claude prompts unless it is an owned review-flow
@@ -512,20 +533,27 @@ inserts a newline — a view-level key handler on the composer's `TextBox`.
   `ItemsControl` realizes a bounded number of containers.
 - Follow-tail (headless, laid out): the initial load ends at the bottom; an
   append while at the bottom ends at the **new** bottom after the layout
-  pass; an append while scrolled up leaves the offset where it was.
+  pass; an append while scrolled up leaves the offset where it was; an append
+  at the bottom followed by a scroll up before the layout pass completes
+  leaves the offset up.
 - Composer: `SendCommand` enablement across every terminal phase and the
   read-only case; the exact two writes via `FakeTerminalAttachClient.SentInput`
   — the bracketed paste, then `\r` only once the `FakeTimeProvider` advances
   past the delay, on the same client; a second send accepted before the
   first's CR is refused with its text intact, and once the first completes it
   goes through — the only order ever observed is paste A, CR, paste B, CR;
-  a detach or reattach that has *begun*
-  before the send refuses it (text stays, nothing written); a reattach whose
-  old-client disposal is held open past 150 ms (`DisposeGate`), a detach, or a
-  teardown started during the delay sends no CR to any client; a faulting
-  write leaves VM state untouched; the text clears on acceptance and stays on
-  refusal; every hint string; a pool-thread state flip updates the hint on
-  the UI thread.
+  a send started while a reattach is awaiting the old client's disposal
+  (`DisposeGate`) or a detach is awaiting its write (`HangDetachForever`) is
+  refused — `State` still reads `Attached` in both windows — and the gate
+  reopens only once the new attempt lands `Attached`; a reattach whose
+  old-client disposal is held open past 150 ms, a detach, or a teardown started
+  during the delay sends no CR to any client and clears `SendInFlight`
+  synchronously; a faulting write clears `SendInFlight` and leaves `State`
+  untouched; a retired delivery's completion cannot clear a newer send's
+  `SendInFlight`; after `TeardownAsync` returns, no bound state changes and no
+  dispatcher work is queued by a still-running delivery; the text clears on
+  acceptance and stays on refusal; every hint string; a pool-thread state
+  flip updates the hint on the UI thread.
 - `TerminalInputEncoderTests`, `ToolDetailTests` (key priority, first line,
   80-character cut), `LinkPolicyTests` (https/http open, `file:`,
   `javascript:`, custom schemes, relative and malformed text refused).
@@ -541,8 +569,10 @@ inserts a newline — a view-level key handler on the composer's `TextBox`.
   workspace opened on Chat with a **real** `XtermTerminalSurface` reports the
   laid-out pane size to the attach client, not 80×24, while `TerminalHost` is
   disabled and non-hit-testable and its automation peer reports offscreen;
-  with Terminal active the chat surface is not in the visual tree, and with
-  Chat active the terminal's banners and buttons are not; focus lands on
+  with Terminal active the chat surface is not effectively visible
+  (`IsEffectivelyVisible == false`, the existing smoke tests' own probe) and
+  its peer reports offscreen, and with Chat active the same holds for the
+  terminal's banners and buttons; focus lands on
   `ComposerInput` on open, stays there through a late Model assignment, moves
   to the terminal on the Terminal switch and back on the Chat switch; tab
   traversal from the composer never reaches `DetachButton`/`ReattachButton`
