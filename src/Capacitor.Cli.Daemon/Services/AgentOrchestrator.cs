@@ -41,16 +41,17 @@ internal record AgentInstance(
     public bool                 HasReceivedOutput { get; set; }
     public TerminalOutputBuffer OutputBuffer      { get; } = new();
 
-    /// <summary>Codex turn diagnostic: the reviewer's own rollout JSONL path, resolved ONCE by the
-    /// session-id detector and cached so the send path can sample its length with a single stat
-    /// (never a directory scan). Null until detection resolves it, and for non-Codex agents.</summary>
-    public string? CodexRolloutPath { get; set; }
+    /// The agent's own transcript — Claude's project .jsonl or Codex's rollout — resolved once
+    /// by discovery and cached: the status payload and the Codex send-path probe both read it,
+    /// and neither may scan a directory to do so. Null until discovery lands, and forever for a
+    /// runtime that writes nothing the daemon locates.
+    public string? TranscriptPath { get; set; }
 
     bool _titleComputed;
     string? _title;
     /// <summary>The status payload's display title, computed ONCE from the immutable Prompt
     /// (SnapshotAgentsForStatus re-runs for every agent on every status pulse — re-parsing an
-    /// invariant there is pure waste, same reasoning as CodexRolloutPath's cache).</summary>
+    /// invariant there is pure waste, same reasoning as TranscriptPath's cache).</summary>
     public string? Title {
         get {
             if (!_titleComputed) { _title = TitleFromPrompt(Prompt); _titleComputed = true; }
@@ -395,6 +396,9 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     /// wiring test can pin that the registered singleton — not a private fallback nobody
     /// subscribes to — is the one every agent mutation reaches (see DaemonStatusWiringTests).</summary>
     internal DaemonStatusNotifier StatusNotifierForTest => _statusNotifier;
+
+    int _discoveryStarts;
+    internal int DiscoveryStartsForTest => Volatile.Read(ref _discoveryStarts);
 
     // Phase B (D4): durable PID records + this daemon's logical identity/epoch for
     // crash-survivor reaping. Initialized in the ctor from config.
@@ -3508,7 +3512,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             // is handled in ArmCodexTurnProbe.
             if (isCodex) {
                 codexGen = Interlocked.Increment(ref agent.CodexTurnProbeGen);
-                if (agent.CodexRolloutPath is { } rolloutPath) codexBaseline = TryFileLength(rolloutPath);
+                if (agent.TranscriptPath is { } rolloutPath) codexBaseline = TryFileLength(rolloutPath);
             }
 
             // PTY runtimes use bracketed paste; ACP runtimes send a structured prompt.
@@ -3564,7 +3568,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     /// already invalidated.</para>
     /// </summary>
     void ArmCodexTurnProbe(AgentInstance agent, long? baseline, long gen) {
-        if (agent.CodexRolloutPath is not { } rolloutPath || baseline is not { } b) {
+        if (agent.TranscriptPath is not { } rolloutPath || baseline is not { } b) {
             LogCodexTurnRolloutUnresolved(agent.Id);
             return;
         }
@@ -4399,94 +4403,48 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     static readonly TimeSpan CodexTurnObserveInterval = TimeSpan.FromSeconds(2);
     static readonly TimeSpan CodexTurnObserveTimeout  = TimeSpan.FromMinutes(2);
 
-    /// <summary>
-    /// Vendor-dispatched, best-effort background fallback that discovers a spawned agent's
-    /// session id from the transcript/rollout its harness writes and reports it to the server,
-    /// for when the session-start hook (the primary source of the agent↔session link) fails or
-    /// doesn't land in time — e.g. an expired kcap token 401s every /hooks POST, or an
-    /// unattended/borrowed reviewer completes before the hook correlates. The server no longer
-    /// gates incarnation completion on this id (it converges on daemon liveness), so this only
-    /// resolves the id lazily for correlation/display and never blocks a launch.
-    ///
-    /// Claude reads its per-worktree Claude project dir (symlinked to the SOURCE repo's, shared
-    /// with the user's own sessions — <see cref="SessionTranscriptLocator"/> disambiguates by
-    /// cwd). Codex reads its <c>~/.codex/sessions</c> rollout tree (shared across all the user's
-    /// Codex sessions — <see cref="CodexSessionRolloutLocator"/> disambiguates by
-    /// <c>payload.cwd</c> + spawn time). A vendor with no daemon-side locator is a no-op: the
-    /// hook stays its only session-id source.
-    /// </summary>
-    async Task DetectSessionIdAsync(AgentInstance agent, string vendor, DateTime spawnedAtUtc) {
-        // The locator scans a shared dir, so a foreign-session file is cached in ruledOut and
-        // never re-opened. A cwd is fixed, so a definitive non-match is permanent; a file with
-        // no cwd yet (still being written) is NOT cached, so the agent's own freshly-created
-        // transcript/rollout is always re-checked.
-        Func<ISet<string>, string?>? locate = vendor.ToLowerInvariant() switch {
-            "claude" => ruledOut => SessionTranscriptLocator.TryLocate(
+    /// Locates the transcript a freshly spawned PTY agent writes — Claude's per-worktree
+    /// project dir (a symlink onto the source repo's, shared with the user's own sessions,
+    /// so the locator disambiguates by cwd), Codex's rollout tree (disambiguated by cwd and
+    /// spawn time). A vendor without a locator is a no-op. Best-effort background work,
+    /// cancelled with the agent; it never blocks a launch.
+    Task DetectSessionIdAsync(AgentInstance agent, string vendor, DateTime spawnedAtUtc) {
+        Func<ISet<string>, (string SessionId, string Path)?>? locate = vendor.ToLowerInvariant() switch {
+            "claude" => ruledOut => SessionTranscriptLocator.TryLocateWinner(
                 ClaudePaths.ProjectDir(agent.Worktree.Path), agent.Worktree.Path, spawnedAtUtc, ruledOut),
-            // Codex turn diagnostic: resolve id AND path together and cache the path on the agent,
-            // so the send-path probe needs only a single stat later — no directory scan on the
-            // daemon command loop. The path is stable for a session's lifetime.
-            "codex" => ruledOut => {
-                if (CodexSessionRolloutLocator.TryLocateWinner(
-                        CodexPaths.Sessions, agent.Worktree.Path, spawnedAtUtc, ruledOut) is not { } winner)
-                    return null;
-                agent.CodexRolloutPath = winner.Path;
-                return winner.SessionId;
-            },
-            _ => null,
+            "codex"  => ruledOut => CodexSessionRolloutLocator.TryLocateWinner(
+                CodexPaths.Sessions, agent.Worktree.Path, spawnedAtUtc, ruledOut),
+            _        => null,
         };
+        if (locate is null) return Task.CompletedTask;
 
-        if (locate is null) return;
-
-        await PollForSessionIdAsync(agent, locate);
+        Interlocked.Increment(ref _discoveryStarts);
+        return RunDiscoveryAsync(agent, locate);
     }
 
-    /// <summary>
-    /// Shared poll loop for <see cref="DetectSessionIdAsync"/>. Polls <paramref name="locate"/>
-    /// until it resolves a session id, the id is set by other means (hook succeeded), the agent
-    /// exits (ReadCts), the daemon shuts down, or the timeout elapses. On a match it sets
-    /// <see cref="AgentInstance.SessionId"/> and best-effort reports via AgentStatusChanged (live
-    /// registry link) AND an <see cref="AgentRunHeartbeat"/> (so the server's restart-recovery
-    /// FindAgentSessionIdAsync path works too). Once SessionId is set, the 30 s heartbeat loop and
-    /// reconnect re-registration keep re-sending it, so a transient report failure self-heals.
-    /// Never breaks the launch.
-    /// </summary>
-    async Task PollForSessionIdAsync(AgentInstance agent, Func<ISet<string>, string?> locate) {
+    internal Task RunDiscoveryForTest(AgentInstance agent, Func<ISet<string>, (string SessionId, string Path)?> locate) =>
+        RunDiscoveryAsync(agent, locate);
+
+    async Task RunDiscoveryAsync(AgentInstance agent, Func<ISet<string>, (string SessionId, string Path)?> locate) {
         try {
-            var deadline = DateTime.UtcNow + SessionIdPollTimeout;
-            var ruledOut = new HashSet<string>();
-
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(agent.ReadCts.Token, _shutdownCts.Token);
+            var discovery = new TranscriptDiscovery(TimeProvider.System, SessionIdPollInterval, SessionIdPollTimeout);
 
-            while (DateTime.UtcNow < deadline) {
-                if (agent.SessionId is not null) return; // linked by other means (hook succeeded)
+            var found = await discovery.RunAsync(locate, async winner => {
+                // Mutation first, pulse second — and the pulse before any server call, which can
+                // stall on a reconnect and must never hold the app's status push hostage.
+                agent.SessionId ??= winner.SessionId;
+                agent.TranscriptPath = winner.Path;
+                _statusNotifier.Pulse();
+                LogSessionIdDetected(agent.Id, winner.SessionId);
 
-                if (locate(ruledOut) is { } sessionId) {
-                    agent.SessionId ??= sessionId;
+                if (agent.IsPrivate) return;
+                await _server.AppendAgentRunEventAsync(agent.Id, new AgentRunHeartbeat(winner.SessionId));
+                await _server.AgentStatusChangedAsync(agent.Id, agent.Status, winner.SessionId);
+            }, cts.Token);
 
-                    LogSessionIdDetected(agent.Id, sessionId);
-
-                    if (!agent.IsPrivate) {
-                        // Enqueue the run-event first: it's a non-throwing local enqueue, whereas
-                        // the SignalR status update can throw during a reconnect. Ordering it first
-                        // ensures a transient connection hiccup can't skip the durable report — the
-                        // status update then re-sends via the heartbeat loop regardless.
-                        await _server.AppendAgentRunEventAsync(agent.Id, new AgentRunHeartbeat(sessionId));
-                        await _server.AgentStatusChangedAsync(agent.Id, agent.Status, sessionId);
-                    }
-
-                    return;
-                }
-
-                await Task.Delay(SessionIdPollInterval, cts.Token);
-            }
-
-            LogSessionIdNotDetected(agent.Id, SessionIdPollTimeout.TotalSeconds);
-        } catch (OperationCanceledException) {
-            // Agent stopped or daemon shutting down — nothing to report.
+            if (!found && !agent.ReadCts.IsCancellationRequested) LogSessionIdNotDetected(agent.Id, SessionIdPollTimeout.TotalSeconds);
         } catch (Exception ex) {
-            // Best-effort by design: if the immediate report failed after SessionId was set,
-            // the heartbeat loop / reconnect re-registration will re-send it.
             LogSessionIdDetectFailed(ex, agent.Id);
         }
     }

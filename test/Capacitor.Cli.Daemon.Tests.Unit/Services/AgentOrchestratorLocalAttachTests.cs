@@ -161,6 +161,27 @@ public class AgentOrchestratorLocalAttachTests {
     }
 
     [Test]
+    public async Task Local_spawns_start_transcript_discovery_private_included() {
+        using var tmp = new TempDir();
+        var server    = new TripwireServerConnection();
+        var pty       = new EnvCapturingPtyFactory();
+        var launchers = new Dictionary<string, IHostedAgentLauncher> { ["claude"] = new SpyHostedAgentLauncher("claude", "spy-claude") };
+        await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, pty, launchers);
+
+        foreach (var isPrivate in new[] { false, true }) {
+            var readBuf = new MemoryStream();
+            await FrameCodec.WriteAsync(readBuf, LocalFrame.Detach(), default);
+            readBuf.Position = 0;
+            using var client = new DuplexTestStream(readBuf, new MemoryStream());
+
+            var spawn = FrameCodec.Spawn("claude", WorkLocation.BorrowedCwd, isPrivate, tmp.Path, [], 80, 24);
+            await orch.HandleLocalSpawnAsync(spawn, client, default);
+        }
+
+        await Assert.That(orch.DiscoveryStartsForTest).IsEqualTo(2);
+    }
+
+    [Test]
     public async Task RegisterAgentAsync_registers_public_agent_and_skips_private() {
         var server = new TripwireServerConnection();
         await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());

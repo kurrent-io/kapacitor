@@ -232,4 +232,62 @@ public class AgentStatusSnapshotTests {
             await fixture.CleanupAsync();
         }
     }
+
+    [Test]
+    public async Task Status_payload_carries_transcript_path_null_before_discovery_and_the_value_after() {
+        var fixture = Build();
+        var orch    = fixture.Orchestrator;
+        try {
+            var agent = orch.SeedAgentForTest("pty-1");
+
+            var before = System.Text.Json.JsonSerializer.Serialize(orch.SnapshotAgentsForStatus()[0], StatusIpcJsonContext.Default.AgentStatusDto);
+            await Assert.That(before).Contains("\"transcript_path\":null");
+
+            var versionBefore = fixture.Notifier.Version;
+            await orch.RunDiscoveryForTest(agent, _ => ("0123456789abcdef0123456789abcdef", "/home/u/.claude/projects/-repo/t.jsonl"));
+
+            var after = System.Text.Json.JsonSerializer.Serialize(orch.SnapshotAgentsForStatus()[0], StatusIpcJsonContext.Default.AgentStatusDto);
+            await Assert.That(after).Contains("\"transcript_path\":\"/home/u/.claude/projects/-repo/t.jsonl\"");
+            await Assert.That(agent.SessionId).IsEqualTo("0123456789abcdef0123456789abcdef");
+            await Assert.That(fixture.Notifier.Version).IsGreaterThan(versionBefore);
+        } finally {
+            await fixture.CleanupAsync();
+        }
+    }
+
+    /// A session id learned elsewhere must not stop discovery: the path is the obligation.
+    [Test]
+    public async Task Discovery_sets_the_path_even_when_the_session_id_is_already_known() {
+        var fixture = Build();
+        var orch    = fixture.Orchestrator;
+        try {
+            var agent = orch.SeedAgentForTest("pty-2");
+            agent.SessionId = "pre-known";
+
+            await orch.RunDiscoveryForTest(agent, _ => ("other", "/t.jsonl"));
+
+            await Assert.That(agent.SessionId).IsEqualTo("pre-known");
+            await Assert.That(agent.TranscriptPath).IsEqualTo("/t.jsonl");
+        } finally {
+            await fixture.CleanupAsync();
+        }
+    }
+
+    /// A private agent gets the path and the pulse with no server call in the way.
+    [Test]
+    public async Task A_private_agent_gets_its_path_and_pulse_without_server_reports() {
+        var fixture = Build();
+        var orch    = fixture.Orchestrator;
+        try {
+            var agent = orch.SeedAgentForTest("priv-1", isPrivate: true);
+            var versionBefore = fixture.Notifier.Version;
+
+            await orch.RunDiscoveryForTest(agent, _ => ("sid", "/p.jsonl"));
+
+            await Assert.That(agent.TranscriptPath).IsEqualTo("/p.jsonl");
+            await Assert.That(fixture.Notifier.Version).IsGreaterThan(versionBefore);
+        } finally {
+            await fixture.CleanupAsync();
+        }
+    }
 }
