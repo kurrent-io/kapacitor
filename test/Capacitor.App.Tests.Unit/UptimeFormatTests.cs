@@ -1,8 +1,7 @@
 namespace Capacitor.App.Tests.Unit;
 
-/// UptimeFormat (spec §8 boundary table) — retargeted from the deleted AgentGridTests.cs (AI-2199:
-/// the Agents grid is gone, but SessionCardViewModel.Age and RailSessionViewModel still format
-/// uptime through this same shared utility).
+/// UptimeFormat's bucket boundaries — the shared formatter behind SessionCardViewModel.Age and
+/// the rail rows' age sub-line.
 public class UptimeFormatTests {
     [Test]
     [Arguments(0, "0s")]

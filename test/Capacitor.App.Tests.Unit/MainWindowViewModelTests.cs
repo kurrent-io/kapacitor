@@ -185,8 +185,6 @@ public class MainWindowViewModelTests {
         });
     }
 
-    /// Retargeted from the deleted AgentGridTests.cs (AI-2199: the Agents grid is gone, but
-    /// GridEnabled itself survives — it now gates only the status block's AgentCountText).
     [Test]
     [NotInParallel("AvaloniaSession")]
     public async Task Command_enablement_matrix() {
