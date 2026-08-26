@@ -158,9 +158,9 @@ public static class FirstRunFlowOutcomes {
     ///
     /// <para><b>Validated against this build's own closed set, not forwarded.</b> The value lands in
     /// profile config and is stamped on every session this machine records afterwards, so one a newer
-    /// server invented would be written to disk and then read back by a server that may no longer mean
-    /// the same thing by it. Null is what a dropped value degrades to, which leaves the profile as it
-    /// was — the same outcome as never having asked.</para>
+    /// server invented would be written to disk and then read back by a server whose meaning for it this
+    /// build cannot check. Null is what a dropped value degrades to, which leaves the profile untouched —
+    /// the same outcome as never having asked.</para>
     /// </summary>
     static string? Visibility(string? value) =>
         value is { Length: > 0 } && AppConfig.ValidVisibilities.Contains(value) ? value : null;

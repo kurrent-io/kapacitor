@@ -452,7 +452,7 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
             await Console.Out.WriteLineAsync($"  Default visibility: {defaultVisibility}");
         } else if (browserAgents?.DefaultVisibility is { } chosenInBrowser) {
             // Answered on the Agents screen, which asks this question in the same words. Prompting again
-            // would take a second answer and silently keep it, which is what this step used to do.
+            // would take a second answer and silently keep it.
             defaultVisibility = chosenInBrowser;
 
             AnsiConsole.MarkupLine(

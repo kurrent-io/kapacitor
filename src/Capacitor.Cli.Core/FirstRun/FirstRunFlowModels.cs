@@ -217,9 +217,9 @@ public sealed record FirstRunFlowResponse {
     /// not tell apart: the step is unanswered, and the user declined everything. Neither asks for a
     /// default.</para>
     ///
-    /// <para><b>It can name a stop this tenant would no longer offer</b>, because the server's fold keeps
-    /// a durable answer as given. Such a value is still the one to write: every stop it can name resolves
-    /// no wider than the profile's own fallback.</para>
+    /// <para><b>It can name a stop this tenant does not currently offer</b>, because the server's fold
+    /// keeps a durable answer as given. Such a value is still the one to write: every stop it can name
+    /// resolves no wider than the profile's own fallback.</para>
     /// </summary>
     [JsonPropertyName("default_visibility")] public string? DefaultVisibility { get; init; }
 
