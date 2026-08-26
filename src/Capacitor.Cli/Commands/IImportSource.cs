@@ -57,8 +57,8 @@ internal sealed record ImportContext(
     /// <para><b>An omitted stamp is not "no default".</b> The server reads an absent field as
     /// <c>org_public</c>, so <c>--private</c> has to say <c>private</c> out loud or the session
     /// lands org-visible and stays that way until the closing privatising pass reaches it —
-    /// permanently, for any session whose PUT fails. One rule in one place because the nine
-    /// sources reached three different answers when each held its own.</para>
+    /// permanently, for any session whose PUT fails. <b>This is the only place that decides</b>,
+    /// for all nine sources: the rule is one a source must not be able to answer differently.</para>
     ///
     /// <para><b>The two halves are deliberately asymmetric.</b> The Step 3 default is a
     /// <i>creation</i> default and says nothing about a session that already exists, so it is
