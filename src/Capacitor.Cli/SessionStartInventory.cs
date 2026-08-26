@@ -6,10 +6,10 @@ using Capacitor.Cli.Core.Setup;
 namespace Capacitor.Cli;
 
 /// <summary>
-/// Surface 3 hook carrier: stamps this machine's harness inventory onto a SessionStart body, so a
-/// daemonless machine still reports it. Serialized through the same <see cref="CapacitorJsonContext"/>
-/// as the daemon's copy, so both carriers are byte-identical. Never throws — a probe failure just
-/// omits the field (must never break a hook).
+/// Surface 3 hook carrier: stamps this machine's harness inventory and platform onto a SessionStart
+/// body, so a daemonless machine still reports them. The inventory is serialized through the same
+/// <see cref="CapacitorJsonContext"/> as the daemon's copy, so both carriers are byte-identical.
+/// Never throws — a probe failure just omits the field (must never break a hook).
 /// </summary>
 static class SessionStartInventory {
     public static void Stamp(JsonObject body, ConfigRoot config) {
@@ -20,5 +20,18 @@ static class SessionStartInventory {
         } catch {
             // best-effort metadata — never break a hook
         }
+        // The CLI's own OS, feeding the server's live applicability gate. Deliberately no
+        // path/heuristic inference — omitted when unrecognized, and unknown EXCLUDES
+        // platform-restricted facts server-side, which beats a wrong guess admitting them.
+        if (HostPlatform.Normalized is { } platform) body["platform"] = platform;
     }
+}
+
+/// <summary>The applicability gate's platform vocabulary: macos / linux / windows.</summary>
+static class HostPlatform {
+    public static string? Normalized =>
+        OperatingSystem.IsMacOS()   ? "macos"
+      : OperatingSystem.IsLinux()   ? "linux"
+      : OperatingSystem.IsWindows() ? "windows"
+      : null;
 }
