@@ -25,6 +25,13 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 /// minutes), never a rolling-window extension.</para>
 /// </summary>
 public class ParticipantUnreachableRetryTests {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
+    // The dispatch is profile-scoped: its token refresh resolves a profile. These tests exercise
+    // routing, not profile selection.
+    McpFlowsServer Server() =>
+        new(Config.Root, Resolutions.None(Config.Root));
+
     static VirtualFlowRetryClock Clock() => new();
 
     static JsonObject SubmitArguments(string flowRunId = "flow-liveness-1") => new() {
@@ -63,7 +70,7 @@ public class ParticipantUnreachableRetryTests {
         using var client = new HttpClient();
 
         var clock = Clock();
-        var response = await McpFlowsServer.HandleToolCallAsync(
+        var response = await Server().HandleToolCallAsync(
             JsonNode.Parse("1")!, ToolCallRequest("submit_review_round", SubmitArguments(flowRunId)),
             client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null,
             clock: clock, backoff: SettlementBackoff.Seeded(11));
@@ -91,7 +98,7 @@ public class ParticipantUnreachableRetryTests {
         using var client = new HttpClient();
 
         var clock = Clock();
-        var response = await McpFlowsServer.HandleToolCallAsync(
+        var response = await Server().HandleToolCallAsync(
             JsonNode.Parse("1")!, ToolCallRequest("submit_review_round", SubmitArguments(flowRunId)),
             client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null,
             clock: clock, backoff: SettlementBackoff.Seeded(11));
@@ -164,7 +171,7 @@ public class ParticipantUnreachableRetryTests {
 
         using var client = new HttpClient(handler) { BaseAddress = new Uri("http://budget.test") };
 
-        var response = await McpFlowsServer.HandleToolCallAsync(
+        var response = await Server().HandleToolCallAsync(
             JsonNode.Parse("1")!, ToolCallRequest("submit_review_round", SubmitArguments("flow-budget-2")),
             client, "http://budget.test", cwd: "/tmp/cwd", repoRoot: null, repoInfo: null,
             clock: clock, backoff: SettlementBackoff.Seeded(7));
@@ -205,7 +212,7 @@ public class ParticipantUnreachableRetryTests {
                   $$"""{"error":"{{code}}","message":"{{message}}"}"""));
         using var client = new HttpClient();
 
-        var response = await McpFlowsServer.HandleToolCallAsync(
+        var response = await Server().HandleToolCallAsync(
             JsonNode.Parse("1")!, ToolCallRequest("submit_review_round", SubmitArguments(flowRunId)),
             client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null);
 
@@ -233,7 +240,7 @@ public class ParticipantUnreachableRetryTests {
         using var client = new HttpClient();
 
         var clock = Clock();
-        using var response = (await McpFlowsServer.SendWithSettlementRetryAsync(
+        using var response = (await Server().SendWithSettlementRetryAsync(
             client, "https://flows.example.test", (c, ct) => c.PostAsync($"{server.Url}/start", null, ct),
             clock, SettlementBackoff.Seeded(11)) as McpFlowsServer.SettlementSendResult.Response)!.Value;
 
@@ -254,7 +261,7 @@ public class ParticipantUnreachableRetryTests {
         using var client = new HttpClient();
 
         var clock = Clock();
-        using var response = (await McpFlowsServer.SendWithSettlementRetryAsync(
+        using var response = (await Server().SendWithSettlementRetryAsync(
             client, "https://flows.example.test", (c, ct) => c.PostAsync($"{server.Url}/rounds", null, ct),
             clock, SettlementBackoff.Seeded(11), extraRetryableCode: McpFlowsServer.ParticipantUnreachableCode)
             as McpFlowsServer.SettlementSendResult.Response)!.Value;
@@ -275,7 +282,7 @@ public class ParticipantUnreachableRetryTests {
         using var client = new HttpClient();
 
         var clock = Clock();
-        using var response = (await McpFlowsServer.SendWithSettlementRetryAsync(
+        using var response = (await Server().SendWithSettlementRetryAsync(
             client, "https://flows.example.test", (c, ct) => c.PostAsync($"{server.Url}/rounds", null, ct),
             clock, SettlementBackoff.Seeded(11), extraRetryableCode: McpFlowsServer.ParticipantUnreachableCode)
             as McpFlowsServer.SettlementSendResult.Response)!.Value;
@@ -297,7 +304,7 @@ public class ParticipantUnreachableRetryTests {
         using var client = new HttpClient();
 
         var clock = Clock();
-        var response = await McpFlowsServer.HandleToolCallAsync(
+        var response = await Server().HandleToolCallAsync(
             JsonNode.Parse("1")!, ToolCallRequest("submit_review_round", SubmitArguments(flowRunId)),
             client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null,
             clock: clock, backoff: SettlementBackoff.Seeded(11));

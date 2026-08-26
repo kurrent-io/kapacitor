@@ -1,4 +1,5 @@
 using Capacitor.Cli.Core.Config;
+using Capacitor.Cli.Core;
 
 namespace Capacitor.Cli.Services;
 
@@ -22,8 +23,9 @@ static class UnitIdentity {
 
     /// <summary>config.json path for a baked <c>KCAP_CONFIG_DIR</c>, or the default config root
     /// when the unit baked none.</summary>
-    public static string ConfigPathFromUnitEnv(IReadOnlyDictionary<string, string> unitEnv) =>
-        unitEnv.TryGetValue("KCAP_CONFIG_DIR", out var dir) && !string.IsNullOrEmpty(dir)
-            ? Path.Combine(dir, "config.json")
-            : AppConfig.GetConfigPath();
+    public static string ConfigPathFromUnitEnv(IReadOnlyDictionary<string, string> unitEnv, ConfigRoot config) =>
+        AppConfig.GetConfigPath(
+            unitEnv.TryGetValue(ConfigRoot.ConfigDirEnvVar, out var dir) && !string.IsNullOrEmpty(dir)
+                ? new ConfigRoot(dir)
+                : config);
 }

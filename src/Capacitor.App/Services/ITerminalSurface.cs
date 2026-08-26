@@ -20,14 +20,4 @@ public interface ITerminalSurface {
     /// correct the client's post-attach nudge (sent at RunAsync's phantom initial size, before the
     /// real pane size was ever known) to what the pane is actually showing.
     (int Cols, int Rows) CurrentSize { get; }
-
-    /// Re-shows the terminal caret after the snapshot replay. Claude/codex TUIs hide the hardware
-    /// cursor once at stream start and draw their own caret as an inverse-video cell — which the
-    /// pinned control (1.1.1) paints invisibly: default-color sentinels resolve by draw-call
-    /// position, so inverse-of-default is black-on-black. Fixed upstream in 1.1.2
-    /// (https://github.com/IvanJosipovic/SvcSystems.UI.Terminal/issues/69) — candidate for
-    /// retirement once a bump past 1.1.2 is verified visually. The engine's cursor position still
-    /// tracks the TUI's caret, so forcing it visible renders a correctly placed caret instead.
-    /// A TUI that hides the cursor again later is respected — this is a one-shot per attach.
-    void EnsureCaretVisible();
 }

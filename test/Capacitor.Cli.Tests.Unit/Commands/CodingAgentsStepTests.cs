@@ -1,6 +1,8 @@
 using Capacitor.Cli.Core.Harness.Codex;
 using Capacitor.Cli.Core.Instructions;
 using Capacitor.Cli.Core.Mcp;
+using Capacitor.Cli.Commands;
+using Capacitor.Cli.Core.FirstRun;
 using static Capacitor.Cli.Commands.CodingAgentsStep;
 
 namespace Capacitor.Cli.Tests.Unit.Commands;
@@ -641,8 +643,12 @@ public class CodingAgentsStepTests {
         await Assert.That(sink.Lines).Contains(l => l.Contains("MCP servers registered"));
     }
 
+    // A failed hooks write is NOT evidence about the MCP servers: hooks.json and mcp.json are
+    // different files. Registering them is what the user asked for, and dropping it would be the same
+    // silent no-op that skipping used to cause. Gemini is the one vendor where the failure IS evidence
+    // — see Gemini_mcp_not_registered_when_hooks_fail.
     [Test]
-    public async Task Cursor_mcp_not_registered_when_hooks_fail() {
+    public async Task Cursor_mcp_still_registered_when_hooks_fail() {
         var sink     = new Sink();
         var calls    = new InstallerCalls { CursorHooksReturns = false };
         var options  = new Options(SkipClaude: true, SkipCodex: true, SkipCursor: false, SkipCopilot: true, NoPrompt: true);
@@ -653,6 +659,186 @@ public class CodingAgentsStepTests {
             prompt: _ => true, writeLine: sink.Write);
 
         await Assert.That(result.CursorHooksInstalled).IsFalse();
+        await Assert.That(result.CursorMcpRegistered).IsTrue();
+    }
+
+    // "Tools without recording" — the combination the server explicitly sanctions and the browser's
+    // Agents screen offers as two independent toggles. It used to install nothing at all: the hooks
+    // were skipped, and every MCP registration was gated on the hooks having installed.
+    [Test]
+    [Arguments("cursor")]
+    [Arguments("copilot")]
+    [Arguments("gemini")]
+    [Arguments("opencode")]
+    [Arguments("pi")]
+    [Arguments("antigravity")]
+    public async Task Tools_without_capture_still_registers_mcp(string vendor) {
+        var sink  = new Sink();
+        var calls = new InstallerCalls();
+
+        // Capture declined for every vendor, tools left on (the Skip*Mcp flags default to false).
+        // Only the vendor under test is detected, so only its MCP can register.
+        //
+        // ToolsIndependentOfCapture is what the browser's Agents screen sets and the terminal path
+        // never does — without it these same flags are a whole-vendor opt-out.
+        var options = new Options(
+            SkipClaude: true, SkipCodex: true, SkipCursor: true, SkipCopilot: true, NoPrompt: true,
+            SkipGemini: true, SkipPi: true, SkipOpenCode: true, SkipAntigravity: true,
+            ToolsIndependentOfCapture: true);
+
+        var detected = new DetectedAgents(
+            Claude: false, Codex: false, Cursor: vendor == "cursor", Copilot: vendor == "copilot",
+            Gemini: vendor == "gemini", Pi: vendor == "pi", OpenCode: vendor == "opencode",
+            Antigravity: vendor == "antigravity");
+
+        var result = await RunAsync(
+            options, detected, TestPaths(), calls.AsInstallers(),
+            prompt: _ => true, writeLine: sink.Write);
+
+        var registered = vendor switch {
+            "cursor"      => result.CursorMcpRegistered,
+            "copilot"     => result.CopilotMcpRegistered,
+            "gemini"      => result.GeminiMcpRegistered,
+            "opencode"    => result.OpenCodeMcpRegistered,
+            "pi"          => result.PiMcpInstalled,
+            "antigravity" => result.AntigravityMcpRegistered,
+            _             => false
+        };
+
+        await Assert.That(registered).IsTrue().Because($"{vendor} tools were chosen without capture");
+        await Assert.That(result.AnyHooksInstalled).IsFalse();
+    }
+
+    // The scripted case, which is the one with no consent moment anywhere: --no-prompt takes the
+    // install decision without asking, so if --skip-<vendor>-hooks also started writing that vendor's
+    // MCP config, a CI job would be silently reconfigured with nothing to read and nothing to refuse.
+    [Test]
+    [Arguments("cursor")]
+    [Arguments("copilot")]
+    [Arguments("gemini")]
+    [Arguments("opencode")]
+    [Arguments("pi")]
+    [Arguments("antigravity")]
+    public async Task Skip_hooks_flag_alone_writes_nothing_for_that_vendor(string vendor) {
+        var sink  = new Sink();
+        var calls = new InstallerCalls();
+
+        // Exactly what a script passes: --no-prompt plus the vendor's own skip flag, and no
+        // ToolsIndependentOfCapture, because only the browser's screen sets that.
+        var options = new Options(
+            SkipClaude: true, SkipCodex: true, SkipCursor: true, SkipCopilot: true, NoPrompt: true,
+            SkipGemini: true, SkipPi: true, SkipOpenCode: true, SkipAntigravity: true);
+
+        var detected = new DetectedAgents(
+            Claude: false, Codex: false, Cursor: vendor == "cursor", Copilot: vendor == "copilot",
+            Gemini: vendor == "gemini", Pi: vendor == "pi", OpenCode: vendor == "opencode",
+            Antigravity: vendor == "antigravity");
+
+        var result = await RunAsync(
+            options, detected, TestPaths(), calls.AsInstallers(),
+            prompt: _ => true, writeLine: sink.Write);
+
+        var registered = vendor switch {
+            "cursor"      => result.CursorMcpRegistered,
+            "copilot"     => result.CopilotMcpRegistered,
+            "gemini"      => result.GeminiMcpRegistered,
+            "opencode"    => result.OpenCodeMcpRegistered,
+            "pi"          => result.PiMcpInstalled,
+            "antigravity" => result.AntigravityMcpRegistered,
+            _             => true
+        };
+
+        await Assert.That(registered).IsFalse().Because($"--skip-{vendor}-hooks must leave {vendor} alone");
+        await Assert.That(result.AnyHooksInstalled).IsFalse();
+    }
+
+    // The shared ~/.agents/skills tree is read by the non-Claude vendors, so writing it for one the
+    // user turned down on the Agents screen is a write nobody asked for — and the legacy Codex sweep
+    // behind it would then run for a Codex they declined.
+    [Test]
+    public async Task Shared_skills_are_not_written_for_a_vendor_the_browser_declined() {
+        var sink  = new Sink();
+        var calls = new InstallerCalls();
+
+        // Claude only. Codex is on the machine but was not chosen.
+        var options = new Options(
+            SkipClaude: false, SkipCodex: true, SkipCursor: true, SkipCopilot: true, NoPrompt: true,
+            SkipGemini: true, SkipPi: true, SkipOpenCode: true, SkipAntigravity: true,
+            ToolsIndependentOfCapture: true);
+
+        var detected = new DetectedAgents(Claude: true, Codex: true, Cursor: false, Copilot: false);
+
+        var result = await RunAsync(
+            options, detected, TestPaths(), calls.AsInstallers(),
+            prompt: _ => true, writeLine: sink.Write);
+
+        await Assert.That(result.AgentSkillsInstalled).IsFalse();
+        await Assert.That(calls.LegacyCleanupCalled).IsFalse();
+    }
+
+    // The terminal path is unchanged: its single yes/no prompt names skills, so a yes covers every
+    // detected vendor and --skip-codex-hooks does not withdraw the shared tree.
+    [Test]
+    public async Task Shared_skills_still_follow_detection_on_the_terminal_path() {
+        var sink  = new Sink();
+        var calls = new InstallerCalls();
+
+        var options = new Options(
+            SkipClaude: false, SkipCodex: true, SkipCursor: true, SkipCopilot: true, NoPrompt: true,
+            SkipGemini: true, SkipPi: true, SkipOpenCode: true, SkipAntigravity: true);
+
+        var detected = new DetectedAgents(Claude: true, Codex: true, Cursor: false, Copilot: false);
+
+        var result = await RunAsync(
+            options, detected, TestPaths(), calls.AsInstallers(),
+            prompt: _ => true, writeLine: sink.Write);
+
+        await Assert.That(result.AgentSkillsInstalled).IsTrue();
+    }
+
+    // Tools without capture keeps the vendor in the skills audience: the skills are what steer an
+    // agent toward the MCP tools it was just given.
+    [Test]
+    public async Task Shared_skills_are_written_for_a_vendor_kept_for_its_tools_alone() {
+        var sink  = new Sink();
+        var calls = new InstallerCalls();
+
+        var options = new Options(
+            SkipClaude: true, SkipCodex: true, SkipCursor: true, SkipCopilot: true, NoPrompt: true,
+            SkipGemini: true, SkipPi: true, SkipOpenCode: true, SkipAntigravity: true,
+            ToolsIndependentOfCapture: true);
+
+        var detected = new DetectedAgents(Claude: false, Codex: false, Cursor: true, Copilot: false);
+
+        var result = await RunAsync(
+            options, detected, TestPaths(), calls.AsInstallers(),
+            prompt: _ => true, writeLine: sink.Write);
+
+        await Assert.That(result.AgentSkillsInstalled).IsTrue();
+    }
+
+    // The same whole-vendor opt-out, but with a browser answer present that ticks the vendor. The
+    // screen's two axes must not reopen the half of the exclusion the caller never named.
+    [Test]
+    public async Task Skip_hooks_flag_survives_a_browser_answer_that_selects_that_vendor() {
+        var sink  = new Sink();
+        var calls = new InstallerCalls();
+
+        var flags = new Options(
+            SkipClaude: true, SkipCodex: true, SkipCursor: true, SkipCopilot: true, NoPrompt: true,
+            SkipGemini: true, SkipPi: true, SkipOpenCode: true, SkipAntigravity: true);
+
+        var answer = new FirstRunAgentsAnswer(
+            [new FirstRunAgentsChoice("cursor", Record: true, Tools: true)],
+            new DateTimeOffset(2026, 8, 25, 9, 30, 0, TimeSpan.Zero), Unrecognised: 0);
+
+        var detected = new DetectedAgents(Claude: false, Codex: false, Cursor: true, Copilot: false);
+
+        var result = await RunAsync(
+            SetupDecisions.WithBrowserAnswer(flags, answer), detected, TestPaths(), calls.AsInstallers(),
+            prompt: _ => true, writeLine: sink.Write);
+
+        await Assert.That(calls.CursorHooksCalled).IsFalse();
         await Assert.That(calls.RegisterCursorMcpCalled).IsFalse();
         await Assert.That(result.CursorMcpRegistered).IsFalse();
     }
@@ -706,7 +892,8 @@ public class CodingAgentsStepTests {
     }
 
     [Test]
-    public async Task Copilot_mcp_not_registered_when_hooks_fail() {
+    // kcap.json and mcp-config.json are different files — see Cursor_mcp_still_registered_when_hooks_fail.
+    public async Task Copilot_mcp_still_registered_when_hooks_fail() {
         var sink     = new Sink();
         var calls    = new InstallerCalls { CopilotHooksReturns = false };
         var options  = new Options(SkipClaude: true, SkipCodex: true, SkipCursor: true, SkipCopilot: false, NoPrompt: true);
@@ -717,8 +904,7 @@ public class CodingAgentsStepTests {
             prompt: _ => true, writeLine: sink.Write);
 
         await Assert.That(result.CopilotHooksInstalled).IsFalse();
-        await Assert.That(calls.RegisterCopilotMcpCalled).IsFalse();
-        await Assert.That(result.CopilotMcpRegistered).IsFalse();
+        await Assert.That(result.CopilotMcpRegistered).IsTrue();
     }
 
     [Test]
@@ -1468,6 +1654,11 @@ public class CodingAgentsStepTests {
 
         await Assert.That(calls.CursorHooksCalled).IsFalse();
         await Assert.That(sink.Lines).Contains(l => l.Contains("Cursor hooks skipped by flag"));
+
+        // --skip-cursor-hooks is a WHOLE-VENDOR opt-out and stays one. Scripts pass it to leave a
+        // vendor alone, and --no-prompt gives them no moment in which to be told it now writes
+        // mcp.json. Only a caller that answered capture and tools separately gets the split.
+        await Assert.That(calls.RegisterCursorMcpCalled).IsFalse();
     }
 
     [Test]
@@ -2127,7 +2318,10 @@ public class CodingAgentsStepTests {
     }
 
     [Test]
-    public async Task OpenCode_mcp_and_instructions_not_registered_when_plugin_fails() {
+    // The MCP block and the plugin are separate files, so a failed plugin write does not withdraw the
+    // tools. The INSTRUCTIONS still follow the plugin: they steer an agent toward tools it would only
+    // have if the plugin loaded, so writing them after a failed write would be steering at nothing.
+    public async Task OpenCode_keeps_mcp_but_not_instructions_when_the_plugin_fails() {
         var sink     = new Sink();
         var calls    = new InstallerCalls { OpenCodeExtensionReturns = false };
         var options  = new Options(SkipClaude: true, SkipCodex: true, SkipCursor: true, SkipCopilot: true, NoPrompt: true, SkipOpenCode: false);
@@ -2136,7 +2330,7 @@ public class CodingAgentsStepTests {
         var result = await RunAsync(options, detected, TestPaths(), calls.AsInstallers(), prompt: _ => true, writeLine: sink.Write);
 
         await Assert.That(result.OpenCodeExtensionInstalled).IsFalse();
-        await Assert.That(calls.RegisterOpenCodeMcpCalled).IsFalse();
+        await Assert.That(calls.RegisterOpenCodeMcpCalled).IsTrue();
         await Assert.That(calls.InstallOpenCodeInstructionsCalled).IsFalse();
     }
 

@@ -17,6 +17,14 @@ namespace Capacitor.Cli.Core;
 public sealed partial class TranscriptSpool(string spoolDir, long capBytes = TranscriptSpool.DefaultCapBytes) {
     public const long DefaultCapBytes = 8_388_608; // 8 MB per session
 
+    // Named here rather than on ConfigRoot, for the same reason as HookSpool's.
+    const string DirName = "transcript-spool";
+
+    /// <summary>The spool under a config root. The directory overload is for a spool that is not
+    /// under one — a test's own throwaway directory.</summary>
+    public TranscriptSpool(ConfigRoot config, long capBytes = DefaultCapBytes)
+        : this(config.Path(DirName), capBytes) { }
+
     /// <summary>Outcome of an <see cref="Append"/> call.</summary>
     public enum AppendResult {
         Appended,          // batch persisted to the live spool file

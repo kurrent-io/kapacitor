@@ -18,6 +18,8 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 /// LocalControlServer's constructor.
 /// </summary>
 public class LocalControlHelloTests {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     sealed class NoopHostLifetime : IHostApplicationLifetime {
         public CancellationToken ApplicationStarted  => CancellationToken.None;
         public CancellationToken ApplicationStopping => CancellationToken.None;
@@ -42,7 +44,7 @@ public class LocalControlHelloTests {
 
     sealed record Harness(TempDaemonStore Daemons, LocalControlServer Server, AgentOrchestrator Orchestrator, ServerConnection Connection, DaemonConfig Config, string SockPath);
 
-    static async Task<Harness> StartAsync(string daemonName, CancellationToken ct) {
+    async Task<Harness> StartAsync(string daemonName, CancellationToken ct) {
         var daemons     = new TempDaemonStore();
         var stateRoot   = daemons.Store.StateDirectory(daemonName);
         var store       = new LaunchConsentStore(stateRoot, NullLogger.Instance);
@@ -64,7 +66,8 @@ public class LocalControlHelloTests {
         var permissionBridge = new LocalPermissionBridge(connection, NullLogger<LocalPermissionBridge>.Instance);
 
         var orchestrator = new AgentOrchestrator(
-            config, connection, worktreeManager, repoMatcher, new NoopPtyProcessFactory(), new NoopHttpClientFactory(),
+            config, Config.Root, connection, worktreeManager, repoMatcher,
+            new NoopPtyProcessFactory(), new NoopHttpClientFactory(),
             permissionBridge, new Dictionary<string, IHostedAgentLauncher>(),
             new Dictionary<string, IHostedAgentRuntimeFactory>(), new NoopHostLifetime(),
             NullLogger<AgentOrchestrator>.Instance, gate);
@@ -92,7 +95,7 @@ public class LocalControlHelloTests {
     /// Wraps a test body with the harness lifecycle, mirroring LaunchConsentIpcTests's RunAsync. The harness owns
     /// its own daemons directory, so nothing here is shared between tests; each [Test] still
     /// carries its own Windows guard, which must be visible on the test method itself.
-    static async Task RunAsync(string daemonName, Func<Harness, CancellationToken, Task> body) {
+    async Task RunAsync(string daemonName, Func<Harness, CancellationToken, Task> body) {
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
 
         Harness? h = null;

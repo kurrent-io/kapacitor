@@ -17,6 +17,8 @@ namespace Capacitor.Cli.Tests.Integration;
 /// — the integration points most likely to drift from the lower-level helpers.
 /// </summary>
 public class PiImportSourceImportTests : IDisposable {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     readonly WireMockServer _server = WireMockServer.Start();
     readonly TempDir        _tmp    = new();
     readonly string         _tempDir;
@@ -70,7 +72,7 @@ public class PiImportSourceImportTests : IDisposable {
 
         using var client = new HttpClient();
 
-        var source = new PiImportSource(
+        var source = new PiImportSource(Config.Root, 
             sessionsDir,
             repoDetector: _ => Task.FromResult<RepositoryPayload?>(null));
 
@@ -137,7 +139,7 @@ public class PiImportSourceImportTests : IDisposable {
 
         using var client = new HttpClient();
 
-        var source = new PiImportSource(
+        var source = new PiImportSource(Config.Root, 
             sessionsDir,
             repoDetector: _ => Task.FromResult<RepositoryPayload?>(null));
 
@@ -170,7 +172,7 @@ public class PiImportSourceImportTests : IDisposable {
 
         using var client = new HttpClient();
 
-        var source = new PiImportSource(
+        var source = new PiImportSource(Config.Root, 
             sessionsDir,
             repoDetector: _ => Task.FromResult<RepositoryPayload?>(null));
 
@@ -202,7 +204,7 @@ public class PiImportSourceImportTests : IDisposable {
 
         using var client = new HttpClient();
 
-        var source = new PiImportSource(
+        var source = new PiImportSource(Config.Root, 
             sessionsDir,
             repoDetector: _ => Task.FromResult<RepositoryPayload?>(null));
 

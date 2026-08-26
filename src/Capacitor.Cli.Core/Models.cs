@@ -968,6 +968,7 @@ public sealed record CurationApplyResponse {
 [JsonSerializable(typeof(Auth.ProxyConfigResponse))]
 [JsonSerializable(typeof(Auth.DiscoveredTenant[]))]
 [JsonSerializable(typeof(FirstRun.CreateFirstRunFlowRequest))]
+[JsonSerializable(typeof(FirstRun.FirstRunHarnessReport))]
 [JsonSerializable(typeof(FirstRun.FirstRunFlowResponse))]
 [JsonSerializable(typeof(LaunchAgentCommand))]
 // Task 8: reviewer-model launch block + preflight RPC + resolved report wire DTOs.

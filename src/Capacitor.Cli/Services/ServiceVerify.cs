@@ -85,6 +85,7 @@ internal enum StartGateReason { DirectiveMissing, DirectiveInvalid, IdentityMism
 /// </summary>
 sealed class ServiceVerify(
     DaemonStore store,
+    ConfigRoot config,
     IVerifyServiceManager manager,
     Func<string, int?> validatedDaemonPid,
     Func<string, TimeSpan, Task<HelloProbeResult>> hello,
@@ -256,7 +257,7 @@ sealed class ServiceVerify(
                 try {
                     var unitEnv = content is not null ? LaunchdUnit.EnvFromPlist(content) : new Dictionary<string, string>();
                     var unitBinaryPath = content is not null ? LaunchdUnit.BinaryFromPlist(content) : null;
-                    reason = EvaluateStartGate(unitEnv, unitBinaryPath, UnitIdentity.ResolveDaemonBinary(), _gateEnv!, _digestMatches);
+                    reason = EvaluateStartGate(unitEnv, unitBinaryPath, UnitIdentity.ResolveDaemonBinary(), _gateEnv!, config, _digestMatches);
                     unitEnv.TryGetValue(ExpectVar, out unitExpectation);
                 } catch {
                     reason = StartGateReason.EvidenceUnreadable;
@@ -488,7 +489,8 @@ sealed class ServiceVerify(
     /// </summary>
     internal static StartGateReason? EvaluateStartGate(
             IReadOnlyDictionary<string, string> unitEnv, string? unitBinaryPath,
-            string? installBinaryPath, Func<string, string?> env, Func<string, bool>? digestMatches = null) {
+            string? installBinaryPath, Func<string, string?> env, ConfigRoot config,
+            Func<string, bool>? digestMatches = null) {
         var invokingDirective = env(ConsentSeedVar);
         if (invokingDirective is null) return null; // true absence — this invocation never asked to be gated
 
@@ -521,7 +523,7 @@ sealed class ServiceVerify(
         }
 
         try {
-            return EvaluateIdentity(unitEnv, env);
+            return EvaluateIdentity(unitEnv, env, config);
         } catch {
             return StartGateReason.EvidenceUnreadable;
         }
@@ -557,7 +559,8 @@ sealed class ServiceVerify(
     /// compared by exact name, server identity through <see cref="ServerIdentity.Canonicalize"/> — a
     /// candidate that fails to canonicalize can never silently agree with the others.
     /// </summary>
-    static StartGateReason? EvaluateIdentity(IReadOnlyDictionary<string, string> unitEnv, Func<string, string?> env) {
+    static StartGateReason? EvaluateIdentity(
+            IReadOnlyDictionary<string, string> unitEnv, Func<string, string?> env, ConfigRoot config) {
         unitEnv.TryGetValue(ProfileVar, out var unitProfile);
         unitEnv.TryGetValue(UrlVar, out var unitUrl);
         unitEnv.TryGetValue(ExpectVar, out var unitExpect);
@@ -571,7 +574,7 @@ sealed class ServiceVerify(
         if (!string.IsNullOrEmpty(unitProfile) && !string.Equals(envProfile, unitProfile, StringComparison.Ordinal))
             return StartGateReason.IdentityMismatch;
 
-        var unitResolved = !string.IsNullOrEmpty(unitUrl) ? unitUrl : BakedProfileServerUrl(unitEnv, unitProfile);
+        var unitResolved = !string.IsNullOrEmpty(unitUrl) ? unitUrl : BakedProfileServerUrl(unitEnv, unitProfile, config);
         if (string.IsNullOrEmpty(unitResolved)) return StartGateReason.IdentityMismatch; // unresolvable unit server
 
         string? canonical = null;
@@ -596,9 +599,10 @@ sealed class ServiceVerify(
     /// the caller's try/catch reports that as <see cref="StartGateReason.EvidenceUnreadable"/>,
     /// never silently folded into the same "server unresolvable" outcome an absent/unconfigured
     /// profile gets. <c>DaemonCommands</c>' UX-only counterpart fails soft to null instead.</summary>
-    static string? BakedProfileServerUrl(IReadOnlyDictionary<string, string> unitEnv, string? profile) {
+    static string? BakedProfileServerUrl(
+            IReadOnlyDictionary<string, string> unitEnv, string? profile, ConfigRoot root) {
         if (string.IsNullOrEmpty(profile)) return null;
-        var configPath = UnitIdentity.ConfigPathFromUnitEnv(unitEnv);
+        var configPath = UnitIdentity.ConfigPathFromUnitEnv(unitEnv, root);
 
         if (!ConfigMutator.TryLoadPure(configPath, out var config))
             throw new InvalidDataException($"unreadable config at '{configPath}'");

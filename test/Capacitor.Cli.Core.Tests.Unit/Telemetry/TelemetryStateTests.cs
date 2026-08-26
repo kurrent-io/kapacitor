@@ -2,25 +2,15 @@ using Capacitor.Cli.Core.Telemetry;
 
 namespace Capacitor.Cli.Core.Tests.Unit.Telemetry;
 
-// Lock on both PathOverride statics (the shared resources): TelemetryState's directly, and
-// TelemetryDeviceId's because SetEnabled(false) deletes the device id file as a side effect (see
-// TelemetryState.SetEnabled) — a test here that didn't isolate that path could delete a sibling
-// test's device id out from under it. Keying on the resource rather than the class means every
-// other test class in the suite that touches either shared static serialises against this one too.
-// See TelemetryDeviceIdTests for the device-id-specific tests this class used to own before the
-// split.
-[NotInParallel([
-    nameof(TelemetryState) + "." + nameof(TelemetryState.PathOverride),
-    nameof(TelemetryDeviceId) + "." + nameof(TelemetryDeviceId.PathOverride),
-])]
+// A root per test covers both files: SetEnabled(false) deletes the device id as a side effect (see
+// TelemetryState.SetEnabled), and one root puts it where this test alone can see it. See
+// TelemetryDeviceIdTests for the device-id-specific tests.
 public class TelemetryStateTests {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     [Test]
     public async Task Read_of_missing_file_is_all_defaults() {
-        using var tmp = new TempDir();
-        TelemetryDeviceId.PathOverride = tmp.PathTo("telemetry-device.json");
-        TelemetryState.PathOverride    = tmp.PathTo("telemetry.json");
-
-        var state = TelemetryState.Read();
+        var state = TelemetryState.Read(Config.Root);
 
         await Assert.That(state.Enabled).IsNull();
         await Assert.That(state.NoticeShown).IsFalse();
@@ -28,51 +18,36 @@ public class TelemetryStateTests {
 
     [Test]
     public async Task Set_enabled_persists_and_survives_reread() {
-        using var tmp = new TempDir();
-        TelemetryDeviceId.PathOverride = tmp.PathTo("telemetry-device.json");
-        TelemetryState.PathOverride    = tmp.PathTo("telemetry.json");
+        TelemetryState.SetEnabled(false, Config.Root);
+        await Assert.That(TelemetryState.PersistedEnabled(Config.Root)).IsFalse();
 
-        TelemetryState.SetEnabled(false);
-        await Assert.That(TelemetryState.PersistedEnabled()).IsFalse();
-
-        TelemetryState.SetEnabled(true);
-        await Assert.That(TelemetryState.PersistedEnabled()).IsTrue();
+        TelemetryState.SetEnabled(true, Config.Root);
+        await Assert.That(TelemetryState.PersistedEnabled(Config.Root)).IsTrue();
     }
 
     [Test]
     public async Task Notice_shown_marker_persists() {
-        using var tmp = new TempDir();
-        TelemetryDeviceId.PathOverride = tmp.PathTo("telemetry-device.json");
-        TelemetryState.PathOverride    = tmp.PathTo("telemetry.json");
-
-        await Assert.That(TelemetryState.Read().NoticeShown).IsFalse();
-        TelemetryState.MarkNoticeShown();
-        await Assert.That(TelemetryState.Read().NoticeShown).IsTrue();
+        await Assert.That(TelemetryState.Read(Config.Root).NoticeShown).IsFalse();
+        TelemetryState.MarkNoticeShown(Config.Root);
+        await Assert.That(TelemetryState.Read(Config.Root).NoticeShown).IsTrue();
     }
 
     [Test]
     public async Task Mark_notice_shown_preserves_enabled() {
-        using var tmp = new TempDir();
-        TelemetryDeviceId.PathOverride = tmp.PathTo("telemetry-device.json");
-        TelemetryState.PathOverride    = tmp.PathTo("telemetry.json");
-        TelemetryState.SetEnabled(true);
+        TelemetryState.SetEnabled(true, Config.Root);
 
-        TelemetryState.MarkNoticeShown();
+        TelemetryState.MarkNoticeShown(Config.Root);
 
-        var state = TelemetryState.Read();
+        var state = TelemetryState.Read(Config.Root);
         await Assert.That(state.Enabled).IsTrue();
         await Assert.That(state.NoticeShown).IsTrue();
     }
 
     [Test]
     public async Task Corrupt_file_reads_as_defaults_and_does_not_throw() {
-        using var tmp = new TempDir();
-        TelemetryDeviceId.PathOverride = tmp.PathTo("telemetry-device.json");
-        var path = tmp.PathTo("telemetry.json");
-        File.WriteAllText(path, "{ not json");
-        TelemetryState.PathOverride = path;
+        File.WriteAllText(Config.PathTo("telemetry.json"), "{ not json");
 
-        var state = TelemetryState.Read();
+        var state = TelemetryState.Read(Config.Root);
 
         await Assert.That(state.Enabled).IsNull();
         await Assert.That(state.NoticeShown).IsFalse();
@@ -88,12 +63,9 @@ public class TelemetryStateTests {
     // half of that change.
     [Test]
     public async Task Write_leaves_no_temp_file_behind_after_a_successful_mutation() {
-        using var tmp = new TempDir();
-        TelemetryDeviceId.PathOverride = tmp.PathTo("telemetry-device.json");
-        var path = tmp.PathTo("telemetry.json");
-        TelemetryState.PathOverride = path;
+        var path = Config.PathTo("telemetry.json");
 
-        TelemetryState.SetEnabled(false);
+        TelemetryState.SetEnabled(false, Config.Root);
 
         var dir     = Path.GetDirectoryName(path)!;
         var entries = Directory.GetFiles(dir);

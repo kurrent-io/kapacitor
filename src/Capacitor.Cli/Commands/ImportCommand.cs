@@ -12,7 +12,7 @@ using Spectre.Console;
 
 namespace Capacitor.Cli.Commands;
 
-static class ImportCommand {
+class ImportCommand(ConfigRoot config, ProfileContext profiles) {
     /// <summary>
     /// Maximum parallel worker count for the Importing phase. Both the
     /// channel-based dispatcher in ImportChainsAsync and the TTY slot-row
@@ -645,8 +645,7 @@ static class ImportCommand {
     internal static string FormatLoadedSummaryMarkup(string sessionId, int lines, string verb) =>
         $"[green]✓[/] Loading [cyan]{Markup.Escape(sessionId)}[/]... {lines} lines [[{Markup.Escape(verb)}]]";
 
-    public static async Task<int> HandleImport(
-            string                        baseUrl,
+    public async Task<int> HandleImport(
             string?                       filterCwd,
             string?                       filterSession           = null,
             int                           minLines                = 15,
@@ -657,7 +656,6 @@ static class ImportCommand {
             ImportScope?                  scope                   = null,
             bool                          skipConfirmation        = false,
             bool                          forcePrivate            = false,
-            string                        activeProfile           = "default",
             (string Owner, string Name)?  currentRepo             = null,
             bool                          needOrgPick             = false,
             string?                       storedOrg               = null,
@@ -668,18 +666,21 @@ static class ImportCommand {
             bool                          discoverOnly            = false,
             bool                          discoverJson            = false
         ) {
+        // Discovery never calls the server and is reached with none configured.
+        var baseUrl = profiles.Resolution.ServerUrl ?? "";
+
         // Discovery is a local scan and never touches this client, so building the authenticated one
         // would probe the server and warn an unauthenticated user about a command that needs neither.
         using var httpClient = discoverOnly
             ? new HttpClient()
-            : await HttpClientExtensions.CreateAuthenticatedClientAsync(baseUrl);
+            : await HttpClientExtensions.CreateAuthenticatedClientAsync(config, profiles, baseUrl);
         var       display    = ImportDisplay.Create(quiet: discoverJson);
 
         // --- Sources ---
         // Back-compat: a null caller (legacy or test) means "Claude only". Once
         // Program.cs migrates in E3, every production caller passes sources
         // explicitly.
-        sources ??= [new ClaudeImportSource()];
+        sources ??= [new ClaudeImportSource(config)];
 
         // --- No-source exit policy ---
         var available = sources.Where(s => s.IsAvailable).ToList();
@@ -789,7 +790,7 @@ static class ImportCommand {
         // vendor and merge. User-configured cwd remaps let historic transcripts
         // referencing since-renamed local repo paths still resolve to a real
         // git directory.
-        var profileConfig      = await AppConfig.LoadProfileConfig();
+        var profileConfig      = profiles.Snapshot;
         var cwdRemap           = profileConfig.CwdRemap;
         var resolved           = new Dictionary<string, (string Owner, string Name)?>(StringComparer.Ordinal);
         var sessionCwds        = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -840,7 +841,7 @@ static class ImportCommand {
                     async (cwd, _) => {
                         try {
                             // Import only needs owner/repo here — skip the PR/MR provider round-trip.
-                            var repo = await RepositoryDetection.DetectRepositoryAsync(cwd, detectPullRequest: false);
+                            var repo = await RepositoryDetection.DetectRepositoryAsync(config, cwd, detectPullRequest: false);
                             repoByCwd[cwd] = repo is { Owner: { } o, RepoName: { } n } ? (o, n) : null;
                         } catch {
                             repoByCwd[cwd] = null;
@@ -876,7 +877,7 @@ static class ImportCommand {
         }
 
         // --- Scope picker ---
-        var profile = await AppConfig.GetActiveProfileAsync();
+        var profile = profiles.Effective;
 
         if (scope is null) {
             var distinct = resolved.Values
@@ -906,7 +907,7 @@ static class ImportCommand {
         // later bare `kcap import --org` reuses it without re-prompting.
         if (scope is ImportScope.Org chosenOrg &&
             !string.Equals(chosenOrg.OrgLogin, storedOrg, StringComparison.OrdinalIgnoreCase)) {
-            await PersistImportOrgAsync(activeProfile, chosenOrg.OrgLogin);
+            await PersistImportOrgAsync(profiles.Name, chosenOrg.OrgLogin);
         }
 
         // --- Per-source scope filtering ---
@@ -1278,7 +1279,7 @@ static class ImportCommand {
                             await concurrencyLimit.WaitAsync();
 
                             try {
-                                var rc = await WhatsDoneCommand.GenerateForSessionAsync(baseUrl, sid, _ => { }, vnd);
+                                var rc = await new WhatsDoneCommand(config, profiles).GenerateForSessionAsync(baseUrl, sid, _ => { }, vnd);
 
                                 if (rc == 0) Interlocked.Increment(ref summariesGenerated);
                                 else {
@@ -2263,12 +2264,12 @@ static class ImportCommand {
     /// not abort the import. Creates the profile entry if it doesn't exist yet (e.g. the
     /// <c>default</c> profile), so the org is remembered even without a tenant-bound profile.
     /// </summary>
-    static async Task PersistImportOrgAsync(string profileName, string org) {
+    async Task PersistImportOrgAsync(string profileName, string org) {
         if (string.IsNullOrWhiteSpace(org)) return;
         org = org.Trim();
 
         try {
-            await ConfigMutator.MutateAsync(c => {
+            await ConfigMutator.MutateAsync(config, c => {
                 var profile = c.Profiles.GetValueOrDefault(profileName) ?? new Core.Config.Profile();
 
                 return c with {
@@ -2410,7 +2411,7 @@ static class ImportCommand {
         return final;
     }
 
-    internal static async Task<Dictionary<string, (string Owner, string Name)?>> ResolveTranscriptReposAsync(
+    internal async Task<Dictionary<string, (string Owner, string Name)?>> ResolveTranscriptReposAsync(
             IReadOnlyList<(string SessionId, string FilePath, string EncodedCwd)> transcripts,
             bool                                                                  codex,
             ImportDisplay                                                         display,
@@ -2474,7 +2475,7 @@ static class ImportCommand {
 
             async ValueTask DetectOne(string cwd) {
                 // Import only needs owner/repo here — skip the PR/MR provider round-trip.
-                var repo = await RepositoryDetection.DetectRepositoryAsync(cwd, detectPullRequest: false);
+                var repo = await RepositoryDetection.DetectRepositoryAsync(config, cwd, detectPullRequest: false);
                 repoByCwd[cwd] = repo is { Owner: { } o, RepoName: { } n } ? (o, n) : null;
             }
 
@@ -2585,7 +2586,7 @@ static class ImportCommand {
     internal static string NormalizeGuid(string value) =>
         Guid.TryParse(value, out var guid) ? guid.ToString("N") : value;
 
-    static async Task<TitleResult> GenerateTitleForImportAsync(HttpClient httpClient, string baseUrl, string sessionId, string filePath, string vendor) {
+    async Task<TitleResult> GenerateTitleForImportAsync(HttpClient httpClient, string baseUrl, string sessionId, string filePath, string vendor) {
         try {
             var (userText, assistantText) = vendor == "codex"
                 ? TitleGenerator.ExtractCodexTitleContext(filePath)
@@ -2595,7 +2596,7 @@ static class ImportCommand {
                 return TitleResult.Skipped;
             }
 
-            var result = await TitleGenerator.GenerateAsync(userText, assistantText, _ => { }, vendor);
+            var result = await TitleGenerator.GenerateAsync(userText, assistantText, _ => { }, profiles.Resolution.Profile, vendor);
 
             if (result is null) {
                 return TitleResult.Skipped;
@@ -2681,7 +2682,7 @@ static class ImportCommand {
     /// serially. Thread-safe: counters use Interlocked, callbacks must be
     /// thread-safe (production wiring uses AnsiConsole + ConcurrentBag).
     /// </summary>
-    internal static async Task<ImportChainsResult> ImportChainsAsync(
+    internal async Task<ImportChainsResult> ImportChainsAsync(
             HttpClient                        httpClient,
             string                            baseUrl,
             List<List<SessionClassification>> chains,
@@ -2767,7 +2768,7 @@ static class ImportCommand {
             ? resolvedCwd
             : session.Meta.Cwd ?? SessionImporter.DecodeCwdFromDirName(session.EncodedCwd);
 
-    static async Task<(SessionImportOutcome Outcome, int LinesSent)> ImportSingleSessionAsync(
+    async Task<(SessionImportOutcome Outcome, int LinesSent)> ImportSingleSessionAsync(
             HttpClient            httpClient,
             string                baseUrl,
             SessionClassification session,
@@ -2893,7 +2894,7 @@ static class ImportCommand {
         if (cwd is not null) {
             // The imported session-start payload carries no PR fields (only owner/repo/branch/user),
             // so skip the PR/MR provider round-trip.
-            var repo = await RepositoryDetection.DetectRepositoryAsync(cwd, detectPullRequest: false);
+            var repo = await RepositoryDetection.DetectRepositoryAsync(config, cwd, detectPullRequest: false);
 
             if (repo is not null || codexRepo is not null) {
                 var repoNode = new JsonObject();
@@ -2930,7 +2931,7 @@ static class ImportCommand {
                 session.Vendor,
                 session.FilePath,
                 GitRepository.FindRoot,
-                root => RepositoryDetection.DetectRepositoryAsync(root, detectPullRequest: false));
+                root => RepositoryDetection.DetectRepositoryAsync(config, root, detectPullRequest: false));
 
             if (evidenceNode is not null) startHook["repository"] = evidenceNode;
         }

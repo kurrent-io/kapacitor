@@ -4,27 +4,12 @@ using Capacitor.Cli.Core.Config;
 
 namespace Capacitor.Cli.Tests.Unit.Commands;
 
-/// <summary>
-/// <c>UseCommand.SetProfile</c>'s actual write now goes through <see cref="ConfigMutator"/>,
-/// which always targets <see cref="AppConfig.GetConfigPath"/> — a
-/// <c>static readonly</c> path pinned once per process (see <c>ConfigDirIsolationTests</c>,
-/// <c>ConfigMutatorTests</c>). So these tests can no longer point <c>configPath</c> at a
-/// private per-test temp dir and expect the mutator to honor it: they seed and assert against
-/// the one shared <c>KCAP_CONFIG_DIR</c> the whole assembly uses, sharing
-/// <c>TokenStoreProfileTests</c>'s <see cref="NotInParallelAttribute"/> key like every other
-/// config.json-touching test class.
-/// </summary>
-[NotInParallel("TokenStoreProfileTests")]
 public class UseCommandTests {
-    [Before(Test)]
-    public void Cleanup() {
-        SharedConfigDirCleanup.ClearWithRetry("config.json", () => File.Delete(AppConfig.GetConfigPath()));
-        AppConfig.ResetResolvedStateForTesting();
-    }
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
 
     [Test]
     public async Task Use_InRepo_SetsProfileBinding() {
-        var configPath = AppConfig.GetConfigPath();
+        var configPath = AppConfig.GetConfigPath(Config.Root);
 
         var initial = new ProfileConfig {
             Profiles = new Dictionary<string, Profile> {
@@ -35,7 +20,7 @@ public class UseCommandTests {
         await File.WriteAllTextAsync(configPath,
             JsonSerializer.Serialize(initial, ProfileConfigJsonContextIndented.Default.ProfileConfig));
 
-        var result = await UseCommand.SetProfile(configPath, "contoso", repoPath: "/repos/my-project", global: false, save: false, savePath: null);
+        var result = await new UseCommand(Config.Root).SetProfile("contoso", repoPath: "/repos/my-project", global: false, save: false, savePath: null);
 
         await Assert.That(result).IsEqualTo(0);
 
@@ -48,7 +33,7 @@ public class UseCommandTests {
 
     [Test]
     public async Task Use_Global_SetsActiveProfile() {
-        var configPath = AppConfig.GetConfigPath();
+        var configPath = AppConfig.GetConfigPath(Config.Root);
 
         var initial = new ProfileConfig {
             Profiles = new Dictionary<string, Profile> {
@@ -59,7 +44,7 @@ public class UseCommandTests {
         await File.WriteAllTextAsync(configPath,
             JsonSerializer.Serialize(initial, ProfileConfigJsonContextIndented.Default.ProfileConfig));
 
-        var result = await UseCommand.SetProfile(configPath, "contoso", repoPath: null, global: true, save: false, savePath: null);
+        var result = await new UseCommand(Config.Root).SetProfile("contoso", repoPath: null, global: true, save: false, savePath: null);
 
         await Assert.That(result).IsEqualTo(0);
 
@@ -71,9 +56,8 @@ public class UseCommandTests {
 
     [Test]
     public async Task Use_Save_WritesRepoConfig() {
-        var configPath = AppConfig.GetConfigPath();
-        using var tmp = new TempDir();
-        var repoRoot = tmp.CreateDir("repo");
+        var configPath = AppConfig.GetConfigPath(Config.Root);
+        var repoRoot   = Config.CreateDir("repo");
 
         var initial = new ProfileConfig {
             Profiles = new Dictionary<string, Profile> {
@@ -84,7 +68,7 @@ public class UseCommandTests {
         await File.WriteAllTextAsync(configPath,
             JsonSerializer.Serialize(initial, ProfileConfigJsonContextIndented.Default.ProfileConfig));
 
-        var result = await UseCommand.SetProfile(configPath, "contoso", repoPath: repoRoot, global: false, save: true, savePath: repoRoot);
+        var result = await new UseCommand(Config.Root).SetProfile("contoso", repoPath: repoRoot, global: false, save: true, savePath: repoRoot);
 
         await Assert.That(result).IsEqualTo(0);
 
@@ -100,7 +84,7 @@ public class UseCommandTests {
 
     [Test]
     public async Task Use_UnknownProfile_ReturnsError() {
-        var configPath = AppConfig.GetConfigPath();
+        var configPath = AppConfig.GetConfigPath(Config.Root);
 
         var initial = new ProfileConfig {
             Profiles = new Dictionary<string, Profile> {
@@ -110,7 +94,7 @@ public class UseCommandTests {
         await File.WriteAllTextAsync(configPath,
             JsonSerializer.Serialize(initial, ProfileConfigJsonContextIndented.Default.ProfileConfig));
 
-        var result = await UseCommand.SetProfile(configPath, "nonexistent", repoPath: "/repos/x", global: false, save: false, savePath: null);
+        var result = await new UseCommand(Config.Root).SetProfile("nonexistent", repoPath: "/repos/x", global: false, save: false, savePath: null);
 
         await Assert.That(result).IsEqualTo(1);
     }

@@ -1,4 +1,5 @@
 using Capacitor.Cli.Core.Auth;
+using Capacitor.Cli.Core.Config;
 
 namespace Capacitor.Cli.Core.Tests.Unit.Auth;
 
@@ -9,29 +10,15 @@ namespace Capacitor.Cli.Core.Tests.Unit.Auth;
 /// comfortably valid (refresh only inside the expiry window). The provider paths that DO hit
 /// the WorkOS / server refresh endpoints are exercised by DecideProactiveRefresh's unit tests
 /// and integration coverage, never here, so this suite stays offline and fast.
-///
-/// Shares the KCAP_CONFIG_DIR token store with the other path-based tests, so it cleans up
-/// and runs non-parallel exactly like <see cref="TokenStoreProfileTests"/>.
 /// </summary>
-[NotInParallel(nameof(TokenStoreProfileTests))]
 public class RefreshIfExpiringTests {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     static readonly TimeSpan Window = TimeSpan.FromMinutes(5);
-
-    static string TokensDir  => PathHelpers.ConfigPath("tokens");
-    static string LegacyPath => PathHelpers.ConfigPath("tokens.json");
-
-    [Before(Test)]
-    public void Cleanup() {
-        if (File.Exists(LegacyPath)) File.Delete(LegacyPath);
-        if (Directory.Exists(TokensDir)) Directory.Delete(TokensDir, recursive: true);
-
-        var cfg = Capacitor.Cli.Core.Config.AppConfig.GetConfigPath();
-        if (File.Exists(cfg)) File.Delete(cfg);
-    }
 
     [Test]
     public async Task NotDue_when_no_tokens_stored() {
-        await Assert.That(await TokenStore.RefreshIfExpiringAsync(Window)).IsEqualTo(ProactiveRefreshOutcome.NotDue);
+        await Assert.That(await new TokenStore(Config.Root).RefreshIfExpiringAsync(ProfileConfig.DefaultName, Window)).IsEqualTo(ProactiveRefreshOutcome.NotDue);
     }
 
     [Test]
@@ -44,25 +31,25 @@ public class RefreshIfExpiringTests {
             GitHubUsername = "alice",
             Provider       = AuthProvider.WorkOS
         };
-        await TokenStore.SaveAsync("default", original);
+        await new TokenStore(Config.Root).SaveAsync("default", original);
 
-        await Assert.That(await TokenStore.RefreshIfExpiringAsync(Window)).IsEqualTo(ProactiveRefreshOutcome.NotDue);
+        await Assert.That(await new TokenStore(Config.Root).RefreshIfExpiringAsync(ProfileConfig.DefaultName, Window)).IsEqualTo(ProactiveRefreshOutcome.NotDue);
 
         // Untouched — no refresh attempted, so the persisted access token is unchanged.
-        var after = await TokenStore.LoadAsync("default");
+        var after = await new TokenStore(Config.Root).LoadAsync("default");
         await Assert.That(after!.AccessToken).IsEqualTo("at");
     }
 
     [Test]
     public async Task NotDue_for_none_provider_even_inside_window() {
         // A None-auth server stores no tokens; a stray Provider=None file must still be a no-op.
-        await TokenStore.SaveAsync("default", new StoredTokens {
+        await new TokenStore(Config.Root).SaveAsync("default", new StoredTokens {
             AccessToken    = "at",
             ExpiresAt      = DateTimeOffset.UtcNow.AddMinutes(1), // inside the window
             GitHubUsername = "alice",
             Provider       = AuthProvider.None
         });
 
-        await Assert.That(await TokenStore.RefreshIfExpiringAsync(Window)).IsEqualTo(ProactiveRefreshOutcome.NotDue);
+        await Assert.That(await new TokenStore(Config.Root).RefreshIfExpiringAsync(ProfileConfig.DefaultName, Window)).IsEqualTo(ProactiveRefreshOutcome.NotDue);
     }
 }

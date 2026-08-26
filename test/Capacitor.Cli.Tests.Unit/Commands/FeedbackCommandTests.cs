@@ -1,7 +1,6 @@
 using System.Text.Json;
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
-using Capacitor.Cli.Core.Config;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
 using WireMock.Server;
@@ -14,7 +13,7 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 /// <c>SupportEndpoints</c>/<c>FeedbackService</c>).
 ///
 /// <para>Flag-validation and message-resolution tests drive
-/// <see cref="FeedbackCommand.HandleAsync(string, string[], bool, Func{string?})"/> directly with an
+/// <see cref="FeedbackCommand.HandleAsync(string[], bool, Func{string?})"/> directly with an
 /// injected TTY flag and line reader — no real stdin needed. Body-shape and response-mapping tests
 /// drive <see cref="FeedbackCommand.HandleCore"/> with a plain unauthenticated <see cref="HttpClient"/>
 /// against a WireMock stub, mirroring <c>ValidatePlanCommandTests</c>'s <c>HandleCore</c> seam — no
@@ -22,30 +21,22 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 ///
 /// <para>The one test that walks the interactive-prompt path all the way through
 /// (<see cref="Interactive_prompt_collects_lines_until_empty_and_posts_the_joined_message"/>) DOES go
-/// through <see cref="FeedbackCommand.HandleAsync(string, string[], bool, Func{string?})"/>'s
+/// through <see cref="FeedbackCommand.HandleAsync(string[], bool, Func{string?})"/>'s
 /// authenticated-client path, so it stubs <c>/auth/config</c> as <c>"None"</c> (no token needed) and
-/// shares <see cref="ReportVersionCommandTests"/>'s <c>TokenStoreProfileTests</c> serialization key —
-/// same reasoning as that class's doc comment: these tests touch the process-wide
-/// <see cref="AppConfig.ResolvedProfile"/> static and the shared config dir other classes in this
-/// assembly also read and write, plus the process-wide <see cref="Console.Out"/>/<see cref="Console.Error"/>.</para>
+/// mutates the process-wide <see cref="Console.Out"/>/<see cref="Console.Error"/>.</para>
 /// </summary>
-[NotInParallel("TokenStoreProfileTests")]
 public class FeedbackCommandTests : IDisposable {
-    static string TokensDir  => PathHelpers.ConfigPath("tokens");
-    static string LegacyPath => PathHelpers.ConfigPath("tokens.json");
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
 
     readonly WireMockServer _server = WireMockServer.Start();
 
     [Before(Test)]
     public void Cleanup() {
         HttpClientExtensions.ResetProviderCacheForTesting();
-        Environment.SetEnvironmentVariable("KCAP_URL", null);
-        SharedConfigDirCleanup.ClearTokenAndProfileState(LegacyPath, TokensDir);
     }
 
     public void Dispose() {
         _server.Stop();
-        AppConfig.ResetResolvedStateForTesting();
         HttpClientExtensions.ResetProviderCacheForTesting();
     }
 
@@ -69,7 +60,8 @@ public class FeedbackCommandTests : IDisposable {
     [Test, NotInParallel]
     public async Task Neither_bug_nor_feedback_is_a_usage_error_naming_both_flags() {
         var (exitCode, _, stderr) = await RunAsync(() =>
-            FeedbackCommand.HandleAsync("http://unused.invalid", ["feedback", "-m", "hi"], true, () => null));
+            new FeedbackCommand(Config.Root, Resolutions.At("http://unused.invalid", Config.Root)).HandleAsync(
+                ["feedback", "-m", "hi"], true, () => null));
 
         await Assert.That(exitCode).IsNotEqualTo(0);
         await Assert.That(stderr).Contains("--bug");
@@ -79,8 +71,8 @@ public class FeedbackCommandTests : IDisposable {
     [Test, NotInParallel]
     public async Task Both_bug_and_feedback_is_a_usage_error_naming_both_flags() {
         var (exitCode, _, stderr) = await RunAsync(() =>
-            FeedbackCommand.HandleAsync(
-                "http://unused.invalid", ["feedback", "--bug", "--feedback", "-m", "hi"], true, () => null));
+            new FeedbackCommand(Config.Root, Resolutions.At("http://unused.invalid", Config.Root)).HandleAsync(
+                ["feedback", "--bug", "--feedback", "-m", "hi"], true, () => null));
 
         await Assert.That(exitCode).IsNotEqualTo(0);
         await Assert.That(stderr).Contains("--bug");
@@ -92,8 +84,8 @@ public class FeedbackCommandTests : IDisposable {
     [Test, NotInParallel]
     public async Task Message_required_when_stdin_is_not_a_tty_and_dash_m_is_omitted() {
         var (exitCode, _, stderr) = await RunAsync(() =>
-            FeedbackCommand.HandleAsync(
-                "http://unused.invalid", ["feedback", "--bug"], stdinIsRedirected: true, readLine: () => null));
+            new FeedbackCommand(Config.Root, Resolutions.At("http://unused.invalid", Config.Root)).HandleAsync(
+                ["feedback", "--bug"], stdinIsRedirected: true, readLine: () => null));
 
         await Assert.That(exitCode).IsNotEqualTo(0);
         await Assert.That(stderr.Trim()).IsEqualTo("A message is required.");
@@ -102,8 +94,8 @@ public class FeedbackCommandTests : IDisposable {
     [Test, NotInParallel]
     public async Task Whitespace_only_message_is_rejected_after_trim() {
         var (exitCode, _, stderr) = await RunAsync(() =>
-            FeedbackCommand.HandleAsync(
-                "http://unused.invalid", ["feedback", "--bug", "-m", "   "], stdinIsRedirected: true, readLine: () => null));
+            new FeedbackCommand(Config.Root, Resolutions.At("http://unused.invalid", Config.Root)).HandleAsync(
+                ["feedback", "--bug", "-m", "   "], stdinIsRedirected: true, readLine: () => null));
 
         await Assert.That(exitCode).IsNotEqualTo(0);
         await Assert.That(stderr.Trim()).IsEqualTo("A message is required.");
@@ -120,8 +112,8 @@ public class FeedbackCommandTests : IDisposable {
         var lines = new Queue<string?>(["first line", "second line", ""]);
 
         var (exitCode, stdout, stderr) = await RunAsync(() =>
-            FeedbackCommand.HandleAsync(
-                _server.Urls[0], ["feedback", "--feedback"], stdinIsRedirected: false, readLine: () => lines.Dequeue()));
+            new FeedbackCommand(Config.Root, Resolutions.At(_server.Urls[0], Config.Root)).HandleAsync(
+                ["feedback", "--feedback"], stdinIsRedirected: false, readLine: () => lines.Dequeue()));
 
         await Assert.That(exitCode).IsEqualTo(0);
         await Assert.That(stderr).Contains("What's going on? (end with an empty line)");
@@ -142,8 +134,8 @@ public class FeedbackCommandTests : IDisposable {
                 .WithBody("""{"reporter_email":"someone@example.com"}"""));
 
         var (exitCode, _, _) = await RunAsync(() =>
-            FeedbackCommand.HandleAsync(
-                _server.Urls[0], ["feedback", "--bug", "--message", "via long flag"], true, () => null));
+            new FeedbackCommand(Config.Root, Resolutions.At(_server.Urls[0], Config.Root)).HandleAsync(
+                ["feedback", "--bug", "--message", "via long flag"], true, () => null));
 
         await Assert.That(exitCode).IsEqualTo(0);
 

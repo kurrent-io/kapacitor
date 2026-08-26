@@ -19,37 +19,26 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 /// identity GET <c>kcap whoami</c> uses) rather than any write-side-effecting endpoint. It must
 /// never surface an error: not-authenticated makes no request at all, and a server fault, a slow
 /// server, or no server configured at all still returns 0.
-///
-/// <para><c>[NotInParallel("TokenStoreProfileTests")]</c>: shares
-/// <c>ObservationHeaderTests</c>'s serialization key — these tests touch the process-wide
-/// <see cref="AppConfig.ResolvedProfile"/> static and the shared <c>KCAP_CONFIG_DIR</c>
-/// config.json that other classes in this assembly also read and write.</para>
 /// </summary>
-[NotInParallel("TokenStoreProfileTests")]
+// Bare, not keyed: KCAP_URL is read by every resolution in the assembly and inherited by every
+// child, so no cohort of key-holders can exclude its observers. Assembly-wide exclusion also covers
+// HttpClientExtensions' process-wide /auth/config discovery cache, where a stub here would
+// otherwise decide what a concurrent test's stub returns.
+[NotInParallel]
 public class ReportVersionCommandTests : IDisposable {
-    const string ProbePath = WhoamiCommand.ProbePath;
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
 
-    static string TokensDir  => PathHelpers.ConfigPath("tokens");
-    static string LegacyPath => PathHelpers.ConfigPath("tokens.json");
+    const string ProbePath = WhoamiCommand.ProbePath;
 
     readonly WireMockServer _server = WireMockServer.Start();
 
     [Before(Test)]
     public void Cleanup() {
         HttpClientExtensions.ResetProviderCacheForTesting();
-        Environment.SetEnvironmentVariable("KCAP_URL", null);
-
-        // Clears the tokens dir, legacy tokens file, config.json and resolved profile state. The
-        // token store is the second leak the not-authenticated case is sensitive to: a VALID token
-        // left under the DEFAULT profile by another test — bound to a localhost port the OS reuses
-        // for this test's WireMock server — resolves Ok and issues the request the test asserts
-        // never happens. (The provider-cache half is cleared globally by AuthProviderCacheGlobalSetup.)
-        SharedConfigDirCleanup.ClearTokenAndProfileState(LegacyPath, TokensDir);
     }
 
     public void Dispose() {
         _server.Stop();
-        AppConfig.ResetResolvedStateForTesting();
         HttpClientExtensions.ResetProviderCacheForTesting();
     }
 
@@ -59,15 +48,21 @@ public class ReportVersionCommandTests : IDisposable {
                 .WithHeader("Content-Type", "application/json")
                 .WithBody($$"""{"provider":"{{provider}}"}"""));
 
-    async Task SeedValidTokenAsync(string profileName) {
-        AppConfig.SetResolvedState(_server.Urls[0], profileName, new Profile());
-        await TokenStore.SaveAsync(profileName, new StoredTokens {
+    // The command reads its token through the resolution's profile name, so the seeded profile has
+    // to be the one the resolution names.
+    ProfileContext Profiles(string profileName) =>
+        Resolutions.Of(new Profile { ServerUrl = _server.Urls[0] }, profileName, _server.Urls[0]);
+
+    async Task<ProfileContext> SeedValidTokenAsync(string profileName) {
+        await new TokenStore(Config.Root).SaveAsync(profileName, new StoredTokens {
             AccessToken    = "tok-" + profileName,
             ExpiresAt      = DateTimeOffset.UtcNow.AddHours(1),
             GitHubUsername = "alice",
             Provider       = AuthProvider.GitHubApp,
             ServerUrl      = _server.Urls[0],
         });
+
+        return Profiles(profileName);
     }
 
     // ── Authenticated: exactly one GET, carrying the version header, no write side effect ──────
@@ -78,9 +73,9 @@ public class ReportVersionCommandTests : IDisposable {
         _server.Given(Request.Create().WithPath(ProbePath).UsingGet())
             .RespondWith(Response.Create().WithStatusCode(200));
 
-        await SeedValidTokenAsync("report-version-ok");
+        var profiles = await SeedValidTokenAsync("report-version-ok");
 
-        var result = await ReportVersionCommand.HandleAsync(_server.Urls[0]);
+        var result = await new ReportVersionCommand(Config.Root, profiles).HandleAsync();
 
         await Assert.That(result).IsEqualTo(0);
 
@@ -103,7 +98,7 @@ public class ReportVersionCommandTests : IDisposable {
         _server.Given(Request.Create().WithPath(ProbePath).UsingGet())
             .RespondWith(Response.Create().WithStatusCode(200));
 
-        var result = await ReportVersionCommand.HandleAsync(_server.Urls[0]);
+        var result = await new ReportVersionCommand(Config.Root, Resolutions.At(_server.Urls[0], Config.Root)).HandleAsync();
 
         await Assert.That(result).IsEqualTo(0);
 
@@ -122,7 +117,7 @@ public class ReportVersionCommandTests : IDisposable {
             .RespondWith(Response.Create().WithStatusCode(200));
 
         // No token stored, no resolved profile — AuthStatus resolves to NotAuthenticated.
-        var result = await ReportVersionCommand.HandleAsync(_server.Urls[0]);
+        var result = await new ReportVersionCommand(Config.Root, Resolutions.At(_server.Urls[0], Config.Root)).HandleAsync();
 
         await Assert.That(result).IsEqualTo(0);
         await Assert.That(_server.LogEntries.Any(e => e.RequestMessage.Path == ProbePath)).IsFalse();
@@ -135,8 +130,8 @@ public class ReportVersionCommandTests : IDisposable {
             .RespondWith(Response.Create().WithStatusCode(200));
 
         const string profileName = "report-version-expired";
-        AppConfig.SetResolvedState(_server.Urls[0], profileName, new Profile());
-        await TokenStore.SaveAsync(profileName, new StoredTokens {
+        var profiles = Profiles(profileName);
+        await new TokenStore(Config.Root).SaveAsync(profileName, new StoredTokens {
             AccessToken    = "tok-expired",
             ExpiresAt      = DateTimeOffset.UtcNow.AddHours(-1),
             GitHubUsername = "alice",
@@ -144,29 +139,11 @@ public class ReportVersionCommandTests : IDisposable {
             ServerUrl      = _server.Urls[0],
         });
 
-        var result = await ReportVersionCommand.HandleAsync(_server.Urls[0]);
+        var result = await new ReportVersionCommand(Config.Root, profiles).HandleAsync();
 
         await Assert.That(result).IsEqualTo(0);
         await Assert.That(_server.LogEntries.Any(e => e.RequestMessage.Path == ProbePath)).IsFalse();
     }
-
-    // Regression for the token-store half of the leak: Cleanup must clear the tokens directory so a
-    // token another test wrote there cannot survive into the next one. Both tests assert the marker
-    // is absent at start, then write it; whichever runs second fails if Cleanup stops clearing the
-    // store. Order-independent, so it does not depend on the runner's test ordering.
-    static string LeakMarker => Path.Combine(TokensDir, "report-version-leak-guard.json");
-
-    static async Task AssertTokenStoreClearedThenSeedAsync() {
-        await Assert.That(File.Exists(LeakMarker)).IsFalse();
-        Directory.CreateDirectory(TokensDir);
-        await File.WriteAllTextAsync(LeakMarker, "{}");
-    }
-
-    [Test]
-    public Task Cleanup_clears_the_token_store_between_tests_A() => AssertTokenStoreClearedThenSeedAsync();
-
-    [Test]
-    public Task Cleanup_clears_the_token_store_between_tests_B() => AssertTokenStoreClearedThenSeedAsync();
 
     // ── Server-side failures: fail-open, never throws ──────────────────────────────────────────
 
@@ -176,9 +153,9 @@ public class ReportVersionCommandTests : IDisposable {
         _server.Given(Request.Create().WithPath(ProbePath).UsingGet())
             .RespondWith(Response.Create().WithStatusCode(500));
 
-        await SeedValidTokenAsync("report-version-500");
+        var profiles = await SeedValidTokenAsync("report-version-500");
 
-        var result = await ReportVersionCommand.HandleAsync(_server.Urls[0]);
+        var result = await new ReportVersionCommand(Config.Root, profiles).HandleAsync();
 
         await Assert.That(result).IsEqualTo(0);
     }
@@ -189,10 +166,10 @@ public class ReportVersionCommandTests : IDisposable {
         _server.Given(Request.Create().WithPath(ProbePath).UsingGet())
             .RespondWith(Response.Create().WithStatusCode(200).WithDelay(TimeSpan.FromSeconds(10)));
 
-        await SeedValidTokenAsync("report-version-slow");
+        var profiles = await SeedValidTokenAsync("report-version-slow");
 
         var sw     = Stopwatch.StartNew();
-        var result = await ReportVersionCommand.HandleAsync(_server.Urls[0]);
+        var result = await new ReportVersionCommand(Config.Root, profiles).HandleAsync();
         sw.Stop();
 
         await Assert.That(result).IsEqualTo(0);
@@ -200,29 +177,40 @@ public class ReportVersionCommandTests : IDisposable {
     }
 
     /// <summary>
-    /// Regression for the wrong-host bug: <c>CreateClientWithAuthStatusAsync</c>'s own baseUrl
-    /// fallback also consults <c>KCAP_URL</c>, so the probe URL must be built from that SAME
-    /// resolved value — not recomputed without it — or the client authenticates against one host
-    /// while the GET (carrying the bearer token) goes to another.
+    /// One source for the base URL, and both the discovery call and the probe must land on it:
+    /// a probe rebuilt from anything else sends the bearer token to a host the client never
+    /// authenticated against. <c>KCAP_URL</c> pointing elsewhere must not divert either half.
     /// </summary>
     [Test]
-    public async Task NoBaseUrl_FallsBackToKcapUrlEnvVar_NotLocalhost() {
+    public async Task Explicit_base_url_carries_both_the_discovery_and_the_probe() {
+        StubDiscovery("github_app");
+        _server.Given(Request.Create().WithPath(ProbePath).UsingGet())
+            .RespondWith(Response.Create().WithStatusCode(200));
+
+        var profiles = await SeedValidTokenAsync("report-version-one-host");
+
+        using var _ = EnvScope.Exclusive("KCAP_URL", "http://127.0.0.1:1");
+
+        await Assert.That(await new ReportVersionCommand(Config.Root, profiles).HandleAsync()).IsEqualTo(0);
+
+        await Assert.That(_server.LogEntries.Count(e => e.RequestMessage.Path == "/auth/config")).IsEqualTo(1);
+        await Assert.That(_server.LogEntries.Count(e => e.RequestMessage.Path == ProbePath)).IsEqualTo(1);
+    }
+
+    /// <summary>A null baseUrl means resolution found no server (Program.cs already folded in
+    /// <c>KCAP_URL</c>), so the probe must go nowhere real and still exit 0 — not fall back to an
+    /// environment variable a second time and reach a server the caller did not name.</summary>
+    [Test]
+    public async Task No_base_url_probes_nothing_and_still_returns_zero() {
         StubDiscovery("None");
         _server.Given(Request.Create().WithPath(ProbePath).UsingGet())
             .RespondWith(Response.Create().WithStatusCode(200));
 
-        var previous = Environment.GetEnvironmentVariable("KCAP_URL");
-        Environment.SetEnvironmentVariable("KCAP_URL", _server.Urls[0]);
-        try {
-            var result = await ReportVersionCommand.HandleAsync(null);
+        using var _ = EnvScope.Exclusive("KCAP_URL", _server.Urls[0]);
 
-            await Assert.That(result).IsEqualTo(0);
+        await Assert.That(await new ReportVersionCommand(Config.Root, Resolutions.None(Config.Root)).HandleAsync()).IsEqualTo(0);
 
-            var requests = _server.LogEntries.Where(e => e.RequestMessage.Path == ProbePath).ToList();
-            await Assert.That(requests.Count).IsEqualTo(1);
-        } finally {
-            Environment.SetEnvironmentVariable("KCAP_URL", previous);
-        }
+        await Assert.That(_server.LogEntries.Count(e => e.RequestMessage.Path == ProbePath)).IsEqualTo(0);
     }
 
     /// <summary>Discovery itself has no deadline; the command's own budget must still bound it.</summary>
@@ -234,10 +222,10 @@ public class ReportVersionCommandTests : IDisposable {
                 .WithBody("""{"provider":"github_app"}""")
                 .WithDelay(TimeSpan.FromSeconds(10)));
 
-        await SeedValidTokenAsync("report-version-slow-discovery");
+        var profiles = await SeedValidTokenAsync("report-version-slow-discovery");
 
         var sw     = Stopwatch.StartNew();
-        var result = await ReportVersionCommand.HandleAsync(_server.Urls[0]);
+        var result = await new ReportVersionCommand(Config.Root, profiles).HandleAsync();
         sw.Stop();
 
         await Assert.That(result).IsEqualTo(0);
@@ -249,7 +237,7 @@ public class ReportVersionCommandTests : IDisposable {
         // No discovery stub, no listener at all on this port — DiscoverProviderAsync's own
         // catch falls back to local tokens, finds none, resolves NotAuthenticated; even if it
         // somehow resolved Ok, the command's own try/catch must still swallow the failure.
-        var result = await ReportVersionCommand.HandleAsync("http://127.0.0.1:1");
+        var result = await new ReportVersionCommand(Config.Root, Resolutions.At("http://127.0.0.1:1", Config.Root)).HandleAsync();
 
         await Assert.That(result).IsEqualTo(0);
     }
@@ -263,9 +251,9 @@ public class ReportVersionCommandTests : IDisposable {
     /// </summary>
     [Test]
     public async Task NoServerConfigured_MakesNoRequest_AndReturnsZero() {
-        // No AppConfig.SetResolvedState, no KCAP_URL: CreateClientWithAuthStatusAsync falls back
+        // Nothing resolved, no KCAP_URL: CreateClientWithAuthStatusAsync falls back
         // to its hardcoded "http://localhost:5108" default, which nothing is listening on here.
-        var result = await ReportVersionCommand.HandleAsync(null);
+        var result = await new ReportVersionCommand(Config.Root, Resolutions.None(Config.Root)).HandleAsync();
 
         await Assert.That(result).IsEqualTo(0);
     }

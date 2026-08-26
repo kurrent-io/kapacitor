@@ -26,14 +26,16 @@ public class BrowserFirstRunFlowTests {
 
         public FirstRunPollOutcome Tail { get; set; } = new(200, Running());
 
-        public List<string>        CreatedIds { get; } = [];
+        public List<string>                CreatedIds { get; } = [];
+        public List<FirstRunMachineReport> Reports    { get; } = [];
         public List<DateTimeOffset> PollTimes  { get; } = [];
         public int                 PollCount  { get; private set; }
 
         public Task<FirstRunCreateOutcome> CreateAsync(
-                string serverUrl, string flowId, string? machine, CancellationToken ct) {
+                string serverUrl, string flowId, FirstRunMachineReport report, CancellationToken ct) {
             log.Add("create");
             CreatedIds.Add(flowId);
+            Reports.Add(report);
 
             var outcome = Creates.Count > 0 ? Creates.Dequeue() : new FirstRunCreateOutcome(200, Running());
 
@@ -138,13 +140,13 @@ public class BrowserFirstRunFlowTests {
         var clock    = new FakeTimeProvider(ClockBase);
         var channel  = new FakeChannel(log, clock);
         var progress = new RecordingProgress(log);
-        var opened   = new List<string>();
+        var browser  = new RecordingBrowser();
 
         keys ??= new FakeKeys(canWatch: false);
 
         return new(
-            new BrowserFirstRunFlow(channel, progress, clock, url => { opened.Add(url); return true; }, keys),
-            channel, progress, clock, log, opened, keys);
+            new BrowserFirstRunFlow(channel, progress, browser, clock, keys),
+            channel, progress, clock, log, browser.Urls, keys);
     }
 
     /// <summary>
@@ -164,8 +166,15 @@ public class BrowserFirstRunFlowTests {
         return await running;
     }
 
+    static readonly FirstRunMachineReport Report = new(
+        "nostromo", "machine-1",
+        new Dictionary<string, FirstRunHarnessReport> {
+            ["claude"] = new() { BinaryOnPath = true, ConfigFound = false, AlreadyWired = false }
+        },
+        ["cursor"], LoginShellFindsCli: false);
+
     static Task<FirstRunFlowResult> Run(Harness h) =>
-        Drive(h.Flow.RunAsync(Server, "nostromo", CancellationToken.None), h.Clock);
+        Drive(h.Flow.RunAsync(Server, Report, CancellationToken.None), h.Clock);
 
     [Test]
     public async Task Creates_the_flow_BEFORE_opening_the_browser() {
@@ -178,6 +187,24 @@ public class BrowserFirstRunFlowTests {
 
         await Assert.That(h.Log.Entries[0]).IsEqualTo("create");
         await Assert.That(h.Log.Entries[1]).IsEqualTo("open");
+    }
+
+    // The create is the report's ONLY carrier: detection needs no auth and has already run, and the
+    // Agents screen must find its rows populated rather than waiting on a second round trip. A retry
+    // on a taken id carries it again, or the flow that survives is the one with no machine behind it.
+    [Test]
+    public async Task Carries_the_machine_report_on_every_create_attempt() {
+        var h = Build();
+        h.Channel.Creates.Enqueue(new(409, null));
+        h.Channel.Polls.Enqueue(new(200, Done()));
+
+        await Run(h);
+
+        await Assert.That(h.Channel.Reports.Count).IsEqualTo(2);
+
+        // Every field, not just the name: a retry that rebuilt an empty report would keep the machine
+        // tag and lose exactly what the screen renders from.
+        await Assert.That(h.Channel.Reports.All(r => ReferenceEquals(r, Report))).IsTrue();
     }
 
     [Test]

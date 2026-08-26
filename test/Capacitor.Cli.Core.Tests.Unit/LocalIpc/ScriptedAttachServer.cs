@@ -10,6 +10,7 @@ sealed class ScriptedAttachServer : IAsyncDisposable {
     readonly Socket _listener;
     Socket? _conn;
     NetworkStream? _stream;
+    Task _pump = Task.CompletedTask;
     public readonly List<LocalFrame> Received = [];
     public readonly TaskCompletionSource<LocalFrame> FirstFrame = new(TaskCreationOptions.RunContinuationsAsynchronously);
     public string Path { get; }
@@ -21,17 +22,33 @@ sealed class ScriptedAttachServer : IAsyncDisposable {
         _listener.Listen(1);
     }
 
+    /// <paramref name="ct"/> bounds the ACCEPT only. The pump runs to EOF: a test that asserts a
+    /// frame did not arrive needs it to have read everything the client wrote, and a pump that stops
+    /// on a caller's deadline can leave one sitting in the socket unread.
     public async Task AcceptAndPumpInboundAsync(CancellationToken ct = default) {
         _conn = await _listener.AcceptAsync(ct);
         _stream = new NetworkStream(_conn, ownsSocket: false);
-        _ = Task.Run(async () => {
+        _pump = Task.Run(async () => {
             try {
-                while (await FrameCodec.ReadAsync(_stream, ct) is { } f) {
+                while (await FrameCodec.ReadAsync(_stream, CancellationToken.None) is { } f) {
                     lock (Received) Received.Add(f);
                     FirstFrame.TrySetResult(f);
                 }
             } catch { /* connection closed by client — fine for a script */ }
-        }, ct);
+        }, CancellationToken.None);
+    }
+
+    /// Completes once the inbound pump has stopped, which happens when the peer closes. <b>Await it
+    /// before concluding a frame never arrived</b> — the pump records under the same lock
+    /// <see cref="SnapshotReceived"/> takes, so a snapshot read while it is still running says only
+    /// what had been drained by then, not what the client sent.
+    public Task InboundDrained => _pump;
+
+    /// Half-close, so the peer sees EOF and settles on its own outcome while our receive side stays
+    /// open. <see cref="CloseConnection"/> discards anything not yet drained, which is exactly what a
+    /// negative assertion must not do.
+    public void ShutdownSend() {
+        try { _conn?.Shutdown(SocketShutdown.Send); } catch (SocketException) { } catch (ObjectDisposedException) { }
     }
 
     /// Polls until a frame of the given type has been recorded. Bytes already handed to the

@@ -1,8 +1,9 @@
 using System.Diagnostics;
-using System.Net;
 using System.Net.Sockets;
-using System.Text;
+using System.Net;
 using System.Text.Json.Nodes;
+using System.Text;
+using Capacitor.Cli.Core;
 
 namespace Capacitor.Cli.Tests.Integration;
 
@@ -22,7 +23,7 @@ public class McpReviewContextServerIntegrationTests {
         listener.Prefixes.Add($"http://127.0.0.1:{port}/{token}/");
         listener.Start();
         var manifest = "{\"schemaVersion\":1,\"entries\":[]}";
-        using var configDir = new TempDir();
+        using var config = new TempConfigRoot();
         var requests = 0;
         var serve = Task.Run(async () => {
             var context = await listener.GetContextAsync();
@@ -37,7 +38,7 @@ public class McpReviewContextServerIntegrationTests {
             context.Response.Close();
         });
 
-        using var process = Spawn(capability, configDir.Path);
+        using var process = Spawn(capability, config.Root);
         try {
             var initialize = await Send(process, new JsonObject {
                 ["jsonrpc"] = "2.0", ["id"] = 1, ["method"] = "initialize",
@@ -68,7 +69,7 @@ public class McpReviewContextServerIntegrationTests {
             await Assert.That(called["result"]!["content"]![0]!["text"]!.GetValue<string>())
                 .IsEqualTo(manifest);
             await Assert.That(requests).IsEqualTo(1);
-            await Assert.That(Directory.GetFileSystemEntries(configDir.Path)).IsEmpty()
+            await Assert.That(Directory.GetFileSystemEntries(config.Directory)).IsEmpty()
                 .Because("context mode must bypass auth/config and update-check state");
         } finally {
             try { process.StandardInput.Close(); } catch { }
@@ -76,12 +77,11 @@ public class McpReviewContextServerIntegrationTests {
         }
     }
 
-    Process Spawn(string capability, string configDir) {
-        var info = KcapProcess.StartInfo(Daemons.Store, "mcp", "review");
+    Process Spawn(string capability, ConfigRoot config) {
+        var info = KcapProcess.StartInfo(Daemons.Store, config, "mcp", "review");
         info.Environment["KCAP_REVIEW_CONTEXT_MODE"] = "1";
         info.Environment["KCAP_REVIEW_CONTEXT_URL"] = capability;
         info.Environment["KCAP_URL"] = "not-a-backend-url";
-        info.Environment["KCAP_CONFIG_DIR"] = configDir;
 
         return Process.Start(info) ?? throw new InvalidOperationException("Failed to start kcap");
     }

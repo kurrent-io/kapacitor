@@ -13,25 +13,19 @@ namespace Capacitor.Cli.Core.Tests.Unit.Auth;
 /// <summary>
 /// Operation-level contract of <see cref="OnboardingFacade"/>: provider dispatch, discovery over
 /// every tenant, cancellation before the boundary, and the WorkOS retarget/provisioner arms.
-/// Shares the TokenStoreProfileTests key so the one KCAP_CONFIG_DIR isn't raced, and the funnel-sink
-/// keys because WorkOS discovery emits SetupFunnel events into CliTelemetry's process-global sink.
+/// Shares the sink key because WorkOS discovery emits SetupFunnel events into CliTelemetry's
+/// process-global sink.
 /// </summary>
-[NotInParallel([
-    nameof(TokenStoreProfileTests),
-    nameof(TelemetryState) + "." + nameof(TelemetryState.PathOverride),
-    nameof(TelemetryDeviceId) + "." + nameof(TelemetryDeviceId.PathOverride),
-])]
+[NotInParallel(nameof(CliTelemetry) + "." + nameof(CliTelemetry.TestSink))]
 public class OnboardingFacadeTests {
-    static string TokensDir  => PathHelpers.ConfigPath("tokens");
-    static string LegacyPath => PathHelpers.ConfigPath("tokens.json");
-    static string ConfigPath => AppConfig.GetConfigPath();
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
 
-    [Before(Test)]
-    public void Cleanup() => SharedConfigDirCleanup.ClearTokenAndProfileState(LegacyPath, TokensDir);
+    string TokensDir  => Config.PathTo("tokens");
+    string ConfigPath => AppConfig.GetConfigPath(Config.Root);
 
-    internal static ProfileConfig ReadConfig() => ConfigMutator.LoadPure(ConfigPath);
+    internal ProfileConfig ReadConfig() => ConfigMutator.LoadPure(ConfigPath);
 
-    internal static bool TokenFileExists(string profile) => File.Exists(Path.Combine(TokensDir, $"{profile}.json"));
+    internal bool TokenFileExists(string profile) => File.Exists(Path.Combine(TokensDir, $"{profile}.json"));
 
     // ── login to a known server ──────────────────────────────────────────────
 
@@ -39,7 +33,7 @@ public class OnboardingFacadeTests {
     public async Task LoginAsync_none_provider_publishes_profile_and_stamp_with_no_token() {
         using var handler  = AuthHttp.Script(authConfig: """{"provider":"None"}""");
         var       progress = new RecordingAuthProgress();
-        var       facade   = NewFacade(progress, handler);
+        var       facade   = NewFacade(Config.Root, progress, handler);
 
         var result = await facade.LoginAsync(
             "https://none.example", forceDevice: false, profile: "solo", CancellationToken.None, adoptServer: true);
@@ -60,12 +54,12 @@ public class OnboardingFacadeTests {
 
     [Test]
     public async Task LoginAsync_none_provider_leaves_a_profile_that_already_points_at_the_server_alone() {
-        await ConfigMutator.MutateAsync(c => c with {
+        await ConfigMutator.MutateAsync(Config.Root, c => c with {
             Profiles = new Dictionary<string, Profile> { ["solo"] = new() { ServerUrl = "https://none.example/" } }
         });
 
         using var handler = AuthHttp.Script(authConfig: """{"provider":"None"}""");
-        var       facade  = NewFacade(new RecordingAuthProgress(), handler);
+        var       facade  = NewFacade(Config.Root, new RecordingAuthProgress(), handler);
 
         await facade.LoginAsync("https://none.example", forceDevice: false, profile: "solo", CancellationToken.None);
 
@@ -78,7 +72,7 @@ public class OnboardingFacadeTests {
     public async Task LoginAsync_github_publishes_the_exchanged_token_and_the_stamp() {
         using var handler  = AuthHttp.Script(authConfig: """{"provider":"GitHubApp","github_client_id":"cid"}""");
         var       progress = new RecordingAuthProgress();
-        var       facade   = NewFacade(progress, handler);
+        var       facade   = NewFacade(Config.Root, progress, handler);
 
         var result = await facade.LoginAsync(
             "https://acme.kcap.ai", forceDevice: true, profile: "acme", CancellationToken.None, adoptServer: true);
@@ -86,7 +80,7 @@ public class OnboardingFacadeTests {
         await Assert.That(result).IsTypeOf<AuthResult.Committed>();
         await Assert.That(((AuthResult.Committed)result).Username).IsEqualTo("alice");
 
-        var stored = await TokenStore.LoadAsync("acme");
+        var stored = await new TokenStore(Config.Root).LoadAsync("acme");
         await Assert.That(stored!.AccessToken).IsEqualTo("capacitor-jwt");
         await Assert.That(stored.Provider).IsEqualTo(AuthProvider.GitHubApp);
 
@@ -99,17 +93,17 @@ public class OnboardingFacadeTests {
 
     [Test]
     public async Task LoginAsync_without_adopt_keeps_todays_behaviour_on_a_foreign_profile() {
-        await ConfigMutator.MutateAsync(c => c with {
+        await ConfigMutator.MutateAsync(Config.Root, c => c with {
             Profiles = new Dictionary<string, Profile> { ["acme"] = new() { ServerUrl = "https://other.example" } }
         });
 
         using var handler = AuthHttp.Script(authConfig: """{"provider":"GitHubApp","github_client_id":"cid"}""");
-        var       facade  = NewFacade(new RecordingAuthProgress(), handler);
+        var       facade  = NewFacade(Config.Root, new RecordingAuthProgress(), handler);
 
         var result = await facade.LoginAsync("https://acme.kcap.ai", forceDevice: true, profile: "acme", CancellationToken.None);
 
         await Assert.That(result).IsTypeOf<AuthResult.Committed>();
-        await Assert.That((await TokenStore.LoadAsync("acme"))!.AccessToken).IsEqualTo("capacitor-jwt");
+        await Assert.That((await new TokenStore(Config.Root).LoadAsync("acme"))!.AccessToken).IsEqualTo("capacitor-jwt");
 
         // No repoint and no claim on a server the profile doesn't name.
         var profile = ReadConfig().Profiles["acme"];
@@ -121,7 +115,7 @@ public class OnboardingFacadeTests {
     public async Task LoginAsync_none_without_adopt_refuses_a_foreign_profile() {
         using var handler  = AuthHttp.Script(authConfig: """{"provider":"None"}""");
         var       progress = new RecordingAuthProgress();
-        var       facade   = NewFacade(progress, handler);
+        var       facade   = NewFacade(Config.Root, progress, handler);
 
         var result = await facade.LoginAsync("https://none.example", forceDevice: false, profile: "solo", CancellationToken.None);
 
@@ -141,7 +135,7 @@ public class OnboardingFacadeTests {
             authConfig: """{"provider":"workos","client_id":"client_d","organization_id":"org_a"}""");
 
         var progress = new RecordingAuthProgress();
-        var facade   = NewFacade(progress, handler,
+        var facade   = NewFacade(Config.Root, progress, handler,
             workosBrowser: FakeBrowser.WithCode("the_code"), workosApiBase: workos.Urls[0]);
 
         var result = await facade.LoginAsync(
@@ -149,7 +143,7 @@ public class OnboardingFacadeTests {
 
         await Assert.That(result).IsTypeOf<AuthResult.Committed>();
 
-        var stored = await TokenStore.LoadAsync("acme");
+        var stored = await new TokenStore(Config.Root).LoadAsync("acme");
         await Assert.That(stored!.AccessToken).IsEqualTo("acc");
         await Assert.That(stored.RefreshToken).IsEqualTo("rt");
         await Assert.That(stored.ClientId).IsEqualTo("client_d");
@@ -171,7 +165,7 @@ public class OnboardingFacadeTests {
         using var handler = AuthHttp.Script(
             authConfig: """{"provider":"workos","client_id":"client_d","organization_id":"org_a"}""");
 
-        var facade = NewFacade(new RecordingAuthProgress(), handler,
+        var facade = NewFacade(Config.Root, new RecordingAuthProgress(), handler,
             workosBrowser: FakeBrowser.WithCode("the_code"), workosApiBase: workos.Urls[0]);
 
         var result = await facade.LoginAsync(
@@ -193,7 +187,7 @@ public class OnboardingFacadeTests {
 
         var progress = new RecordingAuthProgress();
         // No token endpoint is stubbed: the cancel lands in the browser, before any WorkOS call.
-        var facade = NewFacade(progress, handler,
+        var facade = NewFacade(Config.Root, progress, handler,
             workosBrowser: FakeBrowser.CancellingCaller(cts), workosApiBase: "http://127.0.0.1:9");
 
         var result = await facade.LoginAsync(
@@ -217,7 +211,7 @@ public class OnboardingFacadeTests {
                 throw new OperationCanceledException(cts.Token);
             });
 
-        var facade = NewFacade(new RecordingAuthProgress(), handler);
+        var facade = NewFacade(Config.Root, new RecordingAuthProgress(), handler);
 
         var result = await facade.LoginAsync(
             "https://acme.kcap.ai", forceDevice: true, profile: "acme", cts.Token, adoptServer: true);
@@ -231,7 +225,7 @@ public class OnboardingFacadeTests {
     public async Task LoginAsync_unknown_provider_fails_with_todays_message() {
         using var handler  = AuthHttp.Script(authConfig: """{"provider":"martian"}""");
         var       progress = new RecordingAuthProgress();
-        var       facade   = NewFacade(progress, handler);
+        var       facade   = NewFacade(Config.Root, progress, handler);
 
         var result = await facade.LoginAsync("https://acme.kcap.ai", forceDevice: true, profile: "acme", CancellationToken.None);
 
@@ -253,7 +247,7 @@ public class OnboardingFacadeTests {
                 return AuthHttp.Json("""{"error":"authorization_pending"}""");
             });
 
-        var facade = NewFacade(new RecordingAuthProgress(), handler);
+        var facade = NewFacade(Config.Root, new RecordingAuthProgress(), handler);
 
         var result = await facade.LoginAsync("https://acme.kcap.ai", forceDevice: true, profile: "acme", cts.Token);
 
@@ -271,7 +265,7 @@ public class OnboardingFacadeTests {
             tenants: TwoGitHubTenants);
 
         var identities = new List<AuthIdentity>();
-        var facade = NewFacade(new RecordingAuthProgress(), handler, PickerReturningFirst(),
+        var facade = NewFacade(Config.Root, new RecordingAuthProgress(), handler, PickerReturningFirst(),
             beforeCommit: (ids, _) => { identities.AddRange(ids); return Task.CompletedTask; });
 
         var result = await facade.DiscoverAsync(AuthProvider.GitHubApp, forceDevice: true, CancellationToken.None);
@@ -298,7 +292,7 @@ public class OnboardingFacadeTests {
                 : AuthHttp.Json("""{"access_token":"capacitor-jwt","expires_in":3600,"username":"alice"}"""));
 
         var progress = new RecordingAuthProgress();
-        var facade   = NewFacade(progress, handler, PickerReturningFirst());
+        var facade   = NewFacade(Config.Root, progress, handler, PickerReturningFirst());
 
         var result = await facade.DiscoverAsync(AuthProvider.GitHubApp, forceDevice: true, CancellationToken.None);
 
@@ -319,7 +313,7 @@ public class OnboardingFacadeTests {
                 : AuthHttp.Json("""{"access_token":"capacitor-jwt","expires_in":3600,"username":"alice"}"""));
 
         var progress = new RecordingAuthProgress();
-        var facade   = NewFacade(progress, handler, PickerReturningFirst());
+        var facade   = NewFacade(Config.Root, progress, handler, PickerReturningFirst());
 
         var result = await facade.DiscoverAsync(AuthProvider.GitHubApp, forceDevice: true, CancellationToken.None);
 
@@ -336,7 +330,7 @@ public class OnboardingFacadeTests {
     public async Task DiscoverAsync_github_zero_tenants_reports_the_no_tenants_reason() {
         using var handler = AuthHttp.Script(proxyConfig: """{"github_client_id":"cid"}""", tenants: "[]");
 
-        var facade = NewFacade(new RecordingAuthProgress(), handler);
+        var facade = NewFacade(Config.Root, new RecordingAuthProgress(), handler);
         var result = await facade.DiscoverAsync(AuthProvider.GitHubApp, forceDevice: true, CancellationToken.None);
 
         await Assert.That(result).IsTypeOf<AuthResult.Failed>();
@@ -349,7 +343,7 @@ public class OnboardingFacadeTests {
             proxyConfig: """{"github_client_id":"cid"}""",
             devicePoll: () => AuthHttp.Json("""{"error":"access_denied"}"""));
 
-        var facade = NewFacade(new RecordingAuthProgress(), handler);
+        var facade = NewFacade(Config.Root, new RecordingAuthProgress(), handler);
         var result = await facade.DiscoverAsync(AuthProvider.GitHubApp, forceDevice: true, CancellationToken.None);
 
         await Assert.That(result).IsTypeOf<AuthResult.Failed>();
@@ -360,7 +354,7 @@ public class OnboardingFacadeTests {
     public async Task DiscoverAsync_unreachable_proxy_reports_the_unreachable_reason() {
         using var handler = AuthHttp.Script(); // no /config route
 
-        var facade = NewFacade(new RecordingAuthProgress(), handler);
+        var facade = NewFacade(Config.Root, new RecordingAuthProgress(), handler);
         var result = await facade.DiscoverAsync(AuthProvider.GitHubApp, forceDevice: true, CancellationToken.None);
 
         await Assert.That(result).IsTypeOf<AuthResult.Failed>();
@@ -379,7 +373,7 @@ public class OnboardingFacadeTests {
         picker.PickAsync(Arg.Any<DiscoveredTenant[]>(), Arg.Any<CancellationToken>())
               .Returns<Task<DiscoveredTenant?>>(_ => { cts.Cancel(); throw new OperationCanceledException(cts.Token); });
 
-        var facade = NewFacade(new RecordingAuthProgress(), handler, picker);
+        var facade = NewFacade(Config.Root, new RecordingAuthProgress(), handler, picker);
 
         var result = await facade.DiscoverAsync(AuthProvider.GitHubApp, forceDevice: true, cts.Token);
 
@@ -398,7 +392,7 @@ public class OnboardingFacadeTests {
         await cts.CancelAsync();
 
         var progress = new RecordingAuthProgress();
-        var facade   = NewFacade(progress, handler);
+        var facade   = NewFacade(Config.Root, progress, handler);
 
         var result = await facade.DiscoverAsync(AuthProvider.GitHubApp, forceDevice: true, cts.Token);
 
@@ -426,7 +420,7 @@ public class OnboardingFacadeTests {
             return AuthHttp.Json("""{"access_token":"gh-token"}""");
         });
 
-        var facade = NewFacade(progress, cancelling);
+        var facade = NewFacade(Config.Root, progress, cancelling);
         var result = await facade.DiscoverAsync(AuthProvider.GitHubApp, forceDevice: true, cts.Token);
 
         await Assert.That(result).IsTypeOf<AuthResult.Cancelled>();
@@ -447,7 +441,7 @@ public class OnboardingFacadeTests {
         });
 
         var progress = new RecordingAuthProgress();
-        var facade   = NewFacade(progress, handler, workosLogin: OrglessAda);
+        var facade   = NewFacade(Config.Root, progress, handler, workosLogin: OrglessAda);
 
         var result = await facade.DiscoverAsync(AuthProvider.WorkOS, forceDevice: false, cts.Token);
 
@@ -459,7 +453,7 @@ public class OnboardingFacadeTests {
     [Test]
     public async Task DiscoverAsync_unknown_provider_fails() {
         using var handler = AuthHttp.Script(proxyConfig: """{"github_client_id":"cid"}""");
-        var       facade  = NewFacade(new RecordingAuthProgress(), handler);
+        var       facade  = NewFacade(Config.Root, new RecordingAuthProgress(), handler);
 
         var result = await facade.DiscoverAsync("martian", forceDevice: true, CancellationToken.None);
 
@@ -487,7 +481,7 @@ public class OnboardingFacadeTests {
             orgSwitch: """{"organization_id":"org_a","access_token":"acc2","refresh_token":"rt2"}""");
 
         var progress = new RecordingAuthProgress();
-        var facade   = NewFacade(progress, handler, PickerReturningFirst(), workosLogin: OrglessAda);
+        var facade   = NewFacade(Config.Root, progress, handler, PickerReturningFirst(), workosLogin: OrglessAda);
 
         var result = await facade.DiscoverAsync(AuthProvider.WorkOS, forceDevice: false, CancellationToken.None);
 
@@ -496,7 +490,7 @@ public class OnboardingFacadeTests {
         await Assert.That(committed.ActiveProfile).IsEqualTo("eventuous");
         await Assert.That(committed.Provider).IsEqualTo(AuthProvider.WorkOS);
 
-        var stored = await TokenStore.LoadAsync("eventuous");
+        var stored = await new TokenStore(Config.Root).LoadAsync("eventuous");
         await Assert.That(stored!.AccessToken).IsEqualTo("acc2");
         await Assert.That(stored.RefreshToken).IsEqualTo("rt2");
         await Assert.That(stored.ClientId).IsEqualTo("client_d");
@@ -524,7 +518,7 @@ public class OnboardingFacadeTests {
             orgSwitch: """{"user":{"first_name":"Ada"},"organization_id":"org_a","access_token":"acc2","refresh_token":"rt2"}""");
 
         var progress = new RecordingAuthProgress();
-        var facade   = NewFacade(progress, handler, PickerReturningFirst());   // no workosLogin seam: the real ladder runs
+        var facade   = NewFacade(Config.Root, progress, handler, PickerReturningFirst());   // no workosLogin seam: the real ladder runs
 
         var result = await facade.DiscoverAsync(AuthProvider.WorkOS, forceDevice: true, CancellationToken.None);
 
@@ -532,7 +526,7 @@ public class OnboardingFacadeTests {
         await Assert.That(handler.Seen.Any(s => s.Contains("/user_management/authorize/device"))).IsTrue();
         await Assert.That(progress.DeviceCodes).Count().IsEqualTo(1);
 
-        var stored = await TokenStore.LoadAsync("eventuous");
+        var stored = await new TokenStore(Config.Root).LoadAsync("eventuous");
         await Assert.That(stored!.AccessToken).IsEqualTo("acc2");
     }
 
@@ -546,7 +540,7 @@ public class OnboardingFacadeTests {
         provisioner.OfferCreateAsync(Arg.Any<WorkOSTokenSource>(), Arg.Any<CancellationToken>())
                    .Returns(Task.FromResult(ProvisionOffer.ExistingWorkspace("kurrent")));
 
-        var facade = NewFacade(new RecordingAuthProgress(), handler, provisioner: provisioner, workosLogin: OrglessAda);
+        var facade = NewFacade(Config.Root, new RecordingAuthProgress(), handler, provisioner: provisioner, workosLogin: OrglessAda);
 
         var result = await facade.DiscoverAsync(AuthProvider.WorkOS, forceDevice: false, CancellationToken.None);
 
@@ -567,12 +561,12 @@ public class OnboardingFacadeTests {
                    .Returns(Task.FromResult(ProvisionOffer.Created(
                        new ProvisionedTenant("org_new", "acme", "Acme Inc", "https://acme.kcap.ai"))));
 
-        var facade = NewFacade(new RecordingAuthProgress(), handler, provisioner: provisioner, workosLogin: OrglessAda);
+        var facade = NewFacade(Config.Root, new RecordingAuthProgress(), handler, provisioner: provisioner, workosLogin: OrglessAda);
 
         var result = await facade.DiscoverAsync(AuthProvider.WorkOS, forceDevice: false, CancellationToken.None);
 
         await Assert.That(result).IsTypeOf<AuthResult.Committed>();
-        await Assert.That((await TokenStore.LoadAsync("acme"))!.AccessToken).IsEqualTo("acc2");
+        await Assert.That((await new TokenStore(Config.Root).LoadAsync("acme"))!.AccessToken).IsEqualTo("acc2");
         await Assert.That(ReadConfig().Profiles["acme"].AuthProvider!.Provider).IsEqualTo(AuthProvider.WorkOS);
     }
 
@@ -589,7 +583,7 @@ public class OnboardingFacadeTests {
     public async Task DiscoverAsync_workos_failed_provisioning_fails_with_nothing_durable() =>
         await AssertProvisionOfferFails(ProvisionOffer.Failed);
 
-    static async Task AssertProvisionOfferFails(
+    async Task AssertProvisionOfferFails(
             ProvisionOffer offer, AuthFailureReason expected = AuthFailureReason.Other) {
         using var handler = AuthHttp.Script(
             proxyConfig: """{"workos_client_id":"client_d"}""",
@@ -599,7 +593,7 @@ public class OnboardingFacadeTests {
         provisioner.OfferCreateAsync(Arg.Any<WorkOSTokenSource>(), Arg.Any<CancellationToken>())
                    .Returns(Task.FromResult(offer));
 
-        var facade = NewFacade(new RecordingAuthProgress(), handler, provisioner: provisioner, workosLogin: OrglessAda);
+        var facade = NewFacade(Config.Root, new RecordingAuthProgress(), handler, provisioner: provisioner, workosLogin: OrglessAda);
 
         var result = await facade.DiscoverAsync(AuthProvider.WorkOS, forceDevice: false, CancellationToken.None);
 

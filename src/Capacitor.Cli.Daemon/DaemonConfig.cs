@@ -1,4 +1,5 @@
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Daemon.Harness.Claude;
 
 namespace Capacitor.Cli.Daemon;
@@ -54,6 +55,21 @@ public class DaemonConfig {
     /// <summary>Where this daemon's files live.</summary>
     public DaemonStore Store {
         get => field ?? throw new InvalidOperationException($"DaemonConfig.Store was never set; pass a {nameof(DaemonStore)} in from the entry point.");
+        set;
+    }
+
+    /// <summary>Where this daemon's kcap configuration lives — a different anchor from
+    /// <see cref="Store"/>, which ignores <c>KCAP_CONFIG_DIR</c> by design.</summary>
+    public ConfigRoot ConfigRoot {
+        get => field ?? throw new InvalidOperationException($"DaemonConfig.ConfigRoot was never set; pass a {nameof(Core.ConfigRoot)} in from the entry point.");
+        set;
+    }
+
+    /// <summary>The profile this daemon resolved at boot. A separate process from the CLI, so it
+    /// resolves its own; nothing re-resolves later, which is what keeps its token reads and its
+    /// daemon identity naming one profile for the daemon's whole life.</summary>
+    public ProfileContext Profiles {
+        get => field ?? throw new InvalidOperationException($"DaemonConfig.Profiles was never set; pass a {nameof(ProfileContext)} in from the entry point.");
         set;
     }
 

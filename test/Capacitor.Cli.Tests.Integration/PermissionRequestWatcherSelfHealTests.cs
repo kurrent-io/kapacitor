@@ -1,6 +1,8 @@
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Commands;
 
+using Capacitor.Cli.Core;
+
 namespace Capacitor.Cli.Tests.Integration;
 
 /// <summary>
@@ -16,6 +18,15 @@ public class PermissionRequestWatcherSelfHealTests {
     static readonly TempDir Tmp = new();
     static readonly TempDir Transcripts = new();
     static string TempDir => Tmp.Path;
+
+    // KCAP_WATCHER_DIR is pinned below and wins over the root, so nothing here reads it — it points
+    // at the same temp directory anyway, so a lapse in that precedence cannot escape into the
+    // developer's own config.
+    static readonly ConfigRoot Root = new(Tmp.Path);
+
+    // One manager over that root and the URL these spawns target — the two values production hands
+    // it, so a watcher here can never point at a second server.
+    static readonly WatcherManager Watchers = new(Root, Resolutions.At("http://localhost:0", Root));
 
     static string? _previousWatcherDir;
 
@@ -50,13 +61,13 @@ public class PermissionRequestWatcherSelfHealTests {
             ["cwd"]             = "/tmp/test"
         };
 
-        await PermissionRequestCommand.TryEnsureWatcher("http://localhost:0", sessionId, node);
+        await new PermissionRequestCommand(Root, Resolutions.At("http://localhost:0", Root)).TryEnsureWatcher(sessionId, node);
 
         await Assert.That(File.Exists(pidFile)).IsTrue();
         var lines = await File.ReadAllLinesAsync(pidFile);
         await Assert.That(int.TryParse(lines[0].Trim(), out _)).IsTrue();
 
-        await Cli.WatcherManager.KillWatcher(sessionId);
+        await Watchers.KillWatcher(sessionId);
     }
 
     [Test]
@@ -70,11 +81,11 @@ public class PermissionRequestWatcherSelfHealTests {
             ["agent_id"]        = "agent-123"
         };
 
-        await PermissionRequestCommand.TryEnsureWatcher("http://localhost:0", sessionId, node);
+        await new PermissionRequestCommand(Root, Resolutions.At("http://localhost:0", Root)).TryEnsureWatcher(sessionId, node);
 
         await Assert.That(File.Exists(pidFile)).IsFalse();
 
-        await Cli.WatcherManager.KillWatcher(sessionId);
+        await Watchers.KillWatcher(sessionId);
     }
 
     [Test]
@@ -85,10 +96,10 @@ public class PermissionRequestWatcherSelfHealTests {
             ["cwd"] = "/tmp/test"
         };
 
-        await PermissionRequestCommand.TryEnsureWatcher("http://localhost:0", sessionId, node);
+        await new PermissionRequestCommand(Root, Resolutions.At("http://localhost:0", Root)).TryEnsureWatcher(sessionId, node);
 
         await Assert.That(File.Exists(pidFile)).IsFalse();
 
-        await Cli.WatcherManager.KillWatcher(sessionId);
+        await Watchers.KillWatcher(sessionId);
     }
 }

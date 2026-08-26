@@ -14,6 +14,7 @@ namespace Capacitor.Cli.Tests.Integration;
 /// </summary>
 public class FeedbackVerbDispatchTests {
     [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
+    [TempConfigRoot]  public required TempConfigRoot  Config  { get; init; }
 
     [Test]
     public async Task Bare_feedback_reaches_the_handlers_usage_error() {
@@ -29,13 +30,12 @@ public class FeedbackVerbDispatchTests {
     async Task<(string Stdout, string Stderr, int ExitCode)> RunCli(
             string argLine, bool clearServerUrl = false) {
 
-        var psi = KcapProcess.StartInfo(Daemons.Store);
+        var psi = KcapProcess.StartInfo(Daemons.Store, Config.Root);
         // A string, not ArgumentList: quote-aware parsing, so an argument may contain a space.
         psi.Arguments = $"{argLine} --no-update-check";
 
-        // Isolate from the developer's own profile so this assertion doesn't depend on whether
-        // this machine happens to have a server configured. Unreachable-but-present is enough:
-        // FeedbackCommand's usage error fires before any server call is attempted.
+        // Unreachable-but-present is enough: FeedbackCommand's usage error fires before any server
+        // call is attempted.
         psi.Environment["KCAP_URL"] = clearServerUrl ? "" : "http://127.0.0.1:1";
 
         using var process = Process.Start(psi)

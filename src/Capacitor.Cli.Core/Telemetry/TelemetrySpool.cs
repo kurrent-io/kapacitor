@@ -77,12 +77,29 @@ public sealed class TelemetrySpool(string path, int maxEvents = 2000) {
         }
     }
 
-    static string Serialize(TelemetryEvent e) =>
-        new JsonObject {
+    /// <summary>
+    /// One parked event, as one line.
+    /// <para>The join key is removed here, and this is the only place it can be: the spool writes
+    /// properties verbatim, so an undeliverable event would otherwise park a value that is supposed
+    /// to live in memory for one auth run and nowhere else. Delivery fails on a blocked, offline or
+    /// slow network — precisely when nobody is watching — and the file survives until a later send
+    /// succeeds.</para>
+    /// <para>Removed from a clone, never from the caller's object: the same event instance is still
+    /// held by the in-memory queue, and mutating it would drop the key from a report still awaiting
+    /// delivery. The property is dropped rather than replaced with a placeholder because unlike the
+    /// debug renderer, whose reader wants to know whether the key was attached, a replayed event has
+    /// no use for a value it cannot correlate with.</para>
+    /// </summary>
+    static string Serialize(TelemetryEvent e) {
+        var properties = e.Properties.DeepClone().AsObject();
+        properties.Remove(SetupJoin.PropertyName);
+
+        return new JsonObject {
             ["event"]      = e.Name,
-            ["properties"] = e.Properties.DeepClone(),
+            ["properties"] = properties,
             ["timestamp"]  = e.Timestamp.ToString("o"),
         }.ToJsonString();
+    }
 
     static TelemetryEvent? Deserialize(string line) {
         try {

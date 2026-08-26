@@ -57,21 +57,37 @@ public class DaemonStoreTests {
         static string Under(params ReadOnlySpan<string> parts) => Path.Combine([root, .. parts]);
     }
 
-    [Test]
+    [Test, NotInParallel]
     public async Task Default_directory_lives_under_the_daemons_folder() {
-        // The PRODUCTION fallback, with no KCAP_DAEMONS_DIR set: the ~/.config/kcap/daemons/ path,
-        // not the legacy agents/ one. Asserted against the pure resolver rather than by clearing the
-        // env var, which would be a process-global mutation racing every parallel test.
-        await Assert.That(DaemonStore.ResolveDefaultDir(null).Replace('\\', '/'))
-            .EndsWith("/.config/kcap/daemons");
+        using var env = EnvScope.Exclusive(DaemonStore.DaemonsDirEnvVar, null);
+
+        await Assert.That(DaemonStore.FromEnvironment().Directory).IsEqualTo(DefaultDaemonsDir);
     }
 
-    [Test]
+    [Test, NotInParallel]
     public async Task Environment_value_wins_over_the_home_fallback() {
-        await Assert.That(DaemonStore.ResolveDefaultDir("/elsewhere")).IsEqualTo("/elsewhere");
-        await Assert.That(DaemonStore.ResolveDefaultDir("").Replace('\\', '/'))
-            .EndsWith("/.config/kcap/daemons");
+        using (var env = EnvScope.Exclusive(DaemonStore.DaemonsDirEnvVar, "/elsewhere"))
+            await Assert.That(DaemonStore.FromEnvironment().Directory).IsEqualTo("/elsewhere");
+
+        // Empty reads as unset, or `export KCAP_DAEMONS_DIR=` puts every lock in the cwd.
+        using (var env = EnvScope.Exclusive(DaemonStore.DaemonsDirEnvVar, ""))
+            await Assert.That(DaemonStore.FromEnvironment().Directory).IsEqualTo(DefaultDaemonsDir);
     }
+
+    /// <summary>The shared <c>.config/kcap</c> prefix is a coincidence, not a derivation — see
+    /// <see cref="DaemonStore"/> for the incident that pinned it.</summary>
+    [Test, NotInParallel]
+    public async Task Config_dir_override_does_not_move_the_daemons_directory() {
+        using var daemons = EnvScope.Exclusive(DaemonStore.DaemonsDirEnvVar, null);
+        using var config  = EnvScope.Exclusive(ConfigRoot.ConfigDirEnvVar, "/elsewhere/config");
+
+        await Assert.That(DaemonStore.FromEnvironment().Directory).IsEqualTo(DefaultDaemonsDir);
+    }
+
+    static string DefaultDaemonsDir => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+        ".config", "kcap", "daemons"
+    );
 
     /// <summary>
     /// Pins the socket-path budget. A control socket binds inside the daemons directory and macOS

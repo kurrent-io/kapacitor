@@ -19,17 +19,11 @@ namespace Capacitor.Cli.Tests.Integration;
 /// </summary>
 public class ReviewerVendorPreferenceTests : IDisposable {
     [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
+    [TempConfigRoot]  public required TempConfigRoot  Config  { get; init; }
+    [TempDir]         public required TempDir         Tmp     { get; init; }
 
     readonly WireMockServer _server           = WireMockServer.Start();
-    readonly TempDir        _tmp              = new();
-    readonly string         _cfgDir;
-    readonly string         _cwdDir;
     readonly List<Process>  _spawnedProcesses = [];
-
-    public ReviewerVendorPreferenceTests() {
-        _cfgDir = _tmp.CreateDir("cfg");
-        _cwdDir = _tmp.CreateDir("cwd");
-    }
 
     public void Dispose() {
         foreach (var p in _spawnedProcesses) {
@@ -42,10 +36,9 @@ public class ReviewerVendorPreferenceTests : IDisposable {
         }
 
         _server.Stop();
-        _tmp.Dispose();
     }
 
-    string ConfigPath => Path.Combine(_cfgDir, "config.json");
+    string ConfigPath => Config.Root.Path("config.json");
 
     /// <summary>Seeds the isolated profile config THROUGH THE CLI rather than by writing JSON: the
     /// point of this fixture is the real on-disk shape, and a hand-written config is not it (a
@@ -64,11 +57,10 @@ public class ReviewerVendorPreferenceTests : IDisposable {
     }
 
     ProcessStartInfo BaseStartInfo(string arguments) {
-        var psi = KcapProcess.StartInfo(Daemons.Store);
+        var psi = KcapProcess.StartInfo(Daemons.Store, Config.Root);
         // A string, not ArgumentList: quote-aware parsing, so an argument may contain a space.
         psi.Arguments = arguments;
-        psi.WorkingDirectory = _cwdDir;
-        psi.Environment["KCAP_CONFIG_DIR"] = _cfgDir;
+        psi.WorkingDirectory = Tmp.Path;
 
         // The flows lane must resolve its server from the PROFILE, so no URL override may leak in
         // from the developer's or CI's environment.

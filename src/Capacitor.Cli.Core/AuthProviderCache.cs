@@ -19,10 +19,7 @@ namespace Capacitor.Cli.Core;
 static class AuthProviderCache {
     static readonly TimeSpan Ttl = TimeSpan.FromHours(24);
 
-    /// <summary>Test seam: when set, the store lives here instead of the real config dir.</summary>
-    internal static string? OverridePathForTesting;
-
-    static string StorePath => OverridePathForTesting ?? PathHelpers.ConfigPath(Path.Combine("cache", "auth-providers.json"));
+    internal static string StorePath(ConfigRoot config) => config.Path("cache", "auth-providers.json");
 
     /// <summary>
     /// Pure: returns the still-fresh provider recorded for <paramref name="baseUrl"/> in
@@ -74,9 +71,9 @@ static class AuthProviderCache {
     }
 
     /// <summary>Best-effort disk read. Returns the cached provider or <c>null</c>.</summary>
-    public static string? TryGet(string baseUrl) {
+    public static string? TryGet(string baseUrl, ConfigRoot config) {
         try {
-            var path = StorePath;
+            var path = StorePath(config);
 
             return File.Exists(path)
                 ? Read(File.ReadAllText(path), baseUrl, DateTimeOffset.UtcNow.ToUnixTimeSeconds())
@@ -87,9 +84,9 @@ static class AuthProviderCache {
     }
 
     /// <summary>Best-effort disk write. Silently no-ops on any failure.</summary>
-    public static void Set(string baseUrl, string provider) {
+    public static void Set(string baseUrl, string provider, ConfigRoot config) {
         try {
-            var path = StorePath;
+            var path = StorePath(config);
             var dir  = Path.GetDirectoryName(path);
 
             if (dir is not null) Directory.CreateDirectory(dir);

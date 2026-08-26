@@ -11,6 +11,8 @@ namespace Capacitor.Cli.Tests.Unit.Services;
 /// a real launchd install — so the write path has to establish owner-only mode itself, and prove it.
 /// </summary>
 public partial class ServiceFilesTests {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     [LibraryImport("libc", EntryPoint = "umask")]
     private static partial uint umask(uint mask);
 
@@ -195,7 +197,7 @@ public partial class ServiceFilesTests {
     [Test]
     public async Task Windows_writes_both_units_through_the_secure_writer() {
         var seen = new List<(string Path, Encoding? Encoding)>();
-        var mgr  = new WindowsScheduledTaskServiceManager((path, _, encoding) => seen.Add((path, encoding)));
+        var mgr  = new WindowsScheduledTaskServiceManager(Config.Root, (path, _, encoding) => seen.Add((path, encoding)));
 
         mgr.WriteUnitFiles(Spec());
 

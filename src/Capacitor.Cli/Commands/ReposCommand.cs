@@ -1,9 +1,12 @@
+using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Config;
 
 namespace Capacitor.Cli.Commands;
 
-public static class ReposCommand {
-    public static async Task<int> HandleAsync(string[] args) {
+public sealed class ReposCommand(ConfigRoot config) {
+    RepoPathStore Repos { get; } = new(config);
+
+    public async Task<int> HandleAsync(string[] args) {
         if (args.Length < 2)
             return await List();
 
@@ -18,8 +21,8 @@ public static class ReposCommand {
         };
     }
 
-    static async Task<int> List() {
-        var entries = await RepoPathStore.LoadAsync();
+    async Task<int> List() {
+        var entries = await Repos.LoadAsync();
 
         if (entries.Length == 0) {
             await Console.Out.WriteLineAsync("No known repos. Use `kcap repos add .` to add the current directory.");
@@ -37,7 +40,7 @@ public static class ReposCommand {
         return 0;
     }
 
-    static async Task<int> Add(string path) {
+    async Task<int> Add(string path) {
         var resolved = Path.GetFullPath(path);
 
         if (!Directory.Exists(resolved)) {
@@ -46,15 +49,15 @@ public static class ReposCommand {
             return 1;
         }
 
-        await RepoPathStore.AddAsync(resolved);
+        await Repos.AddAsync(resolved);
         await Console.Out.WriteLineAsync($"Added: {resolved}");
 
         return 0;
     }
 
-    static async Task<int> Remove(string path) {
+    async Task<int> Remove(string path) {
         var resolved = Path.GetFullPath(path);
-        var removed  = await RepoPathStore.RemoveAsync(resolved);
+        var removed  = await Repos.RemoveAsync(resolved);
 
         if (removed) {
             await Console.Out.WriteLineAsync($"Removed: {resolved}");

@@ -100,11 +100,19 @@ plugin/hooks-block rather than a shell-hooks file).
 
 Once you are signed in, on a server that offers browser setup kcap creates a
 setup link, opens your browser on it, and waits while you work through the
-screens there. The link is printed as well as opened, so a machine with no
-browser of its own can be finished from one on another. Press any key to stop
-waiting; setup carries on in the terminal either way. Skipped on servers that
-do not offer it, on servers that need no sign-in (auth provider None), and
-under --no-prompt.
+screens there. It reports the coding agents it found on this machine — which
+ones are on your PATH, which have config on disk, which kcap is already wired
+into, and whether your login shell can find kcap — since only the machine can
+know that, and on a device-code sign-in the browser is a different box. The
+link is printed as well as opened, so a machine with no browser of its own can
+be finished from one on another. Press any key to stop waiting; setup carries
+on in the terminal either way. Skipped on servers that do not offer it, on
+servers that need no sign-in (auth provider None), and under --no-prompt.
+
+When you answer the browser's Agents screen, that answer is what gets installed:
+setup applies it instead of asking again, per agent and per choice, and says
+which agents you picked. A --skip-<agent> flag still wins, so a scripted opt-out
+is never overridden. Answering "Not now" installs nothing.
 
 When you sign in with Kurrent's hosted auth and discovery finds no tenant, setup
 asks how to continue: create one for you (organization name + workspace slug) and

@@ -355,8 +355,6 @@ public sealed class TerminalTabViewModel : ReactiveObject {
         await Dispatcher.UIThread.InvokeAsync(() => {
             if (generation != _attemptGeneration) return;
             surface.Feed(text);
-            // AFTER the snapshot: the replay itself carries the TUI's own cursor-hide.
-            surface.EnsureCaretVisible();
             State = TerminalSessionState.Attached(reason);
         }, DispatcherPriority.Default, ct);
     }

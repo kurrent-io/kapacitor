@@ -20,6 +20,13 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 /// zero-jitter backoff.</para>
 /// </summary>
 public class SettlementProgressWindowTests {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
+    // The dispatch is profile-scoped: its token refresh resolves a profile. These tests exercise
+    // routing, not profile selection.
+    McpFlowsServer Server() =>
+        new(Config.Root, Resolutions.None(Config.Root));
+
     static VirtualFlowRetryClock Clock() => new();
 
     static string Busy409(long? seq) => seq is null
@@ -48,11 +55,11 @@ public class SettlementProgressWindowTests {
         }
     }
 
-    static async Task<McpFlowsServer.SettlementSendResult.DeadlineExhausted> RunToExhaustion(
+    async Task<McpFlowsServer.SettlementSendResult.DeadlineExhausted> RunToExhaustion(
             VirtualFlowRetryClock clock, HttpMessageHandler handler) {
         using var client = new HttpClient(handler) { BaseAddress = new Uri("http://settlement.test") };
 
-        var result = await McpFlowsServer.SendWithSettlementRetryAsync(
+        var result = await Server().SendWithSettlementRetryAsync(
             client, "https://flows.example.test", (c, ct) => c.PostAsync("/start", null, ct), clock, SettlementBackoff.Seeded(7));
 
         var exhausted = result as McpFlowsServer.SettlementSendResult.DeadlineExhausted;

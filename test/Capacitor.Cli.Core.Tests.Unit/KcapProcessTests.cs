@@ -8,10 +8,11 @@ namespace Capacitor.Cli.Core.Tests.Unit;
 /// </summary>
 public class KcapProcessTests {
     [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
+    [TempConfigRoot]  public required TempConfigRoot  Config  { get; init; }
 
     [Test]
     public async Task The_stamped_binary_path_resolves_and_runs() {
-        var psi = KcapProcess.StartInfo(Daemons.Store, "--version");
+        var psi = KcapProcess.StartInfo(Daemons.Store, Config.Root, "--version");
 
         using var process = Process.Start(psi)!;
         var version = await process.StandardOutput.ReadToEndAsync();

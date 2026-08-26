@@ -45,9 +45,10 @@ public static class HttpClientExtensions {
     /// enough for a token to expire mid-flight wants it; a hook that POSTs once does not.
     /// </summary>
     public static async Task<(HttpClient Client, AuthStatus Status)> CreateClientWithAuthStatusAsync(
-        string? baseUrl = null, CancellationToken ct = default, bool allowAutoRedirect = true,
-        string? rejectedAccessToken = null, bool autoRetryUnauthorized = false) {
-        var (client, status, _, _) = await CreateClientCoreAsync(baseUrl, ct, allowAutoRedirect,
+        ConfigRoot config, ProfileContext profiles, string baseUrl, CancellationToken ct = default,
+        bool allowAutoRedirect = true, string? rejectedAccessToken = null,
+        bool autoRetryUnauthorized = false) {
+        var (client, status, _, _) = await CreateClientCoreAsync(config, profiles, baseUrl, ct, allowAutoRedirect,
             rejectedAccessToken, autoRetryUnauthorized);
 
         return (client, status);
@@ -59,25 +60,24 @@ public static class HttpClientExtensions {
     ///
     /// <para>Every client this produces — regardless of which branch below built it — leaves here
     /// carrying the observation headers the server's update-notification pipeline reads (see
-    /// <see cref="AttachObservationHeadersAsync"/>): this is the ONE choke point every authenticated
+    /// <see cref="AttachObservationHeaders"/>): this is the ONE choke point every authenticated
     /// CLI request flows through, so it is the one place that can promise every request the server
     /// sees is tagged. <c>WhoamiCommand.ProbeAsync</c> deliberately bypasses this method (it
     /// must not mutate auth state) and attaches the same headers explicitly.</para>
     /// </summary>
     static async Task<(HttpClient Client, AuthStatus Status, TokenResolution? Resolution, string? MachineProblem)> CreateClientCoreAsync(
-        string? baseUrl, CancellationToken ct, bool allowAutoRedirect,
+        ConfigRoot config, ProfileContext profiles, string baseUrl, CancellationToken ct, bool allowAutoRedirect,
         string? rejectedAccessToken, bool autoRetryUnauthorized) {
-        var result = await CreateClientCoreImplAsync(baseUrl, ct, allowAutoRedirect, rejectedAccessToken, autoRetryUnauthorized);
-        await AttachObservationHeadersAsync(result.Client, ct);
+        var result = await CreateClientCoreImplAsync(
+            config, profiles, baseUrl, ct, allowAutoRedirect, rejectedAccessToken, autoRetryUnauthorized);
+        AttachObservationHeaders(profiles, result.Client);
 
         return result;
     }
 
     static async Task<(HttpClient Client, AuthStatus Status, TokenResolution? Resolution, string? MachineProblem)> CreateClientCoreImplAsync(
-        string? baseUrl, CancellationToken ct, bool allowAutoRedirect,
+        ConfigRoot config, ProfileContext profiles, string baseUrl, CancellationToken ct, bool allowAutoRedirect,
         string? rejectedAccessToken, bool autoRetryUnauthorized) {
-        baseUrl ??= AppConfig.ResolvedServerUrl ?? Environment.GetEnvironmentVariable("KCAP_URL") ?? "http://localhost:5108";
-
         HttpClient NewClient(DelegatingHandler? retry = null) {
             var primary = new HttpClientHandler { AllowAutoRedirect = allowAutoRedirect };
 
@@ -90,12 +90,12 @@ public static class HttpClientExtensions {
 
             // Capture the server's own version (X-Kcap-Server-Version) from every response — outermost,
             // so it observes the FINAL response after any 401-retry. No extra requests; best-effort.
-            var capture = new ServerVersionCaptureHandler(baseUrl) { InnerHandler = inner };
+            var capture = new ServerVersionCaptureHandler(baseUrl, config) { InnerHandler = inner };
 
             return new(capture);
         }
 
-        var provider = await DiscoverProviderAsync(baseUrl, ct);
+        var provider = await DiscoverProviderAsync(baseUrl, config, profiles, ct);
 
         if (provider == "None") {
             return (NewClient(), AuthStatus.NoAuthRequired, null, null); // No auth needed
@@ -140,20 +140,20 @@ public static class HttpClientExtensions {
         // an expired token be refreshed a SECOND time — re-spending a single-use WorkOS refresh
         // token — so this path returns directly.
         if (rejectedAccessToken is not null) {
-            var recovered = await TokenStore.RecoverForServerAsync(baseUrl, rejectedAccessToken, ct);
+            var recovered = await new TokenStore(config).RecoverForServerAsync(profiles.Name, baseUrl, rejectedAccessToken, ct);
 
             if (recovered is null) return (NewClient(), AuthStatus.Expired, null, null);
 
-            var recoveredClient = NewClient(autoRetryUnauthorized ? new UnauthorizedRetryHandler(recovered, baseUrl) : null);
+            var recoveredClient = NewClient(autoRetryUnauthorized ? new UnauthorizedRetryHandler(config, profiles.Name, recovered, baseUrl) : null);
             recoveredClient.DefaultRequestHeaders.Authorization = new("Bearer", recovered.AccessToken);
 
             return (recoveredClient, AuthStatus.Ok, null, null);
         }
 
-        var resolution = await TokenStore.GetValidTokensForServerAsync(baseUrl, ct);
+        var resolution = await new TokenStore(config).GetValidTokensForServerAsync(profiles.Name, baseUrl, ct);
 
         if (resolution is { Status: AuthStatus.Ok, Tokens: not null }) {
-            var client = NewClient(autoRetryUnauthorized ? new UnauthorizedRetryHandler(resolution.Tokens, baseUrl) : null);
+            var client = NewClient(autoRetryUnauthorized ? new UnauthorizedRetryHandler(config, profiles.Name, resolution.Tokens, baseUrl) : null);
             client.DefaultRequestHeaders.Authorization = new("Bearer", resolution.Tokens.AccessToken);
 
             return (client, AuthStatus.Ok, resolution, null);
@@ -186,20 +186,18 @@ public static class HttpClientExtensions {
     /// <see cref="CapacitorVersion.CurrentDisplay"/> can't resolve a real version, in which case
     /// sending "unknown" would be worse than omitting it. Attaches <see cref="UpdateCheckHeader"/>
     /// only when the active profile has explicitly opted out, per the absence-means-on contract
-    /// above. Reads the profile via <see cref="AppConfig.GetActiveProfileAsync"/> — the same
-    /// accessor <c>UpdateNotice</c> uses — which is a cache hit (no disk I/O) whenever the process
-    /// already resolved a profile, so this stays cheap on the per-request hot path.
+    /// above. Reads the profile via <see cref="ProfileContext.Effective"/> — the same accessor
+    /// <c>UpdateNotice</c> uses — off the resolution the caller already holds, so the per-request
+    /// hot path touches no disk at all.
     /// </summary>
-    internal static async Task AttachObservationHeadersAsync(HttpClient client, CancellationToken ct = default) {
+    internal static void AttachObservationHeaders(ProfileContext profiles, HttpClient client) {
         var version = CapacitorVersion.CurrentDisplay();
 
         if (!string.IsNullOrWhiteSpace(version) && !version.Equals("unknown", StringComparison.OrdinalIgnoreCase)) {
             client.DefaultRequestHeaders.Add(CliVersionHeader, version);
         }
 
-        var profile = await AppConfig.GetActiveProfileAsync(ct);
-
-        if (profile?.UpdateCheck == false) {
+        if (profiles.Effective?.UpdateCheck == false) {
             client.DefaultRequestHeaders.Add(UpdateCheckHeader, UpdateCheckOffValue);
         }
     }
@@ -215,9 +213,11 @@ public static class HttpClientExtensions {
     /// a refresh. Pass <c>false</c> from callers that run their own 401-retry loop over the returned
     /// client — the MCP servers do — so a single rejection isn't retried (and refreshed) twice.
     /// </param>
-    public static async Task<HttpClient> CreateAuthenticatedClientAsync(string? baseUrl = null, CancellationToken ct = default,
-            bool autoRetryUnauthorized = true) {
-        var (client, status, resolution, machineProblem) = await CreateClientCoreAsync(baseUrl, ct, allowAutoRedirect: true,
+    public static async Task<HttpClient> CreateAuthenticatedClientAsync(
+            ConfigRoot config, ProfileContext profiles, string baseUrl,
+            CancellationToken ct = default, bool autoRetryUnauthorized = true) {
+        var (client, status, resolution, machineProblem) = await CreateClientCoreAsync(
+            config, profiles, baseUrl, ct, allowAutoRedirect: true,
             rejectedAccessToken: null, autoRetryUnauthorized);
 
         switch (status) {
@@ -234,7 +234,7 @@ public static class HttpClientExtensions {
 
                 break;
             case AuthStatus.WrongServer:
-                var target = baseUrl ?? AppConfig.ResolvedServerUrl ?? "the configured server";
+                var target = baseUrl;
                 await Console.Error.WriteLineAsync(
                     $"Stored token was issued by {resolution?.IssuedServerUrl} but this command targets {target}. " +
                     $"Run 'kcap login' (or switch profiles with 'kcap use') to authenticate against {target}.");
@@ -257,7 +257,8 @@ public static class HttpClientExtensions {
     /// </summary>
     internal static void ResetProviderCacheForTesting() => cachedProvider = null;
 
-    public static async Task<string> DiscoverProviderAsync(string baseUrl, CancellationToken ct = default) {
+    public static async Task<string> DiscoverProviderAsync(
+            string baseUrl, ConfigRoot config, ProfileContext profiles, CancellationToken ct = default) {
         if (cachedProvider is not null) {
             return cachedProvider;
         }
@@ -269,7 +270,7 @@ public static class HttpClientExtensions {
 
         // Cross-process cache: each hook invocation is a fresh process, so the in-process static
         // above never helps a hook. Skip the /auth/config round-trip when a recent result is on disk.
-        var cached = AuthProviderCache.TryGet(baseUrl);
+        var cached = AuthProviderCache.TryGet(baseUrl, config);
 
         if (cached is not null) {
             cachedProvider = cached;
@@ -283,10 +284,10 @@ public static class HttpClientExtensions {
             var response = await http.GetAsync($"{baseUrl}/auth/config", ct);
 
             if (response.IsSuccessStatusCode) {
-                var config   = await response.Content.ReadFromJsonAsync(CapacitorJsonContext.Default.AuthDiscoveryResponse, ct);
-                var provider = config?.Provider ?? "None";
+                var discovered = await response.Content.ReadFromJsonAsync(CapacitorJsonContext.Default.AuthDiscoveryResponse, ct);
+                var provider   = discovered?.Provider ?? "None";
                 cachedProvider = provider;          // in-process
-                AuthProviderCache.Set(baseUrl, provider); // cross-process; only cache successful discovery
+                AuthProviderCache.Set(baseUrl, provider, config); // cross-process; only cache successful discovery
 
                 return provider;
             }
@@ -298,7 +299,7 @@ public static class HttpClientExtensions {
         }
 
         // Fallback: try existing tokens (don't cache — allow re-discovery next time)
-        return (await TokenStore.LoadAsync())?.Provider ?? "None";
+        return (await new TokenStore(config).LoadForProfileAsync(profiles.Name, ct))?.Provider ?? "None";
     }
 
     static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(30);
@@ -553,13 +554,13 @@ public static class HttpClientExtensions {
 /// <c>NewClient</c>), so it observes the final response after any retry. Best-effort: it never alters
 /// the request/response and never lets a capture failure surface.
 /// </summary>
-internal sealed class ServerVersionCaptureHandler(string serverUrl) : DelegatingHandler {
+internal sealed class ServerVersionCaptureHandler(string serverUrl, ConfigRoot config) : DelegatingHandler {
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) {
         var response = await base.SendAsync(request, ct);
 
         try {
             if (response.Headers.TryGetValues(HttpClientExtensions.ServerVersionHeader, out var values))
-                ServerVersionStore.Set(serverUrl, values.FirstOrDefault());
+                ServerVersionStore.Set(serverUrl, values.FirstOrDefault(), config);
         } catch {
             // Header capture must never affect the response the caller gets back.
         }

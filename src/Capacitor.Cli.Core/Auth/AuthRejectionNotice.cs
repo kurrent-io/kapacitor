@@ -129,10 +129,10 @@ public static class AuthRejectionNotice {
     /// build an error string. Any store fault degrades to the legacy message rather than
     /// replacing an auth diagnosis with an IO stack trace.
     /// </summary>
-    public static async Task<string> ForPersistentUnauthorizedAsync(string targetBaseUrl, CancellationToken ct = default) {
+    public static async Task<string> ForPersistentUnauthorizedAsync(
+            ConfigRoot config, string profile, string targetBaseUrl, CancellationToken ct = default) {
         try {
-            var profile = await TokenStore.ResolveProfileNameAsync(ct);
-            var stored  = await TokenStore.LoadForProfileAsync(profile, ct);
+            var stored = await new TokenStore(config).LoadForProfileAsync(profile, ct);
 
             return Render(Classify(stored, targetBaseUrl), stored, targetBaseUrl);
         } catch {

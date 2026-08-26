@@ -3,12 +3,14 @@ using System.Text;
 using System.Text.Json;
 using Capacitor.Cli.Commands.Harness;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Config;
 
 namespace Capacitor.Cli.Commands;
 
-static class ValidatePlanCommand {
-    public static async Task<int> Handle(string baseUrl, string sessionId) {
-        using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync();
+class ValidatePlanCommand(ConfigRoot config, ProfileContext profiles) {
+    public async Task<int> Handle(string sessionId) {
+        var       baseUrl    = profiles.Resolution.ServerUrl!;
+        using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync(config, profiles, baseUrl);
 
         return await HandleCore(httpClient, baseUrl, sessionId);
     }

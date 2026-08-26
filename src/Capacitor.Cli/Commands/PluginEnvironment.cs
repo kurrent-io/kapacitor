@@ -1,4 +1,5 @@
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.Harness.Antigravity;
 using Capacitor.Cli.Core.Harness.Claude;
 using Capacitor.Cli.Core.Harness.Codex;
@@ -24,6 +25,10 @@ namespace Capacitor.Cli.Commands;
 /// </summary>
 public sealed record PluginEnvironment(
     string         HomeDirectory,
+    // The resolved snapshot, not a ConfigRoot: the only reader wants EVERY profile's server_url
+    // (the Codex sandbox allowlist covers all of them), never "which profile applies" — and the
+    // process already resolved it, so a root here would only buy a second read of the same file.
+    ProfileConfig  Profiles,
     Func<string?>  ResolvePluginPath,
     TextWriter     Stdout,
     TextWriter     Stderr
@@ -73,8 +78,9 @@ public sealed record PluginEnvironment(
     public string AgentsSkillsDir     => Path.Combine(HomeDirectory, ".agents", "skills");
     public string LegacyCodexSkills   => Path.Combine(CodexHome, "skills");
 
-    public static PluginEnvironment FromProcess() => new(
+    public static PluginEnvironment FromProcess(ProfileConfig profiles) => new(
         HomeDirectory:     PathHelpers.HomeDirectory,
+        Profiles:          profiles,
         ResolvePluginPath: () => SetupCommand.ResolvePluginPath(),
         Stdout:            Console.Out,
         Stderr:            Console.Error

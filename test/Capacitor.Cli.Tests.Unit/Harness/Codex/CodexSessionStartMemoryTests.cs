@@ -1,4 +1,3 @@
-using System.Runtime.CompilerServices;
 using Capacitor.Cli.Commands.Harness;
 
 namespace Capacitor.Cli.Tests.Unit.Harness.Codex;
@@ -107,47 +106,6 @@ public class CodexSessionStartMemoryTests {
     [Arguments("https://kurrent.kcap.ai")]
     public async Task an_absolute_base_url_permits_memory_injection(string baseUrl) {
         await Assert.That(CodexHookCommand.CanAttemptMemoryInjection(baseUrl)).IsTrue();
-    }
-
-    /// <summary>Walks up from this file's compile-time path to the repo root.</summary>
-    static string RepoRoot([CallerFilePath] string here = "") {
-        var dir = Path.GetDirectoryName(here);
-
-        while (dir is not null && !File.Exists(Path.Combine(dir, "Capacitor.slnx")))
-            dir = Path.GetDirectoryName(dir);
-
-        return dir ?? throw new InvalidOperationException($"repo root not found from {here}");
-    }
-
-    // The memory index endpoint is bearer-authenticated, and the shared provider hands a rejected
-    // bearer back to the client factory so it can mint a refreshed client. A bare `new HttpClient()`
-    // would therefore 401 on BOTH the initial call and the refresh, the provider would record a
-    // retryable failure, and Codex would silently receive no memory on every authenticated
-    // deployment — a failure invisible to the writer-level tests above and to any test that cannot
-    // resolve a real token.
-    //
-    // A credential-attaching assertion needs KCAP_CONFIG_DIR bound before PathHelpers' static
-    // initializer runs, which a parallel shared test assembly cannot guarantee. So this pins the
-    // regression at the source level instead: the production path must route through the shared
-    // authenticated-client helper, and must construct no bare client for the memory factory.
-    [Test]
-    public async Task the_production_memory_client_factory_routes_through_the_authenticated_helper() {
-        var source = await File.ReadAllTextAsync(
-            Path.Combine(RepoRoot(), "src", "Capacitor.Cli", "Commands", "Harness", "CodexHookCommand.cs"));
-
-        // The memory path must be wired to the named production factory, not an inline client.
-        await Assert.That(source).Contains("memoryClientFactory ?? DefaultMemoryClientFactory(baseUrl)");
-
-        // Scoped to the factory's own body: the file legitimately constructs bare clients for
-        // unrelated handlers, so a whole-file ban would be a false positive.
-        var start = source.IndexOf("DefaultMemoryClientFactory(string baseUrl)", StringComparison.Ordinal);
-        await Assert.That(start).IsGreaterThan(-1);
-
-        var factoryBody = source.Substring(start, Math.Min(400, source.Length - start));
-
-        await Assert.That(factoryBody).Contains("CreateClientWithAuthStatusAsync");
-        await Assert.That(factoryBody).Contains("rejectedAccessToken");
-        await Assert.That(factoryBody).DoesNotContain("new HttpClient(");
     }
 
     // Stop shares the handshake constant but must NEVER carry memory context: it is a

@@ -1,4 +1,5 @@
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core;
 
 namespace Capacitor.Cli.Tests.Unit.Commands;
@@ -8,9 +9,8 @@ public class PluginCommandSkillsTests {
     public async Task Install_with_both_codex_and_skills_flags_returns_error() {
         using var tmp = new TempDir();
         var capturedErr = new StringWriter();
-        var exit = await PluginCommand.HandleAsync(
-            ["plugin", "install", "--codex", "--skills"],
-            TestEnv(fakeHome: tmp.Path, stderr: capturedErr));
+        var exit = await new PluginCommand(TestEnv(fakeHome: tmp.Path, stderr: capturedErr)).HandleAsync(
+            ["plugin", "install", "--codex", "--skills"]);
         await Assert.That(exit).IsEqualTo(1);
         await Assert.That(capturedErr.ToString()).Contains("mutually exclusive");
     }
@@ -19,9 +19,8 @@ public class PluginCommandSkillsTests {
     public async Task Remove_with_both_codex_and_skills_flags_returns_error() {
         using var tmp = new TempDir();
         var capturedErr = new StringWriter();
-        var exit = await PluginCommand.HandleAsync(
-            ["plugin", "remove", "--codex", "--skills"],
-            TestEnv(fakeHome: tmp.Path, stderr: capturedErr));
+        var exit = await new PluginCommand(TestEnv(fakeHome: tmp.Path, stderr: capturedErr)).HandleAsync(
+            ["plugin", "remove", "--codex", "--skills"]);
         await Assert.That(exit).IsEqualTo(1);
         await Assert.That(capturedErr.ToString()).Contains("mutually exclusive");
     }
@@ -41,9 +40,8 @@ public class PluginCommandSkillsTests {
         var legacyDir = fakeHome.CreateDir(".codex", "skills");
         legacyDir.CreateDir("kcap-recap");
 
-        var exit = await PluginCommand.HandleAsync(
-            ["plugin", "install", "--skills"],
-            TestEnv(fakeHome.Path, pluginRoot.Path));
+        var exit = await new PluginCommand(TestEnv(fakeHome.Path, pluginRoot.Path)).HandleAsync(
+            ["plugin", "install", "--skills"]);
         await Assert.That(exit).IsEqualTo(0);
 
         var target = fakeHome.PathTo(".agents", "skills");
@@ -67,9 +65,8 @@ public class PluginCommandSkillsTests {
                 $"---\nname: {name}\n---\nbody");
         }
 
-        var exit = await PluginCommand.HandleAsync(
-            ["plugin", "install", "--skills", "--if-installed"],
-            TestEnv(fakeHome.Path, pluginRoot.Path));
+        var exit = await new PluginCommand(TestEnv(fakeHome.Path, pluginRoot.Path)).HandleAsync(
+            ["plugin", "install", "--skills", "--if-installed"]);
         await Assert.That(exit).IsEqualTo(0);
 
         // No marker existed → installer must not have run.
@@ -94,9 +91,8 @@ public class PluginCommandSkillsTests {
         target.CreateFile(AgentsSkillsInstaller.MarkerFileName,
             "old-version");
 
-        var exit = await PluginCommand.HandleAsync(
-            ["plugin", "install", "--skills", "--if-installed"],
-            TestEnv(fakeHome.Path, pluginRoot.Path));
+        var exit = await new PluginCommand(TestEnv(fakeHome.Path, pluginRoot.Path)).HandleAsync(
+            ["plugin", "install", "--skills", "--if-installed"]);
         await Assert.That(exit).IsEqualTo(0);
 
         // Skills must be present after refresh.
@@ -134,9 +130,8 @@ public class PluginCommandSkillsTests {
             "---\nname: kcap-recap\n---\nstale body");
         await Assert.That(File.Exists(Path.Combine(target, AgentsSkillsInstaller.MarkerFileName))).IsFalse();
 
-        var exit = await PluginCommand.HandleAsync(
-            ["plugin", "install", "--skills", "--if-installed"],
-            TestEnv(fakeHome.Path, pluginRoot.Path));
+        var exit = await new PluginCommand(TestEnv(fakeHome.Path, pluginRoot.Path)).HandleAsync(
+            ["plugin", "install", "--skills", "--if-installed"]);
         await Assert.That(exit).IsEqualTo(0);
 
         // All skills present + freshly written.
@@ -177,9 +172,8 @@ public class PluginCommandSkillsTests {
         target.CreateFile(["kcap-recap", "SKILL.md"],
             "stale body — must NOT be overwritten");
 
-        var exit = await PluginCommand.HandleAsync(
-            ["plugin", "install", "--skills", "--if-installed"],
-            TestEnv(fakeHome.Path, pluginRoot.Path));
+        var exit = await new PluginCommand(TestEnv(fakeHome.Path, pluginRoot.Path)).HandleAsync(
+            ["plugin", "install", "--skills", "--if-installed"]);
         await Assert.That(exit).IsEqualTo(0);
 
         // Sentinel still intact → installer did not run.
@@ -200,8 +194,8 @@ public class PluginCommandSkillsTests {
         // …but plugin path is null (resolution failed).
         var env = TestEnv(fakeHome.Path, pluginPath: null, stderr: capturedErr);
 
-        var exit = await PluginCommand.HandleAsync(
-            ["plugin", "install", "--skills", "--if-installed"], env);
+        var exit = await new PluginCommand(env).HandleAsync(
+            ["plugin", "install", "--skills", "--if-installed"]);
 
         // Refresh path must never fail npm install — exit 0, nothing on stderr.
         await Assert.That(exit).IsEqualTo(0);
@@ -223,9 +217,8 @@ public class PluginCommandSkillsTests {
             Directory.CreateDirectory(Path.Combine(legacyDir, name));
         }
 
-        var exit = await PluginCommand.HandleAsync(
-            ["plugin", "remove", "--skills"],
-            TestEnv(fakeHome.Path));
+        var exit = await new PluginCommand(TestEnv(fakeHome.Path)).HandleAsync(
+            ["plugin", "remove", "--skills"]);
         await Assert.That(exit).IsEqualTo(0);
 
         foreach (var name in AgentsSkillsInstaller.SourceNames) {
@@ -241,6 +234,7 @@ public class PluginCommandSkillsTests {
         TextWriter? stderr     = null
     ) => new(
         HomeDirectory:     fakeHome,
+        Profiles:          new ProfileConfig(),
         ResolvePluginPath: () => pluginPath,
         Stdout:            stdout ?? TextWriter.Null,
         Stderr:            stderr ?? TextWriter.Null

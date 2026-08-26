@@ -10,6 +10,8 @@ namespace Capacitor.Cli.Tests.Unit.Services;
 public class ServiceVerifyReplaceTests {
     [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
 
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     [TempDir] public required TempDir Tmp { get; init; }
 
     const string Id             = "svc-verify-replace";
@@ -115,7 +117,7 @@ public class ServiceVerifyReplaceTests {
             : manager.Uninstalled ? null
             : ManualOwnerPid;
 
-        var sut = new ServiceVerify(Daemons.Store, manager, ValidatedPid, Hello, TimeProvider.System, readPlist: OwnPlist);
+        var sut = new ServiceVerify(Daemons.Store, Config.Root, manager, ValidatedPid, Hello, TimeProvider.System, readPlist: OwnPlist);
 
         var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: true, ExpectedVersion);
 
@@ -161,7 +163,7 @@ public class ServiceVerifyReplaceTests {
             : helloCalls == 0 ? ManualOwnerPid
             : null;
 
-        var sut = new ServiceVerify(Daemons.Store, manager, ValidatedPid, Hello, TimeProvider.System, readPlist: OwnPlist);
+        var sut = new ServiceVerify(Daemons.Store, Config.Root, manager, ValidatedPid, Hello, TimeProvider.System, readPlist: OwnPlist);
 
         var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: true, ExpectedVersion);
 
@@ -188,7 +190,7 @@ public class ServiceVerifyReplaceTests {
 
         int? ValidatedPid(string _) => manager.Bootstrapped ? manager.RunningPid : null;
 
-        var sut = new ServiceVerify(Daemons.Store, manager, ValidatedPid, Hello, TimeProvider.System, readPlist: OwnPlist);
+        var sut = new ServiceVerify(Daemons.Store, Config.Root, manager, ValidatedPid, Hello, TimeProvider.System, readPlist: OwnPlist);
 
         var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: true, ExpectedVersion);
 
@@ -219,7 +221,7 @@ public class ServiceVerifyReplaceTests {
             : helloCalls == 0 ? ManualOwnerPid
             : null;
 
-        var sut = new ServiceVerify(Daemons.Store, manager, ValidatedPid, Hello, TimeProvider.System, readPlist: OwnPlist);
+        var sut = new ServiceVerify(Daemons.Store, Config.Root, manager, ValidatedPid, Hello, TimeProvider.System, readPlist: OwnPlist);
 
         var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: true, ExpectedVersion);
 
@@ -253,7 +255,7 @@ public class ServiceVerifyReplaceTests {
             : manager.Uninstalled ? null
             : ManualOwnerPid;
 
-        var sut = new ServiceVerify(Daemons.Store, manager, ValidatedPid, Hello, TimeProvider.System, readPlist: OwnPlist);
+        var sut = new ServiceVerify(Daemons.Store, Config.Root, manager, ValidatedPid, Hello, TimeProvider.System, readPlist: OwnPlist);
 
         var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: true, ExpectedVersion);
 
@@ -279,7 +281,7 @@ public class ServiceVerifyReplaceTests {
         static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
             Task.FromResult(new HelloProbeResult(false, null, null, null)); // never well-formed
 
-        var sut = new ServiceVerify(Daemons.Store, manager, _ => ManualOwnerPid, Hello, time, forwardBudget: TimeSpan.FromSeconds(2), readPlist: OwnPlist);
+        var sut = new ServiceVerify(Daemons.Store, Config.Root, manager, _ => ManualOwnerPid, Hello, time, forwardBudget: TimeSpan.FromSeconds(2), readPlist: OwnPlist);
 
         var task = sut.InstallVerifiedAsync(Spec(daemonPath), replace: true, ExpectedVersion);
         var exit = await Drive(task, time, TimeSpan.FromMilliseconds(500));
@@ -304,7 +306,7 @@ public class ServiceVerifyReplaceTests {
         static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
             Task.FromResult(new HelloProbeResult(false, null, null, null));
 
-        var sut = new ServiceVerify(Daemons.Store, manager, _ => null, Hello, time,
+        var sut = new ServiceVerify(Daemons.Store, Config.Root, manager, _ => null, Hello, time,
             forwardBudget: TimeSpan.FromSeconds(2), rollbackReserve: TimeSpan.FromSeconds(1), readPlist: OwnPlist);
 
         var task = sut.InstallVerifiedAsync(Spec(daemonPath), replace: true, ExpectedVersion);
@@ -323,7 +325,7 @@ public class ServiceVerifyReplaceTests {
     public async Task Unknown_probe_aborts_before_the_matrix_runs_anything_destructive() {
         var (_, daemonPath) = SetUpViableInstall();
         var manager = new FakeServiceManager { InitialProbe = LabelProbe.Unknown };
-        var sut = new ServiceVerify(Daemons.Store, manager, _ => ManualOwnerPid, (_, _) => Task.FromResult(new HelloProbeResult(false, null, null, null)), TimeProvider.System, readPlist: OwnPlist);
+        var sut = new ServiceVerify(Daemons.Store, Config.Root, manager, _ => ManualOwnerPid, (_, _) => Task.FromResult(new HelloProbeResult(false, null, null, null)), TimeProvider.System, readPlist: OwnPlist);
 
         var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: true, ExpectedVersion);
 
@@ -346,7 +348,7 @@ public class ServiceVerifyReplaceTests {
         static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
             Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
 
-        var sut = new ServiceVerify(Daemons.Store, manager, _ => ManualOwnerPid, Hello, time, forwardBudget: TimeSpan.FromSeconds(2), readPlist: OwnPlist);
+        var sut = new ServiceVerify(Daemons.Store, Config.Root, manager, _ => ManualOwnerPid, Hello, time, forwardBudget: TimeSpan.FromSeconds(2), readPlist: OwnPlist);
 
         var task = sut.InstallVerifiedAsync(Spec(daemonPath), replace: true, ExpectedVersion);
         var exit = await Drive(task, time, TimeSpan.FromMilliseconds(500));
@@ -364,7 +366,7 @@ public class ServiceVerifyReplaceTests {
         // render throw. That must abort as a VIABILITY failure BEFORE the old label/owner is
         // cleared — never destroy the working unit and only then discover the new one can't render.
         var manager = new ThrowingRenderManager();
-        var sut = new ServiceVerify(Daemons.Store, manager, _ => ManualOwnerPid, (_, _) => Task.FromResult(new HelloProbeResult(false, null, null, null)),
+        var sut = new ServiceVerify(Daemons.Store, Config.Root, manager, _ => ManualOwnerPid, (_, _) => Task.FromResult(new HelloProbeResult(false, null, null, null)),
             TimeProvider.System, readPlist: OwnPlist);
 
         var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: true, ExpectedVersion);
@@ -378,7 +380,7 @@ public class ServiceVerifyReplaceTests {
     public async Task Invalid_pinned_profile_url_under_replace_is_a_viability_abort_touching_nothing() {
         var (_, daemonPath) = SetUpViableInstall();
         var manager = new FakeServiceManager { InitialProbe = LabelProbe.Loaded, InitialUnitPresent = true, InitialJobPid = ManualOwnerPid };
-        var sut = new ServiceVerify(Daemons.Store, manager, _ => ManualOwnerPid, (_, _) => Task.FromResult(new HelloProbeResult(false, null, null, null)),
+        var sut = new ServiceVerify(Daemons.Store, Config.Root, manager, _ => ManualOwnerPid, (_, _) => Task.FromResult(new HelloProbeResult(false, null, null, null)),
             TimeProvider.System, readPlist: OwnPlist, profileViable: () => false);
 
         var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: true, ExpectedVersion);
@@ -400,7 +402,7 @@ public class ServiceVerifyReplaceTests {
         static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
             Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
 
-        var sut = new ServiceVerify(Daemons.Store, manager, _ => manager.Bootstrapped ? manager.RunningPid : null, Hello, time,
+        var sut = new ServiceVerify(Daemons.Store, Config.Root, manager, _ => manager.Bootstrapped ? manager.RunningPid : null, Hello, time,
             forwardBudget: TimeSpan.FromSeconds(5), readPlist: OwnPlist);
 
         var task = sut.InstallVerifiedAsync(Spec(daemonPath), replace: true, ExpectedVersion);
@@ -422,7 +424,7 @@ public class ServiceVerifyReplaceTests {
         var manager = new OrphanPlistManager(reUninstallRemovesPlist: false);
         var time    = new FakeTimeProvider();
 
-        var sut = new ServiceVerify(Daemons.Store, manager, _ => manager.Bootstrapped ? manager.RunningPid : null,
+        var sut = new ServiceVerify(Daemons.Store, Config.Root, manager, _ => manager.Bootstrapped ? manager.RunningPid : null,
             (_, _) => Task.FromResult(new HelloProbeResult(false, null, null, null)), time,
             forwardBudget: TimeSpan.FromSeconds(2), readPlist: OwnPlist);
 

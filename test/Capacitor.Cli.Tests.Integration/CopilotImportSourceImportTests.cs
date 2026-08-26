@@ -15,6 +15,8 @@ namespace Capacitor.Cli.Tests.Integration;
 /// suppressed so it doesn't double-count on top of the classify-time AlreadyLoaded bucket.
 /// </summary>
 public class CopilotImportSourceImportTests : IDisposable {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     readonly WireMockServer _server  = WireMockServer.Start();
     readonly TempDir        _tmp     = new();
     readonly string         _tempDir;
@@ -53,7 +55,7 @@ public class CopilotImportSourceImportTests : IDisposable {
         }
 
         using var client = new HttpClient();
-        var source = new CopilotImportSource(
+        var source = new CopilotImportSource(Config.Root, 
             sessionStateDirOverride: root,
             repoDetector: _ => Task.FromResult<RepositoryPayload?>(null));
 

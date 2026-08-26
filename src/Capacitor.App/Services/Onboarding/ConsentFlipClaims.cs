@@ -11,15 +11,14 @@ namespace Capacitor.App.Services.Onboarding;
 public sealed record ConsentFlipClaim(string Profile, string CanonicalServer);
 
 /// Durable decision-7 claim store; every mutation is a synchronous ConfigFileLock critical section (no await while held).
-public sealed partial class ConsentFlipClaims(string path, string? configPath = null) {
-    // configPath is a test seam for TryConsume's config lock; production default is AppConfig.GetConfigPath().
-    readonly string _configPath = configPath ?? AppConfig.GetConfigPath();
+public sealed partial class ConsentFlipClaims(ConfigRoot config) {
+    const string ClaimsFileName = "consent-flip-claims.json";
+
+    readonly string path = config.Path(ClaimsFileName);
     volatile QuarantineState? _quarantine;
 
-    public static ConsentFlipClaims Default() => new(PathHelpers.ConfigPath("consent-flip-claims.json"));
-
     public IReadOnlyList<ConsentFlipClaim> Pending() {
-        using var _ = ConfigFileLock.Acquire(path);
+        using var _ = config.AcquireLock(ClaimsFileName);
         return ReadFreshLocked().Claims.Select(c => new ConsentFlipClaim(c.Profile, c.Server)).ToList();
     }
 
@@ -29,7 +28,7 @@ public sealed partial class ConsentFlipClaims(string path, string? configPath = 
     /// canonical-identity re-resolve, stranding the claim as permanently pending.
     public bool Arm(ConsentFlipClaim claim) {
         claim = claim with { CanonicalServer = ServerIdentity.Canonicalize(claim.CanonicalServer) ?? claim.CanonicalServer };
-        using var _ = ConfigFileLock.Acquire(path);
+        using var _ = config.AcquireLock(ClaimsFileName);
         var file = ReadFreshLocked();
         var claims = file.Claims
             .Where(c => c.Profile != claim.Profile || c.Server != claim.CanonicalServer)
@@ -44,12 +43,12 @@ public sealed partial class ConsentFlipClaims(string path, string? configPath = 
             Func<(string Profile, string Server, string DaemonName)> reResolveUnderConfigLock,
             string expectedDaemonName) {
         claim = claim with { CanonicalServer = ServerIdentity.Canonicalize(claim.CanonicalServer) ?? claim.CanonicalServer };
-        using var configLock = ConfigFileLock.Acquire(_configPath);
+        using var configLock = config.AcquireLock(AppConfig.ConfigFileName);
         var resolved = reResolveUnderConfigLock();
         if (resolved.Profile != claim.Profile || resolved.Server != claim.CanonicalServer || resolved.DaemonName != expectedDaemonName)
             return false;
 
-        using var claimsLock = ConfigFileLock.Acquire(path);
+        using var claimsLock = config.AcquireLock(ClaimsFileName);
         var file = ReadFreshLocked();
         var remaining = file.Claims.Where(c => c.Profile != claim.Profile || c.Server != claim.CanonicalServer).ToList();
         if (remaining.Count == file.Claims.Count) return true; // already gone — idempotent re-apply, nothing to publish

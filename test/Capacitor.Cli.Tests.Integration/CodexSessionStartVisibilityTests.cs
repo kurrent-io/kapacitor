@@ -1,7 +1,7 @@
 using System.Text.Json.Nodes;
+using Capacitor.Cli.Commands;
 using Capacitor.Cli.Commands.Harness;
 using Capacitor.Cli.Core.Config;
-using Capacitor.Cli.Core;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
 using WireMock.Server;
@@ -16,25 +16,13 @@ namespace Capacitor.Cli.Tests.Integration;
 /// org-visibility fallback) and ignore per-profile exclusions.
 /// </summary>
 public class CodexSessionStartVisibilityTests : IDisposable {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     readonly WireMockServer _server         = WireMockServer.Start();
-    readonly string         _configPath     = PathHelpers.ConfigPath("config.json");
-    readonly string?        _previousConfig;
 
-    public CodexSessionStartVisibilityTests() {
-        _previousConfig = File.Exists(_configPath) ? File.ReadAllText(_configPath) : null;
-    }
+    public void Dispose() => _server.Stop();
 
-    public void Dispose() {
-        _server.Stop();
-
-        if (_previousConfig is null) {
-            if (File.Exists(_configPath)) File.Delete(_configPath);
-        } else {
-            File.WriteAllText(_configPath, _previousConfig);
-        }
-    }
-
-    [Test, NotInParallel("AppConfig_FileState")]
+    [Test]
     public async Task SessionStart_stamps_default_visibility_from_active_profile() {
         var config = new ProfileConfig {
             ActiveProfile = "work",
@@ -45,7 +33,7 @@ public class CodexSessionStartVisibilityTests : IDisposable {
                 }
             }
         };
-        await ConfigMutator.MutateAsync(_ => config);
+        await ConfigMutator.MutateAsync(Config.Root, _ => config);
 
         _server.Given(Request.Create().WithPath("/hooks/session-start/codex").UsingPost())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody("{}"));
@@ -62,7 +50,7 @@ public class CodexSessionStartVisibilityTests : IDisposable {
             }
             """;
 
-        var exit = await CodexHookCommand.Handle(_server.Url!, new StringReader(payload));
+        var exit = await new CodexHookCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), new HookClock(TimeProvider.System)).Handle(new StringReader(payload));
         await Assert.That(exit).IsEqualTo(0);
 
         var requests = _server.FindLogEntries(Request.Create().WithPath("/hooks/session-start/codex").UsingPost());
@@ -89,7 +77,7 @@ public class CodexSessionStartVisibilityTests : IDisposable {
                 }
             }
         };
-        await ConfigMutator.MutateAsync(_ => config);
+        await ConfigMutator.MutateAsync(Config.Root, _ => config);
 
         _server.Given(Request.Create().WithPath("/hooks/session-start/codex").UsingPost())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody("{}"));
@@ -107,7 +95,7 @@ public class CodexSessionStartVisibilityTests : IDisposable {
         using var capture = ConsoleOutput.StartCapture();
 
         try {
-            var exit = await CodexHookCommand.Handle(_server.Url!, new StringReader(payload));
+            var exit = await new CodexHookCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), new HookClock(TimeProvider.System)).Handle(new StringReader(payload));
             await Assert.That(exit).IsEqualTo(0);
 
             // No /hooks/session-start/codex POST.
@@ -121,9 +109,9 @@ public class CodexSessionStartVisibilityTests : IDisposable {
             // Subsequent Stop on the same session must take the disabled-session
             // fast path (no /hooks call, no watcher refresh) — that's how
             // per-turn Stop hooks stay cheap for excluded sessions.
-            await Assert.That(DisabledSessions.IsDisabled(excludedSessionId)).IsTrue();
+            await Assert.That(DisabledSessions.IsDisabled(excludedSessionId, Config.Root)).IsTrue();
         } finally {
-            DisabledSessions.RemoveMarker(excludedSessionId);
+            DisabledSessions.RemoveMarker(excludedSessionId, Config.Root);
         }
     }
 }

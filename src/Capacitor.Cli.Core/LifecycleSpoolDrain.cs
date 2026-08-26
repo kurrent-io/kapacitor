@@ -78,12 +78,12 @@ public static class LifecycleSpoolDrain {
     /// silently drop the what's-done generation. Callers that don't need it (or can't reach the
     /// process-spawning helper — the daemon has its own) may omit it.</para>
     /// </summary>
-    public static Task RunAsync(HttpClient client, string baseUrl, HookSpool lifecycle, TranscriptSpool transcript,
-                                string? currentSessionId, TimeSpan budget, CancellationToken ct,
-                                Action<string, string>? onWhatsDoneRequested = null)
+    public static Task RunAsync(CursorMarkers markers, HttpClient client, string baseUrl, HookSpool lifecycle,
+                                TranscriptSpool transcript, string? currentSessionId, TimeSpan budget,
+                                CancellationToken ct, Action<string, string>? onWhatsDoneRequested = null)
         => RunAsync(lifecycle, transcript, currentSessionId,
             lifecyclePoster: (route, body) => PostOnce(client, baseUrl, route, body, ct, onWhatsDoneRequested),
-            transcriptPoster: body => PostTranscript(client, baseUrl, body, ct),
+            transcriptPoster: body => PostTranscript(markers, client, baseUrl, body, ct),
             budget, ct);
 
     static async Task<DrainOutcome> PostOnce(
@@ -115,7 +115,8 @@ public static class LifecycleSpoolDrain {
         return slash >= 0 ? route[(slash + 1)..] : "claude";
     }
 
-    static Task<DrainOutcome> PostTranscript(HttpClient client, string baseUrl, string body, CancellationToken ct) {
+    static Task<DrainOutcome> PostTranscript(
+            CursorMarkers markers, HttpClient client, string baseUrl, string body, CancellationToken ct) {
         // review fix #1/#8 — a Cursor batch already quarantined by the runtime rewrite
         // guard must never be replayed from the shutdown transcript spool: the tail spooled at
         // shutdown could predate the quarantine (a batch queued before the guard tripped on a
@@ -131,8 +132,8 @@ public static class LifecycleSpoolDrain {
             var sid    = node?["session_id"]?.GetValue<string>();
 
             if (vendor == "cursor" && sid is not null) {
-                if (CursorMarkers.IsQuarantined(sid)) return Task.FromResult(DrainOutcome.Drop);
-                if (CursorMarkers.BarrierPending(sid, DateTimeOffset.UtcNow, CursorMarkers.DefaultBarrierBound))
+                if (markers.IsQuarantined(sid)) return Task.FromResult(DrainOutcome.Drop);
+                if (markers.BarrierPending(sid, DateTimeOffset.UtcNow, CursorMarkers.DefaultBarrierBound))
                     return Task.FromResult(DrainOutcome.TransientStop);
             }
         } catch {

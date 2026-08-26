@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core.Harness.Antigravity;
 using Capacitor.Cli.Core.Instructions;
@@ -34,7 +35,7 @@ public class PluginCommandAntigravityTests {
             {"mcpServers":{"my-tool":{"command":"my-tool","args":["serve"]}}}
             """);
 
-        var exit = await PluginCommand.HandleAsync(["plugin", "install", "--antigravity", "--if-installed"], env);
+        var exit = await new PluginCommand(env).HandleAsync(["plugin", "install", "--antigravity", "--if-installed"]);
         await Assert.That(exit).IsEqualTo(0);
 
         var servers = JsonNode.Parse(await File.ReadAllTextAsync(env.AntigravityMcpConfigJson))!.AsObject()["mcpServers"]!.AsObject();
@@ -60,7 +61,7 @@ public class PluginCommandAntigravityTests {
         Directory.CreateDirectory(Path.GetDirectoryName(env.AntigravityInstructionsMd)!);
         await File.WriteAllTextAsync(env.AntigravityInstructionsMd, "# My rules\n\nAlways use tabs.\n");
 
-        var exit = await PluginCommand.HandleAsync(["plugin", "install", "--antigravity", "--if-installed"], env);
+        var exit = await new PluginCommand(env).HandleAsync(["plugin", "install", "--antigravity", "--if-installed"]);
         await Assert.That(exit).IsEqualTo(0);
 
         var content = await File.ReadAllTextAsync(env.AntigravityInstructionsMd);
@@ -76,8 +77,8 @@ public class PluginCommandAntigravityTests {
         var env = TestEnv(home.Path);
         SeedStaleHooks(env);
 
-        var exit = await PluginCommand.HandleAsync(
-            ["plugin", "install", "--antigravity", "--if-installed", "--skip-antigravity-mcp"], env);
+        var exit = await new PluginCommand(env).HandleAsync(
+            ["plugin", "install", "--antigravity", "--if-installed", "--skip-antigravity-mcp"]);
         await Assert.That(exit).IsEqualTo(0);
 
         await Assert.That(File.Exists(env.AntigravityMcpConfigJson)).IsFalse();
@@ -90,8 +91,8 @@ public class PluginCommandAntigravityTests {
         var env = TestEnv(home.Path);
         SeedStaleHooks(env);
 
-        var exit = await PluginCommand.HandleAsync(
-            ["plugin", "install", "--antigravity", "--if-installed", "--skip-antigravity-instructions"], env);
+        var exit = await new PluginCommand(env).HandleAsync(
+            ["plugin", "install", "--antigravity", "--if-installed", "--skip-antigravity-instructions"]);
         await Assert.That(exit).IsEqualTo(0);
 
         await Assert.That(File.Exists(env.AntigravityInstructionsMd)).IsFalse();
@@ -113,7 +114,7 @@ public class PluginCommandAntigravityTests {
         await File.WriteAllTextAsync(env.AntigravityInstructionsMd, "# My rules\n\nAlways use tabs.\n");
         AgentInstructionsWriter.Write(env.AntigravityInstructionsMd, KcapAgentInstructions.Body);
 
-        var exit = await PluginCommand.HandleAsync(["plugin", "remove", "--antigravity"], env);
+        var exit = await new PluginCommand(env).HandleAsync(["plugin", "remove", "--antigravity"]);
         await Assert.That(exit).IsEqualTo(0);
 
         var servers = JsonNode.Parse(await File.ReadAllTextAsync(env.AntigravityMcpConfigJson))!.AsObject()["mcpServers"]!.AsObject();
@@ -142,7 +143,7 @@ public class PluginCommandAntigravityTests {
         await File.WriteAllTextAsync(env.AntigravityInstructionsMd, "# My rules\n\nAlways use tabs.\n");
         AgentInstructionsWriter.Write(env.AntigravityInstructionsMd, KcapAgentInstructions.Body);
 
-        var exit = await PluginCommand.HandleAsync(["plugin", "remove", "--antigravity"], env);
+        var exit = await new PluginCommand(env).HandleAsync(["plugin", "remove", "--antigravity"]);
         await Assert.That(exit).IsEqualTo(0);
 
         var content = await File.ReadAllTextAsync(env.AntigravityInstructionsMd);
@@ -157,19 +158,9 @@ public class PluginCommandAntigravityTests {
 
     static PluginEnvironment TestEnv(string fakeHome) => new(
         HomeDirectory:     fakeHome,
+        Profiles:          new ProfileConfig(),
         ResolvePluginPath: () => null,   // skills source unavailable → skills install no-ops (covered elsewhere)
         Stdout:            TextWriter.Null,
         Stderr:            TextWriter.Null
     ) { ResolveMcpBinaryPath = () => TestBinaryPath };
-
-    sealed class EnvScope : IDisposable {
-        readonly string  _key;
-        readonly string? _prev;
-        public EnvScope(string key, string? value) {
-            _key  = key;
-            _prev = Environment.GetEnvironmentVariable(key);
-            Environment.SetEnvironmentVariable(key, value);
-        }
-        public void Dispose() => Environment.SetEnvironmentVariable(_key, _prev);
-    }
 }

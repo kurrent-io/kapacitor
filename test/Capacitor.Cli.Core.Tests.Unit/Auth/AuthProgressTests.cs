@@ -41,7 +41,7 @@ public class AuthProgressTests {
 
         using var capture = ConsoleOutput.StartCapture();
 
-        var token = await OAuthLoginFlow.RunDeviceFlowAsync(http, "client_id", progress: progress);
+        var token = await OAuthLoginFlow.RunDeviceFlowAsync(http, "client_id", new RecordingBrowser(), progress: progress);
 
         await Assert.That(token).IsEqualTo("tok");
         await Assert.That(progress.DeviceCodes).Count().IsEqualTo(1);

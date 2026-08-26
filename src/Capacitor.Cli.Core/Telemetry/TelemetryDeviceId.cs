@@ -23,10 +23,7 @@ public readonly record struct TelemetryDeviceIdFile(string Id);
 /// aborts the whole process.
 /// </summary>
 public static class TelemetryDeviceId {
-    /// <summary>Test seam. Null in production, where the path resolves under the config dir.</summary>
-    public static string? PathOverride { get; set; }
-
-    static string Path => PathOverride ?? PathHelpers.ConfigPath("telemetry-device.json");
+    static string DevicePath(ConfigRoot config) => config.Path("telemetry-device.json");
 
     /// <summary>
     /// Returns the stable device id, creating and persisting one on first call. Returns null only
@@ -35,9 +32,9 @@ public static class TelemetryDeviceId {
     /// reason to disable telemetry (see <c>CliTelemetry.Initialize</c>): a disk hiccup here costs a
     /// marginally inflated unique-device count, not an entire session's worth of events.
     /// </summary>
-    public static string? GetOrCreate() {
+    public static string? GetOrCreate(ConfigRoot config) {
         try {
-            return ReadPersisted() ?? Create();
+            return ReadPersisted(config) ?? Create(config);
         } catch {
             return null;
         }
@@ -47,8 +44,8 @@ public static class TelemetryDeviceId {
     /// Reads the persisted id straight off disk — what a fresh process (or a fresh call after a
     /// peer process wrote it) would see. Returns null if the file doesn't exist yet or is corrupt.
     /// </summary>
-    public static string? ReadPersisted() {
-        var path = Path;
+    public static string? ReadPersisted(ConfigRoot config) {
+        var path = DevicePath(config);
         if (!File.Exists(path)) return null;
 
         try {
@@ -67,10 +64,10 @@ public static class TelemetryDeviceId {
     // exactly one writer succeeds; the loser's create throws IOException and re-reads the file the
     // winner just wrote instead of keeping its own generated id, so both converge on one value with
     // no separate lock file needed (mirrors MachineId.Create).
-    static string Create() {
-        var path = Path;
+    static string Create(ConfigRoot config) {
+        var path = DevicePath(config);
         var id   = Guid.NewGuid().ToString("N");
-        var dir  = System.IO.Path.GetDirectoryName(path)!;
+        var dir  = Path.GetDirectoryName(path)!;
         Directory.CreateDirectory(dir);
 
         try {
@@ -79,7 +76,7 @@ public static class TelemetryDeviceId {
         } catch (IOException) {
             // File already exists: adopt a peer's valid id if we can read one (the lost-the-race
             // case — a peer created it between our ReadPersisted() check and this create).
-            var peer = ReadPeerIdWithRetry();
+            var peer = ReadPeerIdWithRetry(config);
             if (peer is not null) return peer;
             // ...else it's persistently unreadable (corrupt / stuck partial write). Heal by
             // overwriting once so GetOrCreate returns a STABLE id instead of churning a new GUID
@@ -104,9 +101,9 @@ public static class TelemetryDeviceId {
     const int PeerReadMaxAttempts = 10;
     const int PeerReadDelayMs     = 5;
 
-    static string? ReadPeerIdWithRetry() {
+    static string? ReadPeerIdWithRetry(ConfigRoot config) {
         for (var attempt = 1; ; attempt++) {
-            var peer = ReadPersisted();
+            var peer = ReadPersisted(config);
             if (peer is not null || attempt >= PeerReadMaxAttempts) return peer;
             Thread.Sleep(PeerReadDelayMs);
         }
@@ -119,9 +116,9 @@ public static class TelemetryDeviceId {
     /// create just means the next reader either sees the survivor or mints a fresh id, both
     /// acceptable outcomes for a value with no consistency requirement.
     /// </summary>
-    public static void Delete() {
+    public static void Delete(ConfigRoot config) {
         try {
-            var path = Path;
+            var path = DevicePath(config);
             if (File.Exists(path)) File.Delete(path);
         } catch {
             // Best effort. Telemetry must never throw to the NativeAOT runtime.

@@ -36,6 +36,29 @@ public class ProvisioningWireTests {
         await Assert.That(resp.Reason).IsEqualTo("taken");
     }
 
+    // CapacitorJsonContext is globally SnakeCaseLower, so a bare property would ship as join_id
+    // and kcap-web — which reads named fields — would silently never see it. Nothing errors.
+    [Test]
+    public async Task ProvisionRequest_serializes_joinId_camelCase_not_snake_case() {
+        var json = JsonSerializer.Serialize(
+            new ProvisionRequest { OrgName = "Acme Inc", Slug = "acme", JoinId = "abc123" },
+            CapacitorJsonContext.Default.ProvisionRequest);
+
+        await Assert.That(json).Contains(@"""joinId"":""abc123""");
+        await Assert.That(json).DoesNotContain("join_id");
+    }
+
+    // Old server / new CLI, and every opted-out run: an absent key must be an absent member, not
+    // an explicit null, so the body is what it always was.
+    [Test]
+    public async Task ProvisionRequest_omits_joinId_entirely_when_there_is_no_key() {
+        var json = JsonSerializer.Serialize(
+            new ProvisionRequest { OrgName = "Acme Inc", Slug = "acme" },
+            CapacitorJsonContext.Default.ProvisionRequest);
+
+        await Assert.That(json).DoesNotContain("joinId");
+    }
+
     [Test]
     public async Task StatusResponse_deserializes_camelCase_workosOrgId() {
         var resp = JsonSerializer.Deserialize(

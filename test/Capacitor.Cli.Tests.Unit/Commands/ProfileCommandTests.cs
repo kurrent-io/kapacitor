@@ -4,27 +4,12 @@ using Capacitor.Cli.Core.Config;
 
 namespace Capacitor.Cli.Tests.Unit.Commands;
 
-/// <summary>
-/// <c>ProfileCommand.AddProfile</c>/<c>RemoveProfile</c>'s actual write now goes through
-/// <see cref="ConfigMutator"/>, which always targets
-/// <see cref="AppConfig.GetConfigPath"/> — a <c>static readonly</c> path pinned once per
-/// process (see <c>ConfigDirIsolationTests</c>, <c>ConfigMutatorTests</c>). So these tests can
-/// no longer point <c>configPath</c> at a private per-test temp dir and expect the mutator to
-/// honor it: they seed and assert against the one shared <c>KCAP_CONFIG_DIR</c> the whole
-/// assembly uses, sharing <c>TokenStoreProfileTests</c>'s <see cref="NotInParallelAttribute"/>
-/// key like every other config.json-touching test class.
-/// </summary>
-[NotInParallel("TokenStoreProfileTests")]
 public class ProfileCommandTests {
-    [Before(Test)]
-    public void Cleanup() {
-        SharedConfigDirCleanup.ClearWithRetry("config.json", () => File.Delete(AppConfig.GetConfigPath()));
-        AppConfig.ResetResolvedStateForTesting();
-    }
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
 
     [Test]
     public async Task AddProfile_CreatesNewProfile() {
-        var configPath = AppConfig.GetConfigPath();
+        var configPath = AppConfig.GetConfigPath(Config.Root);
 
         var initial = new ProfileConfig {
             Profiles = new() {
@@ -34,8 +19,8 @@ public class ProfileCommandTests {
         await File.WriteAllTextAsync(configPath,
             JsonSerializer.Serialize(initial, ProfileConfigJsonContextIndented.Default.ProfileConfig));
 
-        var result = await ProfileCommand.AddProfile(
-            configPath, "contoso", "https://contoso.kcap.io",
+        var result = await new ProfileCommand(Config.Root).AddProfile(
+            "contoso", "https://contoso.kcap.io",
             ["github.com/contoso/*"]
         );
 
@@ -51,7 +36,7 @@ public class ProfileCommandTests {
 
     [Test]
     public async Task RemoveProfile_DeletesProfile() {
-        var configPath = AppConfig.GetConfigPath();
+        var configPath = AppConfig.GetConfigPath(Config.Root);
 
         var initial = new ProfileConfig {
             Profiles = new() {
@@ -62,7 +47,7 @@ public class ProfileCommandTests {
         await File.WriteAllTextAsync(configPath,
             JsonSerializer.Serialize(initial, ProfileConfigJsonContextIndented.Default.ProfileConfig));
 
-        var result = await ProfileCommand.RemoveProfile(configPath, "contoso");
+        var result = await new ProfileCommand(Config.Root).RemoveProfile("contoso");
 
         await Assert.That(result).IsEqualTo(0);
 
@@ -74,7 +59,7 @@ public class ProfileCommandTests {
 
     [Test]
     public async Task AddProfile_SchemeLessInput_AddsHttpsAndStoresNormalizedUrl() {
-        var configPath = AppConfig.GetConfigPath();
+        var configPath = AppConfig.GetConfigPath(Config.Root);
 
         var initial = new ProfileConfig {
             Profiles = new() {
@@ -85,8 +70,8 @@ public class ProfileCommandTests {
             JsonSerializer.Serialize(initial, ProfileConfigJsonContextIndented.Default.ProfileConfig));
 
         // skipProbe defaults to true → no network, falls back to loopback heuristic.
-        var result = await ProfileCommand.AddProfile(
-            configPath, "contoso", "contoso.kcap.io", remotes: []);
+        var result = await new ProfileCommand(Config.Root).AddProfile(
+            "contoso", "contoso.kcap.io", remotes: []);
 
         await Assert.That(result).IsEqualTo(0);
 
@@ -99,7 +84,7 @@ public class ProfileCommandTests {
 
     [Test]
     public async Task RemoveProfile_CannotRemoveDefault() {
-        var configPath = AppConfig.GetConfigPath();
+        var configPath = AppConfig.GetConfigPath(Config.Root);
 
         var initial = new ProfileConfig {
             Profiles = new() {
@@ -109,7 +94,7 @@ public class ProfileCommandTests {
         await File.WriteAllTextAsync(configPath,
             JsonSerializer.Serialize(initial, ProfileConfigJsonContextIndented.Default.ProfileConfig));
 
-        var result = await ProfileCommand.RemoveProfile(configPath, "default");
+        var result = await new ProfileCommand(Config.Root).RemoveProfile("default");
 
         await Assert.That(result).IsEqualTo(1);
 

@@ -1,4 +1,5 @@
 using Capacitor.Cli.Core.Auth;
+using Capacitor.Cli.Core;
 using Microsoft.Extensions.Logging;
 
 namespace Capacitor.Cli.Daemon.Services;
@@ -21,8 +22,8 @@ internal interface IProactiveTokenRefreshPort {
 /// cross-process-locked <see cref="TokenStore"/> when it is within <paramref name="window"/>
 /// of expiry.
 /// </summary>
-internal sealed class TokenStoreRefreshPort(TimeSpan window) : IProactiveTokenRefreshPort {
-    public Task<ProactiveRefreshOutcome> RefreshIfExpiringAsync() => TokenStore.RefreshIfExpiringAsync(window);
+internal sealed class TokenStoreRefreshPort(ConfigRoot config, string profile, TimeSpan window) : IProactiveTokenRefreshPort {
+    public Task<ProactiveRefreshOutcome> RefreshIfExpiringAsync() => new TokenStore(config).RefreshIfExpiringAsync(profile, window);
 }
 
 /// <summary>

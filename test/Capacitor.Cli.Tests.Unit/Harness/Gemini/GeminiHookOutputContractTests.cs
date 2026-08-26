@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Capacitor.Cli.Commands;
 using Capacitor.Cli.Commands.Harness;
 using Capacitor.Cli.Core;
 
@@ -23,6 +24,8 @@ namespace Capacitor.Cli.Tests.Unit.Harness.Gemini;
 /// very tests disprove.</para>
 /// </summary>
 public class GeminiHookOutputContractTests {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     const string SessionId = "3f2504e0-4f89-11d3-9a0c-0305e82c3301";
 
     // Every event kcap registers, plus one it does not. The unrecognised entry is deliberate: Gemini's
@@ -49,17 +52,13 @@ public class GeminiHookOutputContractTests {
     public async Task A_disabled_session_still_emits_a_non_blocking_result(string eventName) {
         // `kcap disable` suppresses every POST and watcher restart — but suppression is not silence.
         // Program.cs drains the spool before dispatch, so these paths are not stderr-free.
-        DisabledSessions.Mark(SessionId.Replace("-", ""));
+        DisabledSessions.Mark(SessionId.Replace("-", ""), Config.Root);
 
-        try {
-            var stdout = await RunAsync($$"""
-                {"hook_event_name":"{{eventName}}","session_id":"{{SessionId}}","cwd":"/tmp"}
-                """);
+        var stdout = await RunAsync($$"""
+            {"hook_event_name":"{{eventName}}","session_id":"{{SessionId}}","cwd":"/tmp"}
+            """);
 
-            await AssertNonBlockingJsonObject(stdout);
-        } finally {
-            DisabledSessions.RemoveMarker(SessionId.Replace("-", ""));
-        }
+        await AssertNonBlockingJsonObject(stdout);
     }
 
     [Test, NotInParallel]
@@ -179,12 +178,12 @@ public class GeminiHookOutputContractTests {
         await Assert.That(stdout.Trim()).IsEqualTo(GeminiHookCommand.AllowPayload);
     }
 
-    static async Task<string> RunAsync(string payload) {
+    async Task<string> RunAsync(string payload) {
         using var capture = ConsoleOutput.StartCapture();
 
         // A URL no POST can reach: these paths must all return before any network call, and a test
         // that quietly started talking to a live server would be measuring something else.
-        await GeminiHookCommand.Handle("http://127.0.0.1:1", new StringReader(payload));
+        await new GeminiHookCommand(Config.Root, Resolutions.At("http://127.0.0.1:1", Config.Root), new HookClock(TimeProvider.System)).Handle(new StringReader(payload));
 
         return capture.GetCapturedOutput();
     }

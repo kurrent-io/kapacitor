@@ -1,46 +1,46 @@
 using Capacitor.Cli.Core.Harness.Cursor;
-using Capacitor.Tests.Helpers.Guards;
 
 namespace Capacitor.Cli.Core.Tests.Unit.Harness.Cursor;
 
 /// <summary>
 /// D0/D1 — round-trips CursorMarkers' quarantine/barrier/heartbeat path helpers and the
-/// quarantine read/write cycle. Shares the KCAP_CONFIG_DIR temp dir RepoPathStoreGlobalSetup pins
-/// before PathHelpers' static ConfigDir field is first touched (see that class's doc comment); a
-/// fresh GUID session id per test keeps these from colliding with each other or with the other
-/// path-based test classes sharing that same directory.
+/// quarantine read/write cycle, each test under its own config root.
 /// </summary>
 public class CursorMarkersTests {
+    CursorMarkers Markers => new(Config.Root);
+
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     static string NewSessionId() => Guid.NewGuid().ToString("N");
 
     [Test]
     public async Task Paths_are_dot_namespaced_under_the_shared_config_dir() {
         var sid = NewSessionId();
 
-        await Assert.That(CursorMarkers.QuarantinePath(sid))
-            .IsEqualTo(Path.Combine(RepoPathStoreGlobalSetup.SharedConfigDir, "cursor-quarantine", $"{sid}.json"));
-        await Assert.That(CursorMarkers.BarrierPath(sid))
-            .IsEqualTo(Path.Combine(RepoPathStoreGlobalSetup.SharedConfigDir, "cursor-barrier", $"{sid}.json"));
-        await Assert.That(CursorMarkers.HeartbeatPath(sid))
-            .IsEqualTo(Path.Combine(RepoPathStoreGlobalSetup.SharedConfigDir, "cursor-heartbeat", $"{sid}.json"));
+        await Assert.That(Markers.QuarantinePath(sid))
+            .IsEqualTo(Path.Combine(Config.Directory, "cursor-quarantine", $"{sid}.json"));
+        await Assert.That(Markers.BarrierPath(sid))
+            .IsEqualTo(Path.Combine(Config.Directory, "cursor-barrier", $"{sid}.json"));
+        await Assert.That(Markers.HeartbeatPath(sid))
+            .IsEqualTo(Path.Combine(Config.Directory, "cursor-heartbeat", $"{sid}.json"));
     }
 
     [Test]
     public async Task IsQuarantined_false_before_any_marker_is_written() {
         var sid = NewSessionId();
 
-        await Assert.That(CursorMarkers.IsQuarantined(sid)).IsFalse();
+        await Assert.That(Markers.IsQuarantined(sid)).IsFalse();
     }
 
     [Test]
     public async Task Quarantine_writes_a_marker_IsQuarantined_reads_it_back() {
         var sid = NewSessionId();
 
-        CursorMarkers.Quarantine(sid, "rewrite detected");
+        Markers.Quarantine(sid, "rewrite detected");
 
-        await Assert.That(CursorMarkers.IsQuarantined(sid)).IsTrue();
+        await Assert.That(Markers.IsQuarantined(sid)).IsTrue();
 
-        var marker = CursorMarkers.ReadMarker(sid);
+        var marker = Markers.ReadMarker(sid);
 
         await Assert.That(marker).IsNotNull();
         await Assert.That(marker!.Value.Reason).IsEqualTo("rewrite detected");
@@ -50,10 +50,10 @@ public class CursorMarkersTests {
     public async Task Quarantine_keeps_the_first_reason_on_a_second_call() {
         var sid = NewSessionId();
 
-        CursorMarkers.Quarantine(sid, "first reason");
-        CursorMarkers.Quarantine(sid, "second reason");
+        Markers.Quarantine(sid, "first reason");
+        Markers.Quarantine(sid, "second reason");
 
-        var marker = CursorMarkers.ReadMarker(sid);
+        var marker = Markers.ReadMarker(sid);
 
         await Assert.That(marker!.Value.Reason).IsEqualTo("first reason");
     }
@@ -67,14 +67,14 @@ public class CursorMarkersTests {
     [Test]
     public async Task Quarantine_swallows_a_write_failure_instead_of_throwing() {
         var sid  = NewSessionId();
-        var path = CursorMarkers.QuarantinePath(sid);
+        var path = Markers.QuarantinePath(sid);
 
         Directory.CreateDirectory(path); // occupies the marker's own file path as a directory
 
         try {
-            CursorMarkers.Quarantine(sid, "rewrite detected"); // must not throw
+            Markers.Quarantine(sid, "rewrite detected"); // must not throw
 
-            await Assert.That(CursorMarkers.IsQuarantined(sid)).IsFalse();
+            await Assert.That(Markers.IsQuarantined(sid)).IsFalse();
         } finally {
             Directory.Delete(path);
         }
@@ -84,14 +84,14 @@ public class CursorMarkersTests {
     public async Task ReadMarker_null_when_no_marker_written() {
         var sid = NewSessionId();
 
-        await Assert.That(CursorMarkers.ReadMarker(sid)).IsNull();
+        await Assert.That(Markers.ReadMarker(sid)).IsNull();
     }
 
     [Test]
     public async Task BarrierPending_false_when_no_barrier_created() {
         var sid = NewSessionId();
 
-        await Assert.That(CursorMarkers.BarrierPending(sid, DateTimeOffset.UtcNow, TimeSpan.FromSeconds(60))).IsFalse();
+        await Assert.That(Markers.BarrierPending(sid, DateTimeOffset.UtcNow, TimeSpan.FromSeconds(60))).IsFalse();
     }
 
     [Test]
@@ -99,23 +99,23 @@ public class CursorMarkersTests {
         var sid = NewSessionId();
         var now = DateTimeOffset.UtcNow;
 
-        CursorMarkers.CreateBarrier(sid, now);
+        Markers.CreateBarrier(sid, now);
 
-        await Assert.That(CursorMarkers.BarrierPending(sid, now.AddSeconds(5), TimeSpan.FromSeconds(60))).IsTrue();
-        await Assert.That(CursorMarkers.BarrierPending(sid, now.AddSeconds(61), TimeSpan.FromSeconds(60))).IsFalse(); // expired — proceeds
+        await Assert.That(Markers.BarrierPending(sid, now.AddSeconds(5), TimeSpan.FromSeconds(60))).IsTrue();
+        await Assert.That(Markers.BarrierPending(sid, now.AddSeconds(61), TimeSpan.FromSeconds(60))).IsFalse(); // expired — proceeds
 
-        CursorMarkers.ClearBarrier(sid);
+        Markers.ClearBarrier(sid);
 
-        await Assert.That(CursorMarkers.BarrierPending(sid, now.AddSeconds(5), TimeSpan.FromSeconds(60))).IsFalse();
+        await Assert.That(Markers.BarrierPending(sid, now.AddSeconds(5), TimeSpan.FromSeconds(60))).IsFalse();
     }
 
     [Test]
     public async Task ClearBarrier_is_a_noop_when_nothing_was_created() {
         var sid = NewSessionId();
 
-        CursorMarkers.ClearBarrier(sid); // must not throw
+        Markers.ClearBarrier(sid); // must not throw
 
-        await Assert.That(CursorMarkers.BarrierPending(sid, DateTimeOffset.UtcNow, TimeSpan.FromSeconds(60))).IsFalse();
+        await Assert.That(Markers.BarrierPending(sid, DateTimeOffset.UtcNow, TimeSpan.FromSeconds(60))).IsFalse();
     }
 
     [Test]
@@ -123,9 +123,9 @@ public class CursorMarkersTests {
         var sid = NewSessionId();
         var now = DateTimeOffset.UtcNow;
 
-        CursorMarkers.TouchHeartbeat(sid, now);
+        Markers.TouchHeartbeat(sid, now);
 
-        await Assert.That(WatcherHeartbeat.Read(CursorMarkers.HeartbeatPath(sid))).IsEqualTo(now);
+        await Assert.That(WatcherHeartbeat.Read(Markers.HeartbeatPath(sid))).IsEqualTo(now);
     }
 
     // the durable per-child subagent-start-acknowledgement marker.
@@ -133,23 +133,23 @@ public class CursorMarkersTests {
     public async Task HasSubagentStartAck_false_before_any_ack_is_recorded() {
         var childSid = NewSessionId();
 
-        await Assert.That(CursorMarkers.HasSubagentStartAck(childSid)).IsFalse();
+        await Assert.That(Markers.HasSubagentStartAck(childSid)).IsFalse();
     }
 
     [Test]
     public async Task MarkSubagentStartAcked_makes_HasSubagentStartAck_true() {
         var childSid = NewSessionId();
 
-        CursorMarkers.MarkSubagentStartAcked(childSid);
+        Markers.MarkSubagentStartAcked(childSid);
 
-        await Assert.That(CursorMarkers.HasSubagentStartAck(childSid)).IsTrue();
+        await Assert.That(Markers.HasSubagentStartAck(childSid)).IsTrue();
     }
 
     [Test]
     public async Task SubagentStartAckPath_is_dot_namespaced_under_the_shared_config_dir_and_keyed_by_child() {
         var childSid = NewSessionId();
 
-        await Assert.That(CursorMarkers.SubagentStartAckPath(childSid))
-            .IsEqualTo(Path.Combine(RepoPathStoreGlobalSetup.SharedConfigDir, "cursor-subagent-start-ack", $"{childSid}.json"));
+        await Assert.That(Markers.SubagentStartAckPath(childSid))
+            .IsEqualTo(Path.Combine(Config.Directory, "cursor-subagent-start-ack", $"{childSid}.json"));
     }
 }

@@ -40,7 +40,7 @@ if (args is ["mcp", "review"] &&
 // killed launching agent, detached pseudo-console) can't orphan this process
 // alive — the reported stray `kcap.exe` after `kcap setup` is exited partway.
 //
-// Armed here, before ResolveServerUrl/update-check, on purpose: those can block
+// Armed here, before ResolveForRepo/update-check, on purpose: those can block
 // for seconds (git remote lookup, npm registry), and StartParentWatchdog refuses
 // to arm if the parent is already gone. Installing later leaves a window where
 // the launching agent can exit during that startup work — the watchdog then
@@ -64,8 +64,8 @@ if (InteractiveLifetime.IsInteractiveCommand(command)) {
 // populated, so `kcap hook --codex` runs its handler regardless of
 // KCAP_SKIP and the handler owns the output contract.
 //
-// Runs before ResolveServerUrl/update-check so a skipped hook does no work:
-// ResolveServerUrl can shell out to `git remote -v` and emit warnings, and
+// Runs before ResolveForRepo/update-check so a skipped hook does no work:
+// ResolveForRepo can shell out to `git remote -v` and emit warnings, and
 // the update-check task hits the npm registry — both pure noise inside a
 // nested headless invocation.
 if (Environment.GetEnvironmentVariable("KCAP_SKIP") is "1"
@@ -74,8 +74,14 @@ if (Environment.GetEnvironmentVariable("KCAP_SKIP") is "1"
     return 0;
 }
 
-var hookProcessStart = System.Diagnostics.Stopwatch.GetTimestamp();
+// Anchored here, before dispatch: every hook ceiling is relative to it, and anchoring inside a
+// handler would inflate the budget by the pre-dispatch work (config load, spool drain) and overshoot
+// the true hook ceiling.
+var clock = new HookClock(TimeProvider.System);
 var isHook = command == "hook";
+
+// Resolved once here and passed onward; nothing downstream resolves a root for itself.
+var config = ConfigRoot.FromEnvironment();
 
 // Claude kills a SessionEnd hook after 1.5 s (ClaudeSessionEndHandoff), so the hand-off sits
 // ahead of ResolveServerUrl's git probes and the global spool drain, each of which can spend it.
@@ -84,8 +90,8 @@ if (isHook && args.Contains("--claude")) {
     try { claudeHookBody = await Console.In.ReadToEndAsync(); } catch { claudeHookBody = ""; }
 
     if (ClaudeSessionEndHandoff.IsDetached(args)) {
-        ClaudeSessionEndHandoff.EnterDetached(claudeHookBody);
-    } else if (ClaudeSessionEndHandoff.ShouldHandOff(args, claudeHookBody) && ClaudeSessionEndHandoff.TrySpawn(args, claudeHookBody)) {
+        ClaudeSessionEndHandoff.EnterDetached(claudeHookBody, config);
+    } else if (ClaudeSessionEndHandoff.ShouldHandOff(args, claudeHookBody) && ClaudeSessionEndHandoff.TrySpawn(args, claudeHookBody, config)) {
         return 0;
     }
 }
@@ -99,10 +105,11 @@ ProcessUrlPolicy.Current = CrashReporter.IsFailOpenCommand(command)
     ? UrlFailurePolicy.Throw
     : UrlFailurePolicy.FailFast;
 
-var baseUrl = await AppConfig.ResolveServerUrl(args, gitTimeoutMs: isHook ? 1000 : 5000);
-
 // KCAP_DAEMONS_DIR is dead to the process from this line on.
 var daemonPaths = DaemonStore.FromEnvironment();
+
+var profiles = await AppConfig.ResolveForRepo(args, config, gitTimeoutMs: isHook ? 1000 : 5000);
+var baseUrl  = profiles.Resolution.ServerUrl;
 
 // Telemetry: initialised once the server URL is known (it decides the `organization` group) and
 // torn down from ProcessExit, which observes the exit code returned by top-level Main. Every
@@ -113,7 +120,7 @@ var daemonPaths = DaemonStore.FromEnvironment();
 var commandStart = System.Diagnostics.Stopwatch.GetTimestamp();
 
 // TokenStore.LoadAsync() is the LOCAL read (src/Capacitor.Cli.Core/Auth/TokenStore.cs:211) —
-// deliberately not GetValidTokensAsync(), which can refresh over the network. `logged_in` is a
+// deliberately not GetValidTokensForProfileAsync(), which can refresh over the network. `logged_in` is a
 // cheap fact about disk, never a reason to make a request on the command path.
 //
 // Gated on IsReportable: denylisted commands (chiefly `hook`, thousands of invocations/day on
@@ -121,7 +128,7 @@ var commandStart = System.Diagnostics.Stopwatch.GetTimestamp();
 // itself for them regardless — so the disk read has no consumer and is worth skipping outright.
 var loggedIn = false;
 if (CommandEvents.IsReportable(command)) {
-    try { loggedIn = await TokenStore.LoadAsync() is not null; } catch { }
+    try { loggedIn = await new TokenStore(config).LoadForProfileAsync(profiles.Name) is not null; } catch { }
 }
 
 // `kcap config set telemetry off` must never activate telemetry for the very invocation that
@@ -135,7 +142,7 @@ if (CommandEvents.IsReportable(command)) {
 // covers that override case with its own DiscardAndDisable.
 if (args.Length >= 4 && command == "config" && args[1] == "set" && args[2] == "telemetry"
  && ConfigCommand.TryParseTelemetryToggle(args[3]) == false) {
-    TelemetryState.SetEnabled(false);
+    TelemetryState.SetEnabled(false, config);
 }
 
 // spec decision 9: an app-spawned CLI child must not emit CLI-labeled telemetry nor consume
@@ -145,7 +152,7 @@ var telemetrySuppressed = CliTelemetry.ConsumeSpawnMarker(
     Environment.GetEnvironmentVariable,
     k => Environment.SetEnvironmentVariable(k, null));
 
-CliTelemetry.Initialize(command, baseUrl, loggedIn, telemetrySuppressed);
+CliTelemetry.Initialize(command, baseUrl, loggedIn, config, telemetrySuppressed);
 
 AppDomain.CurrentDomain.ProcessExit += (_, _) => {
     CliTelemetry.RecordCommand(command, args, Environment.ExitCode, CommandTiming.ElapsedMs(commandStart));
@@ -216,7 +223,7 @@ switch (command) {
             return 1;
         }
 
-        return await ErrorsCommand.HandleErrors(baseUrl!, errSessionId, useChain);
+        return await new ErrorsCommand(config, profiles).HandleErrors(errSessionId, useChain);
     }
     case "recap": {
         var useChain   = args.Contains("--chain");
@@ -226,7 +233,7 @@ switch (command) {
         var useGetTurn = args.Contains("--get-turn");
 
         if (useRepo) {
-            return await RecapCommand.HandleRepoRecap(baseUrl!);
+            return await new RecapCommand(config, profiles).HandleRepoRecap();
         }
 
         // --get-turn takes a value (the turn index), so declare it as a value flag
@@ -243,7 +250,7 @@ switch (command) {
         }
 
         if (usePerTurn) {
-            return await RecapCommand.HandlePerTurnRecap(baseUrl!, recapSessionId);
+            return await new RecapCommand(config, profiles).HandlePerTurnRecap(recapSessionId);
         }
 
         if (useGetTurn) {
@@ -258,10 +265,10 @@ switch (command) {
                 return 1;
             }
 
-            return await RecapCommand.HandleGetTurn(baseUrl!, recapSessionId, turnIndex);
+            return await new RecapCommand(config, profiles).HandleGetTurn(recapSessionId, turnIndex);
         }
 
-        return await RecapCommand.HandleRecap(baseUrl!, recapSessionId, useChain, useFull);
+        return await new RecapCommand(config, profiles).HandleRecap(recapSessionId, useChain, useFull);
     }
     case "validate-plan": {
         var vpSessionId = ResolveSessionId(args);
@@ -273,14 +280,14 @@ switch (command) {
             return 1;
         }
 
-        return await ValidatePlanCommand.Handle(baseUrl!, vpSessionId);
+        return await new ValidatePlanCommand(config, profiles).Handle(vpSessionId);
     }
     case "feedback":
-        return await FeedbackCommand.HandleAsync(baseUrl!, args);
+        return await new FeedbackCommand(config, profiles).HandleAsync(args);
     case "eval": {
         // --list-questions is a standalone sub-action; short-circuit.
         if (args.Contains("--list-questions")) {
-            return await EvalCommand.HandleListQuestions(baseUrl!);
+            return await new EvalCommand(config, profiles).HandleListQuestions();
         }
 
         var evalSessionId = ResolveSessionId(args, valueFlags: ["--model", "--threshold", "--questions", "--skip"]);
@@ -312,8 +319,8 @@ switch (command) {
             }
         }
 
-        return await EvalCommand.HandleEval(
-            baseUrl!, evalSessionId, evalModel, evalChain, evalThreshold,
+        return await new EvalCommand(config, profiles).HandleEval(
+            evalSessionId, evalModel, evalChain, evalThreshold,
             evalQuestions, evalSkip
         );
     }
@@ -325,46 +332,46 @@ switch (command) {
         var wdSessionId = args[1].Replace("-", "");
         var wdVendor    = args.Contains("--codex") ? "codex" : "claude";
 
-        return await WhatsDoneCommand.HandleGenerateWhatsDone(baseUrl!, wdSessionId, wdVendor);
+        return await new WhatsDoneCommand(config, profiles).HandleGenerateWhatsDone(baseUrl!, wdSessionId, wdVendor);
     }
     case "login":
-        return await LoginCommand.HandleAsync(args, baseUrl);
+        return await new LoginCommand(config, profiles, SystemBrowser.Instance).HandleAsync(args, baseUrl);
     case "logout": {
-        await TokenStore.DeleteAsync();
+        await new TokenStore(config).DeleteAsync();
         await Console.Out.WriteLineAsync("Logged out.");
 
         return 0;
     }
     case "whoami":
-        return await WhoamiCommand.HandleAsync(baseUrl!);
+        return await new WhoamiCommand(config, profiles).HandleAsync();
     case "daemon":
-        return await new DaemonCommands(daemonPaths).HandleAsync(args);
+        return await new DaemonCommands(daemonPaths, config, profiles).HandleAsync(args);
     case "agent":
-        return await new AgentCommand(daemonPaths).HandleAsync(args, baseUrl);
+        return await new AgentCommand(daemonPaths, config, profiles).HandleAsync(args, baseUrl);
     case "setup":
-        return await SetupCommand.HandleAsync(args);
+        return await new SetupCommand(config, profiles, SystemBrowser.Instance).HandleAsync(args);
     case "plugin":
-        return await PluginCommand.HandleAsync(args);
+        return await new PluginCommand(PluginEnvironment.FromProcess(profiles.Snapshot)).HandleAsync(args);
     case "profile":
-        return await ProfileCommand.HandleAsync(args);
+        return await new ProfileCommand(config).HandleAsync(args);
     case "machine":
-        return await MachineCommand.HandleAsync(baseUrl!, args);
+        return await new MachineCommand(config, profiles).HandleAsync(args);
     case "use":
-        return await UseCommand.HandleAsync(args);
+        return await new UseCommand(config).HandleAsync(args);
     case "status":
-        return await StatusCommand.HandleAsync(daemonPaths, baseUrl, args);
+        return await new StatusCommand(daemonPaths, profiles, config).HandleAsync(args);
     case "harness":
-        return await HarnessCommand.HandleAsync(args);
+        return await new HarnessCommand(config).HandleAsync(args);
     case "config":
-        return await ConfigCommand.HandleAsync(args);
+        return await new ConfigCommand(config).HandleAsync(args);
     case "ignore":
-        return await IgnoreCommand.HandleAsync(args);
+        return await new IgnoreCommand(config, profiles).HandleAsync(args);
     case "remap":
-        return await RemapCommand.HandleAsync(args);
+        return await new RemapCommand(config).HandleAsync(args);
     case "repos":
-        return await ReposCommand.HandleAsync(args);
+        return await new ReposCommand(config).HandleAsync(args);
     case "projects":
-        return await ProjectsCommand.HandleList(baseUrl!);
+        return await new ProjectsCommand(config, profiles).HandleList();
     case "project": {
         if (args.Length < 2) {
             Console.Error.WriteLine("Usage: kcap project <slug>");
@@ -372,10 +379,10 @@ switch (command) {
             return 1;
         }
 
-        return await ProjectsCommand.HandleDetail(baseUrl!, args[1]);
+        return await new ProjectsCommand(config, profiles).HandleDetail(args[1]);
     }
     case "update":
-        return await UpdateCommand.HandleAsync(args);
+        return await new UpdateCommand(config, profiles).HandleAsync(args);
     case "review": {
         if (args.Length < 2) {
             Console.Error.WriteLine("Usage: kcap review <pr-url-or-shorthand>");
@@ -385,7 +392,7 @@ switch (command) {
             return 1;
         }
 
-        return await ReviewCommand.HandleReview(baseUrl!, args[1]);
+        return await new ReviewCommand(config, profiles).HandleReview(args[1]);
     }
     case "mcp": {
         if (args.Length < 2) {
@@ -410,11 +417,11 @@ switch (command) {
 
                 // Explicit PR args — use directly
                 if (mcpOwner is not null && mcpRepo is not null && mcpPr is not null && int.TryParse(mcpPr, out var mcpPrNum)) {
-                    return await McpReviewServer.RunAsync(baseUrl!, mcpOwner, mcpRepo, mcpPrNum);
+                    return await new McpReviewServer(config, profiles).RunAsync(mcpOwner, mcpRepo, mcpPrNum);
                 }
 
                 // No args — auto-detect from git
-                return await McpReviewServer.RunAutoAsync(baseUrl!);
+                return await new McpReviewServer(config, profiles).RunAutoAsync();
             }
             case "judge": {
                 var session = GetArg(args, "--session");
@@ -425,20 +432,20 @@ switch (command) {
                     return 1;
                 }
 
-                return await McpJudgeServer.RunAsync(baseUrl!, session);
+                return await new McpJudgeServer(config, profiles).RunAsync(session);
             }
             case "sessions":
-                return await McpSessionsServer.RunAsync(baseUrl!);
+                return await new McpSessionsServer(config, profiles).RunAsync();
             case "flows":
-                return await McpFlowsServer.RunAsync(baseUrl!, GetArg(args, "--driver"));
+                return await new McpFlowsServer(config, profiles).RunAsync(GetArg(args, "--driver"));
             case "flow-result":
-                return await McpFlowResultServer.RunAsync(baseUrl!);
+                return await new McpFlowResultServer(config, profiles).RunAsync();
             case "memory":
-                return await McpMemoryServer.RunAsync(baseUrl!);
+                return await new McpMemoryServer(config, profiles).RunAsync();
             case "workitems":
-                return await McpWorkItemsServer.RunAsync(baseUrl!);
+                return await new McpWorkItemsServer(config, profiles).RunAsync();
             case "analytics":
-                return await McpAnalyticsServer.RunAsync(baseUrl!);
+                return await new McpAnalyticsServer(config, profiles).RunAsync();
             default:
                 Console.Error.WriteLine($"Unknown mcp subcommand: {args[1]}");
 
@@ -454,7 +461,7 @@ switch (command) {
             case "apply": {
                 var dryRun = args.Contains("--dry-run");
                 var yes    = args.Contains("--yes") || args.Contains("-y");
-                return await CurateCommand.HandleApply(baseUrl!, dryRun, yes);
+                return await new CurateCommand(config, profiles).HandleApply(dryRun, yes);
             }
             default:
                 Console.Error.WriteLine($"Unknown curate subcommand: {args[1]}");
@@ -463,9 +470,9 @@ switch (command) {
         }
     }
     case "cleanup":
-        return await CleanupCommand.HandleCleanup();
+        return await new CleanupCommand(config, profiles).HandleCleanup();
     case "uninstall":
-        return await UninstallCommand.HandleAsync(daemonPaths, args);
+        return await new UninstallCommand(daemonPaths, config, profiles).HandleAsync(args);
     case "disable": {
         // The sessionId is consumed as a filesystem path component
         // (watcher PID files, disabled marker file). Validate strictly as a
@@ -487,23 +494,24 @@ switch (command) {
         }
 
         // 1. Kill the watcher (and any subagent watchers)
-        await WatcherManager.KillWatcher(sessionId);
+        var watchers = new WatcherManager(config, profiles);
+        await watchers.KillWatcher(sessionId);
 
         // Also kill subagent watchers — scan PID files matching "{sessionId}-*"
-        var watcherDir = WatcherManager.GetWatcherDir();
+        var watcherDir = watchers.GetWatcherDir();
 
         if (Directory.Exists(watcherDir)) {
             foreach (var pidFile in Directory.GetFiles(watcherDir, $"{sessionId}-*.pid")) {
                 var subKey = Path.GetFileNameWithoutExtension(pidFile);
-                await WatcherManager.KillWatcher(subKey);
+                await watchers.KillWatcher(subKey);
             }
         }
 
         // 2. Mark session as disabled (prevents future hook calls from sending data)
-        DisabledSessions.Mark(sessionId);
+        DisabledSessions.Mark(sessionId, config);
 
         // 3. Tell server to delete session data
-        using var disableClient = await HttpClientExtensions.CreateAuthenticatedClientAsync();
+        using var disableClient = await HttpClientExtensions.CreateAuthenticatedClientAsync(config, profiles, baseUrl!);
 
         try {
             var resp = await disableClient.DeleteWithRetryAsync($"{baseUrl!}/api/sessions/{sessionId}");
@@ -546,7 +554,7 @@ switch (command) {
             return 1;
         }
 
-        using var hideClient = await HttpClientExtensions.CreateAuthenticatedClientAsync();
+        using var hideClient = await HttpClientExtensions.CreateAuthenticatedClientAsync(config, profiles, baseUrl!);
         var       visPayload = new JsonObject { ["visibility"] = "none" };
         using var visContent = new StringContent(visPayload.ToJsonString(), Encoding.UTF8, "application/json");
 
@@ -625,13 +633,13 @@ switch (command) {
         // Build sources
         var explicitVendorSelection = vsel.Vendors.Count > 0;
         var allSources = new IImportSource[] {
-            new ClaudeImportSource(),
-            new CodexImportSource(),
-            new CursorImportSource(),
-            new CopilotImportSource(),
+            new ClaudeImportSource(config),
+            new CodexImportSource(config),
+            new CursorImportSource(config),
+            new CopilotImportSource(config),
             new GeminiImportSource(),
-            new KiroImportSource(),
-            new PiImportSource(),
+            new KiroImportSource(config),
+            new PiImportSource(config),
             new OpenCodeImportSource(),
             new AntigravityImportSource(),
         };
@@ -640,11 +648,13 @@ switch (command) {
             : allSources;
 
         // --- Scope resolution ---
-        var profileConfig = await AppConfig.LoadProfileConfig();
-        var activeProfile = string.IsNullOrEmpty(profileConfig.ActiveProfile) ? "default" : profileConfig.ActiveProfile;
+        var profileConfig = profiles.Snapshot;
+        // The profile a later import would persist the chosen org to, so this reads it back from
+        // the same place.
+        var activeProfile = profiles.Name;
         var storedOrg     = profileConfig.Profiles.GetValueOrDefault(activeProfile)?.ImportOrg;
 
-        var currentRepoDetected = await RepositoryDetection.DetectRepositoryAsync(Environment.CurrentDirectory);
+        var currentRepoDetected = await RepositoryDetection.DetectRepositoryAsync(config, Environment.CurrentDirectory);
         (string Owner, string Name)? currentRepo = currentRepoDetected is { Owner: { } o, RepoName: { } n }
             ? (o, n)
             : null;
@@ -664,9 +674,7 @@ switch (command) {
             return 1;
         }
 
-        return await ImportCommand.HandleImport(
-            // Discovery never calls the server, and reaches here with no configured one.
-            baseUrl ?? "",
+        return await new ImportCommand(config, profiles).HandleImport(
             filterCwd,
             filterSession,
             minLines,
@@ -677,7 +685,6 @@ switch (command) {
             scope:                   resolveResult.Scope, // null => HandleImport runs picker
             skipConfirmation:        resolveResult.Yes,
             forcePrivate:            resolveResult.Private,
-            activeProfile:           activeProfile,
             currentRepo:             currentRepo,
             needOrgPick:             resolveResult.NeedOrgPick,
             storedOrg:               storedOrg,
@@ -718,8 +725,8 @@ switch (command) {
 
         var watchVendor = GetArg(args, "--vendor") ?? "claude";
 
-        return await WatchCommand.RunWatch(
-            baseUrl!, watchSessionId, watchPath, watchAgentId, watchCwd,
+        return await new WatchCommand(config, profiles).RunWatch(
+            watchSessionId, watchPath, watchAgentId, watchCwd,
             watchSkipTitle, parentPid, watchVendor
         );
     }
@@ -734,7 +741,7 @@ switch (command) {
         var cfSessionId = args[1].Replace("-", "");
         var cfPath      = args[2];
 
-        return await CopilotFinalizeDrainCommand.Run(baseUrl!, cfSessionId, cfPath);
+        return await new CopilotFinalizeDrainCommand(config, profiles).Run(cfSessionId, cfPath);
     }
     case "set-title" when args.Length < 2:
         Console.Error.WriteLine("Usage: kcap set-title <title>");
@@ -764,7 +771,7 @@ switch (command) {
             title = title[..120];
         }
 
-        using var stClient  = await HttpClientExtensions.CreateAuthenticatedClientAsync();
+        using var stClient  = await HttpClientExtensions.CreateAuthenticatedClientAsync(config, profiles, baseUrl!);
         var       payload   = new JsonObject { ["session_id"] = stSessionId, ["title"] = title };
         using var stContent = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json");
 
@@ -790,7 +797,7 @@ switch (command) {
     // generate-whats-done/set-title/copilot-finalize, nobody types this by hand. See
     // ReportVersionCommand for why it never surfaces an error.
     case "report-version":
-        return await ReportVersionCommand.HandleAsync(baseUrl);
+        return await new ReportVersionCommand(config, profiles).HandleAsync();
     case "hook": {
         // Task 12: global, session-agnostic drain pass run early in EVERY non-Codex hook
         // invocation — centralizes the per-vendor AgentHookPoster.DrainSpoolsAsync calls Tasks 4-6
@@ -804,41 +811,37 @@ switch (command) {
         // spools BEFORE returning. Gating the call would mean a config broken for weeks never reaps
         // anything, and the per-session cap does not bound the number of stale files.
         if (!args.Contains("--codex") && baseUrl is not null) {
-            await AgentHookPoster.DrainSpoolsAsync(
-                baseUrl,
-                new HookSpool(PathHelpers.ConfigPath("spool")),
-                new TranscriptSpool(PathHelpers.ConfigPath("transcript-spool")),
+            await new AgentHookPoster(config, profiles).DrainSpoolsAsync(
+                new HookSpool(config),
+                new TranscriptSpool(config),
                 sessionId: null); // current session unknown here — reading stdin now would consume it
         }
         if (args.Contains("--claude")) {
-            return await ClaudeHookCommand.Handle(baseUrl!, new StringReader(claudeHookBody!), processStart: hookProcessStart);
+            return await new ClaudeHookCommand(config, profiles, clock).Handle(new StringReader(claudeHookBody!));
         }
         if (args.Contains("--codex")) {
-            return await CodexHookCommand.Handle(baseUrl!, Console.In, hookProcessStart);
+            return await new CodexHookCommand(config, profiles, clock).Handle(Console.In);
         }
         if (args.Contains("--cursor")) {
-            return await CursorHookCommand.Handle(baseUrl!, Console.In);
+            return await new CursorHookCommand(config, profiles, clock).Handle(Console.In);
         }
         if (args.Contains("--copilot")) {
-            return await CopilotHookCommand.Handle(baseUrl!, Console.In, args, hookProcessStart);
+            return await new CopilotHookCommand(config, profiles, clock).Handle(Console.In, args);
         }
         if (args.Contains("--gemini")) {
-            return await GeminiHookCommand.Handle(baseUrl!, Console.In, hookProcessStart);
+            return await new GeminiHookCommand(config, profiles, clock).Handle(Console.In);
         }
         if (args.Contains("--kiro")) {
-            return await KiroHookCommand.Handle(baseUrl!, Console.In, args, hookProcessStart);
+            return await new KiroHookCommand(config, profiles, clock).Handle(Console.In, args);
         }
         if (args.Contains("--pi")) {
-            // hookProcessStart, not a handler-local timestamp: HookBudget.Remaining is relative to
-            // it, and self-initializing inside Handle would inflate the memory-fetch budget by the
-            // pre-dispatch work (config load, spool drain), overshooting the true hook ceiling.
-            return await PiHookCommand.Handle(baseUrl!, args, Console.Out, hookProcessStart);
+            return await new PiHookCommand(config, profiles, clock).Handle(args, Console.Out);
         }
         if (args.Contains("--opencode")) {
-            return await OpenCodeHookCommand.Handle(baseUrl!, args);
+            return await new OpenCodeHookCommand(config, profiles, clock).Handle(args);
         }
         if (args.Contains("--antigravity")) {
-            return await AntigravityHookCommand.Handle(baseUrl!, args, hookProcessStart);
+            return await new AntigravityHookCommand(config, profiles, clock).Handle(args);
         }
         Console.Error.WriteLine("kcap hook requires a vendor flag (for example --claude)");
         Console.Error.WriteLine("Supported vendors: --claude, --codex, --cursor, --copilot, --gemini, --kiro, --pi, --opencode, --antigravity");
@@ -859,14 +862,14 @@ Console.Error.WriteLine($"Unknown command: {command}");
 
 return 1;
 } catch (Exception topLevelEx) {
-    CrashReporter.Record(command, topLevelEx);
+    CrashReporter.Record(config, command, topLevelEx);
 
     return CrashReporter.ExitCode(command);
 }
 
 } finally {
-    await UpdateNotice.FlushAsync(command, args);
-    await HarnessSetupNotice.FlushAsync(command);
+    await UpdateNotice.FlushAsync(command, args, profiles, config);
+    await HarnessSetupNotice.FlushAsync(command, config, profiles);
 }
 
 static string? GetArg(string[] arguments, string flag) {

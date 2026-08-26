@@ -1,6 +1,6 @@
 using System.Text.Json.Nodes;
+using Capacitor.Cli.Commands;
 using Capacitor.Cli.Commands.Harness;
-using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Config;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
@@ -17,23 +17,11 @@ namespace Capacitor.Cli.Tests.Integration;
 /// settings.
 /// </summary>
 public class SessionStartVisibilityTests : IDisposable {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     readonly WireMockServer _server = WireMockServer.Start();
-    readonly string         _configPath = PathHelpers.ConfigPath("config.json");
-    readonly string?        _previousConfig;
 
-    public SessionStartVisibilityTests() {
-        _previousConfig = File.Exists(_configPath) ? File.ReadAllText(_configPath) : null;
-    }
-
-    public void Dispose() {
-        _server.Stop();
-
-        if (_previousConfig is null) {
-            if (File.Exists(_configPath)) File.Delete(_configPath);
-        } else {
-            File.WriteAllText(_configPath, _previousConfig);
-        }
-    }
+    public void Dispose() => _server.Stop();
 
     static string SessionStartPayloadWithoutTranscriptPath() =>
         """
@@ -45,7 +33,7 @@ public class SessionStartVisibilityTests : IDisposable {
         }
         """;
 
-    [Test, NotInParallel("AppConfig_FileState")]
+    [Test]
     public async Task Stamps_private_visibility_from_active_profile_v2_config() {
         var config = new ProfileConfig {
             ActiveProfile = "work",
@@ -56,12 +44,12 @@ public class SessionStartVisibilityTests : IDisposable {
                 }
             }
         };
-        await ConfigMutator.MutateAsync(_ => config);
+        await ConfigMutator.MutateAsync(Config.Root, _ => config);
 
         _server.Given(Request.Create().WithPath("/hooks/session-start").UsingPost())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody("{}"));
 
-        await ClaudeHookCommand.Handle(_server.Url!, new StringReader(SessionStartPayloadWithoutTranscriptPath()));
+        await new ClaudeHookCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), new HookClock(TimeProvider.System)).Handle(new StringReader(SessionStartPayloadWithoutTranscriptPath()));
 
         var requests = _server.FindLogEntries(Request.Create().WithPath("/hooks/session-start").UsingPost());
         await Assert.That(requests.Count).IsEqualTo(1);
@@ -70,7 +58,7 @@ public class SessionStartVisibilityTests : IDisposable {
         await Assert.That(body["default_visibility"]?.GetValue<string>()).IsEqualTo("private");
     }
 
-    [Test, NotInParallel("AppConfig_FileState")]
+    [Test]
     public async Task Lowercases_mixedcase_visibility_from_v2_config() {
         var config = new ProfileConfig {
             ActiveProfile = "work",
@@ -81,12 +69,12 @@ public class SessionStartVisibilityTests : IDisposable {
                 }
             }
         };
-        await ConfigMutator.MutateAsync(_ => config);
+        await ConfigMutator.MutateAsync(Config.Root, _ => config);
 
         _server.Given(Request.Create().WithPath("/hooks/session-start").UsingPost())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody("{}"));
 
-        await ClaudeHookCommand.Handle(_server.Url!, new StringReader(SessionStartPayloadWithoutTranscriptPath()));
+        await new ClaudeHookCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), new HookClock(TimeProvider.System)).Handle(new StringReader(SessionStartPayloadWithoutTranscriptPath()));
 
         var requests = _server.FindLogEntries(Request.Create().WithPath("/hooks/session-start").UsingPost());
         await Assert.That(requests.Count).IsEqualTo(1);
@@ -95,7 +83,7 @@ public class SessionStartVisibilityTests : IDisposable {
         await Assert.That(body["default_visibility"]?.GetValue<string>()).IsEqualTo("private");
     }
 
-    [Test, NotInParallel("AppConfig_FileState")]
+    [Test]
     public async Task Falls_back_to_org_public_when_v2_config_visibility_is_invalid() {
         var config = new ProfileConfig {
             ActiveProfile = "work",
@@ -106,12 +94,12 @@ public class SessionStartVisibilityTests : IDisposable {
                 }
             }
         };
-        await ConfigMutator.MutateAsync(_ => config);
+        await ConfigMutator.MutateAsync(Config.Root, _ => config);
 
         _server.Given(Request.Create().WithPath("/hooks/session-start").UsingPost())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody("{}"));
 
-        await ClaudeHookCommand.Handle(_server.Url!, new StringReader(SessionStartPayloadWithoutTranscriptPath()));
+        await new ClaudeHookCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), new HookClock(TimeProvider.System)).Handle(new StringReader(SessionStartPayloadWithoutTranscriptPath()));
 
         var requests = _server.FindLogEntries(Request.Create().WithPath("/hooks/session-start").UsingPost());
         await Assert.That(requests.Count).IsEqualTo(1);
@@ -123,18 +111,18 @@ public class SessionStartVisibilityTests : IDisposable {
     // Surface 3: the session-start body carries this machine's harness inventory (machine id + all
     // nine vendors) — the hook-ingest carrier the server reads when no daemon runs. Same fragment
     // shape the daemon sends on its status report.
-    [Test, NotInParallel("AppConfig_FileState")]
+    [Test]
     public async Task Stamps_harness_inventory_onto_session_start_body() {
         var config = new ProfileConfig {
             ActiveProfile = "work",
             Profiles = new() { ["work"] = new Profile { ServerUrl = _server.Url } }
         };
-        await ConfigMutator.MutateAsync(_ => config);
+        await ConfigMutator.MutateAsync(Config.Root, _ => config);
 
         _server.Given(Request.Create().WithPath("/hooks/session-start").UsingPost())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody("{}"));
 
-        await ClaudeHookCommand.Handle(_server.Url!, new StringReader(SessionStartPayloadWithoutTranscriptPath()));
+        await new ClaudeHookCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), new HookClock(TimeProvider.System)).Handle(new StringReader(SessionStartPayloadWithoutTranscriptPath()));
 
         var requests = _server.FindLogEntries(Request.Create().WithPath("/hooks/session-start").UsingPost());
         await Assert.That(requests.Count).IsEqualTo(1);
@@ -147,7 +135,7 @@ public class SessionStartVisibilityTests : IDisposable {
         await Assert.That(inv["vendors"]!["claude"]!["wired"]).IsNotNull(); // per-vendor {detected,wired} shape
     }
 
-    [Test, NotInParallel("AppConfig_FileState")]
+    [Test]
     public async Task Skips_session_start_when_repo_is_excluded_by_active_profile_v2_config() {
         var config = new ProfileConfig {
             ActiveProfile = "work",
@@ -158,7 +146,7 @@ public class SessionStartVisibilityTests : IDisposable {
                 }
             }
         };
-        await ConfigMutator.MutateAsync(_ => config);
+        await ConfigMutator.MutateAsync(Config.Root, _ => config);
 
         _server.Given(Request.Create().WithPath("/hooks/session-start").UsingPost())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody("{}"));
@@ -174,7 +162,7 @@ public class SessionStartVisibilityTests : IDisposable {
             }
             """;
 
-        await ClaudeHookCommand.Handle(_server.Url!, new StringReader(payload));
+        await new ClaudeHookCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), new HookClock(TimeProvider.System)).Handle(new StringReader(payload));
 
         var requests = _server.FindLogEntries(Request.Create().WithPath("/hooks/session-start").UsingPost());
         await Assert.That(requests.Count).IsEqualTo(0);

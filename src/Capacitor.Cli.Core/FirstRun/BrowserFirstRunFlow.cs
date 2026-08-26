@@ -7,14 +7,13 @@ namespace Capacitor.Cli.Core.FirstRun;
 /// here rather than taken from the server — nothing server-supplied reaches the shell-executed open
 /// to validate.</summary>
 public sealed class BrowserFirstRunFlow(
-        IFirstRunFlowChannel     channel,
-        IFirstRunFlowProgress    progress,
-        TimeProvider?            clock       = null,
-        Func<string, bool>?      openBrowser = null,
-        IKeyWatcher?             keys        = null) {
-    readonly TimeProvider       _clock       = clock ?? TimeProvider.System;
-    readonly Func<string, bool> _openBrowser = openBrowser ?? SystemBrowser.TryOpen;
-    readonly IKeyWatcher        _keys        = keys ?? ConsoleKeyWatcher.Instance;
+        IFirstRunFlowChannel  channel,
+        IFirstRunFlowProgress progress,
+        IBrowserLauncher      launcher,
+        TimeProvider?         clock = null,
+        IKeyWatcher?          keys  = null) {
+    readonly TimeProvider _clock = clock ?? TimeProvider.System;
+    readonly IKeyWatcher  _keys  = keys ?? ConsoleKeyWatcher.Instance;
 
     /// <summary>
     /// The backstop, not the way out. Nothing like the flow's own 12-hour TTL, which is sized for a
@@ -44,14 +43,15 @@ public sealed class BrowserFirstRunFlow(
 
     /// <summary>Runs the leg. Never throws for a reachable failure — every way this ends is a
     /// <see cref="FirstRunFlowResult"/>, because setup carries on either way.</summary>
-    public async Task<FirstRunFlowResult> RunAsync(string serverUrl, string? machine, CancellationToken ct) {
+    public async Task<FirstRunFlowResult> RunAsync(
+            string serverUrl, FirstRunMachineReport report, CancellationToken ct) {
         string flowId;
         var    attempt = 0;
 
         while (true) {
             flowId = FirstRunFlowId.New();
 
-            var created = await channel.CreateAsync(serverUrl, flowId, machine, ct);
+            var created = await channel.CreateAsync(serverUrl, flowId, report, ct);
 
             // Every one of these means "no flow here", and every one has the same remedy: carry on
             // with the setup that already works. The routes are mapped only when the tenant has
@@ -104,7 +104,7 @@ public sealed class BrowserFirstRunFlow(
         if (_keys.CanWatch && _keys.KeyAvailable) _keys.Drain();
 
         progress.Opening(setupUrl);
-        _openBrowser(setupUrl);
+        launcher.TryOpen(setupUrl);
 
         try {
             return await PollAsync(serverUrl, flowId, ct);

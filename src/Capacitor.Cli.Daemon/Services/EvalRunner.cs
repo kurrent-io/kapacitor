@@ -1,4 +1,5 @@
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.Eval;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -21,16 +22,21 @@ internal sealed class EvalRunner {
     readonly ILogger<EvalRunner> _logger;
     readonly string              _baseUrl;
     readonly CancellationToken   _shutdownToken;
+    readonly ConfigRoot          _configRoot;
+    readonly ProfileContext      _profiles;
 
     public EvalRunner(
             ServerConnection         connection,
             EvalContextCache         cache,
+            ConfigRoot               configRoot,
             DaemonConfig             config,
             IHostApplicationLifetime lifetime,
             ILogger<EvalRunner>      logger
         ) {
         _connection    = connection;
         _cache         = cache;
+        _configRoot    = configRoot;
+        _profiles      = config.Profiles;
         _logger        = logger;
         _baseUrl       = config.ServerUrl.TrimEnd('/');
         _shutdownToken = lifetime.ApplicationStopping;
@@ -47,7 +53,7 @@ internal sealed class EvalRunner {
         // only by the daemon's shutdown token. Server-side phase timeouts
         // take effect via InvokeAsync<T>'s own timeout unwinding (the
         // daemon's response is simply discarded if the server moved on).
-        using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync(_baseUrl, _shutdownToken);
+        using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync(_configRoot, _profiles, _baseUrl, _shutdownToken);
         var       observer   = new DaemonEvalObserver(_connection, cmd.EvalRunId, cmd.SessionId, _logger);
 
         try {
@@ -59,6 +65,7 @@ internal sealed class EvalRunner {
             var ctx = await EvalService.PrepareAsync(
                 _baseUrl,
                 httpClient,
+                _profiles.Resolution.Profile,
                 cmd.SessionId,
                 cmd.Questions,
                 catalog,
@@ -96,7 +103,7 @@ internal sealed class EvalRunner {
 
         if (ctx is null) return new(false, null, "context not cached (prepare missing or expired)", 0, 0);
 
-        using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync(_baseUrl, _shutdownToken);
+        using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync(_configRoot, _profiles, _baseUrl, _shutdownToken);
         var       observer   = new DaemonEvalObserver(_connection, cmd.EvalRunId, ctx.SessionId, _logger);
 
         try {
@@ -141,7 +148,7 @@ internal sealed class EvalRunner {
 
         if (ctx is null) return new(false, "context not cached", null);
 
-        using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync(_baseUrl, _shutdownToken);
+        using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync(_configRoot, _profiles, _baseUrl, _shutdownToken);
         var       observer   = new DaemonEvalObserver(_connection, cmd.EvalRunId, ctx.SessionId, _logger);
 
         try {

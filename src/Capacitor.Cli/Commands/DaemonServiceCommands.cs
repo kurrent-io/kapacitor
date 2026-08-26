@@ -9,9 +9,11 @@ namespace Capacitor.Cli.Commands;
 /// whole invocation — <see cref="DispatchAsync"/> resolves both once — so they are state here rather
 /// than two arguments threaded through every verb.
 /// </summary>
-sealed class DaemonServiceCommands(DaemonStore store, IServiceManager manager, string id) {
+sealed class DaemonServiceCommands(
+        DaemonStore store, ConfigRoot root, ProfileContext profiles, IServiceManager manager, string id) {
     /// <summary>Resolves the OS service manager and the service id once, then runs one verb.</summary>
-    public static async Task<int> DispatchAsync(DaemonStore store, string[] args) {
+    public static async Task<int> DispatchAsync(
+            DaemonStore store, ConfigRoot root, ProfileContext profiles, string[] args) {
         if (args.Length == 0) return Usage();
 
         var action  = args[0];
@@ -20,13 +22,15 @@ sealed class DaemonServiceCommands(DaemonStore store, IServiceManager manager, s
 
         IServiceManager manager;
         try {
-            manager = ServiceManagerFactory.ForCurrentOs();
+            manager = ServiceManagerFactory.ForCurrentOs(root);
         } catch (PlatformNotSupportedException ex) {
             await Console.Error.WriteLineAsync(ex.Message);
             return 1;
         }
 
-        var verbs = new DaemonServiceCommands(store, manager, DaemonStore.Sanitize(DaemonCommands.ResolveName(rest)));
+        var verbs = new DaemonServiceCommands(
+            store, root, profiles, manager,
+            DaemonStore.Sanitize(DaemonNameResolver.Resolve(rest, profiles.DaemonName)));
 
         return action switch {
             "install"   => await verbs.Install(rest, startNow: !noStart),
@@ -89,8 +93,8 @@ sealed class DaemonServiceCommands(DaemonStore store, IServiceManager manager, s
         var daemonPath = UnitIdentity.ResolveDaemonBinary();
         if (daemonPath is null) { await Console.Error.WriteLineAsync(DaemonCommands.DaemonNotFoundMessage()); return 1; }
 
-        var profileName = DaemonCommands.ExtractFlagValue(args, "--profile") ?? AppConfig.ResolvedProfile?.ProfileName;
-        var env = new Dictionary<string, string>(ServiceEnvironment.Capture(profileName)) {
+        var profileName = DaemonCommands.ExtractFlagValue(args, "--profile") ?? profiles.Resolution.ProfileName;
+        var env = new Dictionary<string, string>(ServiceEnvironment.Capture(profileName, root)) {
             ["KCAP_DAEMON_SUPERVISED"] = id,   // name-specific; daemon honors it only when == its sanitized --name
         };
 
@@ -103,15 +107,15 @@ sealed class DaemonServiceCommands(DaemonStore store, IServiceManager manager, s
             return 1;
         }
 
-        var logPath = PathHelpers.ConfigPath($"daemon-{id}.log");
+        var logPath = root.Path($"daemon-{id}.log");
         var spec    = new ServiceSpec(id, daemonPath, logPath, env, extra);
 
         if (verify) {
             // The CLI is the safety boundary for §4.1's precondition: prove the pinned profile resolves
             // to a valid server URL here too, so the transaction never destroys a working unit only to
             // install one whose daemon would exit config-invalid and never satisfy readiness.
-            var profileUrlValid = await ServiceInstallViability.PinnedProfileServerUrlValidAsync(env);
-            var engine = new ServiceVerify(store, (LaunchdServiceManager)manager,
+            var profileUrlValid = await ServiceInstallViability.PinnedProfileServerUrlValidAsync(env, root);
+            var engine = new ServiceVerify(store, root, (LaunchdServiceManager)manager,
                 n => DaemonPidProbe.ValidatedPid(store, n), (n, t) => HelloProbe.RunAsync(store, n, t),
                 TimeProvider.System, profileViable: () => profileUrlValid, gateEnv: Environment.GetEnvironmentVariable);
             var exit   = await engine.InstallVerifiedAsync(spec, replace: replace, CapacitorVersion.Current());
@@ -228,7 +232,7 @@ sealed class DaemonServiceCommands(DaemonStore store, IServiceManager manager, s
     /// acquires the <see cref="ServiceTxnLock"/> itself — no double-acquire here.
     /// </summary>
     async Task<int> StartVerified() {
-        var engine = new ServiceVerify(store, (LaunchdServiceManager)manager,
+        var engine = new ServiceVerify(store, root, (LaunchdServiceManager)manager,
             n => DaemonPidProbe.ValidatedPid(store, n), (n, t) => HelloProbe.RunAsync(store, n, t), TimeProvider.System,
             gateEnv: Environment.GetEnvironmentVariable);
         var exit = await engine.StartVerifiedAsync(id);
@@ -303,7 +307,7 @@ sealed class DaemonServiceCommands(DaemonStore store, IServiceManager manager, s
         var json        = args.Contains("--json");
         // Same explicit-flag-wins-then-resolved default as Install: the gate's identity half needs a
         // non-empty KCAP_PROFILE, so a bare `ensure` on launchd must still carry the resolved name.
-        var profileName = DaemonCommands.ExtractFlagValue(args, "--profile") ?? AppConfig.ResolvedProfile?.ProfileName;
+        var profileName = DaemonCommands.ExtractFlagValue(args, "--profile") ?? profiles.Resolution.ProfileName;
 
         var query     = manager.Query(id);
         var daemonPid = DaemonPidProbe.ValidatedPid(store, id);
@@ -350,13 +354,13 @@ sealed class DaemonServiceCommands(DaemonStore store, IServiceManager manager, s
     /// the active one must not bake the active profile's URL — the unit would refuse to boot);
     /// otherwise the resolved profile's.
     /// </summary>
-    static async Task<string?> ResolveServerUrlAsync(string? profileName) =>
+    async Task<string?> ResolveServerUrlAsync(string? profileName) =>
         profileName is null
-            ? AppConfig.ResolvedProfile?.ServerUrl
+            ? profiles.Resolution.ServerUrl
             : await ResolveNamedProfileServerUrlAsync(profileName);
 
-    static async Task<string?> ResolveNamedProfileServerUrlAsync(string profileName) {
-        var config = await AppConfig.LoadProfileConfig();
+    async Task<string?> ResolveNamedProfileServerUrlAsync(string profileName) {
+        var config = await AppConfig.LoadProfileConfig(root);
         return config.Profiles.TryGetValue(profileName, out var p) ? p.ServerUrl : null;
     }
 
@@ -411,9 +415,9 @@ sealed class DaemonServiceCommands(DaemonStore store, IServiceManager manager, s
 
         // The app's MutationEnv overlay, in-process: seed born-prompt + the expected server the gate
         // and the daemon's own boot both re-read. Everything else comes from the ambient capture.
-        var env = EnsureUnitEnv(profileName, serverUrl, ServiceEnvironment.Capture(profileName));
+        var env = EnsureUnitEnv(profileName, serverUrl, ServiceEnvironment.Capture(profileName, root));
         env["KCAP_DAEMON_SUPERVISED"] = id;
-        var logPath = PathHelpers.ConfigPath($"daemon-{id}.log");
+        var logPath = root.Path($"daemon-{id}.log");
         var spec    = new ServiceSpec(id, daemonPath, logPath, env, []);
 
         StartGateReason? gateReason = null;
@@ -421,8 +425,8 @@ sealed class DaemonServiceCommands(DaemonStore store, IServiceManager manager, s
         string? bootRefusalToken = null;
         int exit;
         if (manager is LaunchdServiceManager) {
-            var profileUrlValid = await ServiceInstallViability.PinnedProfileServerUrlValidAsync(env);
-            var engine = new ServiceVerify(store, (LaunchdServiceManager)manager,
+            var profileUrlValid = await ServiceInstallViability.PinnedProfileServerUrlValidAsync(env, root);
+            var engine = new ServiceVerify(store, root, (LaunchdServiceManager)manager,
                 n => DaemonPidProbe.ValidatedPid(store, n), (n, t) => HelloProbe.RunAsync(store, n, t),
                 TimeProvider.System, profileViable: () => profileUrlValid, gateEnv: EnsureGateEnv(profileName, serverUrl));
             exit = await engine.InstallVerifiedAsync(spec, replace: false, CapacitorVersion.Current());
@@ -481,7 +485,7 @@ sealed class DaemonServiceCommands(DaemonStore store, IServiceManager manager, s
         string? bootRefusalToken = null;
         int exit;
         if (manager is LaunchdServiceManager) {
-            var engine = new ServiceVerify(store, (LaunchdServiceManager)manager,
+            var engine = new ServiceVerify(store, root, (LaunchdServiceManager)manager,
                 n => DaemonPidProbe.ValidatedPid(store, n), (n, t) => HelloProbe.RunAsync(store, n, t),
                 TimeProvider.System, gateEnv: EnsureGateEnv(profileName, serverUrl));
             exit = await engine.StartVerifiedAsync(id);
@@ -538,7 +542,7 @@ sealed class DaemonServiceCommands(DaemonStore store, IServiceManager manager, s
 
             var serverUrl = env.TryGetValue("KCAP_URL", out var bakedUrl)
                 ? bakedUrl
-                : BakedProfileServerUrl(env, profile);
+                : BakedProfileServerUrl(env, profile, root);
 
             return (profile, serverUrl, expectedServer, consentSeed);
         } catch {
@@ -549,10 +553,10 @@ sealed class DaemonServiceCommands(DaemonStore store, IServiceManager manager, s
     /// <summary>The <c>KCAP_URL</c>-absent fallback for <see cref="UnitEnvEvidence"/>: the baked
     /// profile's <c>server_url</c>, read from the baked <c>KCAP_CONFIG_DIR</c> (or the default config
     /// root when none was baked) — null on any ambiguity (no baked profile) or miss.</summary>
-    static string? BakedProfileServerUrl(IReadOnlyDictionary<string, string> env, string? profile) {
+    static string? BakedProfileServerUrl(IReadOnlyDictionary<string, string> env, string? profile, ConfigRoot root) {
         if (string.IsNullOrEmpty(profile)) return null;
         try {
-            var config = ConfigMutator.LoadPure(UnitIdentity.ConfigPathFromUnitEnv(env));
+            var config = ConfigMutator.LoadPure(UnitIdentity.ConfigPathFromUnitEnv(env, root));
             return config.Profiles.TryGetValue(profile, out var p) ? p.ServerUrl : null;
         } catch {
             return null;

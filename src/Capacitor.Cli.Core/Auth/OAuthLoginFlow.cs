@@ -7,6 +7,8 @@ using Duende.IdentityModel.OidcClient.Browser;
 
 // ReSharper disable MethodHasAsyncOverload
 
+using Capacitor.Cli.Core.Telemetry;
+
 namespace Capacitor.Cli.Core.Auth;
 
 public static class AuthProvider {
@@ -94,24 +96,15 @@ public static class OAuthLoginFlow {
 
     /// <summary>
     /// Runs GitHub Device Flow interactively. Reports the user code and verification URL, opens the
-    /// system browser to the verification URL, and polls GitHub for the access token, through
-    /// <paramref name="progress"/>. Intended for CLI use — not suitable for headless callers.
+    /// browser on it, and polls GitHub for the access token, through <paramref name="progress"/>.
+    /// Intended for CLI use — not suitable for headless callers.
     /// </summary>
     /// <returns>The GitHub access token on success, or <c>null</c> on failure.</returns>
-    public static async Task<string?> RunDeviceFlowAsync(string clientId, CancellationToken ct = default, IAuthProgress? progress = null) {
-        using var http = new HttpClient();
-        http.DefaultRequestHeaders.Accept.Add(new("application/json"));
-
-        return await RunDeviceFlowAsync(http, clientId, ct, progress);
-    }
-
-    // HttpClient-injectable core — the test seam for pinning the device-code/poll endpoints
-    // to a fake handler (RunDeviceFlowAsync(clientId) hardcodes github.com and can't be redirected).
     internal static async Task<string?> RunDeviceFlowAsync(
-            HttpClient http, string clientId, CancellationToken ct = default, IAuthProgress? progress = null,
-            TimeProvider? time = null, Func<string, bool>? openBrowser = null) {
-        progress    ??= ConsoleAuthProgress.Instance;
-        openBrowser ??= SystemBrowser.TryOpen;
+            HttpClient http, string clientId, IBrowserLauncher launcher,
+            CancellationToken ct = default, IAuthProgress? progress = null,
+            TimeProvider? time = null) {
+        progress ??= ConsoleAuthProgress.Instance;
 
         var deviceResponse = await PostFormForJsonAsync(
             http,
@@ -132,7 +125,7 @@ public static class OAuthLoginFlow {
         var device   = (await deviceResponse.Content.ReadFromJsonAsync(CapacitorJsonContext.Default.DeviceCodeResponse, ct))!;
         var interval = device.IntervalOrDefault;
 
-        var browserOpened = openBrowser(device.BrowserUri);
+        var browserOpened = launcher.TryOpen(device.BrowserUri);
         var prefilled     = browserOpened && !string.IsNullOrEmpty(device.VerificationUriComplete);
 
         // Not copied when the page already carries the code: there is nothing to paste it into, and the
@@ -313,10 +306,20 @@ public static class OAuthLoginFlow {
     /// thrown out of <see cref="LoopbackBrowser"/>). <paramref name="browser"/> is the test seam.
     /// </summary>
     public static async Task<string?> RunGitHubBrowserFlowAsync(
-            string clientId, string codeExchangeUrl, IBrowser? browser = null, TimeSpan? timeout = null,
+            string clientId, string codeExchangeUrl, IBrowserLauncher launcher,
+            IBrowser? browser = null, TimeSpan? timeout = null,
             CancellationToken ct = default, IAuthProgress? progress = null) {
         progress ??= ConsoleAuthProgress.Instance;
-        browser  ??= new LoopbackBrowser(progress: progress);
+
+        // Owned-vs-borrowed, in one line: `created` is disposed, the injected `browser` never is. A
+        // locally-built LoopbackBrowser owns a listener that outlives InvokeAsync (the return-hop
+        // wait), so leaving it inline would hold the port for the life of the process; disposing an
+        // injected one would tear down a test's stand-in, or a future caller's shared instance.
+        // `using` on a nullable disposes only when non-null, which is exactly the distinction.
+        using LoopbackBrowser? created =
+            browser is null ? new LoopbackBrowser(launcher, progress, join: SetupJoin.Loopback) : null;
+        browser ??= created!; // non-null exactly when browser was null, which is when we built it
+
         var redirectUri = $"http://127.0.0.1:{GetAvailablePort()}/callback";
 
         var options = new OidcClientOptions {
@@ -419,23 +422,6 @@ public static class OAuthLoginFlow {
         return tokenResult.AccessToken;
     }
 
-    public static async Task<int> ExchangeAndSaveAsync(
-            string serverUrl, string githubAccessToken, string provider, CancellationToken ct = default, IAuthProgress? progress = null) {
-        progress ??= ConsoleAuthProgress.Instance;
-
-        using var http = new HttpClient();
-
-        var exchanged = await ExchangeAsync(http, serverUrl, githubAccessToken, provider, profile: null, progress, ct);
-
-        if (exchanged is null) return 1;
-
-        await TokenStore.SaveAsync(exchanged.Value.Tokens);
-
-        progress.Notice($"Logged in as {exchanged.Value.Username}");
-
-        return 0;
-    }
-
     /// <summary>
     /// Exchanges a GitHub access token for a Capacitor JWT and returns the tokens WITHOUT saving —
     /// persistence belongs to the caller's commit boundary. <c>null</c> means the exchange failed and
@@ -487,39 +473,6 @@ public static class OAuthLoginFlow {
     }
 
     /// <summary>
-    /// Exchanges a GitHub access token for a Capacitor JWT and saves it to the named profile.
-    /// Unlike the single-argument overload, this does NOT print "Logged in as …" — the caller
-    /// is responsible for user-facing output. Returns 0 on success, 1 on failure.
-    /// </summary>
-    public static async Task<int> ExchangeAndSaveAsync(
-            string serverUrl, string githubAccessToken, string provider, string profile,
-            CancellationToken ct = default, IAuthProgress? progress = null) {
-        using var http = new HttpClient();
-
-        return await ExchangeAndSaveAsync(http, serverUrl, githubAccessToken, provider, profile, ct, progress);
-    }
-
-    public static async Task<int> ExchangeAndSaveAsync(
-            HttpClient        http,
-            string            serverUrl,
-            string            githubAccessToken,
-            string            provider,
-            string            profile,
-            CancellationToken ct = default,
-            IAuthProgress?    progress = null
-        ) {
-        progress ??= ConsoleAuthProgress.Instance;
-
-        var exchanged = await ExchangeAsync(http, serverUrl, githubAccessToken, provider, profile, progress, ct);
-
-        if (exchanged is null) return 1;
-
-        await TokenStore.SaveAsync(profile, exchanged.Value.Tokens, ct);
-
-        return 0;
-    }
-
-    /// <summary>
     /// Reports the server's <c>/auth/token</c> error. When the server reports that the Capacitor
     /// GitHub App isn't installed on the user's org, appends a troubleshooting checklist — the most
     /// common cause is the device-flow consent being completed under a different GitHub account than
@@ -568,16 +521,18 @@ public static class OAuthLoginFlow {
     }
 
     internal static async Task<string?> AcquireGitHubTokenAsync(
-            string clientId, string? codeExchangeUrl, bool forceDevice, CancellationToken ct = default, IAuthProgress? progress = null) {
+            string clientId, string? codeExchangeUrl, bool forceDevice, IBrowserLauncher launcher,
+            CancellationToken ct = default, IAuthProgress? progress = null) {
         using var http = new HttpClient();
 
-        return await AcquireGitHubTokenAsync(http, clientId, codeExchangeUrl, forceDevice, ct, progress);
+        return await AcquireGitHubTokenAsync(http, clientId, codeExchangeUrl, forceDevice, launcher, ct, progress);
     }
 
     // HttpClient-injectable core: the device-flow leg runs on the caller's client so the façade's
     // one client (and a test's scripted handler) covers it.
     internal static async Task<string?> AcquireGitHubTokenAsync(
             HttpClient http, string clientId, string? codeExchangeUrl, bool forceDevice,
+            IBrowserLauncher launcher,
             CancellationToken ct = default, IAuthProgress? progress = null) {
         progress ??= ConsoleAuthProgress.Instance;
 
@@ -586,7 +541,7 @@ public static class OAuthLoginFlow {
 
         if (choice == GitHubFlow.Browser) {
             try {
-                var token = await RunGitHubBrowserFlowAsync(clientId, codeExchangeUrl!, ct: ct, progress: progress);
+                var token = await RunGitHubBrowserFlowAsync(clientId, codeExchangeUrl!, launcher, ct: ct, progress: progress);
 
                 return token ??
                     // Browser flow ran but user cancelled / state mismatch — don't silently fall back.
@@ -600,7 +555,7 @@ public static class OAuthLoginFlow {
             }
         }
 
-        return await RunDeviceFlowAsync(http, clientId, ct, progress);
+        return await RunDeviceFlowAsync(http, clientId, launcher, ct, progress);
     }
 
     internal const string WorkOSApiBase = "https://api.workos.com";
@@ -680,11 +635,10 @@ public static class OAuthLoginFlow {
     /// Public client: no secret anywhere in this flow, so the proxy is not involved.
     /// </summary>
     internal static async Task<WorkOSAuthResponse?> RunWorkOSDeviceFlowAsync(
-            HttpClient http, string clientId, CancellationToken ct = default,
-            IAuthProgress? progress = null, string apiBase = WorkOSApiBase, TimeProvider? time = null,
-            Func<string, bool>? openBrowser = null) {
-        progress    ??= ConsoleAuthProgress.Instance;
-        openBrowser ??= SystemBrowser.TryOpen;
+            HttpClient http, string clientId, IBrowserLauncher launcher,
+            CancellationToken ct = default,
+            IAuthProgress? progress = null, string apiBase = WorkOSApiBase, TimeProvider? time = null) {
+        progress ??= ConsoleAuthProgress.Instance;
 
         var authorize = await PostFormForJsonAsync(
             http, $"{apiBase}/user_management/authorize/device", new() { ["client_id"] = clientId }, ct);
@@ -716,7 +670,7 @@ public static class OAuthLoginFlow {
         }
 
         // Best-effort: the population this flow exists for has no browser here at all.
-        var browserOpened = openBrowser(device.BrowserUri);
+        var browserOpened = launcher.TryOpen(device.BrowserUri);
 
         // The URL printed always matches the instruction under it. Opened: the complete one, which is
         // where the browser actually went, so following the line by hand lands on the same prefilled
@@ -753,28 +707,43 @@ public static class OAuthLoginFlow {
     /// device grant reachable by pressing <c>d</c> at any point and taken automatically when loopback
     /// cannot bind. A loopback attempt that RAN and failed returns <c>null</c> rather than falling
     /// through — a cancel or a state mismatch is an answer, and silently re-asking through another
-    /// channel would ignore it. Mirrors <see cref="AcquireGitHubTokenAsync(HttpClient,string,string?,bool,CancellationToken,IAuthProgress?)"/>.
+    /// channel would ignore it. Mirrors <see cref="AcquireGitHubTokenAsync(HttpClient,string,string?,bool,IBrowserLauncher,CancellationToken,IAuthProgress?)"/>.
     /// </summary>
     internal static async Task<WorkOSAuthResponse?> AcquireWorkOSAsync(
             HttpClient http, string clientId, string? organizationId, bool forceDevice,
+            IBrowserLauncher launcher,
             IBrowser? browser = null, string apiBase = WorkOSApiBase, CancellationToken ct = default,
-            IAuthProgress? progress = null, IKeyWatcher? keys = null, TimeProvider? time = null,
-            Func<string, bool>? openBrowser = null) {
+            IAuthProgress? progress = null, IKeyWatcher? keys = null, TimeProvider? time = null) {
         progress ??= ConsoleAuthProgress.Instance;
         keys     ??= ConsoleKeyWatcher.Instance;
 
         if (ChooseWorkOSFlow(forceDevice) is WorkOSFlow.Device) {
-            return await RunWorkOSDeviceFlowAsync(http, clientId, ct, progress, apiBase, time, openBrowser);
+            return await RunWorkOSDeviceFlowAsync(http, clientId, launcher, ct, progress, apiBase, time);
         }
 
         using var escape = CancellationTokenSource.CreateLinkedTokenSource(ct);
         using var settled = new CancellationTokenSource();
 
+        // Owned, not an inline sub-expression: with a join attached the listener OUTLIVES
+        // AuthenticateWorkOSAsync so it can catch the browser's return hop, so an unnamed instance
+        // would hold the port for the life of the process — for the desktop app, the whole session.
+        // `using` on a nullable disposes exactly when the local is the one we built, never the
+        // injected test seam.
+        //
+        // Scoped to the whole ladder, not to the login task: the fall-through paths below still run
+        // with it alive. That gives the drain only Dispose's own bounded wait once login succeeds,
+        // rather than the longer tail the facade used to provide — enough in practice (the production
+        // round trip merged in under a second) but genuinely tighter, not equivalent.
+        using LoopbackBrowser? created = browser is null
+            ? new LoopbackBrowser(
+                launcher, progress, keys.CanWatch ? WorkOSBrowserHint() : null, SetupJoin.Loopback)
+            : null;
+
         var login = AuthenticateWorkOSAsync(
             clientId, organizationId,
             // No keyboard, no hint: a GUI host cannot act on one, and a console without a keyboard
             // never reaches here (DeviceRouteRequired sent it to the device grant already).
-            browser ?? new LoopbackBrowser(openBrowser, progress, keys.CanWatch ? WorkOSBrowserHint() : null),
+            browser ?? created!,
             apiBase, escape.Token, progress);
         var watch = WatchForEscapeHatchAsync(keys, escape, settled.Token);
 
@@ -797,7 +766,7 @@ public static class OAuthLoginFlow {
             await watch;
         }
 
-        return await RunWorkOSDeviceFlowAsync(http, clientId, ct, progress, apiBase, time, openBrowser);
+        return await RunWorkOSDeviceFlowAsync(http, clientId, launcher, ct, progress, apiBase, time);
     }
 
     /// <summary>
@@ -851,10 +820,12 @@ public static class OAuthLoginFlow {
     /// </summary>
     internal static async Task<(StoredTokens Tokens, string Username)?> WorkOSTokensForServerAsync(
             HttpClient http, string serverUrl, string clientId, string? organizationId, bool forceDevice,
+            IBrowserLauncher launcher,
             IBrowser? browser, CancellationToken ct, IAuthProgress progress, string apiBase = WorkOSApiBase,
             IKeyWatcher? keys = null, TimeProvider? time = null) {
         // AcquireWorkOSAsync already reported the specific failure reason.
-        var json = await AcquireWorkOSAsync(http, clientId, organizationId, forceDevice, browser, apiBase, ct, progress, keys, time);
+        var json = await AcquireWorkOSAsync(
+            http, clientId, organizationId, forceDevice, launcher, browser, apiBase, ct, progress, keys, time);
         if (json is null) return null;
 
         // Org gate: a multi-org user must not be "logged in" to the wrong org — every API call would

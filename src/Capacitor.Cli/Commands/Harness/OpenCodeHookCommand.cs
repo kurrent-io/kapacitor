@@ -26,19 +26,23 @@ namespace Capacitor.Cli.Commands.Harness;
 ///
 /// Fail-open throughout — a kcap/server problem must never disrupt the OpenCode session.
 /// </summary>
-static class OpenCodeHookCommand {
-    public static Task<int> Handle(string baseUrl, string[] args) =>
-        Handle(baseUrl, args, Console.Out);
+sealed class OpenCodeHookCommand(ConfigRoot config, ProfileContext profiles, HookClock clock) {
+    readonly WatcherManager  _watchers = new(config, profiles);
+    readonly AgentHookPoster _poster   = new(config, profiles);
+
+    string Url => profiles.Resolution.ServerUrl!;
+
+    /// <summary>The plugin discards a <c>kcap hook</c> answer slower than its own 10s race
+    /// (<c>OpenCodeExtensionInstaller</c>); this stops well inside it so session-start never sits on
+    /// the agent's critical path.</summary>
+    static readonly TimeSpan Ceiling = TimeSpan.FromSeconds(5);
+
+    public Task<int> Handle(string[] args) => Handle(args, Console.Out);
 
     /// <param name="stdout">Injected so the fragment the plugin consumes is assertable without
     /// capturing the process's real console — which is also the only way to test the no-fragment path,
     /// since "wrote nothing" is indistinguishable from "was never called" on a shared writer.</param>
-    internal static async Task<int> Handle(string baseUrl, string[] args, TextWriter stdout,
-            long processStart = 0,
-            Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory = null,
-            Func<SessionStartMemoryLeaseStore>?                 memoryStoreFactory  = null) {
-        if (processStart == 0) processStart = System.Diagnostics.Stopwatch.GetTimestamp();
-
+    internal async Task<int> Handle(string[] args, TextWriter stdout) {
         var eventName = GetArg(args, "--event");
         if (string.IsNullOrWhiteSpace(eventName)) {
             Console.Error.WriteLine(
@@ -61,13 +65,13 @@ static class OpenCodeHookCommand {
 
         // Mirror the disabled-session fast path: `kcap disable` must stop every POST
         // and watcher restart for the session.
-        if (DisabledSessions.IsDisabled(sessionId)) return 0;
+        if (DisabledSessions.IsDisabled(sessionId, config)) return 0;
 
         // Task 12: the cross-vendor backlog drain now runs centrally in Program.cs's
         // `case "hook":` before dispatch — no longer wired here (removes the double-wire).
-        var spool = new HookSpool(PathHelpers.ConfigPath("spool"));
+        var spool = new HookSpool(config);
 
-        var activeProfile = await AppConfig.GetActiveProfileAsync();
+        var activeProfile = profiles.Effective;
 
         if (activeProfile?.ExcludedPaths is { Length: > 0 } excludedPaths
          && PathExclusion.IsExcluded(cwd, excludedPaths)) {
@@ -76,13 +80,11 @@ static class OpenCodeHookCommand {
 
         // session-start is the only actionable event; the watcher owns session-end.
         return eventName == "session-start"
-            ? await HandleSessionStart(baseUrl, sessionId, sessionIdRaw, file, cwd, args, activeProfile, spool,
-                                       stdout, processStart, memoryClientFactory, memoryStoreFactory)
+            ? await HandleSessionStart(sessionId, sessionIdRaw, file, cwd, args, activeProfile, spool, stdout, clock.Budget(Ceiling))
             : 0;
     }
 
-    static async Task<int> HandleSessionStart(
-            string    baseUrl,
+    async Task<int> HandleSessionStart(
             string    sessionId,
             string    sessionIdRaw,
             string    file,
@@ -91,9 +93,7 @@ static class OpenCodeHookCommand {
             Profile?  activeProfile,
             HookSpool spool,
             TextWriter stdout,
-            long      processStart,
-            Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory,
-            Func<SessionStartMemoryLeaseStore>?                 memoryStoreFactory
+            HookBudget budget
         ) {
         var forwarded = new JsonObject {
             ["hook_event_name"] = "sessionStart",
@@ -123,12 +123,12 @@ static class OpenCodeHookCommand {
             forwarded["default_visibility"] = visibility;
         }
 
-        SessionStartInventory.Stamp(forwarded);
-        var enriched = await RepositoryDetection.EnrichWithRepositoryInfo(forwarded.ToJsonString());
+        SessionStartInventory.Stamp(forwarded, config);
+        var enriched = await RepositoryDetection.EnrichWithRepositoryInfo(config, forwarded.ToJsonString());
 
         if (activeProfile?.ExcludedRepos is { Length: > 0 } excludedRepos
-         && await RepoExclusion.IsExcludedAsync(enriched, excludedRepos)) {
-            DisabledSessions.Mark(sessionId);
+         && await RepoExclusion.IsExcludedAsync(config, enriched, excludedRepos)) {
+            DisabledSessions.Mark(sessionId, config);
             return 0;
         }
 
@@ -150,12 +150,10 @@ static class OpenCodeHookCommand {
         // handed the nudge as raw text.
         var canConsumeFragment = MemoryContractOf(args) >= 1;
         var memoryTask = canConsumeFragment
-            ? StartMemoryIndexTask(
-                baseUrl, sessionId, scopeRoot,
+            ? StartMemoryIndexTask(sessionId, scopeRoot,
                 activeProfile?.DisableMemoryIndex is true,
                 activeProfile?.DisableSessionGuidelines is true,
-                HookBudget.Remaining(processStart, "session-start"),
-                memoryClientFactory, memoryStoreFactory)
+                budget.Remaining)
             : Task.FromResult<string?>(null);
 
         // Spawn-before-post: capture must start on Posted OR Spooled (auth lapse /
@@ -163,27 +161,25 @@ static class OpenCodeHookCommand {
         // failure PostOrSpoolAsync already logged to stderr; a lapse or transient outage instead
         // durably spools the payload for a later drain pass. Only a permanent failure skips the
         // watcher this firing; the next session.idle retries.
-        var outcome = await AgentHookPoster.PostOrSpoolAsync(
-            baseUrl, "session-start/opencode", enriched, "opencode-hook",
+        var outcome = await _poster.PostOrSpoolAsync("session-start/opencode", enriched, "opencode-hook",
             spool, sessionId, route: "session-start/opencode");
 
         // BEFORE the watcher gate below, and before any early return: a withheld watcher must not
         // suppress an injection whose once-per-session lease has already been spent. The plugin reads
         // stdout regardless of what the watcher did.
-        var fragment = await SessionStartMemoryHookSupport.AwaitBounded(memoryTask, processStart, "session-start");
+        var fragment = await SessionStartMemoryHookSupport.AwaitBounded(memoryTask, budget);
         var workItemsNudge = canConsumeFragment
             ? WorkItemsNudgeEmitter.Resolve(SessionStartHarness.OpenCode, sessionId, activeProfile?.DisableWorkItemsNudge is true)
             : null;
         // The harness nudge is independent of the once-per-session memory lease — it has its own
         // 6h evaluation throttle, so it can surface even on a re-fired session that can't reconsume.
         var combinedNudge = HarnessNudgeEmitter.Combine(
-            workItemsNudge, HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true));
+            workItemsNudge, HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true, config));
         await WriteMemoryFragment(stdout, fragment, combinedNudge);
 
-        if (!AgentHookPoster.ShouldSpawnAfter(outcome, baseUrl)) return 0;
+        if (!AgentHookPoster.ShouldSpawnAfter(outcome, Url)) return 0;
 
-        await WatcherManager.EnsureWatcherRunning(
-            baseUrl, sessionId, file,
+        await _watchers.EnsureWatcherRunning(sessionId, file,
             agentId: null, sessionIdOverride: null, cwd: cwd,
             skipTitle: false, vendor: "opencode"
         );
@@ -242,30 +238,28 @@ static class OpenCodeHookCommand {
     /// <c>EnsureAbsolute</c> calls <c>Environment.Exit(2)</c> on an unusable base url — which would kill
     /// the hook before it writes its output, and this hook's stdout is a data channel.</para>
     /// </summary>
-    internal static Task<string?> StartMemoryIndexTask(
-            string     baseUrl,
+    internal Task<string?> StartMemoryIndexTask(
             string     sessionId,
             string?    scopeRoot,
             bool       disabled,
             bool       guidelinesDisabled,
-            TimeSpan   budget,
-            Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory,
-            Func<SessionStartMemoryLeaseStore>?                 memoryStoreFactory) {
+            TimeSpan   budget) {
         // Both lanes off ⇒ nothing to fetch. A single disabled lane still runs the other.
         if ((disabled && guidelinesDisabled) || string.IsNullOrWhiteSpace(sessionId) || string.IsNullOrWhiteSpace(scopeRoot)
          || budget <= TimeSpan.Zero
-         || !SessionStartMemoryHookSupport.CanAttempt(baseUrl))
+         || !SessionStartMemoryHookSupport.CanAttempt(Url))
             return Task.FromResult<string?>(null);
 
         try {
-            var store    = memoryStoreFactory?.Invoke() ?? new SessionStartMemoryLeaseStore();
+            var store    = SessionStartMemoryLeaseStore.Create(config, clock.Time);
             var provider = SessionStartMemoryHookSupport.CompositeProvider(
-                memoryClientFactory ?? SessionStartMemoryHookSupport.ClientFactory(baseUrl),
-                disposeClients: memoryClientFactory is null);
+                config,
+                SessionStartMemoryHookSupport.ClientFactory(config, profiles, Url),
+                disposeClients: true);
 
             return new SessionStartMemoryOrchestrator(store, provider).GetFragmentAsync(
                 LifecycleFor(sessionId),
-                new SessionStartMemoryContextRequest(baseUrl, scopeRoot, disabled, budget, CancellationToken.None,
+                new SessionStartMemoryContextRequest(Url, scopeRoot, disabled, budget, CancellationToken.None,
                     GuidelinesDisabled: guidelinesDisabled));
         } catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException) {
             return Task.FromResult<string?>(null);

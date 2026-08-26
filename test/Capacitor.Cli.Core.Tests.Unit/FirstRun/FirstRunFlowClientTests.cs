@@ -17,6 +17,11 @@ public class FirstRunFlowClientTests {
 
     static string PollPath => $"{CreatePath}/{FlowId}";
 
+    static FirstRunMachineReport Report(
+            string? machine = null, Dictionary<string, FirstRunHarnessReport>? harnesses = null,
+            string[]? declined = null, bool? loginShellFindsCli = null) =>
+        new(machine, machine is null ? null : "machine-1", harnesses ?? [], declined ?? [], loginShellFindsCli);
+
     static string StateBody(string doneStatus) =>
         $$$"""
           {"flow_id":"{{{FlowId}}}","machine":"nostromo","step":"Done","can_finish":true,
@@ -34,7 +39,7 @@ public class FirstRunFlowClientTests {
         using var http = new HttpClient();
 
         var outcome = await new FirstRunFlowClient(http)
-            .CreateAsync(server.Urls[0], FlowId, "nostromo", CancellationToken.None);
+            .CreateAsync(server.Urls[0], FlowId, Report("nostromo"), CancellationToken.None);
 
         await Assert.That(outcome.StatusCode).IsEqualTo(200);
         await Assert.That(outcome.Body!.FlowId).IsEqualTo(FlowId);
@@ -52,6 +57,92 @@ public class FirstRunFlowClientTests {
     }
 
     [Test]
+    public async Task CreateAsync_sends_the_machine_report_the_agents_screen_renders_from() {
+        using var server = WireMockServer.Start();
+        server.Given(Request.Create().WithPath(CreatePath).UsingPost())
+            .RespondWith(Response.Create().WithStatusCode(200)
+                .WithBody(StateBody("Pending")).WithHeader("Content-Type", "application/json"));
+
+        using var http = new HttpClient();
+
+        await new FirstRunFlowClient(http).CreateAsync(
+            server.Urls[0], FlowId,
+            Report(
+                "nostromo",
+                new Dictionary<string, FirstRunHarnessReport> {
+                    ["claude"] = new() { BinaryOnPath = true,  ConfigFound = false, AlreadyWired = true },
+                    ["cursor"] = new() { BinaryOnPath = false, ConfigFound = true,  AlreadyWired = false }
+                },
+                ["kiro"],
+                loginShellFindsCli: false),
+            CancellationToken.None);
+
+        var body = JsonNode.Parse(
+            server.FindLogEntries(Request.Create().WithPath(CreatePath).UsingPost())[0].RequestMessage.Body!)!;
+
+        await Assert.That(body["machine_id"]!.GetValue<string>()).IsEqualTo("machine-1");
+
+        // The two signals travel APART. ORing them into one field is what the daemon's inventory does,
+        // and it costs the screen the ability to say which one it saw — which differs per vendor.
+        await Assert.That(body["harnesses"]!["claude"]!["binary_on_path"]!.GetValue<bool>()).IsTrue();
+        await Assert.That(body["harnesses"]!["claude"]!["config_found"]!.GetValue<bool>()).IsFalse();
+        await Assert.That(body["harnesses"]!["claude"]!["already_wired"]!.GetValue<bool>()).IsTrue();
+        await Assert.That(body["harnesses"]!["cursor"]!["binary_on_path"]!.GetValue<bool>()).IsFalse();
+        await Assert.That(body["harnesses"]!["cursor"]!["config_found"]!.GetValue<bool>()).IsTrue();
+
+        await Assert.That(body["declined"]!.AsArray()[0]!.GetValue<string>()).IsEqualTo("kiro");
+        await Assert.That(body["login_shell_finds_cli"]!.GetValue<bool>()).IsFalse();
+    }
+
+    // The server draws its one error state from an explicit false, so a probe that never ran must not
+    // arrive as one. Sent as JSON null rather than omitted; the server reads both as "not probed".
+    [Test]
+    public async Task CreateAsync_does_not_report_an_unprobed_login_shell_as_a_failed_one() {
+        using var server = WireMockServer.Start();
+        server.Given(Request.Create().WithPath(CreatePath).UsingPost())
+            .RespondWith(Response.Create().WithStatusCode(200)
+                .WithBody(StateBody("Pending")).WithHeader("Content-Type", "application/json"));
+
+        using var http = new HttpClient();
+
+        await new FirstRunFlowClient(http)
+            .CreateAsync(server.Urls[0], FlowId, Report("nostromo"), CancellationToken.None);
+
+        var body = JsonNode.Parse(
+            server.FindLogEntries(Request.Create().WithPath(CreatePath).UsingPost())[0].RequestMessage.Body!)!;
+
+        // Present-and-null, not omitted. The server reads both as "not probed", so the assertion is
+        // about the two things that must NOT happen: a true, or a false the probe never determined.
+        await Assert.That(body.AsObject().ContainsKey("login_shell_finds_cli")).IsTrue();
+        await Assert.That(body["login_shell_finds_cli"]).IsNull();
+    }
+
+    [Test]
+    public async Task PollAsync_reads_the_agents_decision_and_its_cursor() {
+        using var server = WireMockServer.Start();
+        server.Given(Request.Create().WithPath(PollPath).UsingGet())
+            .RespondWith(Response.Create().WithStatusCode(200).WithHeader("Content-Type", "application/json")
+                .WithBody($$$"""
+                    {"flow_id":"{{{FlowId}}}","step":"Done","can_finish":true,
+                     "steps":{"SignIn":"Completed","Agents":"Completed","Import":"Skipped","Done":"Completed"},
+                     "agents":[{"vendor":"claude","record":true,"tools":true},
+                               {"vendor":"cursor","record":true,"tools":false}],
+                     "agents_decided_at":"2026-08-25T09:30:00+00:00"}
+                    """));
+
+        using var http = new HttpClient();
+
+        var outcome = await new FirstRunFlowClient(http).PollAsync(server.Urls[0], FlowId, CancellationToken.None);
+        var answer  = FirstRunFlowOutcomes.Agents(outcome.Body);
+
+        await Assert.That(answer).IsNotNull();
+        await Assert.That(answer!.Choices.Count).IsEqualTo(2);
+        await Assert.That(answer.Records("cursor")).IsTrue();
+        await Assert.That(answer.Tools("cursor")).IsFalse();
+        await Assert.That(answer.DecidedAt).IsEqualTo(new DateTimeOffset(2026, 8, 25, 9, 30, 0, TimeSpan.Zero));
+    }
+
+    [Test]
     public async Task CreateAsync_reads_the_retry_after_a_429_carries() {
         using var server = WireMockServer.Start();
         server.Given(Request.Create().WithPath(CreatePath).UsingPost())
@@ -60,7 +151,7 @@ public class FirstRunFlowClientTests {
         using var http = new HttpClient();
 
         var outcome = await new FirstRunFlowClient(http)
-            .CreateAsync(server.Urls[0], FlowId, null, CancellationToken.None);
+            .CreateAsync(server.Urls[0], FlowId, Report(), CancellationToken.None);
 
         await Assert.That(outcome.StatusCode).IsEqualTo(429);
         await Assert.That(outcome.RetryAfter).IsEqualTo(TimeSpan.FromMinutes(10));
@@ -77,7 +168,7 @@ public class FirstRunFlowClientTests {
         using var http = new HttpClient();
 
         var outcome = await new FirstRunFlowClient(http)
-            .CreateAsync(server.Urls[0], FlowId, null, CancellationToken.None);
+            .CreateAsync(server.Urls[0], FlowId, Report(), CancellationToken.None);
 
         await Assert.That(outcome.StatusCode).IsEqualTo(404);
     }
@@ -92,7 +183,7 @@ public class FirstRunFlowClientTests {
         using var http = new HttpClient();
 
         var outcome = await new FirstRunFlowClient(http)
-            .CreateAsync($"{server.Urls[0]}/", FlowId, null, CancellationToken.None);
+            .CreateAsync($"{server.Urls[0]}/", FlowId, Report(), CancellationToken.None);
 
         await Assert.That(outcome.StatusCode).IsEqualTo(200);
     }
@@ -160,7 +251,7 @@ public class FirstRunFlowClientTests {
         using var http = new HttpClient();
 
         var outcome = await new FirstRunFlowClient(http)
-            .CreateAsync(server.Urls[0], FlowId, null, CancellationToken.None);
+            .CreateAsync(server.Urls[0], FlowId, Report(), CancellationToken.None);
 
         await Assert.That(outcome.RetryAfter).IsNotNull();
         await Assert.That(outcome.RetryAfter!.Value).IsGreaterThanOrEqualTo(TimeSpan.FromMinutes(9.5));
@@ -179,7 +270,7 @@ public class FirstRunFlowClientTests {
         using var http = new HttpClient();
 
         var outcome = await new FirstRunFlowClient(http)
-            .CreateAsync(server.Urls[0], FlowId, null, CancellationToken.None);
+            .CreateAsync(server.Urls[0], FlowId, Report(), CancellationToken.None);
 
         await Assert.That(outcome.RetryAfter).IsEqualTo(TimeSpan.Zero);
     }

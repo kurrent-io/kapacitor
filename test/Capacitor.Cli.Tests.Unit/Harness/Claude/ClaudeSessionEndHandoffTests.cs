@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Capacitor.Cli.Core;
 using Capacitor.Cli.Harness.Claude;
 
 namespace Capacitor.Cli.Tests.Unit.Harness.Claude;
@@ -13,6 +14,10 @@ namespace Capacitor.Cli.Tests.Unit.Harness.Claude;
 [NotInParallel]
 public class ClaudeSessionEndHandoffTests : IDisposable {
     static readonly string[] HookArgs = ["hook", "--claude", "--no-update-check"];
+
+    // Per test, so the stamp asserted below is the hook handing its own root down and not the
+    // ambient one arriving by inheritance.
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
 
     const string SessionEndBody =
         """{"hook_event_name":"SessionEnd","session_id":"9dc27753-7645-4e46-91ec-c2d69973c152","reason":"exit"}""";
@@ -53,7 +58,7 @@ public class ClaudeSessionEndHandoffTests : IDisposable {
         ProcessStartInfo? seen = null;
         WatcherManager.ProcessStarterForTesting = psi => { seen = psi; return null; };
 
-        var spawned = ClaudeSessionEndHandoff.TrySpawn(HookArgs, SessionEndBody);
+        var spawned = ClaudeSessionEndHandoff.TrySpawn(HookArgs, SessionEndBody, Config.Root);
 
         // A null start is a failed spawn: the caller falls back to the inline path.
         await Assert.That(spawned).IsFalse();
@@ -65,6 +70,8 @@ public class ClaudeSessionEndHandoffTests : IDisposable {
         await Assert.That(seen.RedirectStandardOutput).IsTrue();
         await Assert.That(seen.RedirectStandardError).IsTrue();
         await Assert.That(seen.UseShellExecute).IsFalse();
+        // The continuation is the same hook: it must read the root the hook had, not re-derive one.
+        await Assert.That(seen.Environment[ConfigRoot.ConfigDirEnvVar]).IsEqualTo(Config.Directory);
         // The continuation resolves the server URL itself, from the same cwd — the hook skipped
         // that work, so it has nothing to hand down.
         await Assert.That(seen.Environment.TryGetValue("KCAP_URL", out var url) ? url : null)
@@ -93,7 +100,7 @@ public class ClaudeSessionEndHandoffTests : IDisposable {
             return Process.Start(stub);
         };
 
-        var spawned = ClaudeSessionEndHandoff.TrySpawn(HookArgs, SessionEndBody);
+        var spawned = ClaudeSessionEndHandoff.TrySpawn(HookArgs, SessionEndBody, Config.Root);
 
         await Assert.That(spawned).IsTrue();
 
@@ -108,7 +115,7 @@ public class ClaudeSessionEndHandoffTests : IDisposable {
     public async Task Spawn_failure_is_reported_not_thrown() {
         WatcherManager.ProcessStarterForTesting = _ => throw new InvalidOperationException("no exec");
 
-        await Assert.That(ClaudeSessionEndHandoff.TrySpawn(HookArgs, SessionEndBody)).IsFalse();
+        await Assert.That(ClaudeSessionEndHandoff.TrySpawn(HookArgs, SessionEndBody, Config.Root)).IsFalse();
     }
 
     [Test]
@@ -130,7 +137,7 @@ public class ClaudeSessionEndHandoffTests : IDisposable {
             return child;
         };
 
-        var spawned = ClaudeSessionEndHandoff.TrySpawn(HookArgs, SessionEndBody);
+        var spawned = ClaudeSessionEndHandoff.TrySpawn(HookArgs, SessionEndBody, Config.Root);
 
         await Assert.That(spawned).IsFalse();
         await Assert.That(pid).IsNotEqualTo(0);

@@ -39,6 +39,9 @@ public partial class App : Application {
     // The app's one read of KCAP_DAEMONS_DIR.
     readonly DaemonStore _daemonStore = DaemonStore.FromEnvironment();
 
+    // And its one read of KCAP_CONFIG_DIR.
+    readonly ConfigRoot _config = ConfigRoot.FromEnvironment();
+
     // Both are app-lifetime and BOTH exist before any graph does: OnShutdownRequested latches and
     // drains them whether or not StartAsync ever got as far as building a window (spec §3). The gate
     // is shared by every MainWindowViewModel the coordinator builds — including one built between
@@ -149,7 +152,7 @@ public partial class App : Application {
                 TimeProvider.System);
             _lane = lane;
 
-            var gate = await ResolveAndEvaluateGateAsync(_shutdown.Token);
+            var (gate, profiles) = await ResolveAndEvaluateGateAsync(_config, _shutdown.Token);
             // A graph built while the lane still owns a live action must not also drive automatic
             // ones (spec §6a) — only the wizard's own handoff can answer this with anything but true.
             var laneQuiesced = true;
@@ -158,12 +161,12 @@ public partial class App : Application {
             // the app until it closes, and the graph is then built against a FRESH resolution,
             // because the wizard is exactly what may have changed the answer.
             if (gate is GateResult.Incomplete) {
-                laneQuiesced = await RunWizardModeAsync(desktop, lane, channel, laneRunner, laneProbe);
+                laneQuiesced = await RunWizardModeAsync(desktop, lane, channel, laneRunner, laneProbe, profiles);
                 if (_shutdown.IsCancellationRequested) return; // quit during onboarding — nothing left to build
-                gate = await ResolveAndEvaluateGateAsync(_shutdown.Token);
+                (gate, profiles) = await ResolveAndEvaluateGateAsync(_config, _shutdown.Token);
             }
 
-            BuildDaemonGraph(desktop, lane, channel, gate, laneQuiesced);
+            BuildDaemonGraph(desktop, lane, channel, gate, profiles, laneQuiesced);
         } catch (OperationCanceledException) when (_shutdown.IsCancellationRequested) {
             // A quit landing mid-startup (gate evaluation, the wizard's PATH probe, the post-wizard
             // re-resolve) is not a startup failure: the shutdown path already owns teardown, and an
@@ -213,17 +216,18 @@ public partial class App : Application {
     }
 
     // The ONE resolve+evaluate composition (OnboardingGate.EvaluateAsync), wrapped in the
-    // never-brick degrade: the gate verdict and the daemon identity are read off the same
-    // AppConfig.ResolvedProfile it sets, and the post-wizard build re-runs this rather than reusing
-    // a startup value the wizard may have invalidated.
-    internal static Task<GateResult> ResolveAndEvaluateGateAsync(CancellationToken ct) =>
-        EvaluateGateSafelyAsync(OnboardingGate.EvaluateAsync, ct);
+    // never-brick degrade: the verdict and the resolution come back together, so the daemon identity
+    // cannot be read off a second one, and the post-wizard build re-runs this rather than reusing a
+    // startup value the wizard may have invalidated.
+    internal static Task<(GateResult Gate, ProfileContext? Profiles)> ResolveAndEvaluateGateAsync(
+            ConfigRoot config, CancellationToken ct) =>
+        EvaluateGateSafelyAsync(new OnboardingGate(config).EvaluateAsync, ct);
 
     // The steady-state graph, over the resolution the gate was evaluated on (never a second resolve).
     void BuildDaemonGraph(
             IClassicDesktopStyleApplicationLifetime desktop, DaemonMutationLane lane, OutcomeChannel channel,
-            GateResult gate, bool laneQuiesced) {
-        var service = DaemonClientService.CreateResolved(_daemonStore, lane.RunAsync);
+            GateResult gate, ProfileContext? profiles, bool laneQuiesced) {
+        var service = DaemonClientService.CreateResolved(_daemonStore, profiles?.Resolution, lane.RunAsync);
 
         // Incomplete after the wizard (abandoned, or sign-in skipped) is the carve-out arm, and so
         // is a lane that outran the handoff cap: the graph comes up with every lifecycle
@@ -249,7 +253,8 @@ public partial class App : Application {
         // BEFORE service.Start() begins pumping, or the startup phase could miss the very
         // first terminal outcome it hinges on (DaemonLifecycleController.Start's own comment).
         var (lifecycle, shimOffer, consentFlip, lifecycleSurface, lifecycleProbe) = BuildLifecycleController(
-            service, ops, autoActionsPermanentlyClosed, lifecycleStatus.OnNext, lifecycleAttention.OnNext, lane.RunAsync);
+            service, ops, autoActionsPermanentlyClosed, lifecycleStatus.OnNext, lifecycleAttention.OnNext,
+            lane.RunAsync, profiles?.Resolution);
         lifecycle.Start();
         _lifecycle = lifecycle;
         // Subscribe-before-run doesn't matter here (Offerable replays); always started so manual install keeps working in Incomplete mode — autoOfferSuppressed skips only the dialog.
@@ -299,7 +304,7 @@ public partial class App : Application {
 
         // One launch client for the app, not one per window the coordinator builds — each carries
         // its own HubConnection, and only a held instance can be disposed at teardown.
-        var launch = new ServerLaunchClient();
+        var launch = new ServerLaunchClient(_config, profiles);
         _launch = launch;
 
         // One attach client per attempt, dialed at the daemon's own control socket; 80x24 is a
@@ -311,10 +316,10 @@ public partial class App : Application {
 
         _coordinator = new MainWindowCoordinator(
             () => BuildAndShowMainWindow(
-                service, actions, notifier, ticker, _shutdown.Token, activity, lifecycle.StartActionAsync,
+                service, _config, actions, notifier, ticker, _shutdown.Token, activity, lifecycle.StartActionAsync,
                 lifecycleStatus, launch, _navigation, _workspaceTeardown.Track, BuildWorkspace,
                 // The tenant slug the rail footer shows — profiles are named after it at sign-in.
-                tenantName: AppConfig.ResolvedProfile?.ProfileName),
+                tenantName: profiles?.Resolution?.ProfileName),
             // Both close paths release the workspace: hide-to-tray keeps the window (and its
             // attach) alive, a real close discards the window the next Show() would rebuild.
             releaseWorkspace: window => (window.DataContext as MainWindowViewModel)?.CloseWorkspace());
@@ -347,7 +352,7 @@ public partial class App : Application {
     // false means the lane outran the handoff cap and the graph must close its auto-actions.
     async Task<bool> RunWizardModeAsync(
             IClassicDesktopStyleApplicationLifetime desktop, DaemonMutationLane lane, OutcomeChannel channel,
-            IProcessRunner runner, ILoginShellProbe probe) {
+            IProcessRunner runner, ILoginShellProbe probe, ProfileContext? profiles) {
         var cliPath = CliResolver.ResolvePath(Environment.GetEnvironmentVariable, File.Exists);
         // Same rule as the shim coordinator's: only a resolved ABSOLUTE path is linkable.
         var shimTarget = cliPath is not null && Path.IsPathRooted(cliPath) ? cliPath : null;
@@ -357,17 +362,21 @@ public partial class App : Application {
         var surface = new WizardLifecycleSurface(ConfirmLifecyclePromptAsync, action => Dispatcher.UIThread.Post(action));
 
         var graph = WizardComposition.BuildGraph(new WizardGraphOptions(
-            ConsentFlipClaims.Default(),
+            _config,
+            // Nothing resolved means the gate's evaluation threw; sign-in then targets the name every
+            // fallback lands on, which is what an unresolved config would have answered anyway.
+            profiles?.Name ?? ProfileConfig.DefaultName,
+            new ConsentFlipClaims(_config),
             bridges,
             WizardComposition.NewOperation,
             surface,
-            ResolveCli: () => NewWizardCli(runner, cliPath, probe),
+            ResolveCli: () => NewWizardCli(_config, runner, cliPath, probe),
             ResolveOps: name => new LocalControlOps(_daemonStore, name),
-            ResolveIdentity: ResolveWizardIdentity,
-            ResolveConsentFlipIdentity: ResolveConsentFlipIdentity,
+            ResolveIdentity: () => ResolveWizardIdentity(_config),
+            ResolveConsentFlipIdentity: () => ResolveConsentFlipIdentity(_config),
             RunMutation: lane.RunAsync,
             Observation: new OneShotObservation(_daemonStore, OneShotProbeTimeout),
-            AppState: new AppStateStore(PathHelpers.ConfigPath("app-state.json")),
+            AppState: new AppStateStore(_config.Path("app-state.json")),
             ShimInstaller: new PathShimInstaller(runner, probe),
             UrlOpener: new ShellUrlOpener(),
             Probe: probe,
@@ -375,7 +384,7 @@ public partial class App : Application {
             CliPath: cliPath,
             ShimApplicable: shimApplicable,
             ShimTarget: shimTarget,
-            DefaultDaemonName: ResolveWizardIdentity()?.DaemonName,
+            DefaultDaemonName: ResolveWizardIdentity(_config)?.DaemonName,
             Time: TimeProvider.System,
             ShutdownToken: _shutdown.Token));
 
@@ -429,8 +438,9 @@ public partial class App : Application {
 
     // Rebuilt per call (LateBoundKcapCli): the wizard writes the profile, server and daemon name
     // while its steps run, so a binding pinned at composition time would query the wrong service.
-    static IKcapCli NewWizardCli(IProcessRunner runner, string? cliPath, ILoginShellProbe probe) {
-        var (profile, server, daemonName) = ResolveConsentFlipIdentity();
+    static IKcapCli NewWizardCli(
+            ConfigRoot config, IProcessRunner runner, string? cliPath, ILoginShellProbe probe) {
+        var (profile, server, daemonName) = ResolveConsentFlipIdentity(config);
 
         return new KcapCli(
             runner, cliPath, daemonName, string.IsNullOrEmpty(profile) ? "default" : profile,
@@ -619,7 +629,8 @@ public partial class App : Application {
     // already-visible window is a no-op, so this stays correct even if a future edit changes the
     // timing such that ShowMainWindow() DOES still see a non-null MainWindow.
     internal static MainWindow BuildAndShowMainWindow(
-            IDaemonClientService service, AgentActionService actions, IAppNotifier notifier, ITicker ticker,
+            IDaemonClientService service, ConfigRoot config,
+            AgentActionService actions, IAppNotifier notifier, ITicker ticker,
             CancellationToken shutdownToken, ActivityViewModel activity, Func<CancellationToken, Task>? startAction = null,
             IObservable<string?>? lifecycleStatus = null, ILaunchClient? launch = null,
             NavigationGate? navigation = null, Action<Func<Task>>? trackWorkspaceTeardown = null,
@@ -632,7 +643,7 @@ public partial class App : Application {
         // itself uses — never a second daemon connection. AppStateStore/ServerLaunchClient are both
         // cheap, self-contained constructions (file-path-gated I/O; a HubConnection that only opens
         // lazily on first StartAsync), the same reasoning BuildLifecycleController's own
-        // `new AppStateStore(PathHelpers.ConfigPath("app-state.json"))` already relies on. The
+        // `new AppStateStore(config.Path("app-state.json"))` already relies on. The
         // composition root passes its held client so teardown can dispose it; a caller that passes
         // none (a test) gets an unheld one, which owns nothing until a launch is actually made.
         //
@@ -642,8 +653,8 @@ public partial class App : Application {
         // objects exist.
         MainWindowViewModel? vm = null;
         var home = new HomeViewModel(
-            service, new AppStateStore(PathHelpers.ConfigPath("app-state.json")),
-            launch ?? new ServerLaunchClient(), RepoPathStore.GetSortedPathsAsync, shutdownToken,
+            service, new AppStateStore(config.Path("app-state.json")),
+            launch ?? new ServerLaunchClient(config, null), new RepoPathStore(config).GetSortedPathsAsync, shutdownToken,
             openSession: agentId => vm?.OpenSession(agentId),
             navigationGeneration: () => vm?.NavigationGeneration ?? 0,
             openSessionIfCurrent: (agentId, generation) => vm?.OpenSessionIfCurrent(agentId, generation));
@@ -667,17 +678,17 @@ public partial class App : Application {
             ILifecycleSurface Surface, ILoginShellProbe Probe) BuildLifecycleController(
             DaemonClientService service, ILocalControlOps ops, bool autoActionsPermanentlyClosed,
             Action<string> setLifecycleStatus, Action<string> setLifecycleAttention,
-            Func<MutationRequest, CancellationToken, Task<MutationOutcome>> runMutation) {
+            Func<MutationRequest, CancellationToken, Task<MutationOutcome>> runMutation,
+            ResolvedProfile? profile) {
         var cliPath = CliResolver.ResolvePath(Environment.GetEnvironmentVariable, File.Exists);
         var runner  = new ProcessRunner();
-        var profile = AppConfig.ResolvedProfile; // the ONE resolution the gate was evaluated on
         var probe   = new LoginShellProbe(runner, Environment.GetEnvironmentVariable);
         var canonicalServer = ServerIdentity.Canonicalize(profile?.ServerUrl);
         // Shared with the probe above (not re-resolved) — decision 7's PATH overlay on `install`
         // must reflect the SAME probe outcome that the controller's preconditions/PathDegraded see.
         var cli     = new KcapCli(runner, cliPath, service.DaemonName, profile?.ProfileName ?? "default", probe.TerminalPathAsync,
             canonicalServer: canonicalServer);
-        var store   = new AppStateStore(PathHelpers.ConfigPath("app-state.json"));
+        var store   = new AppStateStore(_config.Path("app-state.json"));
         var surface = new LifecycleSurface(setLifecycleStatus, setLifecycleAttention, ConfirmLifecyclePromptAsync);
 
         var lifecycle = new DaemonLifecycleController(
@@ -693,9 +704,11 @@ public partial class App : Application {
             lifecycle.PhaseClosed, probe, new PathShimInstaller(runner, probe), store, surface, shimTarget,
             _shutdown.Token, autoActionsPermanentlyClosed);
 
-        // The delegate below and ConsentFlipClaims.Default() both resolve AppConfig.GetConfigPath().
+        // The delegate below and the claims store must share one root: TryConsume takes the config
+        // lock this delegate then reads under.
         var consentFlip = new ConsentFlipCoordinator(
-            service, ops, ConsentFlipClaims.Default(), ResolveConsentFlipIdentity, surface, store, _shutdown.Token);
+            service, ops, new ConsentFlipClaims(_config),
+            () => ResolveConsentFlipIdentity(_config), surface, store, _shutdown.Token);
 
         return (lifecycle, shimOffer, consentFlip, surface, probe);
     }
@@ -705,8 +718,8 @@ public partial class App : Application {
     // rather than throwing inside the two-lock section.
     // Deliberately literal ActiveProfile (no KCAP_PROFILE layering) — a divergence there is fail-safe
     // via the daemon's own identity-conditional ack (task-13-report).
-    internal static (string Profile, string Server, string DaemonName) ResolveConsentFlipIdentity() {
-        if (!ConfigMutator.TryLoadPure(AppConfig.GetConfigPath(), out var config)) return ("", "", "");
+    internal static (string Profile, string Server, string DaemonName) ResolveConsentFlipIdentity(ConfigRoot root) {
+        if (!ConfigMutator.TryLoadPure(AppConfig.GetConfigPath(root), out var config)) return ("", "", "");
 
         var profileName = config.ActiveProfile;
         var profile     = config.Profiles.GetValueOrDefault(profileName);
@@ -718,11 +731,11 @@ public partial class App : Application {
     /// <summary>
     /// A FRESH, env-aware identity for the wizard's own daemon-facing calls: the same
     /// <see cref="ProfileResolver"/> precedence <see cref="OnboardingGate.EvaluateAsync"/> uses, never
-    /// the startup-cached <see cref="AppConfig.ResolvedProfile"/>, and side-effect-free. Null — never
+    /// the resolution the gate was evaluated on, and side-effect-free. Null — never
     /// an empty-string sentinel — when nothing resolves, which is what keeps its factories fail-closed.
     /// </summary>
-    internal static (string Profile, string Server, string DaemonName)? ResolveWizardIdentity() {
-        if (!ConfigMutator.TryLoadPure(AppConfig.GetConfigPath(), out var config)) return null;
+    internal static (string Profile, string Server, string DaemonName)? ResolveWizardIdentity(ConfigRoot root) {
+        if (!ConfigMutator.TryLoadPure(AppConfig.GetConfigPath(root), out var config)) return null;
 
         var envUrl     = Environment.GetEnvironmentVariable("KCAP_URL");
         var envProfile = Environment.GetEnvironmentVariable("KCAP_PROFILE");
@@ -766,15 +779,17 @@ public partial class App : Application {
     }
 
     // A gate-evaluation exception must never brick startup — degrades to Incomplete (fail-safe: the app still launches, with auto-actions closed) instead of throwing.
-    internal static async Task<GateResult> EvaluateGateSafelyAsync(
-            Func<CancellationToken, Task<GateResult>> evaluate, CancellationToken ct) {
+    internal static async Task<(GateResult Gate, ProfileContext? Profiles)> EvaluateGateSafelyAsync(
+            Func<CancellationToken, Task<(GateResult Result, ProfileContext Profiles)>> evaluate, CancellationToken ct) {
         try {
             return await evaluate(ct).ConfigureAwait(false);
         } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
             throw; // shutdown mid-evaluation — not a gate failure, let the caller's own catch handle it
         } catch (Exception ex) {
             Console.Error.WriteLine($"kcap: onboarding gate evaluation failed unexpectedly — degrading to Incomplete: {ex.Message}");
-            return new GateResult.Incomplete(GateReason.EvaluationFailed);
+            // Only a throw from the resolve itself reaches here — the gate keeps its resolution
+            // across a failed evaluation — so there genuinely is nothing to hand back.
+            return (new GateResult.Incomplete(GateReason.EvaluationFailed), null);
         }
     }
 

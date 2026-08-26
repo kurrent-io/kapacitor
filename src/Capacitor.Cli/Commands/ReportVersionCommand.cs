@@ -11,23 +11,20 @@ namespace Capacitor.Cli.Commands;
 /// immediately. Fail-open: never throws, never prints, always returns 0, bounded to
 /// <see cref="Budget"/> total (discovery + request).
 /// </summary>
-public static class ReportVersionCommand {
+public sealed class ReportVersionCommand(ConfigRoot config, ProfileContext profiles) {
     static readonly TimeSpan Budget = TimeSpan.FromSeconds(5);
 
-    public static async Task<int> HandleAsync(string? baseUrl) {
+    public async Task<int> HandleAsync() {
         try {
             using var cts = new CancellationTokenSource(Budget);
 
-            // One resolved URL for both auth and the request — CreateClientWithAuthStatusAsync's
-            // own fallback also consults KCAP_URL, so recomputing it differently here would
-            // authenticate against one host and probe another.
-            var effectiveBaseUrl = baseUrl
-                ?? AppConfig.ResolvedServerUrl
-                ?? Environment.GetEnvironmentVariable("KCAP_URL")
-                ?? "http://localhost:5108";
+            // `report-version` is an offline command, so it is reached with no server configured —
+            // and it must still return 0 silently rather than error. The local default gives the
+            // probe somewhere to fail against.
+            var effectiveBaseUrl = profiles.Resolution.ServerUrl ?? "http://localhost:5108";
 
             var (client, status) =
-                await HttpClientExtensions.CreateClientWithAuthStatusAsync(effectiveBaseUrl, cts.Token);
+                await HttpClientExtensions.CreateClientWithAuthStatusAsync(config, profiles, effectiveBaseUrl, cts.Token);
 
             using (client) {
                 if (status is not (AuthStatus.Ok or AuthStatus.NoAuthRequired)) return 0;

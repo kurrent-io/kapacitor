@@ -16,8 +16,10 @@ public sealed record FirstRunPollOutcome(int StatusCode, FirstRunFlowResponse? B
 /// <summary>The two flow routes, as a seam: the loop, the backoff and the guards around them are the
 /// part worth testing, and they should not need a socket to exercise.</summary>
 public interface IFirstRunFlowChannel {
-    /// <summary>Creates the flow, before the browser is opened.</summary>
-    Task<FirstRunCreateOutcome> CreateAsync(string serverUrl, string flowId, string? machine, CancellationToken ct);
+    /// <summary>Creates the flow, before the browser is opened, carrying what this machine found on
+    /// itself — the Agents screen has no rows without it.</summary>
+    Task<FirstRunCreateOutcome> CreateAsync(
+        string serverUrl, string flowId, FirstRunMachineReport report, CancellationToken ct);
 
     /// <summary>Reads a flow this caller owns.</summary>
     Task<FirstRunPollOutcome> PollAsync(string serverUrl, string flowId, CancellationToken ct);
@@ -38,9 +40,16 @@ public interface IFirstRunFlowChannel {
 public sealed class FirstRunFlowClient(HttpClient http) : IFirstRunFlowChannel {
     /// <inheritdoc/>
     public async Task<FirstRunCreateOutcome> CreateAsync(
-            string serverUrl, string flowId, string? machine, CancellationToken ct) {
+            string serverUrl, string flowId, FirstRunMachineReport report, CancellationToken ct) {
         var payload = JsonSerializer.Serialize(
-            new CreateFirstRunFlowRequest { FlowId = flowId, Machine = machine },
+            new CreateFirstRunFlowRequest {
+                FlowId             = flowId,
+                Machine            = report.Machine,
+                MachineId          = report.MachineId,
+                Harnesses          = new Dictionary<string, FirstRunHarnessReport>(report.Harnesses, StringComparer.Ordinal),
+                Declined           = [.. report.Declined],
+                LoginShellFindsCli = report.LoginShellFindsCli
+            },
             CapacitorJsonContext.Default.CreateFirstRunFlowRequest);
 
         try {

@@ -11,6 +11,7 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 /// </summary>
 public class DaemonReviewerCommandTests {
     [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
+    [TempConfigRoot]  public required TempConfigRoot  Config  { get; init; }
 
     [Test]
     [Arguments("kiro")]
@@ -54,7 +55,7 @@ public class DaemonReviewerCommandTests {
     [NotInParallel]
     public async Task AnUnknownVendorIsRefusedAndOffersTheAffirmableOnes() {
         using var capture = ConsoleOutput.StartErrorCapture();
-        var exitCode = await DaemonReviewerCommand.HandleAsync(Daemons.Store, ["affirm", "--vendor", "antigravitee"]);
+        var exitCode = await DaemonReviewerCommand.HandleAsync(Daemons.Store, Resolutions.None(Config.Root), ["affirm", "--vendor", "antigravitee"]);
 
         await Assert.That(exitCode).IsEqualTo(1);
         await Assert.That(capture.GetCapturedError()).Contains("Unknown reviewer vendor");

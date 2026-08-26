@@ -1,3 +1,4 @@
+using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Setup;
 
 namespace Capacitor.Cli;
@@ -38,8 +39,8 @@ static class HarnessNudgeEmitter {
     /// <summary>Hook-site convenience: resolve the SessionStart fragment from the current process
     /// environment and the default on-disk ledger/throttle. <paramref name="optedOut"/> is the
     /// profile's <c>DisableHarnessNudge</c>.</summary>
-    public static string? ResolveFragmentForHook(bool optedOut) =>
-        ResolveFragment(AgentDetection.FromEnvironment(), HarnessOfferStore.Default(), optedOut, DateTimeOffset.UtcNow);
+    public static string? ResolveFragmentForHook(bool optedOut, ConfigRoot config) =>
+        ResolveFragment(AgentDetection.FromEnvironment(), new HarnessOfferStore(config), optedOut, DateTimeOffset.UtcNow);
 
     /// <summary>Joins an existing SessionStart nudge with the harness nudge (either may be null)
     /// into one additional-context blob, blank-line separated — so a delivery helper that carries a

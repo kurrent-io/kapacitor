@@ -7,11 +7,13 @@ namespace Capacitor.Cli.Tests.Unit.Services;
 sealed class ProdPathFixture : IDisposable {
     readonly TempDir _tmp = new();
     readonly TempDaemonStore _daemons = new("prod");
+    readonly TempConfigRoot _config = new("prod");
     readonly string _id;
     readonly string? _originalHome;
     readonly string _home;
 
     public DaemonStore Store => _daemons.Store;
+    public ConfigRoot Config => _config.Root;
     public string PlistPath => LaunchdUnit.PlistPath(_id);
     public string DaemonPath { get; }
 
@@ -40,6 +42,7 @@ sealed class ProdPathFixture : IDisposable {
 
     public void Dispose() {
         Environment.SetEnvironmentVariable("HOME", _originalHome);
+        _config.Dispose();
         _daemons.Dispose();
         _tmp.Dispose();
     }
