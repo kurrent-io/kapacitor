@@ -393,21 +393,26 @@ Chat — focuses `ComposerInput`.
 Lives on `ChatTabViewModel`, sends through the sibling Terminal tab:
 
 - `ComposerText`; `SendCommand` (`ReactiveCommand.Create`, synchronous),
-  executable iff the terminal is `Attached`, not read-only, **no send is in
-  flight** (`Terminal.SendInFlight`, below), and the text is not blank. It
-  calls `Terminal.TrySendText(text)` and clears the text iff that returns
-  true — one synchronous step on the UI thread, no await, so acceptance and
-  the clear cannot be separated by a state change. The send is
+  executable iff **`Terminal.CanAcceptText`** (the terminal-owned projection
+  below — the one authority `TrySendText` itself consults, so can-execute and
+  acceptance can never disagree) and the text is not blank. It calls
+  `Terminal.TrySendText(text)` and clears the text iff that returns true —
+  one synchronous step on the UI thread, no await, so acceptance and the
+  clear cannot be separated by a state change. The send is
   **accepted**, not acknowledged: the attach seam's `SendInputAsync` returns
   nothing and Core's client no-ops when it is no longer writable and folds a
   transport failure into the attach outcome — so no send can learn whether
   its bytes landed. A refused send leaves the text in place and the hint
   already says why. A transport loss surfaces the way it always does — the
   attach outcome flips `Terminal.State`, and the hint follows.
-- `ComposerHint` follows `Terminal.State`: attached read-write → "Reply to
-  {vendor label} · Enter sends · Shift+Enter for a new line"; attached read-only
-  → "Read-only: {reason}"; `Resolving`/`Connecting` → "Connecting to the
-  terminal…"; `Detached`/`Failed` → "Reattach the terminal to send";
+- `ComposerHint` follows `Terminal.SendAvailability` (below), which folds
+  the gate into the state so the hint is truthful in every window: `Ready` →
+  "Reply to {vendor label} · Enter sends · Shift+Enter for a new line";
+  `Sending` → "Sending…"; `Transitioning` (the gate is closed while `State`
+  still reads Attached — a reattach or detach in progress) → "Reconnecting
+  the terminal…"; otherwise by `State`: attached read-only → "Read-only:
+  {reason}"; `Resolving`/`Connecting` → "Connecting to the terminal…";
+  `Detached`/`Failed` → "Reattach the terminal to send";
   `Exited`/`SessionEnded` → "This session has ended"; `NoTerminal`/`NotFound` →
   "No terminal to send to". The vendor label comes from
   `HostedHarnessCatalog.LabelFor` over the daemon's advertised options.
@@ -421,33 +426,48 @@ Lives on `ChatTabViewModel`, sends through the sibling Terminal tab:
 thread. The terminal owns a **send gate** with three pieces of state, all
 mutated only on the UI thread:
 
-- `SendGate` ∈ Open | Closed. **Closed synchronously, before any await, at
-  the start of** `TryStartAttemptAsync` (reattach), `RunDetachAsync` and
-  `TeardownAsync`; **reopened only when a later attempt lands `Attached`
-  read-write** (the `OnAttachedAsync` dispatch that sets that state). Neither
-  `State` nor `_client` can serve as the gate: a reattach leaves both
-  `Attached` and live while it awaits the old client's disposal, and a detach
-  leaves both unchanged while it awaits the detach write — a send started in
-  either window would otherwise be accepted against a client on its way out.
-- The **send epoch**, a counter bumped at the same three points, which a
-  running delivery re-checks before its CR.
+- `SendGate` ∈ Open | Closed. **Open exactly while the terminal is in
+  writable `Attached`, as the gate sees it.** It closes in two kinds of
+  place: synchronously, before any await, at the start of the transitions
+  that *begin* while `State` still reads Attached — `TryStartAttemptAsync`
+  (reattach), `RunDetachAsync`, `TeardownAsync` — and inside **every**
+  UI-thread publish of a `State` other than writable Attached (the natural
+  outcomes `FinishAttemptAsync` maps — Detached, Exited, Failed,
+  ConnectionLost — the agent removal that lands `SessionEnded`, `NotFound`,
+  `NoTerminal`), in the same dispatch and before the new state is published.
+  It reopens only inside the publish of a read-write `Attached`. To make
+  that unforgettable, `State` has one publish point that applies the gate
+  rule; nothing assigns it directly. Neither `State` nor `_client` can serve
+  as the gate on its own: a reattach leaves both `Attached` and live while it
+  awaits the old client's disposal, and a detach leaves both unchanged while
+  it awaits the detach write — a send started in either window would
+  otherwise be accepted against a client on its way out.
+- The **send epoch**, a counter bumped by every closure, which a running
+  delivery re-checks before its CR.
 - `SendInFlight` (bound), true from acceptance until the delivery ends.
 
-`TrySendText` refuses (false, nothing written) unless `SendGate` is Open and
-`SendInFlight` is false; otherwise it captures the client and the epoch, sets
-`SendInFlight`, starts the fault-contained background delivery, and returns
-true. One transaction at a time is the point: two accepted sends inside the
-150 ms window would interleave as paste A, paste B, CR, CR — Core's client
-serializes single frames, not multi-frame messages — and the TUI would submit
-both as one prompt and spend the second Enter on whatever is up next.
-Refusing keeps the second text in the composer for the user to send again a
-moment later.
+Two bound projections fold these together for the composer:
+`CanAcceptText` = gate Open ∧ ¬`SendInFlight`, and `SendAvailability` ∈
+`Ready | Sending | Transitioning | <by State>` — `Transitioning` being the
+gate Closed while `State` still reads Attached. Both raise change
+notifications on every gate, in-flight and state change.
+
+`TrySendText` refuses (false, nothing written) unless `CanAcceptText`;
+otherwise it captures the client and the epoch, sets `SendInFlight`, starts
+the fault-contained background delivery, and returns true. One transaction
+at a time is the point: two accepted sends inside the 150 ms window would
+interleave as paste A, paste B, CR, CR — Core's client serializes single
+frames, not multi-frame messages — and the TUI would submit both as one
+prompt and spend the second Enter on whatever is up next. Refusing keeps the
+second text in the composer for the user to send again a moment later.
 
 Ownership of `SendInFlight` is one rule: **the closer retires the send.**
-Closing the gate (reattach, detach, teardown) synchronously bumps the epoch
-and clears `SendInFlight`; the delivery's own completion — success or fault —
-clears it through a UI-thread dispatch that mutates nothing unless the epoch
-it captured is still current and the VM has not been torn down, so a late
+Every closure — an entry-point closure or a state publish — synchronously
+bumps the epoch and clears `SendInFlight`, so a natural exit or an agent
+removal landing during the 150 ms delay kills the pending CR the same way a
+reattach does; the delivery's own completion — success or fault — clears it
+through a UI-thread dispatch that mutates nothing unless the epoch it
+captured is still current and the VM has not been torn down, so a late
 completion can neither clear a newer send nor touch a torn-down VM.
 
 The delivery is the daemon's own `PtyHostedAgentRuntime.SendUserInputAsync`
@@ -544,16 +564,22 @@ inserts a newline — a view-level key handler on the composer's `TextBox`.
   goes through — the only order ever observed is paste A, CR, paste B, CR;
   a send started while a reattach is awaiting the old client's disposal
   (`DisposeGate`) or a detach is awaiting its write (`HangDetachForever`) is
-  refused — `State` still reads `Attached` in both windows — and the gate
-  reopens only once the new attempt lands `Attached`; a reattach whose
-  old-client disposal is held open past 150 ms, a detach, or a teardown started
-  during the delay sends no CR to any client and clears `SendInFlight`
-  synchronously; a faulting write clears `SendInFlight` and leaves `State`
+  refused — `State` still reads `Attached` in both windows, `SendCommand`'s
+  `CanExecute` is false and the hint reads "Reconnecting the terminal…" — and
+  the gate reopens only once the new attempt lands read-write `Attached` (a
+  read-only Attached leaves it closed); a reattach whose old-client disposal
+  is held open past 150 ms, a detach, or a teardown started during the delay
+  sends no CR to any client and clears `SendInFlight` synchronously; an
+  `AttachOutcome` (`Exited` and `ConnectionLost` at least) and an agent
+  removal landing during the delay each close acceptance synchronously,
+  clear `SendInFlight`, suppress the CR, and a direct `TrySendText` right
+  after is refused; a faulting write clears `SendInFlight` and leaves `State`
   untouched; a retired delivery's completion cannot clear a newer send's
   `SendInFlight`; after `TeardownAsync` returns, no bound state changes and no
   dispatcher work is queued by a still-running delivery; the text clears on
-  acceptance and stays on refusal; every hint string; a pool-thread state
-  flip updates the hint on the UI thread.
+  acceptance and stays on refusal; every hint string including "Sending…"
+  and "Reconnecting the terminal…"; a pool-thread state flip updates the
+  hint on the UI thread.
 - `TerminalInputEncoderTests`, `ToolDetailTests` (key priority, first line,
   80-character cut), `LinkPolicyTests` (https/http open, `file:`,
   `javascript:`, custom schemes, relative and malformed text refused).
