@@ -68,7 +68,7 @@ public sealed class RailWorktreeViewModel : ReactiveObject, IDisposable {
         // RxSchedulers.MainThreadScheduler. Sharing the source avoids that dependency entirely.
         var expanded = collapse.Changes.Where(p => p == path).Select(_ => Unit.Default)
             .StartWith(Unit.Default)
-            .Select(_ => !collapse.IsCollapsed(path, IsMainCheckout));
+            .Select(_ => !collapse.IsCollapsed(path));
         _isExpanded = expanded
             .ToProperty(this, x => x.IsExpanded)
             .DisposeWith(_disposables);

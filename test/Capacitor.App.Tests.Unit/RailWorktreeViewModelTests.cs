@@ -51,12 +51,14 @@ public class RailWorktreeViewModelTests {
 
     [Test]
     [NotInParallel("AvaloniaSession")]
-    public async Task Main_checkout_defaults_collapsed_and_others_expanded() {
+    public async Task Every_worktree_defaults_expanded_main_checkout_included() {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var cache = new SourceCache<AgentStatusDto, string>(a => a.Id);
             using var main = Build(cache, path: "/repo", root: "/repo");
             using var wt = Build(cache);
-            await Assert.That(main.IsExpanded).IsFalse();
+            // The rail only carries current sessions, so nothing hides by default (owner
+            // revision of the canvas's collapsed-main rule) — collapsing is an explicit choice.
+            await Assert.That(main.IsExpanded).IsTrue();
             await Assert.That(wt.IsExpanded).IsTrue();
         });
     }
@@ -68,11 +70,11 @@ public class RailWorktreeViewModelTests {
             var collapse = new RailCollapseState();
             var cache = new SourceCache<AgentStatusDto, string>(a => a.Id);
             using (var first = Build(cache, collapse, path: "/repo", root: "/repo")) {
-                first.ToggleCommand.Execute().Subscribe();
-                await Assert.That(first.IsExpanded).IsTrue();
+                first.ToggleCommand.Execute().Subscribe(); // explicit collapse
+                await Assert.That(first.IsExpanded).IsFalse();
             }
             using var recreated = Build(cache, collapse, path: "/repo", root: "/repo");
-            await Assert.That(recreated.IsExpanded).IsTrue(); // survived the group's death
+            await Assert.That(recreated.IsExpanded).IsFalse(); // survived the group's death
         });
     }
 

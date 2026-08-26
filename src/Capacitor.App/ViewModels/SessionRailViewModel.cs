@@ -89,8 +89,8 @@ public sealed class SessionRailViewModel : ReactiveObject, IDisposable {
             .DisposeWith(_disposables);
     }
 
-    /// The launch auto-open's counterpart: a session opened into a collapsed worktree (main
-    /// checkout by default) must never highlight an invisible row (spec §3).
+    /// The launch auto-open's counterpart: a session opened into an explicitly collapsed
+    /// worktree must never highlight an invisible row (spec §3).
     public void NotifySessionOpened(string agentId) {
         var dto = _daemon.Agents.Lookup(agentId);
         if (!dto.HasValue || dto.Value.RepoPath is not { Length: > 0 } path) return;

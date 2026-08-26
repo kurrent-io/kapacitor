@@ -73,13 +73,13 @@ public class SessionRailViewModelTests {
             var (service, rail) = Build();
             using (rail) {
                 service.Agents.AddOrUpdate(Dto("a1", "/dev/alpha"));
-                rail.Repos[0].Worktrees[0].ToggleCommand.Execute().Subscribe(); // expand main checkout
+                rail.Repos[0].Worktrees[0].ToggleCommand.Execute().Subscribe(); // explicit collapse
 
                 service.Agents.RemoveKey("a1"); // the whole repo group dies
                 await Assert.That(rail.Repos).Count().IsEqualTo(0);
 
                 service.Agents.AddOrUpdate(Dto("a1", "/dev/alpha")); // and re-forms
-                await Assert.That(rail.Repos[0].Worktrees[0].IsExpanded).IsTrue();
+                await Assert.That(rail.Repos[0].Worktrees[0].IsExpanded).IsFalse();
             }
         });
     }
@@ -90,10 +90,11 @@ public class SessionRailViewModelTests {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var (service, rail) = Build();
             using (rail) {
-                service.Agents.AddOrUpdate(Dto("a1", "/dev/alpha")); // main checkout: collapsed
+                service.Agents.AddOrUpdate(Dto("a1", "/dev/alpha"));
+                rail.Repos[0].Worktrees[0].ToggleCommand.Execute().Subscribe(); // explicit collapse
                 await Assert.That(rail.Repos[0].Worktrees[0].IsExpanded).IsFalse();
 
-                rail.NotifySessionOpened("a1");
+                rail.NotifySessionOpened("a1"); // opening beats the collapse — never a hidden highlight
                 rail.SelectedAgentId = "a1";
 
                 var wt = rail.Repos[0].Worktrees[0];
