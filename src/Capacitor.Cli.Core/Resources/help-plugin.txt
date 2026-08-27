@@ -226,7 +226,7 @@ Notes:
 
   --antigravity installs the kcap plugin to ~/.gemini/config/plugins/kcap/ — a
   plugin.json manifest (which the GUI requires to load the dir) plus a hooks.json
-  kcap block (preserving any hook blocks you authored). It also registers the 4 kcap
+  kcap block (preserving any hook blocks you authored). It also registers the 6 kcap
   MCP servers in ~/.gemini/config/mcp_config.json (Antigravity's OWN MCP file, not the
   Gemini CLI's settings.json — see --skip-antigravity-mcp), installs a steering block
   into the shared ~/.gemini/GEMINI.md (see --skip-antigravity-instructions), and copies
