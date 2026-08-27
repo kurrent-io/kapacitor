@@ -64,6 +64,11 @@ public class WorkspaceViewSmokeTests {
         return (window, vm, daemon, attach);
     }
 
+    /// Effectively visible under this window. A name that never gets realized into the visual
+    /// tree — the collapsed chat surface's own controls — reads as not visible, which is exactly
+    /// what the gate promises.
+    static bool Visible(Window window, string name) => Find<Control>(window, name) is { IsEffectivelyVisible: true };
+
     static bool IsOffscreen(Control control) =>
         Avalonia.Automation.Peers.ControlAutomationPeer.CreatePeerForElement(control).IsOffscreen();
 
@@ -84,7 +89,9 @@ public class WorkspaceViewSmokeTests {
 
     /// Pins that every x:Name the view's code-behind and the suite reach for resolves before any
     /// dto arrives — the tab strip included, which is collapsed in this state and must still be
-    /// in the tree for the code-behind to find.
+    /// in the tree for the code-behind to find. The chat surface is collapsed too, and a
+    /// collapsed UserControl is never measured, so its own names resolve through its name scope
+    /// rather than the window's visual tree.
     [Test]
     [NotInParallel("AvaloniaSession")]
     public async Task WorkspaceView_resolves_all_named_controls() {
@@ -97,11 +104,14 @@ public class WorkspaceViewSmokeTests {
             var names = new[] {
                 "WorkspaceTitle", "WorkspaceRepo", "WorkspaceVendorChip", "ChatTabButton",
                 "TerminalTabButton", "NoTerminalNote", "TerminalHost", "TerminalBanners",
-                "DetachButton", "ReattachButton", "ChatHost", "ChatItems", "ChatPhaseNote",
-                "ComposerInput", "SendButton",
+                "DetachButton", "ReattachButton", "SessionEndedNote", "ChatHost",
             };
             foreach (var name in names)
                 await Assert.That(Find<Control>(window, name)).IsNotNull().Because($"{name} should resolve");
+
+            var chatHost = Find<ChatTabView>(window, "ChatHost")!;
+            foreach (var name in new[] { "ChatItems", "ChatPhaseNote", "ComposerInput", "SendButton" })
+                await Assert.That(chatHost.FindControl<Control>(name)).IsNotNull().Because($"{name} should resolve");
 
             window.Close();
             Dispatcher.UIThread.RunJobs();
@@ -194,9 +204,9 @@ public class WorkspaceViewSmokeTests {
         });
     }
 
-    /// Owner decision after manual QA: a NORMAL read-write attach shows NO banner — it overlaid
-    /// the terminal content. Explicit detach returns when a use case earns it; read-only keeps
-    /// the banner because it is the only explanation for dead keystrokes.
+    /// Pins that a normal read-write attach shows NO banner — one would overlay the terminal
+    /// content. Read-only keeps its banner because it is the only explanation for dead
+    /// keystrokes.
     [Test]
     [NotInParallel("AvaloniaSession")]
     public async Task Read_write_attached_state_shows_no_banner() {
@@ -293,6 +303,44 @@ public class WorkspaceViewSmokeTests {
             await Assert.That(terminalHost.Opacity).IsEqualTo(1.0);
             await Assert.That(IsOffscreen(terminalHost)).IsFalse();
             await Assert.That(Find<Control>(window, "TerminalHost")).IsNotNull();
+
+            window.Close();
+            Dispatcher.UIThread.RunJobs();
+            await vm.TeardownAsync();
+        });
+    }
+
+    /// Pins the one gate the chat surface hangs off: a session with no PTY renders no chat at
+    /// all — not the host, not the composer, not Send — and keeps the banner layer it has no
+    /// Terminal tab to reach, so its end is still announced.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task A_session_without_a_terminal_shows_no_chat_surface_and_still_banners_its_end() {
+        await RunOnUiAsync(async () => {
+            var (view, vm, daemon, _) = Build();
+            var window = new Window { Content = view, Width = 900, Height = 600 };
+            window.Show();
+            Dispatcher.UIThread.RunJobs();
+
+            daemon.Agents.AddOrUpdate(Agent(AgentId, hasTerminal: false));
+            await (vm.Terminal.PendingResolveWorkForTesting ?? Task.CompletedTask);
+            Dispatcher.UIThread.RunJobs();
+            window.UpdateLayout();
+
+            var chatHost = Find<ChatTabView>(window, "ChatHost")!;
+            await Assert.That(vm.IsChatActive).IsTrue();
+            await Assert.That(chatHost.IsEffectivelyVisible).IsFalse();
+            await Assert.That(Visible(window, "ComposerInput")).IsFalse();
+            await Assert.That(Visible(window, "SendButton")).IsFalse();
+            await Assert.That(chatHost.FindControl<TextBox>("ComposerInput")!.IsFocused).IsFalse();
+            await Assert.That(Find<Control>(window, "NoTerminalNote")!.IsVisible).IsTrue();
+
+            daemon.Agents.Remove(AgentId);
+            Dispatcher.UIThread.RunJobs();
+            window.UpdateLayout();
+
+            await Assert.That(vm.Terminal.State.Phase).IsEqualTo(TerminalSessionPhase.SessionEnded);
+            await Assert.That(Find<Control>(window, "SessionEndedNote")!.IsEffectivelyVisible).IsTrue();
 
             window.Close();
             Dispatcher.UIThread.RunJobs();

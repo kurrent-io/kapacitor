@@ -59,7 +59,7 @@
             <StackPanel Spacing="6">
                 <TextBox x:Name="ComposerInput" Text="{Binding ComposerText}" AcceptsReturn="True" TextWrapping="Wrap"
                          MinHeight="38" MaxHeight="160" Background="Transparent" BorderThickness="0"
-                         PlaceholderText="Write a message" KeyDown="OnComposerKeyDown" />
+                         PlaceholderText="Write a message" />
                 <Grid ColumnDefinitions="*,Auto,Auto,Auto,Auto">
                     <TextBlock Text="{Binding ComposerHint}" FontSize="11" Foreground="{StaticResource KcapFaintBrush}"
                                VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />

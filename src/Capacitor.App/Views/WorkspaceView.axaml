@@ -91,17 +91,26 @@
                                        CaretBrush="{StaticResource KcapAccentBrush}"
                                        Model="{Binding Terminal.Surface, Converter={x:Static views:TerminalSurfaceModelConverter.Instance}}" />
 
-            <Panel x:Name="TerminalBanners" IsVisible="{Binding IsTerminalActive}">
+            <!-- A session with no tabs at all has no Terminal tab to activate, and these banners
+                 are the only content its cell ever gets — so they stay up whenever the strip is
+                 showing the muted note instead of the tabs. -->
+            <Panel x:Name="TerminalBanners">
+                <Panel.IsVisible>
+                    <MultiBinding Converter="{x:Static BoolConverters.Or}">
+                        <Binding Path="IsTerminalActive" />
+                        <Binding Path="!ShowsTerminalTab" />
+                    </MultiBinding>
+                </Panel.IsVisible>
+
                 <Border IsVisible="{Binding Terminal.State, Converter={x:Static views:TerminalPhaseIsConverter.Instance}, ConverterParameter=Connecting}"
                         Background="{StaticResource KcapSurfaceBrush}" BorderBrush="{StaticResource KcapBorderBrush}" BorderThickness="1"
                         CornerRadius="8" Padding="14,8" HorizontalAlignment="Center" VerticalAlignment="Top" Margin="0,14,0,0">
                     <TextBlock Text="Connecting…" Foreground="{StaticResource KcapMutedBrush}" />
                 </Border>
 
-                <!-- Owner decision (post-QA): the attach banner overlays the terminal, so a normal
-                     read-write session shows NO banner — explicit detach returns when a use case
-                     earns it. Read-only keeps the banner: it is the only explanation for dead
-                     keystrokes, and Detach is the only action such a session has. -->
+                <!-- The attach banner overlays the terminal, so a read-write session shows none.
+                     Read-only keeps it: it is the only explanation for dead keystrokes, and
+                     Detach is the only action such a session has. -->
                 <Border IsVisible="{Binding Terminal.State, Converter={x:Static views:TerminalReadOnlyBannerVisibleConverter.Instance}}"
                         Background="{StaticResource KcapWarningDimBrush}" BorderBrush="{StaticResource KcapWarningBrush}"
                         BorderThickness="1" CornerRadius="8" Padding="12,7" HorizontalAlignment="Center" VerticalAlignment="Top" Margin="0,14,0,0">
@@ -144,15 +153,23 @@
                 <Border IsVisible="{Binding Terminal.State, Converter={x:Static views:TerminalPhaseIsConverter.Instance}, ConverterParameter=SessionEnded}"
                         Background="{StaticResource KcapSurfaceBrush}" BorderBrush="{StaticResource KcapBorderBrush}" BorderThickness="1"
                         CornerRadius="8" Padding="16,12" HorizontalAlignment="Center" VerticalAlignment="Center">
-                    <TextBlock Text="This session has ended." Foreground="{StaticResource KcapMutedBrush}" />
+                    <TextBlock x:Name="SessionEndedNote" Text="This session has ended." Foreground="{StaticResource KcapMutedBrush}" />
                 </Border>
             </Panel>
 
-            <!-- The automation peer reports offscreen from the control's OWN IsVisible, so hiding
-                 an ancestor instead would leave the inactive chat announced as onscreen. The flag
-                 lives on the workspace VM, which is not this control's DataContext. -->
-            <views:ChatTabView x:Name="ChatHost" DataContext="{Binding Chat}"
-                               IsVisible="{Binding $parent[views:WorkspaceView].((vm:WorkspaceViewModel)DataContext).IsChatActive}" />
+            <!-- The chat surface exists only where the tab strip does, so a session with no PTY
+                 renders none of it. The automation peer reports offscreen from the control's OWN
+                 IsVisible, so hiding an ancestor instead would leave the inactive chat announced
+                 as onscreen — and both flags live on the workspace VM, which is not this
+                 control's DataContext. -->
+            <views:ChatTabView x:Name="ChatHost" DataContext="{Binding Chat}">
+                <views:ChatTabView.IsVisible>
+                    <MultiBinding Converter="{x:Static BoolConverters.And}">
+                        <Binding Path="$parent[views:WorkspaceView].((vm:WorkspaceViewModel)DataContext).ShowsTerminalTab" />
+                        <Binding Path="$parent[views:WorkspaceView].((vm:WorkspaceViewModel)DataContext).IsChatActive" />
+                    </MultiBinding>
+                </views:ChatTabView.IsVisible>
+            </views:ChatTabView>
         </Grid>
     </Grid>
 </UserControl>

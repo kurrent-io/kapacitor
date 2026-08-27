@@ -2,19 +2,26 @@ using System.Collections.Specialized;
 using System.Windows.Input;
 using Avalonia.Controls;
 using Avalonia.Input;
+using Avalonia.Interactivity;
 using Avalonia.VisualTree;
 using Capacitor.App.ViewModels;
 
 namespace Capacitor.App.Views;
 
-/// Follow-tail lives here, stateless across events: "was at end" is decided at the collection
-/// change from the OLD extent (the new rows are not measured yet), and the scroll is applied
-/// after the layout pass that establishes the new extent — only if the reader has not moved.
+/// Follow-tail lives here: "was at end" is decided at the collection change from the OLD extent
+/// (the new rows are not measured yet), and the scroll is applied after the layout pass that
+/// establishes the new extent — only if the reader has not moved. One one-shot at a time: only a
+/// layout pass retires one, so a stretch without one — the surface collapsed behind the other
+/// tab — would otherwise accumulate a handler per append, at the transcript's poll rate.
 public partial class ChatTabView : UserControl {
     INotifyCollectionChanged? _observed;
+    bool _followPending;
 
     public ChatTabView() {
         InitializeComponent();
+        // Tunnel, not bubble: TextBox's own class handler runs first on the bubbling route, where
+        // it inserts the newline and marks Enter handled before any instance handler sees it.
+        ComposerInput.AddHandler(KeyDownEvent, OnComposerKeyDown, RoutingStrategies.Tunnel);
         DataContextChanged += (_, _) => Observe((DataContext as ChatTabViewModel)?.Items as INotifyCollectionChanged);
     }
 
@@ -27,19 +34,23 @@ public partial class ChatTabView : UserControl {
     ScrollViewer? Scroll => ChatItems.GetVisualDescendants().OfType<ScrollViewer>().FirstOrDefault();
 
     void OnItemsChanged(object? sender, NotifyCollectionChangedEventArgs e) {
-        if (e.Action != NotifyCollectionChangedAction.Add || Scroll is not { } scroll) return;
+        if (e.Action != NotifyCollectionChangedAction.Add || _followPending || Scroll is not { } scroll) return;
         var wasAtEnd = scroll.Offset.Y + scroll.Viewport.Height >= scroll.Extent.Height - 1;
         if (!wasAtEnd) return;
 
+        _followPending = true;
         var captured = scroll.Offset;
         void OnLayoutUpdated(object? _, EventArgs __) {
             scroll.LayoutUpdated -= OnLayoutUpdated;
+            _followPending = false;
             if (scroll.Offset == captured) scroll.ScrollToEnd();
         }
         scroll.LayoutUpdated += OnLayoutUpdated;
     }
 
-    // Enter sends, Shift+Enter is the TextBox's own newline.
+    /// A bare Enter is always consumed — it sends when the composer can send, and otherwise does
+    /// nothing, leaving the text and the hint that says why. Shift+Enter falls through to the
+    /// TextBox's own newline.
     void OnComposerKeyDown(object? sender, KeyEventArgs e) {
         if (e.Key != Key.Enter || e.KeyModifiers.HasFlag(KeyModifiers.Shift)) return;
         e.Handled = true;

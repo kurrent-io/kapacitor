@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Reactive.Linq;
 using Avalonia.Controls;
 using Avalonia.Data.Converters;
 using Avalonia.Threading;
@@ -35,12 +36,16 @@ public partial class WorkspaceView : UserControl {
                 && DataContext is WorkspaceViewModel { IsTerminalActive: true })
                 TerminalHost.Focus();
         };
+        // A session with no PTY has neither surface to focus, so nothing is posted until the chat
+        // tab exists — which is also the moment a workspace opened on Chat gets its composer
+        // focused, since the tab is already active by then.
         DataContextChanged += (_, _) => {
             _tabFocus?.Dispose();
             _tabFocus = (DataContext as WorkspaceViewModel)?
-                .WhenAnyValue(vm => vm.ActiveTab)
-                .Subscribe(tab => Dispatcher.UIThread.Post(() => {
-                    if (tab == WorkspaceTab.Chat) ChatHost.FocusComposer();
+                .WhenAnyValue(vm => vm.ActiveTab, vm => vm.Chat)
+                .Where(pair => pair.Item2 is not null)
+                .Subscribe(pair => Dispatcher.UIThread.Post(() => {
+                    if (pair.Item1 == WorkspaceTab.Chat) ChatHost.FocusComposer();
                     else TerminalHost.Focus();
                 }, DispatcherPriority.Loaded));
         };
@@ -79,8 +84,8 @@ public sealed class TerminalPhaseIsConverter : IValueConverter {
 }
 
 /// The read-only warning banner: visible only for a read-only Attached session — the one case
-/// where the banner explains otherwise-dead keystrokes. A read-write attach shows no banner
-/// (owner decision after QA: it overlaid the terminal).
+/// where the banner explains otherwise-dead keystrokes. A read-write attach shows none: the
+/// banner would overlay the terminal it sits on.
 public sealed class TerminalReadOnlyBannerVisibleConverter : IValueConverter {
     public static readonly TerminalReadOnlyBannerVisibleConverter Instance = new();
 
