@@ -401,7 +401,10 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
             ["approvalPolicy"]    = CodexAppServerPosture.RenderApprovalPolicy(_launch.Approval),
             ["approvalsReviewer"] = CodexAppServerPosture.ApprovalsReviewer,
         };
-        if (!string.IsNullOrEmpty(_launch.Model))
+        // Honor the "default" no-override sentinel exactly as the PTY path does (CodexLauncher.AddModelArg):
+        // sending model:"default" to Codex on a ChatGPT account is rejected (400) and fails the turn.
+        // Omitting it lets Codex resolve the model from ~/.codex/config.toml.
+        if (CodexLauncher.IsConcreteModel(_launch.Model))
             startParams["model"] = _launch.Model;
         if (isResume)
             startParams["threadId"] = _launch.ResumeSessionId; // resume-by-thread_id; response.thread.id == this id
@@ -440,8 +443,8 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
             ["approvalPolicy"]    = CodexAppServerPosture.RenderApprovalPolicy(_launch.Approval),
             ["approvalsReviewer"] = CodexAppServerPosture.ApprovalsReviewer,
         };
-        if (!string.IsNullOrEmpty(_launch.Model))  turnParams["model"]  = _launch.Model;
-        if (!string.IsNullOrEmpty(_launch.Effort)) turnParams["effort"] = MapEffort(_launch.Effort);
+        if (CodexLauncher.IsConcreteModel(_launch.Model)) turnParams["model"]  = _launch.Model; // omit the "default" sentinel (see thread/start)
+        if (!string.IsNullOrEmpty(_launch.Effort))        turnParams["effort"] = MapEffort(_launch.Effort);
 
         var result = await RequestAsync("turn/start", turnParams, ct).ConfigureAwait(false);
         var turn   = result.Obj("turn");

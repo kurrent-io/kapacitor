@@ -47,6 +47,10 @@ sealed class FakeCodexAppServer : IAsyncDisposable {
     public readonly List<string>       ReceivedMethods    = [];
     public readonly List<string>       InitializeOptOuts  = [];
     public string?                     LastThreadStartSandbox;
+    public bool                        LastThreadStartHadModel;
+    public string?                     LastThreadStartModel;
+    public bool                        LastTurnStartHadModel;
+    public string?                     LastTurnStartModel;
     public string?                     LastResumeThreadId; // §2.7 B4: the threadId carried on thread/resume
     public string?                     LastTurnApprovalPolicy;
     public string?                     LastTurnEffort;
@@ -115,6 +119,8 @@ sealed class FakeCodexAppServer : IAsyncDisposable {
             case "thread/start":
                 if (@params.ValueKind == JsonValueKind.Object && @params.TryGetProperty("sandbox", out var sb))
                     LastThreadStartSandbox = sb.ValueKind == JsonValueKind.String ? sb.GetString() : null;
+                LastThreadStartHadModel = @params.Prop("model") is not null;
+                LastThreadStartModel    = @params.Str("model");
                 await RespondAsync(id, new JsonObject {
                     ["thread"]        = new JsonObject { ["id"] = ThreadId, ["sessionId"] = ThreadId, ["path"] = "/tmp/r.jsonl" },
                     ["model"]         = Model,
@@ -145,6 +151,8 @@ sealed class FakeCodexAppServer : IAsyncDisposable {
                     LastTurnApprovalPolicy = ap.GetString();
                 if (@params.ValueKind == JsonValueKind.Object && @params.TryGetProperty("effort", out var ef))
                     LastTurnEffort = ef.GetString();
+                LastTurnStartHadModel = @params.Prop("model") is not null;
+                LastTurnStartModel    = @params.Str("model");
 
                 var turnId = "turn-" + _turnStartCount;
                 _lastTurnId = turnId;
