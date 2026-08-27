@@ -69,7 +69,7 @@ public static class MarkdownBlocks {
             LineHeight = fontSize * 1.6,
             Foreground = Brush("KcapTextBrush"),
         };
-        foreach (var inline in inlines) AddInline(source, text.Inlines!, inline, openLink);
+        foreach (var inline in inlines) AddInline(source, text.Inlines!, inline, openLink, (fontSize, text.FontWeight));
         return text;
     }
 
@@ -84,19 +84,19 @@ public static class MarkdownBlocks {
             ? source.Substring(span.Start, span.Length)
             : "";
 
-    static void AddInlines(string source, InlineCollection target, ContainerInline? container, ICommand? openLink) {
+    static void AddInlines(string source, InlineCollection target, ContainerInline? container, ICommand? openLink, (double Size, FontWeight Weight) font) {
         if (container is null) return;
-        foreach (var inline in container) AddInline(source, target, inline, openLink);
+        foreach (var inline in container) AddInline(source, target, inline, openLink, font);
     }
 
-    static void AddInline(string source, InlineCollection target, MdInline inline, ICommand? openLink) {
+    static void AddInline(string source, InlineCollection target, MdInline inline, ICommand? openLink, (double Size, FontWeight Weight) font) {
         switch (inline) {
             case LiteralInline literal:
                 target.Add(new Run(Flat(literal.Content.ToString())));
                 break;
             case EmphasisInline emphasis: {
                 Span span = emphasis.DelimiterCount >= 2 ? new Bold() : new Italic();
-                AddInlines(source, span.Inlines, emphasis, openLink);
+                AddInlines(source, span.Inlines, emphasis, openLink, font);
                 target.Add(span);
                 break;
             }
@@ -113,13 +113,13 @@ public static class MarkdownBlocks {
                 target.Add(new Run(Flat(SpanText(source, image.Span))));
                 break;
             case LinkInline link when LinkPolicy.IsOpenable(link.Url):
-                target.Add(new InlineUIContainer { Child = LinkButton(Flat(PlainText(source, link)), link.Url!, openLink) });
+                target.Add(Link(LinkButton(Flat(PlainText(source, link)), link.Url!, openLink, font)));
                 break;
             case LinkInline link:
-                AddInlines(source, target, link, openLink);
+                AddInlines(source, target, link, openLink, font);
                 break;
             case AutolinkInline auto when LinkPolicy.IsOpenable(auto.Url):
-                target.Add(new InlineUIContainer { Child = LinkButton(auto.Url, auto.Url, openLink) });
+                target.Add(Link(LinkButton(auto.Url, auto.Url, openLink, font)));
                 break;
             case AutolinkInline auto:
                 target.Add(new Run(Flat(auto.Url)));
@@ -128,7 +128,7 @@ public static class MarkdownBlocks {
                 target.Add(new Run(Flat(html.Tag)));
                 break;
             case ContainerInline nested:
-                AddInlines(source, target, nested, openLink);
+                AddInlines(source, target, nested, openLink, font);
                 break;
             default:
                 target.Add(new Run(Flat(SpanText(source, inline.Span))));
@@ -138,15 +138,24 @@ public static class MarkdownBlocks {
 
     // NavigateUri stays unset on purpose: set, the control opens the URI itself and the policy
     // in the command would never run.
-    static HyperlinkButton LinkButton(string label, string url, ICommand? openLink) => new() {
+    static HyperlinkButton LinkButton(string label, string url, ICommand? openLink, (double Size, FontWeight Weight) font) => new() {
         Content = label,
         Command = openLink,
         CommandParameter = url,
         Padding = new Thickness(0),
+        BorderThickness = new Thickness(0),
+        MinHeight = 0,
+        MinWidth = 0,
+        FontSize = font.Size,
+        FontWeight = font.Weight,
         Cursor = new Cursor(StandardCursorType.Hand),
         Foreground = Brush("KcapAccentBrush"),
         VerticalAlignment = VerticalAlignment.Center,
     };
+
+    // A control's baseline is its bottom edge, so aligning it to the text baseline lifts the
+    // whole button above the line; centring keeps its glyphs on the neighbours' line.
+    static InlineUIContainer Link(HyperlinkButton button) => new() { Child = button, BaselineAlignment = BaselineAlignment.Center };
 
     static string PlainText(string source, ContainerInline container) =>
         string.Concat(container.Select(inline => inline switch {

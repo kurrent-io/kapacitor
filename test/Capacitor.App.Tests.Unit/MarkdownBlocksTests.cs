@@ -152,4 +152,27 @@ public class MarkdownBlocksTests {
             } finally { window.Close(); }
         });
     }
+
+    /// Pins the link's place in the line: a paragraph with a link is no taller than the same
+    /// paragraph without one, and the button reads in the paragraph's own size and weight.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task A_link_sits_in_the_line_without_changing_its_height() {
+        await RunOnUiAsync(async () => {
+            var (linked, linkedRoot, _) = Show("PR opened: [pull/588](https://example.com/pull/588) and done.");
+            var (plain, plainRoot, _) = Show("PR opened: pull/588 and done.");
+            try {
+                linked.UpdateLayout();
+                plain.UpdateLayout();
+                var linkedText = All<SelectableTextBlock>(linkedRoot).Single();
+                var plainText = All<SelectableTextBlock>(plainRoot).Single();
+                var button = All<HyperlinkButton>(linkedRoot).Single();
+
+                await Assert.That(Math.Abs(linkedText.Bounds.Height - plainText.Bounds.Height)).IsLessThanOrEqualTo(1);
+                await Assert.That(button.FontSize).IsEqualTo(linkedText.FontSize);
+                await Assert.That(button.FontWeight).IsEqualTo(linkedText.FontWeight);
+                await Assert.That(button.Bounds.Height).IsLessThanOrEqualTo(linkedText.Bounds.Height);
+            } finally { linked.Close(); plain.Close(); }
+        });
+    }
 }
