@@ -179,6 +179,10 @@ public class MarkdownBlocksTests {
                 var lineBaseline = linkedText.TextLayout.TextLines[0].Baseline;
                 await Assert.That(Math.Abs(lineBaseline - plainText.TextLayout.TextLines[0].Baseline)).IsLessThanOrEqualTo(0.5);
                 await Assert.That(Math.Abs(innerBaseline - lineBaseline)).IsLessThanOrEqualTo(1);
+
+                // The glyphs' descenders hang below the button, so nothing in it may clip.
+                await Assert.That(button.ClipToBounds).IsFalse();
+                await Assert.That(button.GetVisualDescendants().OfType<Visual>().Any(v => v.ClipToBounds)).IsFalse();
             } finally { linked.Close(); plain.Close(); }
         });
     }

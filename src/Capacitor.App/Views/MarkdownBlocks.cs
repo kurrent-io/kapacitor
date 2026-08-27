@@ -2,11 +2,12 @@ using System.Windows.Input;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Documents;
+using Avalonia.Controls.Presenters;
 using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Media.TextFormatting;
-using Avalonia.VisualTree;
+using Avalonia.Styling;
 using Capacitor.App.Services;
 using Markdig;
 using Markdig.Extensions.Tables;
@@ -166,7 +167,10 @@ public static class MarkdownBlocks {
         button.ClipToBounds = false;
         button.UseLayoutRounding = false;
         button.SetValue(TextBlock.LineHeightProperty, double.NaN);
-        button.TemplateApplied += (_, _) => { foreach (var part in button.GetVisualDescendants()) part.ClipToBounds = false; };
+        // The presenter creates its text part after TemplateApplied, so a one-off pass would miss
+        // it; a style reaches every part whenever it appears.
+        button.Styles.Add(new Style(x => x.Is<TextBlock>()) { Setters = { new Setter(Visual.ClipToBoundsProperty, false) } });
+        button.Styles.Add(new Style(x => x.Is<ContentPresenter>()) { Setters = { new Setter(Visual.ClipToBoundsProperty, false) } });
         button.AttachedToVisualTree += (_, _) => button.Height = AscentOf(button.FontFamily, button.FontWeight, button.FontSize);
         return new() { Child = button };
     }
