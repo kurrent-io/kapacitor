@@ -662,4 +662,327 @@ public class SecretRedactorTests {
             .GetProperty("content");
         await Assert.That(content[0].GetProperty("is_error").GetBoolean()).IsFalse();
     }
+
+    // Structural redaction — a pattern may only rewrite the inside of a string value, never the
+    // JSON around it. The server drops a line it cannot parse, so corruption here is a silent
+    // hole in the transcript rather than a visible failure.
+
+    [Test]
+    [Arguments("""{"s":"plain","n":[7,{"deep":"x"}]}""", """{"s":"[REDACTED]","n":[7,{"deep":"[REDACTED]"}]}""")]
+    [Arguments("""["Bearer one","Bearer two"]""", """["[REDACTED]","[REDACTED]"]""")]
+    [Arguments("""{"a":1}""", """{"a":1}""")]
+    [Arguments("true", "true")]
+    [Arguments("null", "null")]
+    public async Task RedactsEveryStringLeaf_UnderASecretKey_KeepingItsShape(string value, string expected) {
+        // A secret-bearing key hands its secret to the whole subtree, not just to a string sitting
+        // directly under it. Structure survives so the line still parses, and every string leaf
+        // under it goes; a number, a boolean and null are left as they are.
+        var line     = """{"type":"user","toolUseResult":{"payload":{"cookie":""" + value + ""","items":[1,2]}}}""";
+        var expected_ = """{"type":"user","toolUseResult":{"payload":{"cookie":""" + expected + ""","items":[1,2]}}}""";
+
+        var result = SecretRedactor.RedactLine(line);
+
+        await Assert.That(result).IsEqualTo(expected_);
+
+        // The sibling is outside the armed subtree, so the disarm on the closing token landed.
+        using var doc = System.Text.Json.JsonDocument.Parse(result);
+        var payload = doc.RootElement.GetProperty("toolUseResult").GetProperty("payload");
+        await Assert.That(payload.GetProperty("items").GetArrayLength()).IsEqualTo(2);
+    }
+
+    [Test]
+    [Arguments("""{"token":"abc123","public":"visible","n":42}""",
+               """{"token":"[REDACTED]","public":"visible","n":42}""")]
+    [Arguments("""{"token":{"inner":"abc123","num":7},"public":"visible","n":42}""",
+               """{"token":{"inner":"[REDACTED]","num":7},"public":"visible","n":42}""")]
+    [Arguments("""{"headers":{"Authorization":["Bearer x","Bearer y"],"z":1},"tail":"keep"}""",
+               """{"headers":{"Authorization":["[REDACTED]","[REDACTED]"],"z":1},"tail":"keep"}""")]
+    [Arguments("""{"ghp_abc123def456ghi789jkl012":"repo-name","public":"visible"}""",
+               """{"[REDACTED]-1":"repo-name","public":"visible"}""")]
+    [Arguments("""{"cookie":{"c":"1"},"mid":"keep","secret":{"s":"2"},"after":"keep"}""",
+               """{"cookie":{"c":"[REDACTED]"},"mid":"keep","secret":{"s":"[REDACTED]"},"after":"keep"}""")]
+    public async Task LeavesSiblings_OfASecretKey_Untouched(string line, string expected) {
+        // What arms a subtree has to disarm on the way out. A flag that outlived its own key would
+        // take the next sibling with it.
+        await Assert.That(SecretRedactor.RedactLine(line)).IsEqualTo(expected);
+    }
+
+    [Test]
+    public async Task NeverThrows_AndAlwaysEmitsParseableJson_OverGeneratedDocuments() {
+        // RedactLine runs inside the drain's `Select`, so a throw takes transcript forwarding with
+        // it, and a line that no longer parses is dropped by the server without a word. Seeded, so
+        // a failure here is reproducible rather than a flake.
+        string[] fragments = [
+            "\"plain text\"", "\"ghp_abc123def456ghi789jkl012\"", "\"AKIAIOSFODNN7EXAMPLE\"",
+            "\"Authorization: Bearer abc123def456\"", "\"caf\\u00e9 <tag> a/b\"", "\"\"",
+            "1", "-0.0", "1e3", "123456789012345678901234567890", "true", "false", "null",
+            "\"{\\\"api_key\\\":\\\"sk-live_abcdefghijkl\\\"}\"",
+            "\"-----BEGIN RSA PRIVATE KEY-----\\nMIIEpAIB\\n-----END RSA PRIVATE KEY-----\"",
+        ];
+        string[] keys = ["a", "token", "cookie", "author", "privateKeys", "auth", "x", "a"];
+
+        var rng      = new Random(20260827);
+        var changed  = 0;
+
+        for (var i = 0; i < 3000; i++) {
+            var line = Compose(rng, fragments, keys, depth: 0);
+
+            var result = SecretRedactor.RedactLine(line);
+
+            using var doc = System.Text.Json.JsonDocument.Parse(result);
+            if (!string.Equals(result, line, StringComparison.Ordinal)) changed++;
+        }
+
+        // Without this the corpus could stop redacting anything and the test would still pass.
+        await Assert.That(changed).IsGreaterThan(1000);
+
+        static string Compose(Random rng, string[] fragments, string[] keys, int depth) {
+            if (depth >= 4 || rng.Next(3) == 0) return fragments[rng.Next(fragments.Length)];
+
+            var count = rng.Next(1, 4);
+            if (rng.Next(2) == 0) {
+                var parts = new string[count];
+                for (var i = 0; i < count; i++) parts[i] = Compose(rng, fragments, keys, depth + 1);
+
+                return "[" + string.Join(",", parts) + "]";
+            }
+
+            var pairs = new string[count];
+            for (var i = 0; i < count; i++)
+                pairs[i] = "\"" + keys[rng.Next(keys.Length)] + "\":" + Compose(rng, fragments, keys, depth + 1);
+
+            return "{" + string.Join(",", pairs) + "}";
+        }
+    }
+
+    [Test]
+    [Arguments("privateKey")]
+    [Arguments("private_key")]
+    [Arguments("private-key")]
+    [Arguments("private.key")]
+    [Arguments("privatekeys")]
+    [Arguments("apiKeys")]
+    [Arguments("accessKey")]
+    [Arguments("clientSecrets")]
+    [Arguments("credential")]
+    [Arguments("authTokens")]
+    public async Task RecognisesASecretKey_HoweverItIsSpelled(string key) {
+        var line = "{\"cfg\":{\"" + key + "\":\"s3cr3t-value-here\"},\"n\":1}";
+
+        var result = SecretRedactor.RedactLine(line);
+
+        await Assert.That(result).IsEqualTo("{\"cfg\":{\"" + key + "\":\"[REDACTED]\"},\"n\":1}");
+    }
+
+    [Test]
+    [Arguments("""{"auth":{"tok":"abc"},"n":1}""", """{"auth":{"tok":"[REDACTED]"},"n":1}""")]
+    [Arguments("""{"oauth":"abc","n":1}""", """{"oauth":"[REDACTED]","n":1}""")]
+    [Arguments("""{"author":"Ada Lovelace","n":1}""", """{"author":"Ada Lovelace","n":1}""")]
+    [Arguments("""{"authored_by":"Ada","authority":"local"}""", """{"authored_by":"Ada","authority":"local"}""")]
+    public async Task TreatsBareAuthAsASecretKey_WithoutCatchingAuthor(string line, string expected) {
+        // `auth` carries a token often enough to belong in the key vocabulary, and the end anchor
+        // is the whole reason it can: unanchored it would swallow `author` and every word built
+        // on it.
+        await Assert.That(SecretRedactor.RedactLine(line)).IsEqualTo(expected);
+    }
+
+    [Test]
+    [Arguments("""{"X-Api-Key":12345,"next":"kept"}""")]
+    [Arguments("""{"Authorization":12345}""")]
+    [Arguments("""{"cookie":{"n":5},"keep":7}""")]
+    [Arguments("""{"password":1234567}""")]
+    [Arguments("""{"oauth":2,"needs_auth":0}""")]
+    public async Task LeavesEveryNumber_HoweverSecretItsKey(string line) {
+        // Deliberate, and it gives up the all-digit credential: the keyword vocabulary matches
+        // anywhere in a name, so the token-usage fields classify as secret-bearing on nearly every
+        // model turn, while a header value arrives as a string and so is never a number here.
+        await Assert.That(SecretRedactor.RedactLine(line)).IsEqualTo(line);
+    }
+
+    [Test]
+    [Arguments("""{"type":"token_count","input_tokens":1234,"output_tokens":56}""")]
+    [Arguments("""{"total_token_usage":{"input_tokens":1234,"cached":10},"model":"gpt-5"}""")]
+    [Arguments("""{"usage":{"prompt_tokens":10,"completion_tokens":20}}""")]
+    public async Task LeavesTokenMetrics_Alone(string line) {
+        // `input_tokens` and `token_count` classify as secret-bearing on the keyword vocabulary,
+        // and they sit on nearly every Codex turn. A number carries no credential, so none of them
+        // is rewritten — the analytics that read these would otherwise see a redacted value.
+        await Assert.That(SecretRedactor.RedactLine(line)).IsEqualTo(line);
+    }
+
+    [Test]
+    public async Task RedactsSecretsAppearingAsPropertyNames_WithDistinctMarkers() {
+        // A name that is itself a token has to go, and two of them cannot both become the bare
+        // marker: that would collapse the object into a duplicate key.
+        var line = """{"ghp_abc123def456ghi789jkl012":"repo","AKIAIOSFODNN7EXAMPLE":"acct","keep":"v"}""";
+
+        var result = SecretRedactor.RedactLine(line);
+
+        await Assert.That(result).IsEqualTo("""{"[REDACTED]-1":"repo","[REDACTED]-2":"acct","keep":"v"}""");
+    }
+
+    [Test]
+    public async Task PreservesJson_WhenPemMarkersSpanTwoStringValues() {
+        // `BEGIN` in one value and `END` in another, at different depths, are two values — not one
+        // block — so there is nothing to redact and every structural token between them stays.
+        var line = """{"outer":{"head":"-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIB"},"tail":["x",{"rest":"more\n-----END RSA PRIVATE KEY-----"}]}""";
+
+        var result = SecretRedactor.RedactLine(line);
+
+        await Assert.That(result).IsEqualTo(line);
+
+        using var doc = System.Text.Json.JsonDocument.Parse(result);
+        await Assert.That(doc.RootElement.GetProperty("tail").GetArrayLength()).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task RedactsLine_SecretsInsideEscapedInnerJson() {
+        // A serialized tool result carried as a string, itself carrying a serialized body: the
+        // patterns run over the decoded value, so both the once-escaped header and the
+        // twice-escaped key/value pair are still reachable.
+        var line = """
+            {"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_1","type":"tool_result","content":"{\"headers\":{\"X-Api-Key\":\"opaque_value_no_prefix_123456\"},\"body\":\"{\\\"client_secret\\\":\\\"a8f3b2c91d4e7f0123456789abcdef01\\\"}\"}","is_error":false}]}}
+            """.Trim();
+
+        var result = SecretRedactor.RedactLine(line);
+
+        await Assert.That(result).DoesNotContain("opaque_value_no_prefix_123456");
+        await Assert.That(result).DoesNotContain("a8f3b2c91d4e7f0123456789abcdef01");
+
+        using var doc = System.Text.Json.JsonDocument.Parse(result);
+        var content = doc.RootElement.GetProperty("message").GetProperty("content")[0];
+        await Assert.That(content.GetProperty("is_error").GetBoolean()).IsFalse();
+        // The inner document survives as text, minus the two values.
+        await Assert.That(content.GetProperty("content").GetString()).Contains("\"headers\"");
+    }
+
+    [Test]
+    public async Task RedactsLine_SecretKeyValue_ContainingEscapes_LeavesNoTail() {
+        // A real JSON pair is two tokens, so a `"key": "value"` text pattern cannot see the key at
+        // all: the property name decides, and the whole value goes — a value carrying quotes or
+        // backslashes must not survive from its first escape onward.
+        var line = """{"type":"user","toolUseResult":{"client_secret":"a\"b\\c-1234567890"}}""";
+
+        var result = SecretRedactor.RedactLine(line);
+
+        using var doc = System.Text.Json.JsonDocument.Parse(result);
+        await Assert.That(doc.RootElement.GetProperty("toolUseResult").GetProperty("client_secret").GetString())
+            .IsEqualTo("[REDACTED]");
+    }
+
+    [Test]
+    public async Task RedactedOutput_AlwaysParses_WhenInputParsed() {
+        // Round-trip property over the shapes that broke text-level redaction: whatever a pattern
+        // matches, a line that parsed on the way in parses on the way out.
+        string[] corpus = [
+            """{"h":{"cookie":{"a":1},"items":[1,2]}}""",
+            """{"h":{"authorization":[1,2],"next":"keep"}}""",
+            """{"h":{"set-cookie":null,"x-api-key":true,"n":7}}""",
+            """{"h":{"x-csrf-token":{"nested":{"deep":[1,{"a":"b"}]}}}}""",
+            """{"a":"-----BEGIN RSA PRIVATE KEY-----\nMIIE","b":["x",{"c":"z\n-----END RSA PRIVATE KEY-----"}]}""",
+            """{"c":"Authorization: Bearer abc123def456ghi789jkl012mno","d":"tail"}""",
+            """{"c":"{\"Authorization\": \"Bearer abc123def456ghi789\", \"Accept\": \"application/json\"}"}""",
+            """{"c":"Set-Cookie: sid=\"quoted-value-1234567890\"; Path=/","d":1}""",
+            """{"c":"first 100 chars: {\n  \"SecretAccessKey\": \"0X+FPiUxddhI7babryQv4l5JQ37Smuy"}""",
+            """{"client_secret":"a\"b\\c-1234567890","keep":[1,2,3]}""",
+            """{"c":"password    supersecretvalue1234567890 — ünïcode ✓ <tag> & more"}""",
+            """{"c":"GITHUB_TOKEN=ghp_abc123def456ghi789jkl012mno345pqrs678\nAWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE"}""",
+        ];
+
+        var unparsable = corpus
+            .Select(SecretRedactor.RedactLine)
+            .Where(redacted => !Parses(redacted))
+            .ToArray();
+
+        await Assert.That(unparsable).IsEmpty();
+
+        // The corpus is only meaningful if it actually exercises the patterns.
+        await Assert.That(corpus.Count(line => SecretRedactor.RedactLine(line) != line)).IsGreaterThan(5);
+        return;
+
+        static bool Parses(string text) {
+            try {
+                using var doc = System.Text.Json.JsonDocument.Parse(text);
+                return true;
+            } catch (System.Text.Json.JsonException) {
+                return false;
+            }
+        }
+    }
+
+    // Fidelity of everything the redactor did NOT touch. Copying untouched bytes through is what
+    // buys these; a DOM or a re-serializing writer has to reproduce each one deliberately.
+
+    [Test]
+    [Arguments("1.0", "trailing zero")]
+    [Arguments("1e3", "exponent form")]
+    [Arguments("123456789012345678901234567890", "beyond every fixed-width numeric type")]
+    [Arguments("0.1000000000000000055511151231257827", "more digits than a double round-trips")]
+    [Arguments("-0.0", "negative zero")]
+    public async Task PreservesNumberText_WhenAnotherValueIsRedacted(string number, string shape) {
+        // Redacting one value must not reformat a number elsewhere in the line: a transcript
+        // number is data, and rewriting it through a numeric type would silently alter it.
+        var line = $$"""{"a":{{number}},"tok":"ghp_abc123def456ghi789jkl012mno345"}""";
+
+        var result = SecretRedactor.RedactLine(line);
+
+        await Assert.That(result).DoesNotContain("ghp_abc123");
+        await Assert.That(result).Contains(number);
+    }
+
+    [Test]
+    public async Task RedactsLine_WithDuplicatePropertyNames() {
+        // JSON permits duplicate keys and transcripts are written by third-party tooling, so a
+        // line carrying them must still redact rather than throw at the drain.
+        var line = """{"a":1,"a":2,"tok":"ghp_abc123def456ghi789jkl012mno345"}""";
+
+        var result = SecretRedactor.RedactLine(line);
+
+        await Assert.That(result).DoesNotContain("ghp_abc123");
+        await Assert.That(result).Contains("[REDACTED]");
+    }
+
+    [Test]
+    public async Task RedactsLine_NestedDeeperThanTheReaderAllows() {
+        // Nested past the depth System.Text.Json itself refuses, so nothing can walk it and the
+        // whole-line pipeline is all there is. It still has to come back redacted: the alternative
+        // is shipping the secret raw.
+        var line = string.Concat(Enumerable.Repeat("""{"a":""", 1100))
+          + "\"tok ghp_abc123def456ghi789jkl012mno345\""
+          + new string('}', 1100);
+
+        var result = SecretRedactor.RedactLine(line);
+
+        await Assert.That(result).DoesNotContain("ghp_abc123");
+        await Assert.That(result).Contains("[REDACTED]");
+    }
+
+    [Test]
+    [Arguments("""{"a":1 /* ghp_abc123def456ghi789jkl012 */}""")]
+    [Arguments("""{"a":1} // ghp_abc123def456ghi789jkl012""")]
+    [Arguments("""{"a":1 /* nothing sensitive */}""")]
+    public async Task DropsAComment_RatherThanShipALineNoStrictParserTakes(string line) {
+        // A comment is not a value, so nothing else scans its text, and it cannot survive into
+        // strict JSON either. Dropping counts as a change on its own — otherwise a line whose
+        // values are all clean rides the unchanged path to the wire with the comment still on it.
+        var result = SecretRedactor.RedactLine(line);
+
+        await Assert.That(result).DoesNotContain("ghp_abc123def456ghi789jkl012");
+        await Assert.That(result).DoesNotContain("nothing sensitive");
+
+        using var doc = System.Text.Json.JsonDocument.Parse(result);
+        await Assert.That(doc.RootElement.GetProperty("a").GetInt32()).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task LeavesNonJsonLine_ToTheWholeLinePipeline() {
+        // The drop only applies to a line that was JSON going in. Text that never parsed has
+        // nothing to corrupt, and replacing it with a placeholder would lose it for no gain.
+        var line = "plain log output with GITHUB_TOKEN=ghp_abc123def456ghi789jkl012 in it";
+
+        var result = SecretRedactor.RedactLine(line);
+
+        await Assert.That(result).DoesNotContain("ghp_abc123");
+        await Assert.That(result).StartsWith("plain log output with GITHUB_TOKEN=");
+    }
 }

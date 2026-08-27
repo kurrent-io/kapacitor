@@ -58,6 +58,10 @@ Deliberate choices a change can silently undo — each looks like a bug until yo
 - **Auth commits in one ordered boundary** — claims, then config and provider stamp, then tokens —
   behind a totalized result. `kcap login` never repoints `server_url`; `kcap setup` and the wizard
   adopt it.
+- **Secret redaction rewrites decoded JSON string values, never the serialized line.** A pattern run
+  over the whole line matches past the value it found into the surrounding structure, and the server
+  drops an unparseable line silently. A line the writer refuses is replaced by a placeholder —
+  never by the raw line, which would re-expose what the redactor just matched.
 
 ## Tech stack
 
