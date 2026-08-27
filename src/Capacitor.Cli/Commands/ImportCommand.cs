@@ -607,6 +607,14 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
     /// failed — import is best-effort and the Done grid is where that is reported — so a caller
     /// deriving success from the exit code calls a partial or total failure a success.
     /// </remarks>
+    /// <summary>Reports a run that deliberately moved nothing: it reached a decision, and the decision
+    /// was that there was nothing to do.</summary>
+    static void ReportNothing(Action<ImportRunOutcome>? onFinished) =>
+        onFinished?.Invoke(new ImportRunOutcome(
+            new FinalCounts(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, RanBackground: false,
+                            RequestedSummaries: false),
+            VisibilityFailures: 0));
+
     internal sealed record ImportRunOutcome(FinalCounts Counts, int VisibilityFailures) {
         /// <summary>Anything the user asked for that did not happen.</summary>
         internal bool AnythingFailed => Counts.Failed > 0 || VisibilityFailures > 0;
@@ -743,6 +751,10 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
 
             display.Line("No coding-agent sessions found. Install Claude, Codex, or Cursor and try again.");
 
+            // Zero is an answer, and a caller that hears nothing cannot tell it from a run that died
+            // before it got here — the same rule the discovery report already follows.
+            ReportNothing(onFinished);
+
             return 0;
         }
 
@@ -794,6 +806,10 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
             if (discoverOnly) return WriteEmptyDiscoveryReport(discoverySink, ScannedVendors(sources), windowsAsOf);
 
             display.Line("No transcript files found.");
+
+            // Zero is an answer, and a caller that hears nothing cannot tell it from a run that died
+            // before it got here — the same rule the discovery report already follows.
+            ReportNothing(onFinished);
 
             return 0;
         }
@@ -1015,6 +1031,10 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
 
         if (totalAfterScope == 0) {
             display.Line("No sessions match the selected scope.");
+
+            // Zero is an answer, and a caller that hears nothing cannot tell it from a run that died
+            // before it got here — the same rule the discovery report already follows.
+            ReportNothing(onFinished);
 
             return 0;
         }
@@ -2966,7 +2986,8 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
                 if (resumeLastTs is not null) resumeEndHook["ended_at"] = resumeLastTs.Value.ToString("O");
 
                 using var endContent = new StringContent(resumeEndHook.ToJsonString(), Encoding.UTF8, "application/json");
-                using var endResp    = await httpClient.PostWithRetryAsync($"{baseUrl}/hooks/session-end/{session.Vendor}", endContent, ct: ct);
+                using var endResp    = await httpClient.PostWithRetryAsync(
+                    $"{baseUrl}/hooks/session-end/{session.Vendor}", endContent, ct: ct, retryStatuses: true);
 
                 if (!endResp.IsSuccessStatusCode) {
                     events.OnSessionErrored(slot, session.SessionId, $"resume session-end failed: HTTP {(int)endResp.StatusCode}");
@@ -3076,7 +3097,8 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
         // claude even though the transcript was a codex rollout.
         try {
             using var startContent = new StringContent(startHook.ToJsonString(), Encoding.UTF8, "application/json");
-            using var startResp    = await httpClient.PostWithRetryAsync($"{baseUrl}/hooks/session-start/{session.Vendor}", startContent, ct: ct);
+            using var startResp    = await httpClient.PostWithRetryAsync(
+                $"{baseUrl}/hooks/session-start/{session.Vendor}", startContent, ct: ct, retryStatuses: true);
 
             if (!startResp.IsSuccessStatusCode) {
                 events.OnSessionErrored(slot, session.SessionId, $"session-start failed: HTTP {(int)startResp.StatusCode}");
@@ -3128,7 +3150,8 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
         // session-start comment above) — symmetric route, same default of claude.
         try {
             using var endContent = new StringContent(endHook.ToJsonString(), Encoding.UTF8, "application/json");
-            using var endResp    = await httpClient.PostWithRetryAsync($"{baseUrl}/hooks/session-end/{session.Vendor}", endContent, ct: ct);
+            using var endResp    = await httpClient.PostWithRetryAsync(
+                    $"{baseUrl}/hooks/session-end/{session.Vendor}", endContent, ct: ct, retryStatuses: true);
 
             if (endResp.IsSuccessStatusCode) {
                 try {
@@ -3225,7 +3248,8 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
             try {
                 using var resp = await httpClient.PutWithRetryAsync(
                     $"{baseUrl}/api/sessions/{sessionId}/visibility",
-                    content
+                    content,
+                    retryStatuses: true
                 );
 
                 if (!resp.IsSuccessStatusCode) {

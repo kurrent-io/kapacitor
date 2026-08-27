@@ -7,6 +7,52 @@ Not release notes. Each entry is written as of the change that produced it and i
 code moves on; where an entry disagrees with the code, the code wins.
 
 
+## The import outcome reaches the first-run flow
+
+The flow's `import-outcome` route folded a report into `FirstRunFlowState.ImportOutcome` and had no
+caller, so the Done screen's counts caption was unreachable — and since the outcome is also the signal
+that the run finished, the screen could not tell a working import from a stalled one.
+
+`FinalCounts` already carried the route's three counts, so nothing is re-derived. Two things it did not
+carry: a session the `--private` preflight held back never reaches the upload and so appears in none of
+the three, and folds into `failed` (re-running retries exactly it); and a pass that threw leaves its
+sessions unaccounted, which **three counts cannot express**, so nothing at all is reported for that run.
+Sending the surviving pass's figures would state a clean import over a run that lost one.
+
+**Null is not `(0,0,0)`.** Three zeroes are also a clean run over an already-loaded history, so a refusal
+carries a coded token — `no_readable_agents`, or `decision_unreadable` — and the server rejects a token
+on an outcome that moved something.
+
+**An empty answer has two causes and only one is a decline.** `Choices` is empty both when the user asked
+for nothing and when every level in the decision was unreadable here; `IsDecline` already drew that line,
+and reporting the second as a clean zero would tell the screen "you chose not to" about a user who chose
+otherwise. Relatedly, `HandleImport` had three "found nothing" exits that returned 0 without reaching
+`onFinished`, so a clean run over an out-of-scope selection looked like a lost pass and reported nothing —
+they now report a measured zero, the rule the discovery report in the same file already followed.
+
+The retry is **not** credited against the poll budget, unlike the scan and the import. It runs on every
+tick for as long as the report is refused, so crediting it would let a server that never accepts it
+stretch the flow's own 30-minute backstop into hours.
+
+That second token had no producer, and the branch that should raise it was worse than silent: a decision
+naming a window this build cannot map returned early **without stamping the cursor**, re-evaluating the
+same answer on every tick for the life of the flow. Polling cannot make a newer server's vocabulary
+readable, so it is reported and the cursor moves.
+
+`decided_at` cannot be wrong inside the lane — the answer is built from the view's own stamp, so they are
+one value. The reachable hazard is the retry: the report is held across ticks, and `DeliverOutcomeAsync`
+takes no view, so it cannot re-stamp a held report with whatever is standing.
+
+**Retrying a retryable status is opt-in.** `SendWithRetryAsync` retried transport faults but returned any
+completed response, so one 503 cost a session with no second attempt while an unreachable server got
+thirty seconds of trying — which is what made `failed` too weak to show. It is now retried like a
+transport fault (408, 429, 5xx; `Retry-After` honoured, capped by the remaining budget) but only where the
+call site asks. Every hook, watch, daemon and MCP path shares that helper and their budgets assume one
+attempt; changing it for all of them in service of one caption is not the trade. An exhausted budget
+returns the status rather than throwing — the call sites catch `HttpRequestException` only, so a throw
+would turn a 503 into a crash mid-import.
+
+
 ## The Agents screen's visibility answer reaches the profile
 
 The flow asked who may read future sessions, recorded it on `FirstRunAgentsDecidedEvent`, served it on

@@ -88,6 +88,25 @@ public class BrowserFirstRunFlowTests {
             return Task.FromResult(new FirstRunImportReportOutcome(
                 ImportReportStatuses.Count > 0 ? ImportReportStatuses.Dequeue() : 200));
         }
+
+        public List<ReportFirstRunImportOutcomeRequest> OutcomeReports { get; } = [];
+
+        /// <summary>Status per outcome report in turn; the last repeats. A non-2xx drives the retry.</summary>
+        public Queue<int> OutcomeStatuses { get; } = new();
+
+        /// <summary>Run on each outcome report, to model one that takes real time on the wire.</summary>
+        public Action? OnOutcomeReport { get; set; }
+
+        public Task<FirstRunImportReportOutcome> ReportImportOutcomeAsync(
+                string serverUrl, string flowId, ReportFirstRunImportOutcomeRequest report,
+                CancellationToken ct) {
+            log.Add("outcome-report");
+            OnOutcomeReport?.Invoke();
+            OutcomeReports.Add(report);
+
+            return Task.FromResult(new FirstRunImportReportOutcome(
+                OutcomeStatuses.Count > 0 ? OutcomeStatuses.Dequeue() : 200));
+        }
     }
 
     sealed class RecordingProgress(Log log) : IFirstRunFlowProgress {
@@ -163,7 +182,12 @@ public class BrowserFirstRunFlowTests {
 
         public List<DateOnly> Dates { get; } = [];
 
-        public Task ImportAsync(FirstRunImportAnswer answer, DateOnly today, CancellationToken ct) {
+        /// <summary>What the run reports. Null models a run that lost a pass, which must be reported as
+        /// nothing rather than as a clean zero.</summary>
+        public FirstRunImportTotals? Moved { get; set; } = new(3, 1, 0);
+
+        public Task<FirstRunImportTotals?> ImportAsync(
+                FirstRunImportAnswer answer, DateOnly today, CancellationToken ct) {
             log.Add("import");
             Advance?.Invoke();
             Imports.Add(answer);
@@ -171,7 +195,7 @@ public class BrowserFirstRunFlowTests {
 
             if (ImportThrows is { } boom) throw boom;
 
-            return Task.CompletedTask;
+            return Task.FromResult(Moved);
         }
 
         public static ReportFirstRunImportRequest Report(int sessions = 12) => new() {
@@ -1180,6 +1204,198 @@ public class BrowserFirstRunFlowTests {
 
         await Assert.That(h.Importing!.Imports).IsEmpty();
         await Assert.That(h.Progress.Imports).IsEmpty();
+    }
+
+    [Test]
+    public async Task Reports_what_the_run_moved_against_the_decision_that_ran() {
+        var h = Build(importing: true);
+        h.Importing!.Moved = new FirstRunImportTotals(7, 2, 1);
+        h.Channel.Polls.Enqueue(new(200, ImportAnswered()));
+        h.Channel.Polls.Enqueue(new(200, Done()));
+
+        await Run(h);
+
+        var sent = h.Channel.OutcomeReports.Single();
+
+        await Assert.That((sent.Imported, sent.Skipped, sent.Failed)).IsEqualTo((7, 2, 1));
+        await Assert.That(sent.Reason).IsNull();
+        await Assert.That(sent.DecidedAt).IsEqualTo(Decided)
+                    .Because("the answer that ran, not whichever is standing when the run ends");
+    }
+
+    [Test]
+    public async Task An_undelivered_outcome_keeps_its_own_stamp_when_the_decision_moves_under_it() {
+        // The report is held across ticks, so this is the one place the stamp CAN go wrong: re-stamping
+        // the retry with whatever is standing would attach the first run's counts to an answer it never
+        // ran, and the server would then discard both — the earlier one as superseded, the later one as
+        // already answered.
+        var h     = Build(importing: true);
+        var later = Decided.AddMinutes(3);
+
+        h.Channel.OutcomeStatuses.Enqueue(503);   // the first run's report is refused...
+        h.Channel.OutcomeStatuses.Enqueue(200);   // ...and taken on the next tick, still as its own
+        h.Channel.Polls.Enqueue(new(200, ImportAnswered(FirstRunImportWindows.Last30)));
+        h.Channel.Polls.Enqueue(new(200, ImportAnswered(FirstRunImportWindows.Everything, decidedAt: later)));
+        h.Channel.Polls.Enqueue(new(200, Done()));
+
+        await Run(h);
+
+        await Assert.That(h.Channel.OutcomeReports.Select(r => r.DecidedAt))
+                    .IsEquivalentTo([Decided, Decided, later]);
+    }
+
+    [Test]
+    public async Task Reports_a_decision_it_cannot_read_as_a_refusal_rather_than_polling_it_forever() {
+        // A window this build cannot map never becomes readable by asking again, so the cursor moves and
+        // the screen is told why. Without the stamp this re-evaluated the same answer on every tick and
+        // reported nothing at all.
+        var h    = Build(importing: true);
+        var view = ImportAnswered();
+        var stuck = view with { Import = view.Import! with { Window = "since_the_dawn_of_time" } };
+
+        h.Channel.Polls.Enqueue(new(200, stuck));
+        h.Channel.Polls.Enqueue(new(200, stuck));
+        h.Channel.Polls.Enqueue(new(200, stuck));
+        h.Channel.Polls.Enqueue(new(200, Done()));
+
+        await Run(h);
+
+        var sent = h.Channel.OutcomeReports.Single();
+
+        await Assert.That(sent.Reason).IsEqualTo(FirstRunImportOutcomeReasons.DecisionUnreadable);
+        await Assert.That((sent.Imported, sent.Skipped, sent.Failed)).IsEqualTo((0, 0, 0));
+        await Assert.That(sent.DecidedAt).IsEqualTo(Decided);
+        await Assert.That(h.Importing!.Imports).IsEmpty();
+    }
+
+    [Test]
+    public async Task Reports_no_readable_vendor_as_a_refusal_and_not_as_three_zeroes() {
+        // Three zeroes are also a clean run over an already-loaded history. The token is what stops the
+        // screen calling "nothing could be read" a successful import.
+        var h    = Build(importing: true);
+        var view = ImportAnswered();
+
+        h.Channel.Polls.Enqueue(new(200, view with { Import = view.Import! with { Vendors = ["telepathy"] } }));
+        h.Channel.Polls.Enqueue(new(200, Done()));
+
+        await Run(h);
+
+        await Assert.That(h.Channel.OutcomeReports.Single().Reason)
+                    .IsEqualTo(FirstRunImportOutcomeReasons.NoReadableAgents);
+    }
+
+    [Test]
+    public async Task Reports_a_clean_zero_when_the_user_chose_to_import_nothing() {
+        // Answered, with nothing to do — but the outcome is also how the screen learns the machine has
+        // finished, so silence here leaves it unable to tell this from a stalled run.
+        var h = Build(importing: true);
+        h.Channel.Polls.Enqueue(new(200, ImportAnswered(noRepos: true)));
+        h.Channel.Polls.Enqueue(new(200, Done()));
+
+        await Run(h);
+
+        var sent = h.Channel.OutcomeReports.Single();
+
+        await Assert.That((sent.Imported, sent.Skipped, sent.Failed)).IsEqualTo((0, 0, 0));
+        await Assert.That(sent.Reason).IsNull().Because("nothing was refused; nothing was asked for");
+    }
+
+    [Test]
+    public async Task Reports_nothing_for_a_run_that_lost_a_pass() {
+        // Its sessions are unaccounted and three counts cannot say so. Reporting the surviving figures
+        // would state a clean import over a run that dropped one.
+        var h = Build(importing: true);
+        h.Importing!.Moved = null;
+        h.Channel.Polls.Enqueue(new(200, ImportAnswered()));
+        h.Channel.Polls.Enqueue(new(200, Done()));
+
+        await Run(h);
+
+        await Assert.That(h.Importing.Imports).HasSingleItem().Because("the run still happened");
+        await Assert.That(h.Channel.OutcomeReports).IsEmpty();
+    }
+
+    [Test]
+    public async Task Retries_the_outcome_until_it_lands_without_importing_again() {
+        var h = Build(importing: true);
+        h.Channel.OutcomeStatuses.Enqueue(500);
+        h.Channel.OutcomeStatuses.Enqueue(500);
+        h.Channel.OutcomeStatuses.Enqueue(200);
+        h.Channel.Polls.Enqueue(new(200, ImportAnswered()));
+        h.Channel.Polls.Enqueue(new(200, ImportAnswered()));
+        h.Channel.Polls.Enqueue(new(200, ImportAnswered()));
+        h.Channel.Polls.Enqueue(new(200, ImportAnswered()));
+        h.Channel.Polls.Enqueue(new(200, Done()));
+
+        await Run(h);
+
+        await Assert.That(h.Importing!.Imports).HasSingleItem();
+        await Assert.That(h.Channel.OutcomeReports.Count).IsEqualTo(3)
+                    .Because("retried until taken, then never again");
+    }
+
+    [Test]
+    public async Task Flushes_an_owed_outcome_when_the_flow_finishes_in_the_same_tick() {
+        // The poll returns on a finished flow, so the tick that reports is also the last one that
+        // exists. Without the flush an outcome refused once would never be sent at all.
+        var h = Build(importing: true);
+        h.Channel.OutcomeStatuses.Enqueue(503);
+        h.Channel.OutcomeStatuses.Enqueue(200);
+        h.Channel.Polls.Enqueue(new(200, ImportAnswered() with {
+            Steps = new() {
+                ["SignIn"] = "Completed", ["Agents"] = "Completed",
+                ["Import"] = "Completed", ["Done"] = "Completed"
+            }
+        }));
+
+        await Run(h);
+
+        await Assert.That(h.Channel.OutcomeReports.Count).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task An_answer_left_empty_because_its_levels_were_unreadable_is_not_a_decline() {
+        // Choices.Count == 0 has two causes and only one of them is "the user chose nothing". A newer
+        // server's level empties the list too, and reporting THAT as a clean zero tells the screen the
+        // user declined an import they actually asked for.
+        var h    = Build(importing: true);
+        var view = ImportAnswered();
+
+        h.Channel.Polls.Enqueue(new(200, view with {
+            Import = view.Import! with {
+                Repos = [new FirstRunImportRepoChoiceResponse {
+                    Owner = "kurrent-io", Name = "kcap-server", Level = "EveryoneOnTheInternet"
+                }]
+            }
+        }));
+        h.Channel.Polls.Enqueue(new(200, Done()));
+
+        await Run(h);
+
+        var sent = h.Channel.OutcomeReports.Single();
+
+        await Assert.That(sent.Reason).IsEqualTo(FirstRunImportOutcomeReasons.DecisionUnreadable);
+        await Assert.That((sent.Imported, sent.Skipped, sent.Failed)).IsEqualTo((0, 0, 0));
+        await Assert.That(h.Importing!.Imports).IsEmpty();
+    }
+
+    [Test]
+    public async Task A_stalled_outcome_report_does_not_extend_the_flows_own_backstop() {
+        // The report is retried on every tick for as long as it is owed, so crediting its time back to
+        // the poll budget — the way the import and the scan are credited — would let a server that never
+        // accepts it stretch a 30-minute backstop into hours. A refused report is a blip, not progress.
+        var h = Build(importing: true);
+
+        h.Channel.Tail            = new(200, ImportAnswered());
+        h.Channel.OnOutcomeReport = () => h.Clock.Advance(TimeSpan.FromSeconds(15));
+
+        // Never taken, so it stays owed for the life of the flow.
+        for (var i = 0; i < 5_000; i++) h.Channel.OutcomeStatuses.Enqueue(503);
+
+        var result = await Run(h);
+
+        await Assert.That(result).IsTypeOf<FirstRunFlowResult.Abandoned>();
+        await Assert.That(h.Clock.GetUtcNow() - ClockBase).IsLessThanOrEqualTo(TimeSpan.FromMinutes(31));
     }
 
     [Test]

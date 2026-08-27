@@ -291,4 +291,124 @@ public class SetupImportLaneTests {
         // collapsing it to "no filter" would import exactly what the user declined.
         await Assert.That(SetupCommand.BuildImportSources(Config.Root, [])).IsEmpty();
     }
+
+    // ---- What the run reports back to the flow.
+
+    static ImportCommand.FinalCounts Moved(
+            int loaded = 0, int resumed = 0, int alreadyLoaded = 0, int tooShort = 0, int excluded = 0,
+            int probeError = 0, int errored = 0) =>
+        new(loaded, resumed, alreadyLoaded, tooShort, excluded, probeError, errored,
+            TitlesGenerated: 0, TitlesSkipped: 0, TitlesFailed: 0,
+            SummariesGenerated: 0, SummariesFailed: 0, RanBackground: false, RequestedSummaries: false);
+
+    [Test]
+    public async Task Sums_the_totals_across_both_passes() {
+        // One report goes to the flow but --private forces two invocations, so a lane returning either
+        // pass alone would halve the figures the screen shows.
+        var queue = new Queue<ImportCommand.ImportRunOutcome?>([
+            new(Moved(loaded: 3, alreadyLoaded: 1), 0),
+            new(Moved(loaded: 4, resumed: 2, tooShort: 5, errored: 1), 0)
+        ]);
+
+        var totals = await Lane(_ => Task.FromResult(queue.Dequeue())).ImportAsync(
+            Answer(repos: [("mine", FirstRunImportLevel.OnlyMe), ("ours", FirstRunImportLevel.Shared)]),
+            new DateOnly(2026, 6, 15), CancellationToken.None);
+
+        await Assert.That(totals).IsNotNull();
+        await Assert.That((totals!.Value.Imported, totals.Value.Skipped, totals.Value.Failed))
+                    .IsEqualTo((9, 6, 1));
+    }
+
+    [Test]
+    public async Task A_resume_counts_as_imported_and_not_as_a_third_thing() {
+        var totals = await Lane(_ => Task.FromResult<ImportCommand.ImportRunOutcome?>(
+                new(Moved(resumed: 4), 0))).ImportAsync(
+            Answer(repos: ("ours", FirstRunImportLevel.Shared)), new DateOnly(2026, 6, 15),
+            CancellationToken.None);
+
+        await Assert.That(totals!.Value.Imported).IsEqualTo(4);
+    }
+
+    [Test]
+    public async Task A_probe_error_is_reported_as_failed_and_not_as_skipped() {
+        // Re-running retries it, which is what failed means here — unlike too-short or already-loaded.
+        var totals = await Lane(_ => Task.FromResult<ImportCommand.ImportRunOutcome?>(
+                new(Moved(probeError: 2), 0))).ImportAsync(
+            Answer(repos: ("ours", FirstRunImportLevel.Shared)), new DateOnly(2026, 6, 15),
+            CancellationToken.None);
+
+        await Assert.That((totals!.Value.Skipped, totals.Value.Failed)).IsEqualTo((0, 2));
+    }
+
+    [Test]
+    public async Task A_session_held_back_by_a_lost_visibility_write_is_reported_as_failed() {
+        // The preflight drops it before the upload, so it is in none of the run's own three counts —
+        // and re-running retries exactly it. Left out, the total would silently understate.
+        var totals = await Lane(_ => Task.FromResult<ImportCommand.ImportRunOutcome?>(
+                new(Moved(loaded: 2), 3))).ImportAsync(
+            Answer(repos: ("ours", FirstRunImportLevel.Shared)), new DateOnly(2026, 6, 15),
+            CancellationToken.None);
+
+        await Assert.That((totals!.Value.Imported, totals.Value.Failed)).IsEqualTo((2, 3));
+    }
+
+    [Test]
+    public async Task A_pass_that_threw_reports_nothing_at_all() {
+        // Its sessions are unaccounted, and the surviving pass's figures alone would state a clean
+        // import over a run that lost one.
+        var first = true;
+
+        Task<ImportCommand.ImportRunOutcome?> Run(SetupImportLane.Pass pass) {
+            if (first) {
+                first = false;
+
+                throw new InvalidOperationException("disk went away");
+            }
+
+            return Task.FromResult<ImportCommand.ImportRunOutcome?>(new(Moved(loaded: 5), 0));
+        }
+
+        var lane   = Lane(Run);
+        var totals = await lane.ImportAsync(
+            Answer(repos: [("mine", FirstRunImportLevel.OnlyMe), ("ours", FirstRunImportLevel.Shared)]),
+            new DateOnly(2026, 6, 15), CancellationToken.None);
+
+        await Assert.That(totals).IsNull();
+        await Assert.That(lane.Failed).IsTrue();
+    }
+
+    [Test]
+    public async Task A_pass_that_reported_no_grid_reports_nothing_at_all() {
+        var totals = await Lane(_ => Task.FromResult<ImportCommand.ImportRunOutcome?>(null)).ImportAsync(
+            Answer(repos: ("ours", FirstRunImportLevel.Shared)), new DateOnly(2026, 6, 15),
+            CancellationToken.None);
+
+        await Assert.That(totals).IsNull();
+    }
+
+    [Test]
+    public async Task A_run_that_measured_zero_reports_zero_rather_than_nothing() {
+        // A pass that reached its grid and found nothing in scope is the "(0,0,0), no reason" row, not a
+        // lost pass. Collapsing it into null would leave the screen unable to say the import finished.
+        var totals = await Lane(_ => Task.FromResult<ImportCommand.ImportRunOutcome?>(
+                new(Moved(), 0))).ImportAsync(
+            Answer(repos: ("ours", FirstRunImportLevel.Shared)), new DateOnly(2026, 6, 15),
+            CancellationToken.None);
+
+        await Assert.That(totals).IsNotNull();
+        await Assert.That((totals!.Value.Imported, totals.Value.Skipped, totals.Value.Failed))
+                    .IsEqualTo((0, 0, 0));
+    }
+
+    [Test]
+    public async Task A_clean_run_reports_totals_rather_than_null() {
+        // The null case has to stay narrow: it is how the caller decides to send nothing, so a clean
+        // run collapsing into it would leave the screen unable to say the import finished.
+        var totals = await Lane(_ => Task.FromResult<ImportCommand.ImportRunOutcome?>(
+                new(Moved(loaded: 1), 0))).ImportAsync(
+            Answer(repos: ("ours", FirstRunImportLevel.Shared)), new DateOnly(2026, 6, 15),
+            CancellationToken.None);
+
+        await Assert.That(totals).IsNotNull();
+    }
 }

@@ -94,6 +94,31 @@ public sealed record ReportFirstRunMachineActionRequest {
     [JsonPropertyName("reason")]       public          string?        Reason      { get; init; }
 }
 
+/// <summary>
+/// POST /api/first-run/flows/{id}/import-outcome — how the import ended, once its passes are done.
+///
+/// <para><b>Also the signal that it finished.</b> Without it the screen cannot tell a run still working
+/// from one that stopped, so an outcome that moved nothing is still worth sending.</para>
+/// </summary>
+/// <remarks>
+/// Bound rather than loose, unlike the discovery report: three counts are the whole record, so the
+/// server refuses a request missing one instead of defaulting it to a figure nobody measured.
+/// </remarks>
+public sealed record ReportFirstRunImportOutcomeRequest {
+    /// <summary>The decision this answers, echoed from the poll's <c>import_decided_at</c>. <b>The
+    /// report's identity</b>: the server records nothing for a decision the user has since replaced, so
+    /// this is the stamp of the answer that actually ran and never the standing one.</summary>
+    [JsonPropertyName("decided_at")] public required DateTimeOffset DecidedAt { get; init; }
+
+    [JsonPropertyName("imported")] public required int Imported { get; init; }
+    [JsonPropertyName("skipped")]  public required int Skipped  { get; init; }
+    [JsonPropertyName("failed")]   public required int Failed   { get; init; }
+
+    /// <summary>A <see cref="FirstRunImportOutcomeReasons"/> token, and only on a run that moved
+    /// nothing — the server rejects the whole report otherwise.</summary>
+    [JsonPropertyName("reason")] public string? Reason { get; init; }
+}
+
 /// <summary>One repository discovery found, as the report carries it.</summary>
 /// <remarks><c>sessions</c> is keyed by window rather than positional: an array aligned by index goes
 /// wrong silently. An absent key reads as "not counted", never as zero.</remarks>

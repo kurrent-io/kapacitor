@@ -306,7 +306,7 @@ public static class HttpClientExtensions {
     static readonly TimeSpan MaxDelay       = TimeSpan.FromSeconds(4);
 
     /// <summary>
-    /// Per-attempt cap on a single HTTP call inside <see cref="SendWithRetryAsync(Func{CancellationToken, Task{HttpResponseMessage}}, TimeSpan, CancellationToken)"/>.
+    /// Per-attempt cap on a single HTTP call inside <see cref="SendWithRetryAsync(Func{CancellationToken, Task{HttpResponseMessage}}, TimeSpan, CancellationToken, bool)"/>.
     /// Enforced via a linked <see cref="CancellationTokenSource"/> so the wall-clock cap
     /// is observable on the token we pass to <see cref="HttpClient"/> — not on the
     /// client's own <see cref="HttpClient.Timeout"/> (default 100s), which would
@@ -352,14 +352,18 @@ public static class HttpClientExtensions {
     }
 
     extension(HttpClient client) {
+        /// <param name="retryStatuses">Retry a retryable status as a transport fault is retried — see
+        /// <see cref="IsRetryableStatus"/>. Off by default, and set only where a lost call is counted and
+        /// shown to someone.</param>
         public Task<HttpResponseMessage> PostWithRetryAsync(
                 string            url,
                 HttpContent       content,
-                TimeSpan?         timeout = null,
-                CancellationToken ct      = default
+                TimeSpan?         timeout       = null,
+                CancellationToken ct            = default,
+                bool              retryStatuses = false
             ) {
             EnsureAbsolute(url);
-            return SendWithRetryAsync(token => client.PostAsync(url, content, token), timeout ?? DefaultTimeout, ct);
+            return SendWithRetryAsync(token => client.PostAsync(url, content, token), timeout ?? DefaultTimeout, ct, retryStatuses);
         }
 
         public Task<HttpResponseMessage> GetWithRetryAsync(string url, TimeSpan? timeout = null, CancellationToken ct = default) {
@@ -367,14 +371,18 @@ public static class HttpClientExtensions {
             return SendWithRetryAsync(token => client.GetAsync(url, token), timeout ?? DefaultTimeout, ct);
         }
 
+        /// <param name="retryStatuses">Retry a retryable status as a transport fault is retried — see
+        /// <see cref="IsRetryableStatus"/>. Off by default, and set only where a lost call is counted and
+        /// shown to someone.</param>
         public Task<HttpResponseMessage> PutWithRetryAsync(
                 string            url,
                 HttpContent       content,
-                TimeSpan?         timeout = null,
-                CancellationToken ct      = default
+                TimeSpan?         timeout       = null,
+                CancellationToken ct            = default,
+                bool              retryStatuses = false
             ) {
             EnsureAbsolute(url);
-            return SendWithRetryAsync(token => client.PutAsync(url, content, token), timeout ?? DefaultTimeout, ct);
+            return SendWithRetryAsync(token => client.PutAsync(url, content, token), timeout ?? DefaultTimeout, ct, retryStatuses);
         }
 
         public Task<HttpResponseMessage> DeleteWithRetryAsync(string url, TimeSpan? timeout = null, CancellationToken ct = default) {
@@ -469,72 +477,140 @@ public static class HttpClientExtensions {
         return true;
     }
 
+    /// <summary>
+    /// Statuses worth a second attempt: a request timeout, a rate limit, and anything the server calls
+    /// its own fault.
+    ///
+    /// <para><b>Opt-in per call site, never the default.</b> Every hook, watch, daemon and MCP path
+    /// shares this helper, and retrying a 5xx for all of them at once would change the timing of paths
+    /// whose budgets are shaped around a single attempt.</para>
+    /// </summary>
+    internal static bool IsRetryableStatus(HttpStatusCode status) =>
+        status is HttpStatusCode.RequestTimeout or HttpStatusCode.TooManyRequests || (int)status >= 500;
+
+    /// <summary>How long the server asked us to wait, in either header form — a proxy may rewrite
+    /// delta-seconds as an HTTP date, and reading only the delta would treat that as no header at all. A
+    /// date is measured against the response's own Date header so clock skew cannot invert the wait.</summary>
+    static TimeSpan? RetryAfterOf(HttpResponseMessage resp) => resp.Headers.RetryAfter switch {
+        { Delta: { } delta } => delta,
+        { Date:  { } date  } => date - (resp.Headers.Date ?? DateTimeOffset.UtcNow) is { Ticks: > 0 } wait
+                                    ? wait
+                                    : TimeSpan.Zero,
+        _                    => null
+    };
+
     internal static Task<HttpResponseMessage> SendWithRetryAsync(
             Func<CancellationToken, Task<HttpResponseMessage>> send,
             TimeSpan                                           totalTimeout,
-            CancellationToken                                  ct
-        ) => SendWithRetryAsync(send, totalTimeout, PerAttemptTimeout, ct);
+            CancellationToken                                  ct,
+            bool                                               retryStatuses = false
+        ) => SendWithRetryAsync(send, totalTimeout, PerAttemptTimeout, ct, retryStatuses);
 
     internal static async Task<HttpResponseMessage> SendWithRetryAsync(
             Func<CancellationToken, Task<HttpResponseMessage>> send,
             TimeSpan                                           totalTimeout,
             TimeSpan                                           perAttemptTimeout,
-            CancellationToken                                  ct
+            CancellationToken                                  ct,
+            bool                                               retryStatuses = false
         ) {
         var        sw        = Stopwatch.StartNew();
         var        delayMs   = 250;
         Exception? lastError = null;
 
-        while (true) {
-            // Hard wall-clock guard: never start a new attempt (or sleep) past totalTimeout,
-            // even when perAttemptTimeout would otherwise allow it. Without this, a default
-            // call (total=30s, per-attempt=60s) against a hung server still blocks for ~60s.
-            var remaining = totalTimeout - sw.Elapsed;
+        // The last retryable response, held so that running out of budget returns the status the server
+        // actually sent. Throwing instead would report a transport failure about a server that answered
+        // every time, and the call sites catch only HttpRequestException.
+        //
+        // Nulled when handed to the caller, so the finally disposes only what nobody received.
+        HttpResponseMessage? refused   = null;
+        TimeSpan?            honourFor = null;
 
-            if (remaining <= TimeSpan.Zero)
-                throw BudgetExhausted(totalTimeout, perAttemptTimeout, lastError);
+        try {
+            while (true) {
+                // Hard wall-clock guard: never start a new attempt (or sleep) past totalTimeout,
+                // even when perAttemptTimeout would otherwise allow it. Without this, a default
+                // call (total=30s, per-attempt=60s) against a hung server still blocks for ~60s.
+                var remaining = totalTimeout - sw.Elapsed;
 
-            var attemptCap = remaining < perAttemptTimeout ? remaining : perAttemptTimeout;
+                if (remaining <= TimeSpan.Zero)
+                    return Answered() ?? throw BudgetExhausted(totalTimeout, perAttemptTimeout, lastError);
 
-            using var attemptCts = new CancellationTokenSource(attemptCap);
-            using var linkedCts  = CancellationTokenSource.CreateLinkedTokenSource(ct, attemptCts.Token);
+                var attemptCap = remaining < perAttemptTimeout ? remaining : perAttemptTimeout;
 
-            try {
-                return await send(linkedCts.Token);
-            } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
-                // Caller cancelled — surface as cancellation, never retry.
-                throw;
-            } catch (HttpRequestException ex) when (sw.Elapsed < totalTimeout) {
-                // Transient transport error within retry budget — back off and try again.
-                lastError = ex;
-            } catch (OperationCanceledException ex) when (sw.Elapsed < totalTimeout) {
-                // Per-attempt timeout fired (linked CTS, not caller's ct) and retry budget
-                // remains — back off and try again. Without this branch the same condition
-                // would surface as an unhandled TaskCanceledException at every call site
-                // that only catches HttpRequestException (import probes, transcript POSTs,
-                // session-start hooks, ...).
-                lastError = ex;
-            } catch (HttpRequestException ex) {
-                // Budget exhausted on transport error — surface as HttpRequestException so
-                // existing `catch (HttpRequestException)` handlers degrade gracefully.
-                throw new HttpRequestException(
-                    $"Request failed after exhausting the {totalTimeout.TotalSeconds:F0}s retry budget.",
-                    ex
-                );
-            } catch (OperationCanceledException ex) {
-                throw BudgetExhausted(totalTimeout, perAttemptTimeout, ex);
+                using var attemptCts = new CancellationTokenSource(attemptCap);
+                using var linkedCts  = CancellationTokenSource.CreateLinkedTokenSource(ct, attemptCts.Token);
+
+                try {
+                    var resp = await send(linkedCts.Token);
+
+                    if (!retryStatuses || !IsRetryableStatus(resp.StatusCode)) return resp;
+
+                    // Replaces rather than accumulates: only the newest refusal is worth returning, and
+                    // the one it replaces holds a connection until it is dropped.
+                    refused?.Dispose();
+                    refused   = resp;
+                    honourFor = RetryAfterOf(resp);
+                    lastError = null;
+                } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
+                    // Caller cancelled — surface as cancellation, never retry.
+                    throw;
+                } catch (HttpRequestException ex) when (sw.Elapsed < totalTimeout) {
+                    // Transient transport error within retry budget — back off and try again.
+                    lastError = ex;
+                } catch (OperationCanceledException ex) when (sw.Elapsed < totalTimeout) {
+                    // Per-attempt timeout fired (linked CTS, not caller's ct) and retry budget
+                    // remains — back off and try again. Without this branch the same condition
+                    // would surface as an unhandled TaskCanceledException at every call site
+                    // that only catches HttpRequestException (import probes, transcript POSTs,
+                    // session-start hooks, ...).
+                    lastError = ex;
+                } catch (HttpRequestException ex) {
+                    // A refusal already in hand outranks a late transport fault: the server did answer,
+                    // and that answer is what the caller counts on.
+                    if (Answered() is { } answer) return answer;
+
+                    // Budget exhausted on transport error — surface as HttpRequestException so
+                    // existing `catch (HttpRequestException)` handlers degrade gracefully.
+                    throw new HttpRequestException(
+                        $"Request failed after exhausting the {totalTimeout.TotalSeconds:F0}s retry budget.",
+                        ex
+                    );
+                } catch (OperationCanceledException ex) {
+                    if (Answered() is { } answer) return answer;
+
+                    throw BudgetExhausted(totalTimeout, perAttemptTimeout, ex);
+                }
+
+                // Cap the backoff sleep to the remaining budget so a retry delay can never push
+                // us past totalTimeout. If nothing's left, jump back to the loop top so the
+                // hard-guard above throws with lastError preserved as the inner exception.
+                var remainingAfter = totalTimeout - sw.Elapsed;
+
+                if (remainingAfter <= TimeSpan.Zero) continue;
+
+                // The server's own figure wins when it is longer: it is the one party that knows when it
+                // will be ready, and backing off less than it asked is what earns the next refusal.
+                var wantMs = honourFor is { } asked
+                    ? Math.Max(delayMs, asked.TotalMilliseconds)
+                    : delayMs;
+
+                honourFor = null;
+
+                var actualDelayMs = (int)Math.Min(wantMs, remainingAfter.TotalMilliseconds);
+                await Task.Delay(actualDelayMs, ct);
+                delayMs = Math.Min(delayMs * 2, (int)MaxDelay.TotalMilliseconds);
             }
+        } finally {
+            refused?.Dispose();
+        }
 
-            // Cap the backoff sleep to the remaining budget so a retry delay can never push
-            // us past totalTimeout. If nothing's left, jump back to the loop top so the
-            // hard-guard above throws with lastError preserved as the inner exception.
-            var remainingAfter = totalTimeout - sw.Elapsed;
+        // Hands the held refusal over, so the finally above stops owning it.
+        HttpResponseMessage? Answered() {
+            var answer = refused;
 
-            if (remainingAfter <= TimeSpan.Zero) continue;
+            refused = null;
 
-            var actualDelayMs = (int)Math.Min(delayMs, remainingAfter.TotalMilliseconds);
-            await Task.Delay(actualDelayMs, ct);
-            delayMs = Math.Min(delayMs * 2, (int)MaxDelay.TotalMilliseconds);
+            return answer;
         }
 
         static HttpRequestException BudgetExhausted(TimeSpan totalTimeout, TimeSpan perAttemptTimeout, Exception? inner) =>

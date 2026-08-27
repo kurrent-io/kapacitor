@@ -185,10 +185,10 @@ public sealed class BrowserFirstRunFlow(
                     // nobody is sitting at, and letting it eat the backstop would abandon a flow that
                     // is progressing.
                     deadline += await RunImportLaneAsync(serverUrl, flowId, last!, report, import, ct);
-                    deadline += await ActOnImportDecisionAsync(last!, import, ct);
+                    deadline += await ActOnImportDecisionAsync(serverUrl, flowId, last!, import, ct);
 
                     if (FirstRunFlowOutcomes.IsFinished(last!)) {
-                        await FlushReportsAsync(serverUrl, flowId, performed, reported, ct);
+                        await FlushReportsAsync(serverUrl, flowId, performed, reported, import, ct);
 
                         return new FirstRunFlowResult.Finished(last!);
                     }
@@ -285,30 +285,75 @@ public sealed class BrowserFirstRunFlow(
     /// </summary>
     /// <returns>How long this took, for the caller to add back to the budget.</returns>
     async Task<TimeSpan> ActOnImportDecisionAsync(
-            FirstRunFlowResponse view, ImportLaneState state, CancellationToken ct) {
+            string serverUrl, string flowId, FirstRunFlowResponse view, ImportLaneState state,
+            CancellationToken ct) {
         if (importing is null) return TimeSpan.Zero;
+
+        // First, so a report that did not land last tick is retried without waiting for the decision to
+        // change — which it never will, once it has been acted on.
+        //
+        // Deliberately uncredited, unlike the import below: this runs on every tick for as long as an
+        // outcome is owed, so crediting a stalled POST back to the poll budget would let a server that
+        // never accepts the report stretch the flow's own backstop from minutes into hours. A refused
+        // report is a blip; only the run is progress.
+        await DeliverOutcomeAsync(serverUrl, flowId, state, ct);
+
         if (!FirstRunFlowOutcomes.IsSettled(view, FirstRunFlowStep.Import)) return TimeSpan.Zero;
-        if (FirstRunFlowOutcomes.Import(view) is not { } answer) return TimeSpan.Zero;
+
+        // A decision this build cannot read is REPORTED, not re-read: polling again cannot make a newer
+        // server's window or titles vocabulary readable, so the cursor moves and the screen is told why
+        // rather than left waiting on a machine that has silently given up.
+        if (FirstRunFlowOutcomes.Import(view) is not { } answer) {
+            if (view.ImportDecidedAt is { } unreadable && state.ImportedThrough != unreadable) {
+                state.ImportedThrough = unreadable;
+                state.Outcome        = Refusal(unreadable, FirstRunImportOutcomeReasons.DecisionUnreadable);
+
+                await DeliverOutcomeAsync(serverUrl, flowId, state, ct);
+            }
+
+            return TimeSpan.Zero;
+        }
+
         if (state.ImportedThrough == answer.DecidedAt) return TimeSpan.Zero;
 
         // Stamped before the run, not after: a throw must not leave the same answer to be run again on
         // the next tick, which would repeat an upload rather than retry a failed one.
         state.ImportedThrough = answer.DecidedAt;
 
-        // "Import nothing" is an answer, and there is nothing to run for it — but it is still answered,
-        // so the cursor above has moved and the screen is not left waiting on this machine.
-        if (answer.Choices.Count == 0) return TimeSpan.Zero;
+        // "Import nothing" is an answer, and there is nothing to run for it — but the screen waits on
+        // this machine to say the run is over, so a clean zero is still owed.
+        //
+        // Only when it really is a decline: an answer left empty because every level in it was
+        // unreadable asked for imports and got none, and reporting that as a clean zero states the one
+        // thing the screen must not — "you chose not to" — about a user who chose otherwise.
+        if (answer.Choices.Count == 0) {
+            state.Outcome = answer.IsDecline
+                ? Outcome(answer.DecidedAt, default, null)
+                : Refusal(answer.DecidedAt, FirstRunImportOutcomeReasons.DecisionUnreadable);
 
-        // Nothing to scan, so nothing to run: the caller says why instead of announcing an import of
-        // history that could not move.
-        if (answer.NoReadableVendors) return TimeSpan.Zero;
+            await DeliverOutcomeAsync(serverUrl, flowId, state, ct);
+
+            return TimeSpan.Zero;
+        }
+
+        // Nothing to scan, so nothing to run. Reported as a refusal rather than as three zeroes, which
+        // is what a clean import over an already-loaded history also looks like.
+        if (answer.NoReadableVendors) {
+            state.Outcome = Refusal(answer.DecidedAt, FirstRunImportOutcomeReasons.NoReadableAgents);
+
+            await DeliverOutcomeAsync(serverUrl, flowId, state, ct);
+
+            return TimeSpan.Zero;
+        }
 
         var began = _clock.GetUtcNow();
 
         progress.Importing(answer.Choices.Count, SessionsInScope(state.Discovered, answer));
 
+        FirstRunImportTotals? moved = null;
+
         try {
-            await importing.ImportAsync(answer, state.WindowsAsOf(_clock), ct);
+            moved = await importing.ImportAsync(answer, state.WindowsAsOf(_clock), ct);
         } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
             throw;
         } catch (Exception) {
@@ -318,7 +363,41 @@ public sealed class BrowserFirstRunFlow(
             progress.ImportEnded();
         }
 
+        // Nothing is sent for a run that lost a pass. Its sessions are unaccounted, and three counts
+        // cannot say so — the surviving pass's figures alone would report a clean import.
+        if (moved is { } totals) {
+            state.Outcome = Outcome(answer.DecidedAt, totals, null);
+
+            await DeliverOutcomeAsync(serverUrl, flowId, state, ct);
+        }
+
         return _clock.GetUtcNow() - began;
+    }
+
+    /// <summary>The outcome as the route takes it.</summary>
+    static ReportFirstRunImportOutcomeRequest Outcome(
+            DateTimeOffset decidedAt, FirstRunImportTotals totals, string? reason) =>
+        new() {
+            DecidedAt = decidedAt,
+            Imported  = totals.Imported,
+            Skipped   = totals.Skipped,
+            Failed    = totals.Failed,
+            Reason    = reason
+        };
+
+    /// <summary>A refusal: three zeroes and a token. The server rejects the report outright if a reason
+    /// arrives on counts that moved something, so the zeroes are part of the contract rather than a
+    /// convenience.</summary>
+    static ReportFirstRunImportOutcomeRequest Refusal(DateTimeOffset decidedAt, string reason) =>
+        Outcome(decidedAt, default, reason);
+
+    /// <summary>Hands over the owed outcome, keeping it for a later tick unless the server took it.</summary>
+    async Task DeliverOutcomeAsync(
+            string serverUrl, string flowId, ImportLaneState state, CancellationToken ct) {
+        if (state.Outcome is not { } owed) return;
+
+        if ((await channel.ReportImportOutcomeAsync(serverUrl, flowId, owed, ct)).Recorded)
+            state.Outcome = null;
     }
 
     /// <summary>The import lane's state across polls, in one object because an async method cannot
@@ -333,6 +412,10 @@ public sealed class BrowserFirstRunFlow(
 
         /// <summary>The report reached the server. Until it does, every tick tries again.</summary>
         public bool Delivered { get; set; }
+
+        /// <summary>The outcome still owed to the server, or null when there is none left to send.
+        /// Retried every tick like the discovery report, and cleared only once taken.</summary>
+        public ReportFirstRunImportOutcomeRequest? Outcome { get; set; }
 
         /// <summary>The answer already run, as a cursor rather than a flag. The server advances the
         /// stamp only when the answer CHANGES, so going Back and widening the window runs the wider
@@ -448,11 +531,13 @@ public sealed class BrowserFirstRunFlow(
     async Task FlushReportsAsync(
             string serverUrl, string flowId,
             Dictionary<FirstRunMachineActionRequest, FirstRunMachineActionResult> performed,
-            HashSet<FirstRunMachineActionRequest> reported, CancellationToken ct) {
+            HashSet<FirstRunMachineActionRequest> reported, ImportLaneState import, CancellationToken ct) {
         for (var retry = 0; retry < FlushRetries; retry++) {
             var outstanding = performed.Where(p => !reported.Contains(p.Key)).ToList();
 
-            if (outstanding.Count == 0) return;
+            // The import outcome flushes here too: the poll returns on a finished flow, so this is the
+            // last tick that exists and an outcome left owed would never be sent at all.
+            if (outstanding.Count == 0 && import.Outcome is null) return;
 
             // Always gapped, including the first: this runs immediately after the tick's own attempt
             // failed, and an instant re-POST at the same server answers the same way.
@@ -460,6 +545,8 @@ public sealed class BrowserFirstRunFlow(
 
             foreach (var (request, result) in outstanding)
                 await ReportAsync(serverUrl, flowId, request, result, reported, ct);
+
+            await DeliverOutcomeAsync(serverUrl, flowId, import, ct);
         }
     }
 

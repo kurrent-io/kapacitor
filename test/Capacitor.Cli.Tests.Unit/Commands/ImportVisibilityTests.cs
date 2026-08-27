@@ -526,6 +526,37 @@ public class ImportVisibilityTests : IDisposable {
     }
 
     [Test]
+    public async Task HandleImport_reports_a_measured_zero_when_nothing_matches_the_scope() {
+        // The exit that costs the first-run flow its finished signal: a scope matching nothing returns 0
+        // having decided there was nothing to do, and a caller told nothing at all cannot tell that from
+        // a run that died before it got there.
+        _server.Given(Request.Create().WithPath("/api/sessions/*/last-line").UsingGet())
+            .RespondWith(Response.Create().WithStatusCode(404));
+        StubAllHookEndpoints();
+
+        var projectsDir = Path.Combine(_tempDir, "claude-projects-nothing-in-scope");
+        WriteClaudeSession(projectsDir, "vis-out-of-scope");
+
+        ImportCommand.ImportRunOutcome? outcome = null;
+
+        var exitCode = await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root)).HandleImport(
+            filterCwd: null,
+            minLines: 1,
+            sources: [new ClaudeImportSource(Config.Root, projectsDir)],
+            scope: new ImportScope.Repo([("kurrent-io", "nothing-here-by-that-name")]),
+            skipConfirmation: true,
+            onFinished: o => outcome = o
+        );
+
+        await Assert.That(exitCode).IsEqualTo(0);
+        await Assert.That(outcome).IsNotNull().Because("zero is an answer; silence is not");
+        await Assert.That(outcome!.Counts.Imported).IsEqualTo(0);
+        await Assert.That(outcome.Counts.Skipped).IsEqualTo(0);
+        await Assert.That(outcome.Counts.Failed).IsEqualTo(0);
+        await Assert.That(outcome.AnythingFailed).IsFalse();
+    }
+
+    [Test]
     public async Task HandleImport_reports_a_clean_run_as_nothing_failed() {
         _server.Given(Request.Create().WithPath("/api/sessions/*/last-line").UsingGet())
             .RespondWith(Response.Create().WithStatusCode(404));

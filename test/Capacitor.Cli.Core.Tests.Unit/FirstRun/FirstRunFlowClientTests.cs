@@ -559,4 +559,93 @@ public class FirstRunFlowClientTests {
         await Assert.That(outcome.Body!.DefaultVisibility).IsNull();
         await Assert.That(FirstRunFlowOutcomes.Agents(outcome.Body)!.DefaultVisibility).IsNull();
     }
+
+    // ---- The import-outcome route. Every other test in this file builds the request object directly,
+    // so nothing else proves the source-generated names actually reach the wire — and a slip there
+    // leaves the screen waiting for ever with the whole suite green.
+
+    static string OutcomePath => $"{PollPath}/import-outcome";
+
+    [Test]
+    public async Task ReportImportOutcomeAsync_sends_the_counts_under_the_names_the_route_reads() {
+        using var server = WireMockServer.Start();
+        server.Given(Request.Create().WithPath(OutcomePath).UsingPost())
+            .RespondWith(Response.Create().WithStatusCode(200)
+                .WithBody(StateBody("Completed")).WithHeader("Content-Type", "application/json"));
+
+        using var http = new HttpClient();
+
+        var outcome = await new FirstRunFlowClient(http).ReportImportOutcomeAsync(
+            server.Urls[0], FlowId,
+            new ReportFirstRunImportOutcomeRequest {
+                DecidedAt = new DateTimeOffset(2026, 8, 27, 9, 30, 0, TimeSpan.Zero),
+                Imported  = 7,
+                Skipped   = 2,
+                Failed    = 1
+            },
+            CancellationToken.None);
+
+        await Assert.That(outcome.Recorded).IsTrue();
+
+        var sent = System.Text.Json.JsonDocument.Parse(server.LogEntries.Single()
+            .RequestMessage.Body!).RootElement;
+
+        await Assert.That(sent.GetProperty("imported").GetInt32()).IsEqualTo(7);
+        await Assert.That(sent.GetProperty("skipped").GetInt32()).IsEqualTo(2);
+        await Assert.That(sent.GetProperty("failed").GetInt32()).IsEqualTo(1);
+        await Assert.That(sent.GetProperty("decided_at").GetDateTimeOffset())
+                    .IsEqualTo(new DateTimeOffset(2026, 8, 27, 9, 30, 0, TimeSpan.Zero));
+        await Assert.That(sent.TryGetProperty("reason", out var reason)).IsTrue();
+        await Assert.That(reason.ValueKind).IsEqualTo(System.Text.Json.JsonValueKind.Null);
+    }
+
+    [Test]
+    public async Task ReportImportOutcomeAsync_sends_a_refusal_token_verbatim() {
+        // The server validates against its own closed set and rejects the whole report on a token it
+        // does not know, so a second spelling here is a silent wire break rather than a dropped field.
+        using var server = WireMockServer.Start();
+        server.Given(Request.Create().WithPath(OutcomePath).UsingPost())
+            .RespondWith(Response.Create().WithStatusCode(200)
+                .WithBody(StateBody("Completed")).WithHeader("Content-Type", "application/json"));
+
+        using var http = new HttpClient();
+
+        await new FirstRunFlowClient(http).ReportImportOutcomeAsync(
+            server.Urls[0], FlowId,
+            new ReportFirstRunImportOutcomeRequest {
+                DecidedAt = DateTimeOffset.UnixEpoch,
+                Imported  = 0,
+                Skipped   = 0,
+                Failed    = 0,
+                Reason    = FirstRunImportOutcomeReasons.NoReadableAgents
+            },
+            CancellationToken.None);
+
+        var sent = System.Text.Json.JsonDocument.Parse(server.LogEntries.Single()
+            .RequestMessage.Body!).RootElement;
+
+        await Assert.That(sent.GetProperty("reason").GetString()).IsEqualTo("no_readable_agents");
+    }
+
+    [Test]
+    [Arguments(400)]
+    [Arguments(410)]
+    [Arguments(500)]
+    public async Task ReportImportOutcomeAsync_reports_a_refusal_as_not_recorded(int status) {
+        using var server = WireMockServer.Start();
+        server.Given(Request.Create().WithPath(OutcomePath).UsingPost())
+            .RespondWith(Response.Create().WithStatusCode(status));
+
+        using var http = new HttpClient();
+
+        var outcome = await new FirstRunFlowClient(http).ReportImportOutcomeAsync(
+            server.Urls[0], FlowId,
+            new ReportFirstRunImportOutcomeRequest {
+                DecidedAt = DateTimeOffset.UnixEpoch, Imported = 0, Skipped = 0, Failed = 0
+            },
+            CancellationToken.None);
+
+        await Assert.That(outcome.StatusCode).IsEqualTo(status);
+        await Assert.That(outcome.Recorded).IsFalse();
+    }
 }

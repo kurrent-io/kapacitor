@@ -224,8 +224,11 @@ sealed class SetupImportLane(
         return outcome;
     }
 
-    public async Task ImportAsync(FirstRunImportAnswer answer, DateOnly today, CancellationToken ct) {
-        var since = answer.Since(today);
+    public async Task<FirstRunImportTotals?> ImportAsync(
+            FirstRunImportAnswer answer, DateOnly today, CancellationToken ct) {
+        var since   = answer.Since(today);
+        var totals  = new FirstRunImportTotals(0, 0, 0);
+        var counted = true;
 
         // One pass per level, because --private is per invocation. Ordered narrowest first so a run
         // interrupted between them has uploaded the private history rather than the shared.
@@ -244,7 +247,8 @@ sealed class SetupImportLane(
 
                 throw;
             } catch (Exception ex) {
-                Failed = true;
+                Failed  = true;
+                counted = false;
 
                 AnsiConsole.MarkupLine(
                     $"  [yellow]![/] That history did not import: {Markup.Escape(ex.Message)}. "
@@ -262,7 +266,22 @@ sealed class SetupImportLane(
                 AnsiConsole.MarkupLine(
                     "  [yellow]![/] Some of that history did not import. Run [cyan]kcap import[/] to retry it.");
             }
+
+            if (outcome is null) {
+                counted = false;
+
+                continue;
+            }
+
+            // A session the visibility preflight held back never reached the upload, so it is in none of
+            // the run's three counts — and re-running retries it, which is what `failed` means here.
+            totals += new FirstRunImportTotals(
+                outcome.Counts.Imported,
+                outcome.Counts.Skipped,
+                outcome.Counts.Failed + outcome.VisibilityFailures);
         }
+
+        return counted ? totals : null;
     }
 }
 
