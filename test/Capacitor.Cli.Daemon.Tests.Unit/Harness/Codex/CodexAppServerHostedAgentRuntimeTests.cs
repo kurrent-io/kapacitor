@@ -82,29 +82,27 @@ public class CodexAppServerHostedAgentRuntimeTests {
         await runtime.DisposeAsync();
     }
 
-    /// <summary>the "default" no-override sentinel must NOT be sent to Codex — on a ChatGPT
-    /// account <c>model:"default"</c> is rejected with a 400 and fails the turn. thread/start AND
-    /// turn/start must OMIT the model entirely (letting Codex resolve it from ~/.codex/config.toml),
-    /// exactly as the PTY path (<c>CodexLauncher.AddModelArg</c>) does. Before the fix both carried
-    /// <c>model:"default"</c>.</summary>
+    /// <summary>The "default" no-override sentinel is omitted from both thread/start and turn/start,
+    /// so Codex resolves the model from ~/.codex/config.toml; sending <c>model:"default"</c> to a
+    /// ChatGPT-auth account is a 400.</summary>
     [Test]
     public async Task Default_model_sentinel_is_omitted_from_thread_start_and_turn_start() {
-        var fake = new FakeCodexAppServer { Model = "gpt-5.3-codex" }; // the model Codex resolves from config
+        var fake = new FakeCodexAppServer { Model = "gpt-5.3-codex" };
         var (runtime, _, _) = Build(_ => fake, Launch(model: "default"));
 
         await runtime.StartAsync(CancellationToken.None).WaitAsync(HangGuard);
         await runtime.SendUserInputAsync("go").WaitAsync(HangGuard);
         await runtime.WaitForTurnIdleAsync(CancellationToken.None).WaitAsync(HangGuard);
 
-        await Assert.That(fake.LastThreadStartHadModel).IsFalse(); // thread/start omitted the model
-        await Assert.That(fake.LastTurnStartHadModel).IsFalse();   // turn/start omitted the model
-        await Assert.That(runtime.ResolvedModel).IsEqualTo("gpt-5.3-codex"); // Codex's own resolution still surfaces
+        await Assert.That(fake.LastThreadStartHadModel).IsFalse();
+        await Assert.That(fake.LastTurnStartHadModel).IsFalse();
+        await Assert.That(runtime.ResolvedModel).IsEqualTo("gpt-5.3-codex");
 
         await runtime.DisposeAsync();
     }
 
-    /// <summary>Control: a CONCRETE model is passed through verbatim on both thread/start and
-    /// turn/start (so the fix only strips the sentinel, never a real override).</summary>
+    /// <summary>A concrete model is passed through verbatim on both thread/start and turn/start
+    /// (the sentinel handling strips only "default", never a real override).</summary>
     [Test]
     public async Task Concrete_model_is_passed_on_thread_start_and_turn_start() {
         var fake = new FakeCodexAppServer { Model = "gpt-5.3-codex" };
