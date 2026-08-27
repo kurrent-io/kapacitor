@@ -403,7 +403,8 @@ public sealed class PluginCommand(PluginEnvironment env) {
 
         await env.Stdout.WriteLineAsync(
             "Next: Codex will prompt to trust the kcap hooks on its next launch — " +
-            "accept once to trust them all (or run /hooks inside Codex to trust them individually)."
+            "accept once to trust them all (or run /hooks inside Codex to trust them individually). " +
+            "The Codex desktop app never prompts: trust the kcap hooks in Settings → Hooks there."
         );
 
         // Skills are user-scoped only. Written to ~/.agents/skills/ so they
