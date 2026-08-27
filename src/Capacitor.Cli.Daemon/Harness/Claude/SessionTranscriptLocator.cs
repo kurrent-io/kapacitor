@@ -3,28 +3,21 @@ using System.Text.Json.Nodes;
 namespace Capacitor.Cli.Daemon.Harness.Claude;
 
 /// <summary>
-/// Discovers the session id of a freshly spawned hosted Claude agent by scanning the
-/// Claude Code project directory for the transcript file the agent writes.
+/// Locates the transcript a freshly spawned hosted Claude agent writes — and with it the agent's
+/// session id — by scanning the Claude Code project directory. The daemon reports the id over its
+/// own authenticated connection, so the server's link to the session does not depend on the
+/// agent's session-start hook reaching it.
 ///
-/// Why this exists: the web chat can only attach to a hosted agent once the server's
-/// registry entry has a SessionId, and until now the ONLY source of that link was the
-/// spawned Claude's session-start hook POSTing to <c>/hooks/session-start</c>. When that
-/// hook fails (e.g. an expired kcap token → 401), the link is never made and the agent
-/// page shows "Waiting for session to start..." forever even though the terminal works.
-/// The daemon itself can make the link instead: Claude Code writes its transcript to
-/// <c>{ClaudePaths.Projects}/{project-dir-hash}/{session-id}.jsonl</c>, so polling that
-/// directory and reporting the discovered id over the daemon's own (authenticated)
-/// SignalR connection is a hook-independent fallback.
+/// Disambiguation: the daemon symlinks the worktree's project dir to the SOURCE repo's project
+/// dir (see <c>ClaudeLauncher.SymlinkClaudeProjectDir</c>), which is shared with the user's own
+/// sessions in that repo — so a new <c>.jsonl</c> there is not necessarily this agent's.
+/// Candidates are verified by reading the first lines of the file and requiring the JSON
+/// <c>"cwd"</c> field to equal the agent's worktree path (the worktree is created per-agent, so a
+/// cwd match is definitive).
 ///
-/// Disambiguation: the daemon symlinks the worktree's project dir to the SOURCE repo's
-/// project dir (see <c>ClaudeLauncher.SymlinkClaudeProjectDir</c>), which is shared with
-/// the user's own sessions in that repo — so a new <c>.jsonl</c> there is not necessarily
-/// this agent's. Candidates are verified by reading the first lines of the file and
-/// requiring the JSON <c>"cwd"</c> field to equal the agent's worktree path (the worktree
-/// is created per-agent, so a cwd match is definitive).
-///
-/// The decision logic (cwd matching, filename → session id parsing, timestamp filtering)
-/// is pure and unit-tested without a filesystem; only <see cref="TryLocate"/> touches disk.
+/// The decision logic (cwd matching, filename → session id parsing, timestamp filtering) is pure
+/// and unit-tested without a filesystem; only <see cref="TryLocateWinner"/> — and
+/// <see cref="TryLocate"/> through it — touches disk.
 /// </summary>
 internal static class SessionTranscriptLocator {
     /// <summary>
