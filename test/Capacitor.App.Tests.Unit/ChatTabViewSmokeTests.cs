@@ -5,6 +5,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Headless;
 using Avalonia.Input;
+using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
@@ -385,6 +386,29 @@ public class ChatTabViewSmokeTests {
             await Assert.That(host.Composer.IsFocused).IsTrue();
             await Assert.That(ring.BorderThickness).IsEqualTo(new Thickness(0));
             await Assert.That(ring.Background is null || ring.Background is ISolidColorBrush { Color.A: 0 }).IsTrue();
+            await host.CloseAsync();
+        });
+    }
+
+    /// Pins the timeline's rhythm: consecutive tool rows sit close together, and a run of them
+    /// keeps a clear gap before the assistant text that follows.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Tool_rows_stack_densely_and_keep_their_distance_from_text() {
+        await RunOnUiAsync(async () => {
+            var host = new Host();
+            await host.LoadAsync(Tmp.CreateFile("rows.jsonl",
+                [ToolCallLine, ToolResultLine, ToolCallLine.Replace("t1", "t2"), ToolResultLine.Replace("t1", "t2"), AssistantLinkLine]));
+
+            var rows = host.View.GetVisualDescendants().OfType<StackPanel>()
+                .Where(p => p.Orientation == Orientation.Horizontal && p.DataContext is ToolCallItem).ToList();
+            var text = host.View.GetVisualDescendants().OfType<MarkdownView>().Single();
+            double Top(Control c) => c.TranslatePoint(new Point(0, 0), host.View)!.Value.Y;
+            double Bottom(Control c) => Top(c) + c.Bounds.Height;
+
+            await Assert.That(rows).Count().IsEqualTo(2);
+            await Assert.That(Top(rows[1]) - Bottom(rows[0])).IsLessThan(10);
+            await Assert.That(Top(text) - Bottom(rows[1])).IsGreaterThanOrEqualTo(12);
             await host.CloseAsync();
         });
     }

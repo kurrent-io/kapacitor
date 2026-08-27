@@ -26,7 +26,7 @@
                         <!-- ItemsPanel does not reach the presenter on its own: without this
                              template binding it falls back to its own default StackPanel and
                              every row is realized. -->
-                        <ItemsPresenter Name="PART_ItemsPresenter" ItemsPanel="{TemplateBinding ItemsPanel}" Margin="22,26,22,8" />
+                        <ItemsPresenter Name="PART_ItemsPresenter" ItemsPanel="{TemplateBinding ItemsPanel}" Margin="22,18,22,8" />
                     </ScrollViewer>
                 </ControlTemplate>
             </ItemsControl.Template>
@@ -37,18 +37,18 @@
             </ItemsControl.ItemsPanel>
             <ItemsControl.DataTemplates>
                 <DataTemplate x:DataType="vm:UserTurnItem">
-                    <Border HorizontalAlignment="Right" MaxWidth="520" Margin="0,0,0,20" Padding="14,11" CornerRadius="10"
+                    <Border HorizontalAlignment="Right" MaxWidth="520" Margin="0,8,0,12" Padding="14,11" CornerRadius="10"
                             Background="{StaticResource KcapSurfaceRaisedBrush}">
                         <SelectableTextBlock Text="{Binding Text}" TextWrapping="Wrap" FontSize="13.5" LineHeight="20"
                                              Foreground="{StaticResource KcapTextBrush}" />
                     </Border>
                 </DataTemplate>
                 <DataTemplate x:DataType="vm:AssistantTextItem">
-                    <views:MarkdownView Text="{Binding Text}" MaxWidth="660" HorizontalAlignment="Left" Margin="0,0,0,20"
+                    <views:MarkdownView Text="{Binding Text}" MaxWidth="660" HorizontalAlignment="Left" Margin="0,8,0,12"
                                         OpenLink="{Binding $parent[ItemsControl].((vm:ChatTabViewModel)DataContext).OpenLinkCommand}" />
                 </DataTemplate>
                 <DataTemplate x:DataType="vm:ToolCallItem">
-                    <StackPanel Orientation="Horizontal" Spacing="9" Margin="0,0,0,20">
+                    <StackPanel Orientation="Horizontal" Spacing="9" Margin="0,0,0,6">
                         <TextBlock Text="›" FontSize="13" Foreground="{StaticResource KcapFaintBrush}" VerticalAlignment="Center" />
                         <TextBlock Text="{Binding Name}" FontSize="11.5" Foreground="{StaticResource KcapMutedBrush}" VerticalAlignment="Center" />
                         <TextBlock Text="{Binding Detail}" FontSize="11" Foreground="{StaticResource KcapFaintBrush}"
