@@ -13,7 +13,9 @@ public static class RepoLabel {
         if (repoPath is null) return "—";
 
         var segments = repoPath.Replace('\\', '/').TrimEnd('/').Split('/');
-        if (segments.Length >= 4 && segments[^3] == ".claude" && segments[^2] == "worktrees" && segments[^4].Length > 0)
+        // A worktree an agent runs in — Claude's own or the daemon's — sits two levels under its
+        // repository, which is the name worth showing.
+        if (segments.Length >= 4 && segments[^3] is ".claude" or ".capacitor" && segments[^2] == "worktrees" && segments[^4].Length > 0)
             return segments[^4];
 
         return PlatformPaths.Leaf(repoPath);

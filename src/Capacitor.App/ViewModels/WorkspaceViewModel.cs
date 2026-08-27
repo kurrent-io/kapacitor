@@ -177,7 +177,7 @@ public sealed class WorkspaceViewModel : ReactiveObject {
         return new AgentPresence(dto, ended);
     }
 
-    static string TitleFor(AgentStatusDto? dto) => $"{RepoLabel.Leaf(dto?.RepoPath)} · {dto?.Vendor ?? "—"}";
+    static string TitleFor(AgentStatusDto? dto) => dto?.Title ?? $"{RepoLabel.Leaf(dto?.RepoPath)} · {dto?.Vendor ?? "—"}";
 
     static string VendorChipFor(AgentStatusDto? dto) {
         if (dto is null) return "—";

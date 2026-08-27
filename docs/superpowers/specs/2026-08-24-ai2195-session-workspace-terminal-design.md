@@ -261,8 +261,9 @@ Entry points:
 
 Follows the settled canvas artboard:
 
-- Header: session title (same `RepoLabel.Leaf(repo) · vendor` shape as the card),
-  repo label, vendor + model chip with transport-family dot, and the two
+- Header: the session's title when the daemon reports one, else the
+  `RepoLabel.Leaf(repo) · vendor` shape the card had; the repository label, read
+  through a worktree to the repository, vendor + model chip with transport-family dot, and the two
   existing actions — Open in web and Stop — reused straight from
   `AgentActionService` (one code path with tray/grid, force-stop confirmation
   included).

@@ -184,4 +184,25 @@ public class WorkspaceViewModelTests {
             await Assert.That(chat.PendingReadForTesting!).IsNull();
         });
     }
+
+    /// Pins the header for a titled session on a borrowed checkout: the title line is the
+    /// session's own title, and the repository line reads through the worktree to the repository.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task The_header_shows_the_session_title_over_the_repository_behind_a_borrowed_worktree() {
+        await RunOnUiAsync(async () => {
+            var daemon = new FakeDaemonClientService();
+            var actions = NewActions(new ScriptedLocalControlOps(), new RecordingNotifier(), new RecordingOpener());
+            var vm = Build(daemon, actions, new FakeTerminalAttachClientFactory(), new FakeTimeProvider(), agentId: "r1");
+
+            daemon.Agents.AddOrUpdate(
+                Agent("r1", "codex", hasTerminal: true, repoPath: "/repo/myproj/.capacitor/worktrees/agent-6da2", kind: "review-flow")
+                    with { Title = "Review this PR" });
+            await (vm.Terminal.PendingResolveWorkForTesting ?? Task.CompletedTask);
+
+            await Assert.That(vm.Title).IsEqualTo("Review this PR");
+            await Assert.That(vm.RepoLabelText).IsEqualTo("myproj");
+            await vm.TeardownAsync();
+        });
+    }
 }
