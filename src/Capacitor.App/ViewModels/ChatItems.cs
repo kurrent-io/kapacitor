@@ -2,7 +2,7 @@ using ReactiveUI;
 
 namespace Capacitor.App.ViewModels;
 
-/// One row of the Chat tab. Three shapes, matched by DataTemplates on the concrete type.
+/// One row of the Chat tab. Four shapes, matched by DataTemplates on the concrete type.
 public abstract class ChatItemViewModel : ReactiveObject { }
 
 public sealed class UserTurnItem(string text) : ChatItemViewModel {
@@ -10,6 +10,11 @@ public sealed class UserTurnItem(string text) : ChatItemViewModel {
 }
 
 public sealed class AssistantTextItem(string text) : ChatItemViewModel {
+    public string Text { get; } = text;
+}
+
+/// System-attributed text — a finished background task, a reconnect note — never anyone's speech.
+public sealed class SystemNoteItem(string text) : ChatItemViewModel {
     public string Text { get; } = text;
 }
 

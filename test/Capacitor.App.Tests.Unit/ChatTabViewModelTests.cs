@@ -233,4 +233,22 @@ public class ChatTabViewModelTests {
         });
         await Assert.That(onUi).IsTrue();
     }
+
+    /// Pins the system-note row: a task notification the vendor injects into the transcript
+    /// renders as a system note carrying its summary and result, never as a user bubble.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task A_task_notification_renders_as_a_system_note() {
+        await RunOnUiAsync(async () => {
+            var h = Claude();
+            var path = Tmp.CreateFile("t.jsonl", [
+                """{"type":"user","origin":{"kind":"task-notification"},"message":{"content":"<task-notification>\n<summary>Agent finished</summary>\n<result>\nAll good.\n</result>\n</task-notification>"}}""",
+            ]);
+            await h.PushAsync(Dto(path));
+
+            await Assert.That(h.Chat.Items.Select(i => i.GetType().Name)).IsEquivalentTo(new[] { nameof(SystemNoteItem) });
+            await Assert.That(((SystemNoteItem)h.Chat.Items[0]).Text).IsEqualTo("**Agent finished**\n\nAll good.");
+            await h.TeardownAsync();
+        });
+    }
 }

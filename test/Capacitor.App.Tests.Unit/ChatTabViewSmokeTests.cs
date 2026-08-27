@@ -435,4 +435,22 @@ public class ChatTabViewSmokeTests {
             await host.CloseAsync();
         });
     }
+
+    /// Pins the system note's surface: a muted card carrying the note as markdown, distinct from
+    /// the user bubble and the assistant prose around it.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task A_system_note_renders_as_a_muted_markdown_card() {
+        await RunOnUiAsync(async () => {
+            var host = new Host();
+            await host.LoadAsync(Tmp.CreateFile("note.jsonl", [
+                """{"type":"user","origin":{"kind":"task-notification"},"message":{"content":"<task-notification>\n<summary>Agent finished</summary>\n<result>\nAll **good**.\n</result>\n</task-notification>"}}""",
+            ]));
+
+            var card = host.View.GetVisualDescendants().OfType<Border>().Single(b => b.Classes.Contains("systemNote"));
+            var text = card.GetVisualDescendants().OfType<SelectableTextBlock>().ToList();
+            await Assert.That(text.Select(t => t.Inlines?.Text ?? t.Text ?? "")).IsEquivalentTo(new[] { "Agent finished", "All good." }, CollectionOrdering.Matching);
+            await host.CloseAsync();
+        });
+    }
 }

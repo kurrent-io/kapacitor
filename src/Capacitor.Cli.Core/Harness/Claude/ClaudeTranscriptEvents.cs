@@ -20,7 +20,9 @@ public sealed partial class ClaudeTranscriptEvents : ITranscriptProjection {
             if (!root.IsObject || root.Bool("isSidechain") == true) return [];
             var ts = root.Str("timestamp");
             return root.Str("type") switch {
-                "user"      => root.Bool("isMeta") == true ? [] : ProjectUser(root, ts),
+                "user"      => root.Bool("isMeta") == true ? []
+                             : root.Obj("origin")?.Str("kind") == "task-notification" ? ProjectTaskNotification(root, ts)
+                             : ProjectUser(root, ts),
                 "assistant" => ProjectAssistant(root, ts),
                 _           => [],
             };
@@ -57,6 +59,30 @@ public sealed partial class ClaudeTranscriptEvents : ITranscriptProjection {
 
     static string ToolResultText(JsonElement block) =>
         block.Str("content") ?? (block.Arr("content") is { } blocks ? JoinTextBlocks(blocks, "text") : "");
+
+    // A finished background task lands in the transcript as a user record Claude Code marks by
+    // its origin: system-attributed, and its summary and result are what a reader wants.
+    static List<AcpEventEnvelope> ProjectTaskNotification(JsonElement root, string? ts) {
+        var raw = root.Obj("message") is { } message
+            ? message.Str("content") ?? (message.Arr("content") is { } blocks ? JoinTextBlocks(blocks, "text") : "")
+            : "";
+        var summary = TaskSummary().Match(raw) is { Success: true } s ? s.Groups[1].Value.Trim() : "";
+        var body    = TaskResult().Match(raw) is { Success: true } r ? r.Groups[1].Value.Trim() : "";
+        var parts = new List<string>(2);
+        if (summary.Length > 0) parts.Add($"**{summary}**");
+        if (body.Length > 0) parts.Add(body);
+        var text = parts.Count > 0 ? string.Join("\n\n", parts) : TaskWrapper().Replace(raw, "").Trim();
+        return text.Length == 0 ? [] : [new AcpEventEnvelope(Kind: AcpEventKind.SystemNote, Text: text, TimestampIso: ts)];
+    }
+
+    [GeneratedRegex(@"<summary>(.*?)</summary>", RegexOptions.Singleline)]
+    private static partial Regex TaskSummary();
+
+    [GeneratedRegex(@"<result>(.*?)</result>", RegexOptions.Singleline)]
+    private static partial Regex TaskResult();
+
+    [GeneratedRegex(@"</?task-notification>")]
+    private static partial Regex TaskWrapper();
 
     static void AddUserText(List<AcpEventEnvelope> result, string raw, string? ts) {
         var text = StripWrappers(raw);

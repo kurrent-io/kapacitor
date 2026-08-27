@@ -35,6 +35,13 @@
                     <views:MarkdownView Text="{Binding Text}" MaxWidth="660" HorizontalAlignment="Left" Margin="0,8,0,12"
                                         OpenLink="{Binding $parent[ItemsControl].((vm:ChatTabViewModel)DataContext).OpenLinkCommand}" />
                 </DataTemplate>
+                <DataTemplate x:DataType="vm:SystemNoteItem">
+                    <Border Classes="systemNote" MaxWidth="660" HorizontalAlignment="Left" Margin="0,8,0,12" Padding="14,10" CornerRadius="10"
+                            Background="{StaticResource KcapSurfaceBrush}" BorderBrush="{StaticResource KcapBorderBrush}" BorderThickness="1">
+                        <views:MarkdownView Text="{Binding Text}"
+                                            OpenLink="{Binding $parent[ItemsControl].((vm:ChatTabViewModel)DataContext).OpenLinkCommand}" />
+                    </Border>
+                </DataTemplate>
                 <DataTemplate x:DataType="vm:ToolCallItem">
                     <StackPanel Orientation="Horizontal" Spacing="9" Margin="0,0,0,6">
                         <TextBlock Text="›" FontSize="13" Foreground="{StaticResource KcapFaintBrush}" VerticalAlignment="Center" />

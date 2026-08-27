@@ -203,6 +203,9 @@ Output invariants shared by both mappers:
 
 `ClaudeTranscriptEvents`, keyed on the record's root `type`:
 
+- `user` whose `origin.kind` is `task-notification` — a finished background task
+  Claude Code injects as if the user had spoken: one `system_note` whose text is
+  the `<summary>` in bold and the `<result>` as markdown, never a user message.
 - `user`, not `isMeta`, not `isSidechain`: a string `message.content` is one
   `user_message`; an array yields one `user_message` per `text` block and one
   `tool_result` per `tool_result` block (`ToolCallId` = `tool_use_id`,
@@ -287,10 +290,13 @@ path switch bump it.
 Items — an `AvaloniaList<ChatItemViewModel>` exposed read-only and mutated on
 the UI thread. A read's items are applied with one `AddRange` (one collection
 notification per read, however many records the first read of a long
-transcript yields), and `Reset` is one `Clear`. Three shapes:
+transcript yields), and `Reset` is one `Clear`. Four shapes:
 
 - `UserTurnItem(Text)`: the canvas's right-aligned bubble, plain text.
 - `AssistantTextItem(Text)`: markdown-rendered prose, one item per envelope.
+- `SystemNoteItem(Text)`: a `system_note` — markdown in a muted card, left-aligned
+  like assistant prose but framed, so a task notification reads as the
+  system's word, not the user's.
 - `ToolCallItem(Name, Detail, Outcome)`: the muted `›` row. `Outcome` is a
   bound property ∈ Running | Done | Error, flipped in place when the matching
   `tool_result` arrives (indexed by `ToolCallId`; an unmatched result is

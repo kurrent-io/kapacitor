@@ -246,6 +246,9 @@ public sealed class ChatTabViewModel : ReactiveObject {
                 case AcpEventKind.AssistantText:
                     fresh.Add(new AssistantTextItem(e.Text ?? ""));
                     break;
+                case AcpEventKind.SystemNote:
+                    fresh.Add(new SystemNoteItem(e.Text ?? ""));
+                    break;
                 case AcpEventKind.ToolCall: {
                     var item = new ToolCallItem(e.ToolName ?? "tool", ToolDetail.From(e.ToolInputJson, _root));
                     if (e.ToolCallId is { } id) _pendingTools[id] = item;

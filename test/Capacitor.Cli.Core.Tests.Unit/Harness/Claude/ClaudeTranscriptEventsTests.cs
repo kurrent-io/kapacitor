@@ -94,4 +94,22 @@ public class ClaudeTranscriptEventsTests {
         await Assert.That(P("""{"type":"user","message":{"content":42}}""")).IsEmpty();
         await Assert.That(P("""{"type":"assistant","message":{"content":[{"type":"text","text":7}]}}""")).IsEmpty();
     }
+
+    /// Pins the task-notification rule: a record Claude Code injects for a finished background
+    /// task is system-attributed, never the user's words — its summary leads in bold and its result
+    /// follows as markdown; a notification with no result is the summary alone.
+    [Test]
+    public async Task A_task_notification_projects_to_a_system_note_of_summary_and_result() {
+        var line = """{"type":"user","origin":{"kind":"task-notification"},"promptSource":"system","message":{"role":"user","content":"<task-notification>\n<task-id>k1</task-id>\n<status>completed</status>\n<summary>Agent \"Review Task 15\" finished</summary>\n<result>\n## Findings\n\nNone.\n</result>\n</task-notification>"}}""";
+        var note = P(line);
+        await Assert.That(note).Count().IsEqualTo(1);
+        await Assert.That(note[0].Kind).IsEqualTo(AcpEventKind.SystemNote);
+        await Assert.That(note[0].Text).IsEqualTo("**Agent \"Review Task 15\" finished**\n\n## Findings\n\nNone.");
+
+        var bare = P("""{"type":"user","origin":{"kind":"task-notification"},"message":{"content":"<task-notification>\n<summary>MCP task done.</summary>\n</task-notification>"}}""");
+        await Assert.That(bare[0].Text).IsEqualTo("**MCP task done.**");
+
+        var human = P("""{"type":"user","origin":{"kind":"human"},"promptSource":"typed","message":{"content":"hello"}}""");
+        await Assert.That(human[0].Kind).IsEqualTo(AcpEventKind.UserMessage);
+    }
 }
