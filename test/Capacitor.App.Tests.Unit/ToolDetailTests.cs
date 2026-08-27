@@ -36,4 +36,19 @@ public class ToolDetailTests {
         await Assert.That(ToolDetail.From("not json")).IsEqualTo("");
         await Assert.That(ToolDetail.From(null)).IsEqualTo("");
     }
+
+    /// Pins path display: a path under the session's root reads relative to it — the daemon's
+    /// per-agent worktree under the repository counts as the root — while other keys and paths
+    /// elsewhere are left alone.
+    [Test]
+    public async Task File_paths_read_relative_to_the_sessions_root() {
+        const string repo = "/Users/me/dev/repo";
+        await Assert.That(ToolDetail.From("""{"file_path":"/Users/me/dev/repo/.capacitor/worktrees/agent-1/src/Foo.cs"}""", repo)).IsEqualTo("src/Foo.cs");
+        await Assert.That(ToolDetail.From("""{"file_path":"/Users/me/dev/repo/src/Foo.cs"}""", repo)).IsEqualTo("src/Foo.cs");
+        await Assert.That(ToolDetail.From("""{"path":"/Users/me/dev/repo/.capacitor/worktrees/agent-1/docs"}""", repo)).IsEqualTo("docs");
+        await Assert.That(ToolDetail.From("""{"notebook_path":"/Users/me/dev/repo/n.ipynb"}""", repo)).IsEqualTo("n.ipynb");
+        await Assert.That(ToolDetail.From("""{"file_path":"/elsewhere/x.cs"}""", repo)).IsEqualTo("/elsewhere/x.cs");
+        await Assert.That(ToolDetail.From("""{"command":"cat /Users/me/dev/repo/x"}""", repo)).IsEqualTo("cat /Users/me/dev/repo/x");
+        await Assert.That(ToolDetail.From("""{"file_path":"/Users/me/dev/repo/src/Foo.cs"}""", null)).IsEqualTo("/Users/me/dev/repo/src/Foo.cs");
+    }
 }

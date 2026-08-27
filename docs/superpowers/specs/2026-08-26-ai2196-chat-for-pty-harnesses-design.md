@@ -294,10 +294,13 @@ transcript yields), and `Reset` is one `Clear`. Three shapes:
 - `ToolCallItem(Name, Detail, Outcome)`: the muted `›` row. `Outcome` is a
   bound property ∈ Running | Done | Error, flipped in place when the matching
   `tool_result` arrives (indexed by `ToolCallId`; an unmatched result is
-  ignored). `Detail` is `ToolDetail.From(name, inputJson)`: the first present
-  of `description`, `command`, `cmd`, `file_path`, `path`, `pattern`, `query`,
-  `url`, `skill`, `prompt`, `input`; its first line, trimmed to 80 characters
-  with an ellipsis; empty when none applies.
+  ignored). `Detail` is `ToolDetail.From(inputJson, repoPath)`: the first
+  present of `description`, `command`, `cmd`, `file_path`, `path`,
+  `notebook_path`, `pattern`, `query`, `url`, `skill`, `prompt`, `input`; its
+  first line, trimmed to 80 characters with an ellipsis; empty when none
+  applies. A path key under the session's repository reads relative to it —
+  or to the daemon's per-agent worktree beneath it when the path is in one —
+  as the web UI shows it, so the file name survives the cut.
 
 `assistant_thinking` and unmatched `tool_result` envelopes create no item;
 `Reset` clears the items and the pairing index.

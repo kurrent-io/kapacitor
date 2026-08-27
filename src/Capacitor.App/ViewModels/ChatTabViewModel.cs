@@ -43,6 +43,7 @@ public sealed class ChatTabViewModel : ReactiveObject {
     int _generation;
     int _readInFlight;
     string? _path;
+    string? _root;
     volatile TailLease? _lease;
     ITimer? _timer;
     volatile Task? _pendingRead;
@@ -170,6 +171,7 @@ public sealed class ChatTabViewModel : ReactiveObject {
 
     void OnDto(AgentStatusDto dto) {
         _vendor = dto.Vendor;
+        _root = dto.RepoPath;
         VendorLabel = HostedHarnessCatalog.LabelFor(_options, dto.Vendor);
         ModelLabel = HostedHarnessCatalog.ModelLabelFor(dto.Vendor, dto.Model ?? "");
         StatusText = dto.Status;
@@ -245,7 +247,7 @@ public sealed class ChatTabViewModel : ReactiveObject {
                     fresh.Add(new AssistantTextItem(e.Text ?? ""));
                     break;
                 case AcpEventKind.ToolCall: {
-                    var item = new ToolCallItem(e.ToolName ?? "tool", ToolDetail.From(e.ToolInputJson));
+                    var item = new ToolCallItem(e.ToolName ?? "tool", ToolDetail.From(e.ToolInputJson, _root));
                     if (e.ToolCallId is { } id) _pendingTools[id] = item;
                     fresh.Add(item);
                     break;
