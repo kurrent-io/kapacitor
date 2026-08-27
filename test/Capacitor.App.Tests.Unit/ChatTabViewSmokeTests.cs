@@ -332,7 +332,7 @@ public class ChatTabViewSmokeTests {
 
             host.PressEnter(RawInputModifiers.Shift);
 
-            await Assert.That(host.Composer.Text).IsEqualTo("hi\n");
+            await Assert.That(host.Composer.Text).IsEqualTo("hi" + Environment.NewLine);
             await Assert.That(client.SentInput).IsEmpty();
             await host.CloseAsync();
         });

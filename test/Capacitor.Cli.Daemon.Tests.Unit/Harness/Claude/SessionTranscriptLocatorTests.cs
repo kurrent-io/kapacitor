@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Capacitor.Cli.Daemon.Harness.Claude;
 
 namespace Capacitor.Cli.Daemon.Tests.Unit.Harness.Claude;
@@ -253,7 +254,8 @@ public class SessionTranscriptLocatorTests {
 
     // ── TryLocateWinner: the matched file, link-resolved ────────────────
 
-    static string TranscriptLine(string cwd) => $$$"""{"type":"user","cwd":"{{{cwd}}}","sessionId":"abc","message":{"content":"hi"}}""";
+    // Encoded, not interpolated: a Windows path's backslashes are JSON escapes.
+    static string TranscriptLine(string cwd) => $$$"""{"type":"user","cwd":"{{{JsonEncodedText.Encode(cwd)}}}","sessionId":"abc","message":{"content":"hi"}}""";
 
     [Test]
     public async Task TryLocateWinner_returns_id_and_the_matched_path() {
