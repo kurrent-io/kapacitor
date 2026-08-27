@@ -4,6 +4,18 @@
              xmlns:views="clr-namespace:Capacitor.App.Views"
              x:Class="Capacitor.App.Views.ChatTabView"
              x:DataType="vm:ChatTabViewModel">
+    <UserControl.Styles>
+        <!-- The card is the composer's boundary: the theme's focused ring and fill inside it would
+             read as a second box. -->
+        <Style Selector="TextBox#ComposerInput:focus /template/ Border#PART_BorderElement">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+        </Style>
+        <Style Selector="TextBox#ComposerInput:pointerover /template/ Border#PART_BorderElement">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+        </Style>
+    </UserControl.Styles>
     <Grid RowDefinitions="*,Auto">
         <!-- The template owns the ScrollViewer: that is the shape Avalonia virtualizes. An
              ItemsControl inside an external ScrollViewer is measured at infinite height. -->
@@ -53,7 +65,7 @@
                    Foreground="{StaticResource KcapMutedBrush}" FontSize="12.5"
                    HorizontalAlignment="Center" VerticalAlignment="Center" />
 
-        <Border Grid.Row="1" Margin="22,8,22,18" MaxWidth="660" HorizontalAlignment="Left"
+        <Border Grid.Row="1" Margin="22,8,22,18"
                 Background="{StaticResource KcapSurfaceBrush}" BorderBrush="{StaticResource KcapBorderBrush}"
                 BorderThickness="1" CornerRadius="10" Padding="13,12">
             <StackPanel Spacing="6">

@@ -355,4 +355,37 @@ public class ChatTabViewSmokeTests {
             await host.CloseAsync();
         });
     }
+
+    /// Pins the composer's width: it spans the pane like the Home goal box rather than capping
+    /// at the assistant column's width on the left.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task The_composer_spans_the_pane() {
+        await RunOnUiAsync(async () => {
+            var host = new Host();
+            host.Window.UpdateLayout();
+
+            await Assert.That(host.Composer.Bounds.Width).IsGreaterThan(host.View.Bounds.Width - 100);
+            await host.CloseAsync();
+        });
+    }
+
+    /// Pins that focusing the composer draws no ring of its own: the card is the input's
+    /// boundary, so the theme's focused border and fill stay off.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task A_focused_composer_draws_no_ring_inside_its_card() {
+        await RunOnUiAsync(async () => {
+            var host = new Host();
+            host.Composer.Focus();
+            Dispatcher.UIThread.RunJobs();
+            host.Window.UpdateLayout();
+
+            var ring = host.Composer.GetVisualDescendants().OfType<Border>().Single(b => b.Name == "PART_BorderElement");
+            await Assert.That(host.Composer.IsFocused).IsTrue();
+            await Assert.That(ring.BorderThickness).IsEqualTo(new Thickness(0));
+            await Assert.That(ring.Background is null || ring.Background is ISolidColorBrush { Color.A: 0 }).IsTrue();
+            await host.CloseAsync();
+        });
+    }
 }
