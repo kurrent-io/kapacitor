@@ -596,7 +596,7 @@ public class FirstRunFlowClientTests {
         await Assert.That(sent.GetProperty("decided_at").GetDateTimeOffset())
                     .IsEqualTo(new DateTimeOffset(2026, 8, 27, 9, 30, 0, TimeSpan.Zero));
         await Assert.That(sent.TryGetProperty("reason", out var reason)).IsTrue();
-        await Assert.That(reason.ValueKind).IsEqualTo(System.Text.Json.JsonValueKind.Null);
+        await Assert.That(reason.IsNull).IsTrue();
     }
 
     [Test]

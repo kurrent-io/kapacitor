@@ -100,7 +100,6 @@ backstop by time spent on work — a disk scan, an upload — on the reasoning t
 progressing rather than a terminal nobody is sitting at. The owed-outcome retry is neither: it runs on
 every tick for as long as the report is refused, so crediting it back would let a server that never
 accepts the report stretch the backstop from thirty minutes into hours. Only the run itself is credited.
-A first draft credited every exit, which is exactly that bug.
 
 ## Retrying a status, opt-in
 
@@ -146,14 +145,12 @@ and that a reason token crosses verbatim. Nothing else covered it — every othe
 the request object directly, so a naming or AOT-binding slip would have left the screen waiting for ever
 with the suite green.
 
-Sixteen mutations, fifteen killed and one shown to be equivalent (the correlation swap above). The retry
-predicate is pinned from both sides: retrying a 4xx kills six tests, not retrying a 429 kills two, and
-defaulting the flag to on kills the opt-in test.
+The retry predicate is pinned from both sides, since either half alone would pass a one-sided test:
+retrying a 4xx breaks six rows, and not retrying a 429 breaks two.
 
-Four of those pin defects external review found here, and each has a test that fails without its fix:
-treating every empty answer as a decline, the nothing-in-scope exit reporting nothing, crediting the
-stalled report back to the deadline, and a late transport fault outranking the refusal in hand. Two of
-them initially survived mutation against branches the tests did not reach — the deadline one exits through
-the cursor-match arm rather than the not-settled one, and the transport one needs the fault to land
-*after* the budget to reach the unguarded catch. Both were mutation-aim errors rather than coverage gaps,
-and both die once aimed correctly.
+Four rules carry a test that fails without them and are easy to reintroduce, so they are worth naming:
+an empty answer treated as a decline, the nothing-in-scope exit reporting nothing, the stalled report
+credited back to the deadline, and a late transport fault outranking the refusal in hand. The last two
+are only reachable down one arm each — the deadline through the cursor-match exit rather than the
+not-settled one, and the transport fault only once it lands *after* the budget, which is what reaches the
+unguarded catch. A check aimed at the other arm passes while the rule is broken.

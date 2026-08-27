@@ -534,7 +534,7 @@ public class ImportVisibilityTests : IDisposable {
             .RespondWith(Response.Create().WithStatusCode(404));
         StubAllHookEndpoints();
 
-        var projectsDir = Path.Combine(_tempDir, "claude-projects-nothing-in-scope");
+        var projectsDir = _tmp.PathTo("claude-projects-nothing-in-scope");
         WriteClaudeSession(projectsDir, "vis-out-of-scope");
 
         ImportCommand.ImportRunOutcome? outcome = null;

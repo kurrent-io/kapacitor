@@ -978,7 +978,6 @@ public sealed record CurationApplyResponse {
 [JsonSerializable(typeof(FirstRun.ReportFirstRunImportRequest))]
 [JsonSerializable(typeof(FirstRun.ReportFirstRunImportOutcomeRequest))]
 [JsonSerializable(typeof(LaunchAgentCommand))]
-// Task 8: reviewer-model launch block + preflight RPC + resolved report wire DTOs.
 [JsonSerializable(typeof(ExplicitReviewerModelLaunch))]
 [JsonSerializable(typeof(ReviewerModelResolveRequestV1))]
 [JsonSerializable(typeof(ReviewerModelResolveResponseV1))]
