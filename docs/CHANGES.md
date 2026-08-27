@@ -159,12 +159,15 @@ and observed rather than refused, so a workspace a coordinator builds between th
 still cannot hold a socket open past the drain. The companion guard lives in `NavigationGate`: its
 first shutdown pass latches (which also bumps the generation), so `OpenSession` — card click or launch
 auto-open alike — rejects from then on in every window, current or later-built.
-The feed into the embedded emulator is rewritten first (`TerminalFeedSanitizer`): XTerm.NET has no
-arm for the underline-colour selectors 58/59, so their arguments are read as attribute codes — a `4`
-among them underlines every later cell, and agent renderers close styles one at a time and never send
-the full reset that would clear it — and it drops any parameter with colon sub-parameters, losing
-`4:0` and the colon truecolour form. `KCAP_APP_PTY_DUMP=<file>` appends every fed frame as received,
-the only record of what the emulator was given.
+The feed into the embedded emulator is rewritten first (`TerminalFeedSanitizer`): XTerm.NET
+dispatches a CSI on its final byte alone, so xterm's modifyOtherKeys set — `CSI > 4 ; 2 m`, which
+Claude Code sends on every return to raw mode — reaches the SGR handler as "underline on, dim on",
+and agent renderers close styles one at a time and never send the full reset that would clear it;
+every private-parameter sequence ending in `m` is dropped. The same handler has no arm for the
+underline-colour selectors 58/59, whose arguments are read as attribute codes, and drops any
+parameter with colon sub-parameters, losing `4:0` and the colon truecolour form.
+`KCAP_APP_PTY_DUMP=<file>` appends every fed frame as received, the only record of what the
+emulator was given.
 
 ## Session chat
 

@@ -58,4 +58,14 @@ public class TerminalFeedSanitizerTests {
         var input = Esc + "[" + new string('1', 80);
         await Assert.That(s.Sanitize(input)).IsEqualTo(input);
     }
+
+    /// Pins the private-parameter rule: a sequence such as xterm's modifyOtherKeys set, which
+    /// only shares SGR's final byte, leaves the feed rather than reaching the SGR handler.
+    [Test]
+    public async Task Private_parameter_sequences_ending_in_m_are_dropped() {
+        var s = new TerminalFeedSanitizer();
+        await Assert.That(s.Sanitize(Esc + "[>4;2ma")).IsEqualTo("a");
+        await Assert.That(s.Sanitize(Esc + "[?4mb")).IsEqualTo("b");
+        await Assert.That(s.Sanitize(Esc + "[>5u" + Esc + "[<u")).IsEqualTo(Esc + "[>5u" + Esc + "[<u");
+    }
 }

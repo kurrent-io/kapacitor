@@ -40,4 +40,17 @@ public class XtermTerminalSurfaceTests {
             await Assert.That(File.ReadAllText(dump)).IsEqualTo("ab" + Esc + "[59mc");
         });
     }
+
+    /// Pins the keyboard-mode guard end to end: the modifyOtherKeys set Claude Code sends on
+    /// every return to raw mode underlines nothing.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task A_keyboard_mode_set_in_the_feed_does_not_underline_later_cells() {
+        await RunOnUiAsync(async () => {
+            var surface = new XtermTerminalSurface(40, 4);
+            surface.Feed(Esc + "[<u" + Esc + "[>5u" + Esc + "[>4;2ma");
+
+            await Assert.That(Underlined(surface, 0)).IsFalse();
+        });
+    }
 }

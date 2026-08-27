@@ -2,13 +2,15 @@ namespace Capacitor.App.Services;
 
 using System.Text;
 
-/// Rewrites the SGR forms the embedded emulator mis-parses before they reach it. XTerm.NET has
-/// no arm for the underline-colour selectors 58 and 59, so their numeric arguments are read as
-/// attribute codes — a 4 among them underlines every later cell, and the renderers agents use
-/// close styles one at a time and never send the full reset that would clear it — and it drops
-/// any parameter carrying colon sub-parameters, losing 4:0 (underline off) and the colon
-/// truecolour form. One instance per stream: a sequence cut by a frame boundary is held until
-/// its final byte arrives.
+/// Rewrites what the embedded emulator mis-parses before it reaches it. XTerm.NET dispatches a
+/// CSI on its final byte alone, so xterm's modifyOtherKeys set — `CSI > 4 ; 2 m`, which Claude
+/// Code sends on every return to raw mode — lands in the SGR handler as "underline on, dim on",
+/// and the renderers agents use close styles one at a time and never send the full reset that
+/// would clear it; every private-parameter sequence ending in `m` is dropped, the emulator
+/// implementing none of them. The SGR handler also has no arm for the underline-colour selectors
+/// 58 and 59, whose arguments are read as attribute codes, and drops any parameter carrying colon
+/// sub-parameters, losing 4:0 (underline off) and the colon truecolour form. One instance per
+/// stream: a sequence cut by a frame boundary is held until its final byte arrives.
 public sealed class TerminalFeedSanitizer {
     const char Esc = (char)27;
     const int HoldCap = 64;
@@ -36,9 +38,8 @@ public sealed class TerminalFeedSanitizer {
             }
 
             var parameters = input.AsSpan(i + 2, j - i - 2);
-            var isSgr = input[j] == 'm' && (parameters.IsEmpty || parameters[0] is >= '0' and <= '9' or ';' or ':');
-            if (isSgr) output.Append(RewriteSgr(parameters));
-            else output.Append(input, i, j - i + 1);
+            if (input[j] != 'm') output.Append(input, i, j - i + 1);
+            else if (parameters.IsEmpty || parameters[0] is >= '0' and <= '9' or ';' or ':') output.Append(RewriteSgr(parameters));
             i = j + 1;
         }
         return output.ToString();
