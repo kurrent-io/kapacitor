@@ -218,9 +218,9 @@ public sealed record FirstRunFlowResponse {
     /// anything about the profile — see <c>SetupCommand.DecideVisibility</c>, which separates them by
     /// whether the step settled, because the second has told the machine nothing.</para>
     ///
-    /// <para><b>It can name a stop this tenant does not currently offer</b>, because the server's fold
-    /// keeps a durable answer as given. Such a value is still the one to write: every stop it can name
-    /// resolves no wider than the profile's own fallback.</para>
+    /// <para><b>A stop this build cannot name is dropped, not written.</b> The value persists in profile
+    /// config and is stamped on every session afterwards, so it is mapped through
+    /// <c>AppConfig.ValidVisibilities</c> and degrades to null, which leaves the profile as it was.</para>
     /// </summary>
     [JsonPropertyName("default_visibility")] public string? DefaultVisibility { get; init; }
 
