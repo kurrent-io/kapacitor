@@ -165,8 +165,11 @@ Notes:
   --skills` stays removed until you install a vendor again explicitly.
 
   --codex also writes hooks to ~/.codex/hooks.json (or <repo>/.codex/hooks.json
-  with --project). MCP server registration is handled separately by the Codex
-  plugin manifest and is not affected by this command.
+  with --project). Codex runs only hooks you have trusted: the next `codex`
+  CLI launch prompts to trust the new entries (accept once, or use /hooks to
+  trust them individually); the Codex desktop app never prompts — trust the
+  kcap hooks in Settings → Hooks there. MCP server registration is handled
+  separately by the Codex plugin manifest and is not affected by this command.
 
   --cursor writes all 8 supported hooks to ~/.cursor/hooks.json (merged with
   any existing entries) and then registers all 6 kcap MCP servers in
