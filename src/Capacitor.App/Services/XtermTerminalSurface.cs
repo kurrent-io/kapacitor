@@ -25,7 +25,13 @@ public sealed class XtermTerminalSurface : ITerminalSurface {
     // via Model.Terminal.Resize(cols, rows).
     public (int Cols, int Rows) CurrentSize => (Model.Terminal.Cols, Model.Terminal.Rows);
 
-    public XtermTerminalSurface(int cols, int rows) {
+    readonly TerminalFeedSanitizer _sanitizer = new();
+    readonly string? _dumpPath;
+
+    /// <paramref name="dumpPath"/>: a file every fed frame is appended to as received, before
+    /// any rewriting — the only record of what the emulator was given.
+    public XtermTerminalSurface(int cols, int rows, string? dumpPath = null) {
+        _dumpPath = dumpPath;
         Model = new TerminalControlModel(new TerminalOptions {
             Cols = cols,
             Rows = rows,
@@ -37,7 +43,10 @@ public sealed class XtermTerminalSurface : ITerminalSurface {
         Model.Terminal.Engine.DataReceived += OnDataReceived;
     }
 
-    public void Feed(string text) => Model.Feed(text);
+    public void Feed(string text) {
+        if (_dumpPath is not null) File.AppendAllText(_dumpPath, text);
+        Model.Feed(_sanitizer.Sanitize(text));
+    }
 
     void OnUserInput(object? sender, TerminalUserInputEventArgs e) =>
         InputProduced?.Invoke(e.Data.ToArray());

@@ -42,6 +42,10 @@ public partial class App : Application {
     // And its one read of KCAP_CONFIG_DIR.
     readonly ConfigRoot _config = ConfigRoot.FromEnvironment();
 
+    // And its one read of KCAP_APP_PTY_DUMP: a file every terminal feed frame is appended to as
+    // received, for seeing what the emulator was given.
+    static readonly string? PtyDumpPath = Environment.GetEnvironmentVariable("KCAP_APP_PTY_DUMP");
+
     // Both are app-lifetime and BOTH exist before any graph does: OnShutdownRequested latches and
     // drains them whether or not StartAsync ever got as far as building a window (spec §3). The gate
     // is shared by every MainWindowViewModel the coordinator builds — including one built between
@@ -313,7 +317,7 @@ public partial class App : Application {
         // attached to the visual tree (WorkspaceView's own header comment).
         var attachFactory = CoreTerminalAttachClient.Factory(() => _daemonStore.SocketPath(service.DaemonName));
         WorkspaceViewModel BuildWorkspace(string agentId) => new(
-            agentId, service, actions, attachFactory, () => new XtermTerminalSurface(80, 24), TimeProvider.System, opener);
+            agentId, service, actions, attachFactory, () => new XtermTerminalSurface(80, 24, PtyDumpPath), TimeProvider.System, opener);
 
         _coordinator = new MainWindowCoordinator(
             () => BuildAndShowMainWindow(
