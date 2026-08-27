@@ -19,16 +19,20 @@ public sealed class JsonlTail(string path) {
     public TailRead ReadAppended() {
         try {
             using var stream = new FileStream(Path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-            var status = TailStatus.Ok;
             var length = stream.Length;
-            if (length < _cursor) {
-                _cursor = 0;
-                status = TailStatus.Reset;
+            var regressed = length < _cursor;
+            // The origin stays local until the read succeeds: assigning the reset cursor up front
+            // would let a fault mid-read return Failed with the regression already spent, and the
+            // next Ok read would then deliver the whole file on top of what it had reported.
+            var origin = regressed ? 0 : _cursor;
+            var status = regressed ? TailStatus.Reset : TailStatus.Ok;
+            if (length == origin) {
+                _cursor = origin;
+                return new TailRead([], status);
             }
-            if (length == _cursor) return new TailRead([], status);
 
-            stream.Position = _cursor;
-            var buffer = new byte[length - _cursor];
+            stream.Position = origin;
+            var buffer = new byte[length - origin];
             var read = 0;
             while (read < buffer.Length) {
                 var n = stream.Read(buffer, read, buffer.Length - read);
@@ -37,7 +41,7 @@ public sealed class JsonlTail(string path) {
             }
 
             var lines = SplitCompleteLines(buffer.AsSpan(0, read), out var consumed);
-            _cursor += consumed;
+            _cursor = origin + consumed;
             return new TailRead(lines, status);
         } catch (FileNotFoundException) {
             return new TailRead([], TailStatus.Missing);

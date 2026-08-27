@@ -79,6 +79,30 @@ public class JsonlTailTests {
         await Assert.That(read.Lines).IsEquivalentTo(new[] { "{\"b\":2}" });
     }
 
+    /// Pins that a failure never spends a truncation: a Failed read leaves the cursor exactly
+    /// where it started, so the shorter file is still a regression to the next successful read,
+    /// which reports Reset and delivers the new content once rather than appending it.
+    [Test]
+    public async Task A_failure_between_a_truncation_and_its_reset_still_reports_the_reset() {
+        var path = Tmp.CreateFile("t.jsonl", "{\"a\":1}\n{\"b\":2}\n");
+        var tail = new JsonlTail(path);
+        tail.ReadAppended();
+        await Assert.That(tail.Cursor).IsEqualTo(16);
+
+        File.Delete(path);
+        Directory.CreateDirectory(path);
+        await Assert.That(tail.ReadAppended().Status).IsEqualTo(TailStatus.Failed);
+        await Assert.That(tail.Cursor).IsEqualTo(16);
+
+        Directory.Delete(path);
+        File.WriteAllText(path, "{\"z\":9}\n");
+        var read = tail.ReadAppended();
+
+        await Assert.That(read.Status).IsEqualTo(TailStatus.Reset);
+        await Assert.That(read.Lines).IsEquivalentTo(new[] { "{\"z\":9}" });
+        await Assert.That(tail.Cursor).IsEqualTo(8);
+    }
+
     [Test]
     public async Task Reads_a_file_another_handle_holds_open_for_writing() {
         var path = Tmp.PathTo("live.jsonl");
