@@ -1,12 +1,11 @@
 using Capacitor.App.Services;
+using static Capacitor.App.Tests.Unit.Ansi;
 using static Capacitor.App.Tests.Unit.AvaloniaSession;
 
 namespace Capacitor.App.Tests.Unit;
 
 public class XtermTerminalSurfaceTests {
     [TempDir] public required TempDir Tmp { get; init; }
-
-    static readonly string Esc = ((char)27).ToString();
 
     static bool Underlined(XtermTerminalSurface surface, int x) =>
         surface.Model.Terminal.Engine.Buffer.GetLine(0)![x].Attributes.IsUnderline();

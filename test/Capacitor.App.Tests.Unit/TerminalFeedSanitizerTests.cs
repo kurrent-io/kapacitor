@@ -1,9 +1,9 @@
 using Capacitor.App.Services;
+using static Capacitor.App.Tests.Unit.Ansi;
 
 namespace Capacitor.App.Tests.Unit;
 
 public class TerminalFeedSanitizerTests {
-    static readonly string Esc = ((char)27).ToString();
     static string Csi(string parameters) => Esc + "[" + parameters + "m";
 
     /// Pins the underline-colour rule: 58 with its arguments, and 59, leave the feed entirely,

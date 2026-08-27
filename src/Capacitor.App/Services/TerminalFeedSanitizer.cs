@@ -16,13 +16,14 @@ public sealed class TerminalFeedSanitizer {
     const int HoldCap = 64;
 
     readonly StringBuilder _held = new();
+    readonly StringBuilder _output = new();
 
     public string Sanitize(string text) {
         if (_held.Length == 0 && text.IndexOf(Esc) < 0) return text;
 
         var input = _held.Length == 0 ? text : _held.Append(text).ToString();
         _held.Clear();
-        var output = new StringBuilder(input.Length);
+        var output = _output.Clear();
         var i = 0;
         while (i < input.Length) {
             if (input[i] != Esc) { output.Append(input[i]); i++; continue; }
@@ -39,10 +40,22 @@ public sealed class TerminalFeedSanitizer {
 
             var parameters = input.AsSpan(i + 2, j - i - 2);
             if (input[j] != 'm') output.Append(input, i, j - i + 1);
-            else if (parameters.IsEmpty || parameters[0] is >= '0' and <= '9' or ';' or ':') output.Append(RewriteSgr(parameters));
+            else if (parameters.IsEmpty || parameters[0] is >= '0' and <= '9' or ';' or ':') {
+                if (NeedsRewrite(parameters)) output.Append(RewriteSgr(parameters));
+                else output.Append(input, i, j - i + 1);
+            }
             i = j + 1;
         }
         return output.ToString();
+    }
+
+    static bool NeedsRewrite(ReadOnlySpan<char> parameters) {
+        if (parameters.IndexOf(':') >= 0) return true;
+        foreach (var range in parameters.Split(';')) {
+            var group = parameters[range];
+            if (group.SequenceEqual("58") || group.SequenceEqual("59")) return true;
+        }
+        return false;
     }
 
     static string RewriteSgr(ReadOnlySpan<char> parameters) {

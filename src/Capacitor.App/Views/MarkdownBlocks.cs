@@ -2,7 +2,6 @@ using System.Windows.Input;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Documents;
-using Avalonia.Controls.Presenters;
 using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Media;
@@ -33,6 +32,11 @@ public static class MarkdownBlocks {
     public static Control Build(string markdown, ICommand? openLink) {
         var document = Markdown.Parse(markdown, Pipeline);
         var panel = new StackPanel { Spacing = 8 };
+        // A link's glyph descenders hang below its button, so the text part inside a link must not
+        // clip; the part is created after the button's template, so only a style reaches it.
+        panel.Styles.Add(new Style(x => x.OfType<HyperlinkButton>().Descendant().Is<TextBlock>()) {
+            Setters = { new Setter(Visual.ClipToBoundsProperty, false) },
+        });
         foreach (var block in document) panel.Children.Add(BuildBlock(markdown, block, openLink));
         return panel;
     }
@@ -73,7 +77,7 @@ public static class MarkdownBlocks {
             LineHeight = fontSize * LineSpacing,
             Foreground = Brush("KcapTextBrush"),
         };
-        foreach (var inline in inlines) AddInline(source, text.Inlines!, inline, openLink, (fontSize, text.FontWeight));
+        foreach (var inline in inlines) AddInline(source, text.Inlines!, inline, openLink, fontSize, text.FontWeight);
         return text;
     }
 
@@ -88,19 +92,19 @@ public static class MarkdownBlocks {
             ? source.Substring(span.Start, span.Length)
             : "";
 
-    static void AddInlines(string source, InlineCollection target, ContainerInline? container, ICommand? openLink, (double Size, FontWeight Weight) font) {
+    static void AddInlines(string source, InlineCollection target, ContainerInline? container, ICommand? openLink, double fontSize, FontWeight weight) {
         if (container is null) return;
-        foreach (var inline in container) AddInline(source, target, inline, openLink, font);
+        foreach (var inline in container) AddInline(source, target, inline, openLink, fontSize, weight);
     }
 
-    static void AddInline(string source, InlineCollection target, MdInline inline, ICommand? openLink, (double Size, FontWeight Weight) font) {
+    static void AddInline(string source, InlineCollection target, MdInline inline, ICommand? openLink, double fontSize, FontWeight weight) {
         switch (inline) {
             case LiteralInline literal:
                 target.Add(new Run(Flat(literal.Content.ToString())));
                 break;
             case EmphasisInline emphasis: {
                 Span span = emphasis.DelimiterCount >= 2 ? new Bold() : new Italic();
-                AddInlines(source, span.Inlines, emphasis, openLink, font);
+                AddInlines(source, span.Inlines, emphasis, openLink, fontSize, weight);
                 target.Add(span);
                 break;
             }
@@ -117,13 +121,13 @@ public static class MarkdownBlocks {
                 target.Add(new Run(Flat(SpanText(source, image.Span))));
                 break;
             case LinkInline link when LinkPolicy.IsOpenable(link.Url):
-                target.Add(Link(LinkButton(Flat(PlainText(source, link)), link.Url!, openLink, font)));
+                target.Add(Link(LinkButton(Flat(PlainText(source, link)), link.Url!, openLink, fontSize, weight)));
                 break;
             case LinkInline link:
-                AddInlines(source, target, link, openLink, font);
+                AddInlines(source, target, link, openLink, fontSize, weight);
                 break;
             case AutolinkInline auto when LinkPolicy.IsOpenable(auto.Url):
-                target.Add(Link(LinkButton(auto.Url, auto.Url, openLink, font)));
+                target.Add(Link(LinkButton(auto.Url, auto.Url, openLink, fontSize, weight)));
                 break;
             case AutolinkInline auto:
                 target.Add(new Run(Flat(auto.Url)));
@@ -132,7 +136,7 @@ public static class MarkdownBlocks {
                 target.Add(new Run(Flat(html.Tag)));
                 break;
             case ContainerInline nested:
-                AddInlines(source, target, nested, openLink, font);
+                AddInlines(source, target, nested, openLink, fontSize, weight);
                 break;
             default:
                 target.Add(new Run(Flat(SpanText(source, inline.Span))));
@@ -142,7 +146,7 @@ public static class MarkdownBlocks {
 
     // NavigateUri stays unset on purpose: set, the control opens the URI itself and the policy
     // in the command would never run.
-    static HyperlinkButton LinkButton(string label, string url, ICommand? openLink, (double Size, FontWeight Weight) font) => new() {
+    static HyperlinkButton LinkButton(string label, string url, ICommand? openLink, double fontSize, FontWeight weight) => new() {
         Content = label,
         Command = openLink,
         CommandParameter = url,
@@ -150,8 +154,8 @@ public static class MarkdownBlocks {
         BorderThickness = new Thickness(0),
         MinHeight = 0,
         MinWidth = 0,
-        FontSize = font.Size,
-        FontWeight = font.Weight,
+        FontSize = fontSize,
+        FontWeight = weight,
         Cursor = new Cursor(StandardCursorType.Hand),
         Foreground = Brush("KcapAccentBrush"),
         VerticalAlignment = VerticalAlignment.Center,
@@ -161,22 +165,29 @@ public static class MarkdownBlocks {
     // baseline: a button as tall as the line drags the whole line's text down to its bottom. The
     // button is therefore laid out at the font's natural line height and sized to its ascent,
     // so its bottom is a baseline no taller than the text's own, its glyphs sit on that line, and
-    // their descenders overflow it — which every template part must be allowed to draw.
+    // their descenders overflow it, which the block's style lets every part draw.
     static InlineUIContainer Link(HyperlinkButton button) {
         button.VerticalContentAlignment = VerticalAlignment.Top;
         button.ClipToBounds = false;
         button.UseLayoutRounding = false;
         button.SetValue(TextBlock.LineHeightProperty, double.NaN);
-        // The presenter creates its text part after TemplateApplied, so a one-off pass would miss
-        // it; a style reaches every part whenever it appears.
-        button.Styles.Add(new Style(x => x.Is<TextBlock>()) { Setters = { new Setter(Visual.ClipToBoundsProperty, false) } });
-        button.Styles.Add(new Style(x => x.Is<ContentPresenter>()) { Setters = { new Setter(Visual.ClipToBoundsProperty, false) } });
-        button.AttachedToVisualTree += (_, _) => button.Height = AscentOf(button.FontFamily, button.FontWeight, button.FontSize);
+        button.AttachedToVisualTree += OnLinkAttached;
         return new() { Child = button };
     }
 
-    static double AscentOf(FontFamily family, FontWeight weight, double fontSize) =>
-        new TextLayout("x", new Typeface(family, FontStyle.Normal, weight), fontSize, Brushes.Black).TextLines[0].Baseline;
+    // Sized once the inherited font is known.
+    static void OnLinkAttached(object? sender, VisualTreeAttachmentEventArgs e) {
+        if (sender is HyperlinkButton button) button.Height = Ascent(button.FontFamily, button.FontWeight, button.FontSize);
+    }
+
+    static readonly Dictionary<(string Family, FontWeight Weight, double Size), double> Ascents = [];
+
+    static double Ascent(FontFamily family, FontWeight weight, double fontSize) {
+        var key = (family.Name, weight, fontSize);
+        if (!Ascents.TryGetValue(key, out var ascent))
+            Ascents[key] = ascent = new TextLayout("x", new Typeface(family, FontStyle.Normal, weight), fontSize, Brushes.Black).TextLines[0].Baseline;
+        return ascent;
+    }
 
     static string PlainText(string source, ContainerInline container) =>
         string.Concat(container.Select(inline => inline switch {
@@ -237,7 +248,7 @@ public static class MarkdownBlocks {
         var weight = new int[columns];
         foreach (var row in rows)
             foreach (var (cell, column) in row.OfType<TableCell>().Select((c, i) => (c, i)))
-                if (column < columns) weight[column] += SpanText(source, cell.Span).Length;
+                if (column < columns) weight[column] += cell.Span.Length;
         var widest = Array.IndexOf(weight, weight.Max());
         for (var c = 0; c < columns; c++)
             grid.ColumnDefinitions.Add(c == widest

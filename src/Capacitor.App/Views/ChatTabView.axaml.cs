@@ -25,13 +25,11 @@ public partial class ChatTabView : UserControl {
         ComposerInput.AddHandler(KeyDownEvent, OnComposerKeyDown, RoutingStrategies.Tunnel);
         // The ScrollViewer is the list template's; it exists only once the list is first measured,
         // which for a surface built before its first layout is later than the first rows.
-        ChatItems.TemplateApplied += (_, _) => Follow(ChatItems.GetVisualDescendants().OfType<ScrollViewer>().FirstOrDefault());
-    }
-
-    void Follow(ScrollViewer? scroll) {
-        if (_scroll is not null) _scroll.ScrollChanged -= OnScrollChanged;
-        _scroll = scroll;
-        if (_scroll is not null) _scroll.ScrollChanged += OnScrollChanged;
+        ChatItems.TemplateApplied += (_, _) => {
+            if (_scroll is not null) _scroll.ScrollChanged -= OnScrollChanged;
+            _scroll = ChatItems.GetVisualDescendants().OfType<ScrollViewer>().FirstOrDefault();
+            if (_scroll is not null) _scroll.ScrollChanged += OnScrollChanged;
+        };
     }
 
     static void OnScrollChanged(object? sender, ScrollChangedEventArgs e) {
