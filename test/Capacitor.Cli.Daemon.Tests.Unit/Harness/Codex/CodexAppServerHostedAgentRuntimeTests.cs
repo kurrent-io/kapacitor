@@ -82,7 +82,7 @@ public class CodexAppServerHostedAgentRuntimeTests {
         await runtime.DisposeAsync();
     }
 
-    /// <summary>AI-2331: the "default" no-override sentinel must NOT be sent to Codex — on a ChatGPT
+    /// <summary>the "default" no-override sentinel must NOT be sent to Codex — on a ChatGPT
     /// account <c>model:"default"</c> is rejected with a 400 and fails the turn. thread/start AND
     /// turn/start must OMIT the model entirely (letting Codex resolve it from ~/.codex/config.toml),
     /// exactly as the PTY path (<c>CodexLauncher.AddModelArg</c>) does. Before the fix both carried
@@ -103,7 +103,7 @@ public class CodexAppServerHostedAgentRuntimeTests {
         await runtime.DisposeAsync();
     }
 
-    /// <summary>Control for AI-2331: a CONCRETE model is passed through verbatim on both thread/start and
+    /// <summary>Control: a CONCRETE model is passed through verbatim on both thread/start and
     /// turn/start (so the fix only strips the sentinel, never a real override).</summary>
     [Test]
     public async Task Concrete_model_is_passed_on_thread_start_and_turn_start() {

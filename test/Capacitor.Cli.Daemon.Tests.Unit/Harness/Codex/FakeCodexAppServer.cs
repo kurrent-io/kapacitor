@@ -47,9 +47,9 @@ sealed class FakeCodexAppServer : IAsyncDisposable {
     public readonly List<string>       ReceivedMethods    = [];
     public readonly List<string>       InitializeOptOuts  = [];
     public string?                     LastThreadStartSandbox;
-    public bool                        LastThreadStartHadModel; // AI-2331: was the "model" key present on thread/start?
+    public bool                        LastThreadStartHadModel; // was the "model" key present on thread/start?
     public string?                     LastThreadStartModel;    // its value when present (null when omitted)
-    public bool                        LastTurnStartHadModel;   // AI-2331: was the "model" key present on turn/start?
+    public bool                        LastTurnStartHadModel;   // was the "model" key present on turn/start?
     public string?                     LastTurnStartModel;
     public string?                     LastResumeThreadId; // §2.7 B4: the threadId carried on thread/resume
     public string?                     LastTurnApprovalPolicy;
