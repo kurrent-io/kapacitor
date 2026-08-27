@@ -172,6 +172,13 @@ public class MarkdownBlocksTests {
                 await Assert.That(button.FontSize).IsEqualTo(linkedText.FontSize);
                 await Assert.That(button.FontWeight).IsEqualTo(linkedText.FontWeight);
                 await Assert.That(button.Bounds.Height).IsLessThanOrEqualTo(linkedText.Bounds.Height);
+
+                // The line keeps the text's own baseline, and the button's glyphs sit on it.
+                var inner = All<TextBlock>(button).Single();
+                var innerBaseline = ((Visual)inner).TranslatePoint(new Point(0, inner.TextLayout.TextLines[0].Baseline), linkedText)!.Value.Y;
+                var lineBaseline = linkedText.TextLayout.TextLines[0].Baseline;
+                await Assert.That(Math.Abs(lineBaseline - plainText.TextLayout.TextLines[0].Baseline)).IsLessThanOrEqualTo(0.5);
+                await Assert.That(Math.Abs(innerBaseline - lineBaseline)).IsLessThanOrEqualTo(1);
             } finally { linked.Close(); plain.Close(); }
         });
     }

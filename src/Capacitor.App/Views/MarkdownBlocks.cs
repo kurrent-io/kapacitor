@@ -5,6 +5,8 @@ using Avalonia.Controls.Documents;
 using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Media;
+using Avalonia.Media.TextFormatting;
+using Avalonia.VisualTree;
 using Capacitor.App.Services;
 using Markdig;
 using Markdig.Extensions.Tables;
@@ -23,6 +25,7 @@ public static class MarkdownBlocks {
     static readonly MarkdownPipeline Pipeline =
         new MarkdownPipelineBuilder().UseAutoLinks().UsePipeTables().UsePreciseSourceLocation().Build();
     static readonly FontFamily Mono = new("Menlo,Monaco,Consolas,Cascadia Mono,DejaVu Sans Mono,monospace");
+    const double LineSpacing = 1.6;
 
     static IBrush Brush(string key) => Application.Current?.FindResource(key) as IBrush ?? Brushes.Gray;
 
@@ -66,7 +69,7 @@ public static class MarkdownBlocks {
             TextWrapping = TextWrapping.Wrap,
             FontSize = fontSize,
             FontWeight = bold ? FontWeight.SemiBold : FontWeight.Normal,
-            LineHeight = fontSize * 1.6,
+            LineHeight = fontSize * LineSpacing,
             Foreground = Brush("KcapTextBrush"),
         };
         foreach (var inline in inlines) AddInline(source, text.Inlines!, inline, openLink, (fontSize, text.FontWeight));
@@ -153,9 +156,23 @@ public static class MarkdownBlocks {
         VerticalAlignment = VerticalAlignment.Center,
     };
 
-    // A control's baseline is its bottom edge, so aligning it to the text baseline lifts the
-    // whole button above the line; centring keeps its glyphs on the neighbours' line.
-    static InlineUIContainer Link(HyperlinkButton button) => new() { Child = button, BaselineAlignment = BaselineAlignment.Center };
+    // A hosted control's baseline is its bottom edge, and the line adopts the largest run
+    // baseline: a button as tall as the line drags the whole line's text down to its bottom. The
+    // button is therefore laid out at the font's natural line height and sized to its ascent,
+    // so its bottom is a baseline no taller than the text's own, its glyphs sit on that line, and
+    // their descenders overflow it — which every template part must be allowed to draw.
+    static InlineUIContainer Link(HyperlinkButton button) {
+        button.VerticalContentAlignment = VerticalAlignment.Top;
+        button.ClipToBounds = false;
+        button.UseLayoutRounding = false;
+        button.SetValue(TextBlock.LineHeightProperty, double.NaN);
+        button.TemplateApplied += (_, _) => { foreach (var part in button.GetVisualDescendants()) part.ClipToBounds = false; };
+        button.AttachedToVisualTree += (_, _) => button.Height = AscentOf(button.FontFamily, button.FontWeight, button.FontSize);
+        return new() { Child = button };
+    }
+
+    static double AscentOf(FontFamily family, FontWeight weight, double fontSize) =>
+        new TextLayout("x", new Typeface(family, FontStyle.Normal, weight), fontSize, Brushes.Black).TextLines[0].Baseline;
 
     static string PlainText(string source, ContainerInline container) =>
         string.Concat(container.Select(inline => inline switch {
