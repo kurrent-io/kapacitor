@@ -47,6 +47,10 @@ sealed class FakeCodexAppServer : IAsyncDisposable {
     public readonly List<string>       ReceivedMethods    = [];
     public readonly List<string>       InitializeOptOuts  = [];
     public string?                     LastThreadStartSandbox;
+    public bool                        LastThreadStartHadModel; // AI-2331: was the "model" key present on thread/start?
+    public string?                     LastThreadStartModel;    // its value when present (null when omitted)
+    public bool                        LastTurnStartHadModel;   // AI-2331: was the "model" key present on turn/start?
+    public string?                     LastTurnStartModel;
     public string?                     LastResumeThreadId; // §2.7 B4: the threadId carried on thread/resume
     public string?                     LastTurnApprovalPolicy;
     public string?                     LastTurnEffort;
@@ -113,8 +117,12 @@ sealed class FakeCodexAppServer : IAsyncDisposable {
                 break;
 
             case "thread/start":
-                if (@params.ValueKind == JsonValueKind.Object && @params.TryGetProperty("sandbox", out var sb))
-                    LastThreadStartSandbox = sb.ValueKind == JsonValueKind.String ? sb.GetString() : null;
+                if (@params.ValueKind == JsonValueKind.Object) {
+                    if (@params.TryGetProperty("sandbox", out var sb))
+                        LastThreadStartSandbox = sb.ValueKind == JsonValueKind.String ? sb.GetString() : null;
+                    LastThreadStartHadModel = @params.TryGetProperty("model", out var tsm);
+                    LastThreadStartModel    = LastThreadStartHadModel && tsm.ValueKind == JsonValueKind.String ? tsm.GetString() : null;
+                }
                 await RespondAsync(id, new JsonObject {
                     ["thread"]        = new JsonObject { ["id"] = ThreadId, ["sessionId"] = ThreadId, ["path"] = "/tmp/r.jsonl" },
                     ["model"]         = Model,
@@ -145,6 +153,12 @@ sealed class FakeCodexAppServer : IAsyncDisposable {
                     LastTurnApprovalPolicy = ap.GetString();
                 if (@params.ValueKind == JsonValueKind.Object && @params.TryGetProperty("effort", out var ef))
                     LastTurnEffort = ef.GetString();
+                LastTurnStartHadModel = false;
+                LastTurnStartModel    = null;
+                if (@params.ValueKind == JsonValueKind.Object && @params.TryGetProperty("model", out var tm)) {
+                    LastTurnStartHadModel = true;
+                    LastTurnStartModel    = tm.ValueKind == JsonValueKind.String ? tm.GetString() : null;
+                }
 
                 var turnId = "turn-" + _turnStartCount;
                 _lastTurnId = turnId;

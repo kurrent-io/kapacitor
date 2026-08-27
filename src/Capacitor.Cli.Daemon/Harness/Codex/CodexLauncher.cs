@@ -397,16 +397,23 @@ internal sealed partial class CodexLauncher(
         args.Add($"mcp_servers.{serverId}.default_tools_approval_mode=\"approve\"");
     }
 
-    /// Append `-m &lt;model&gt;` unless the model is empty or the "default" no-override sentinel.
-    /// "default" is the sentinel from the flow/agent dispatch; passing it as `-m default` is
-    /// rejected by Codex on a ChatGPT account ("The 'default' model is not supported when using
-    /// Codex with a ChatGPT account") and silently yields an empty turn. Omitting -m makes Codex
-    /// use the model from ~/.codex/config.toml (mirrors the effort=="auto" case). Shared by both
-    /// the default and review launch paths so the sentinel is honored in either.
+    /// True when <paramref name="model"/> is a concrete model slug to pass through to Codex, rather than
+    /// empty or the "default" no-override sentinel. "default" is the sentinel from the flow/agent
+    /// dispatch; passing it to Codex verbatim — as PTY `-m default`, or as the app-server
+    /// thread/turn `model` param — is rejected on a ChatGPT account ("The 'default' model is not
+    /// supported when using Codex with a ChatGPT account") and yields a failed/empty turn. Omitting it
+    /// makes Codex resolve the model from ~/.codex/config.toml (mirrors the effort=="auto" case). Shared
+    /// by the PTY launch args AND <c>CodexAppServerHostedAgentRuntime</c>'s thread/turn params so the
+    /// sentinel is honored on every Codex transport.
+    internal static bool IsConcreteModel(string? model) =>
+        !string.IsNullOrEmpty(model) && !string.Equals(model, "default", StringComparison.OrdinalIgnoreCase);
+
+    /// Append `-m &lt;model&gt;` unless the model is empty or the "default" no-override sentinel
+    /// (see <see cref="IsConcreteModel"/>).
     static void AddModelArg(List<string> args, string? model) {
-        if (!string.IsNullOrEmpty(model) && !string.Equals(model, "default", StringComparison.OrdinalIgnoreCase)) {
+        if (IsConcreteModel(model)) {
             args.Add("-m");
-            args.Add(model);
+            args.Add(model!);
         }
     }
 
