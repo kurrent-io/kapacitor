@@ -412,4 +412,27 @@ public class ChatTabViewSmokeTests {
             await host.CloseAsync();
         });
     }
+
+    /// Pins follow-tail against virtualization's estimate: an appended row far taller than the
+    /// rows around it still leaves the reader at the real bottom once it is measured.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Follow_tail_lands_at_the_bottom_when_the_appended_row_is_taller_than_the_estimate() {
+        await RunOnUiAsync(async () => {
+            var host = new Host();
+            var path = Tmp.CreateFile("tall.jsonl", Enumerable.Repeat(UserLine, 60).ToArray());
+            await host.LoadAsync(path);
+            await Assert.That(host.AtBottom()).IsTrue();
+
+            var reply = string.Join("\\n\\n", Enumerable.Range(1, 25).Select(i => $"Paragraph {i} of a long reply."));
+            File.AppendAllLines(path, ["{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"" + reply + "\"}]}}"]);
+            host.Time.Advance(ChatTabViewModel.PollInterval);
+            await (host.Chat.PendingReadForTesting ?? Task.CompletedTask);
+            host.Settle();
+
+            await Assert.That(host.Chat.Items.Count).IsEqualTo(61);
+            await Assert.That(host.AtBottom()).IsTrue();
+            await host.CloseAsync();
+        });
+    }
 }

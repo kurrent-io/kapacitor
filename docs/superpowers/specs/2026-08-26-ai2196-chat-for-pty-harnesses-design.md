@@ -308,16 +308,21 @@ the shape Avalonia virtualizes; an `ItemsControl` dropped inside an external
 `ScrollViewer` is measured at infinite height and realizes every item. Item
 templates are per item type (`DataTemplates` keyed on the three shapes).
 
-Follow-tail is a view concern, stateless across events: on each collection
-change the view decides *was at end* right then, from the `ScrollViewer`'s
-current offset, viewport and **old** extent (the new items have not been
-measured yet), and if so arms a one-shot `LayoutUpdated` hook — the explicit
-layout-completion seam, when the virtualized presenter has established the
-new extent; an immediate `ScrollToEnd` would clamp against the old one. The
-hook re-checks before scrolling that the offset is still the one captured at
-decision time and does nothing otherwise, so a user who scrolls up in the
-window between the event and the layout pass is not yanked; a user who has
-already scrolled up keeps their offset untouched.
+Follow-tail is a view concern that sticks to the bottom: on every
+`ScrollViewer.ScrollChanged` whose extent or viewport moved, the view decides
+*was at the bottom before this change* from the event's deltas and, if so,
+scrolls to the new end. It is not a once-per-append scroll because the
+virtualizing panel reports the extent as an estimate that a tall row corrects
+only once it is realized — a single scroll to the estimated end lands short,
+and the next append then reads "not at the bottom" and stops following;
+re-evaluating on each change converges instead. A reader scrolling up moves
+the offset down, in the same change or an earlier one, and a change whose
+offset delta is negative is never followed — only the panel's own anchoring
+moves the offset up while the extent grows — so a user who has scrolled up
+keeps their offset untouched until they return to the bottom. The hook is
+attached when the list's template is applied, which for a surface built
+before its first layout is later than its first rows, so the initial load
+lands at the bottom through the same rule.
 
 ### Markdown
 
