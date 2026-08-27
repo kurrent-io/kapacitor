@@ -251,4 +251,31 @@ public class HomeViewSmokeTests {
         await Assert.That(countAfterOne).IsEqualTo(1);
         await Assert.That(countAfterTwo).IsEqualTo(2);
     }
+
+    /// Pins that the goal box draws no ring of its own on focus: the card is its boundary, so
+    /// the theme's focused border and fill stay off.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task A_focused_goal_box_draws_no_ring_inside_its_card() {
+        var (thickness, transparent) = await AvaloniaSession.DispatchAsync(() => {
+            var (_, vm, _, _, tmp) = Build();
+            using var _tmp = tmp;
+            var window = new Window { Content = new LauncherPaneView { DataContext = vm }, Width = 800, Height = 600 };
+            window.Show();
+            Dispatcher.UIThread.RunJobs();
+            var goal = Find<TextBox>(window, "GoalInput")!;
+            goal.Focus();
+            Dispatcher.UIThread.RunJobs();
+            window.UpdateLayout();
+            var ring = goal.GetVisualDescendants().OfType<Border>().Single(b => b.Name == "PART_BorderElement");
+            var result = (ring.BorderThickness, ring.Background is null || ring.Background is Avalonia.Media.ISolidColorBrush { Color.A: 0 });
+            window.Close();
+            Dispatcher.UIThread.RunJobs();
+            vm.Dispose();
+            return result;
+        });
+
+        await Assert.That(thickness).IsEqualTo(new Avalonia.Thickness(0));
+        await Assert.That(transparent).IsTrue();
+    }
 }

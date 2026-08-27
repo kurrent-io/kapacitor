@@ -33,5 +33,11 @@
             <Setter Property="CornerRadius" Value="12" />
             <Setter Property="Padding" Value="0" />
         </Style>
+        <!-- A TextBox inside one of our cards: the card is its boundary, so the theme's focused
+             ring and fill would read as a second box. -->
+        <Style Selector="TextBox.kcapEmbedded:focus /template/ Border#PART_BorderElement, TextBox.kcapEmbedded:pointerover /template/ Border#PART_BorderElement">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+        </Style>
     </Application.Styles>
 </Application>

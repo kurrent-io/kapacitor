@@ -16,7 +16,7 @@
         <Border Background="{StaticResource KcapSurfaceBrush}" BorderBrush="{StaticResource KcapBorderBrush}"
                 BorderThickness="1" CornerRadius="12" Padding="14">
             <StackPanel Spacing="12">
-                <TextBox x:Name="GoalInput" Text="{Binding Goal}"
+                <TextBox x:Name="GoalInput" Classes="kcapEmbedded" Text="{Binding Goal}"
                          PlaceholderText="What should we build? Type a goal or paste an issue, PR, or work-item URL…"
                          Background="Transparent" Foreground="{StaticResource KcapTextBrush}"
                          BorderThickness="0" MinHeight="72" TextWrapping="Wrap" FontSize="14"
