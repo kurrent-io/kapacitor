@@ -1,9 +1,11 @@
 using System.Collections.Specialized;
+using System.Globalization;
 using System.Text;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Headless;
 using Avalonia.Input;
+using Avalonia.Media;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
 using Capacitor.App.Services;
@@ -26,25 +28,48 @@ public class ChatTabViewSmokeTests {
     [TempDir] public required TempDir Tmp { get; init; }
 
     const string UserLine = """{"type":"user","message":{"role":"user","content":"hello"}}""";
+    const string AssistantLinkLine = """{"type":"assistant","message":{"content":[{"type":"text","text":"See [docs](https://example.com/docs) now."}]}}""";
+    const string ToolCallLine = """{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls -la"}}]}}""";
+    const string ToolResultLine = """{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}""";
+    const string ToolErrorLine = """{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"boom","is_error":true}]}}""";
     static readonly TimeSpan CrDelay = TimeSpan.FromMilliseconds(150);
 
     sealed class Host {
+        bool _shown;
+
         public FakeDaemonClientService Daemon { get; } = new();
         public FakeTimeProvider Time { get; } = new();
         public FakeTerminalAttachClientFactory Attach { get; } = new();
+        public RecordingOpener Opener { get; } = new();
         public TerminalTabViewModel Terminal { get; }
         public ChatTabViewModel Chat { get; }
         public ChatTabView View { get; }
         public Window Window { get; }
         public ScrollViewer Scroll => View.GetVisualDescendants().OfType<ScrollViewer>().First();
+        public bool HasScroll => View.GetVisualDescendants().OfType<ScrollViewer>().Any();
         public TextBox Composer => View.FindControl<TextBox>("ComposerInput")!;
 
-        public Host() {
+        /// `show: false` leaves the window unshown, so the view has no template and no
+        /// ScrollViewer until Show() is called — the order production takes, where the tab's
+        /// first read starts before the workspace view exists.
+        public Host(bool show = true) {
             Terminal = new TerminalTabViewModel("a1", Daemon, Attach.Factory, () => new FakeTerminalSurface(), Time);
-            Chat = new ChatTabViewModel("a1", Daemon, Terminal, TranscriptProjection.For("claude"), new RecordingOpener(), Time);
+            Chat = new ChatTabViewModel("a1", Daemon, Terminal, TranscriptProjection.For("claude"), Opener, Time);
             View = new ChatTabView { DataContext = Chat };
             Window = new Window { Content = View, Width = 800, Height = 600 };
+            if (!show) return;
+            Show();
+        }
+
+        public void Show() {
             Window.Show();
+            _shown = true;
+            Settle();
+        }
+
+        public void Settle() {
+            Dispatcher.UIThread.RunJobs();
+            if (_shown) Window.UpdateLayout();
             Dispatcher.UIThread.RunJobs();
         }
 
@@ -76,8 +101,7 @@ public class ChatTabViewSmokeTests {
             Daemon.Agents.AddOrUpdate(Agent("a1", "claude", hasTerminal: true) with { TranscriptPath = path });
             await (Terminal.PendingResolveWorkForTesting ?? Task.CompletedTask);
             await (Chat.PendingReadForTesting ?? Task.CompletedTask);
-            Dispatcher.UIThread.RunJobs();
-            Window.UpdateLayout();
+            Settle();
         }
 
         public async Task AppendAndTickAsync(string path, int lines) {
@@ -160,6 +184,37 @@ public class ChatTabViewSmokeTests {
         });
     }
 
+    /// Pins that the initial load lands the reader at the bottom even when it completes before the
+    /// view's first layout pass — an unshown window, and a tab collapsed from the start — so there
+    /// is no ScrollViewer to read "was at end" from when the rows arrive.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task An_initial_load_before_the_first_layout_still_lands_the_reader_at_the_bottom() {
+        await RunOnUiAsync(async () => {
+            var unshown = new Host(show: false);
+            await unshown.LoadAsync(Tmp.CreateFile("unshown.jsonl", Enumerable.Repeat(UserLine, 60).ToArray()));
+            await Assert.That(unshown.Chat.Items).Count().IsEqualTo(60);
+            await Assert.That(unshown.HasScroll).IsFalse();
+
+            unshown.Show();
+
+            await Assert.That(unshown.AtBottom()).IsTrue();
+            await unshown.CloseAsync();
+
+            var collapsed = new Host(show: false);
+            collapsed.View.IsVisible = false;
+            collapsed.Show();
+            await collapsed.LoadAsync(Tmp.CreateFile("hidden.jsonl", Enumerable.Repeat(UserLine, 60).ToArray()));
+            await Assert.That(collapsed.HasScroll).IsFalse();
+
+            collapsed.View.IsVisible = true;
+            collapsed.Settle();
+
+            await Assert.That(collapsed.AtBottom()).IsTrue();
+            await collapsed.CloseAsync();
+        });
+    }
+
     /// Pins that appends arriving while the surface is collapsed still leave the reader at the
     /// bottom once it is laid out again — the shape a Chat tab sitting behind the Terminal tab is
     /// in, where the view arms at most one pending scroll however many appends land.
@@ -190,6 +245,53 @@ public class ChatTabViewSmokeTests {
             await host.CloseAsync();
         });
     }
+
+    /// Pins the assistant template's one silent binding: a link rendered inside a chat row opens
+    /// through the tab's own command, reached across the item boundary, and opens exactly once.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task A_link_in_an_assistant_row_opens_through_the_tabs_command() {
+        await RunOnUiAsync(async () => {
+            var host = new Host();
+            await host.LoadAsync(Tmp.CreateFile("link.jsonl", [AssistantLinkLine]));
+
+            await Assert.That(host.Chat.Items).Count().IsEqualTo(1);
+
+            var link = host.View.GetVisualDescendants().OfType<HyperlinkButton>().Single();
+            var origin = link.TranslatePoint(new Point(2, 2), host.Window)!.Value;
+            host.Window.MouseDown(origin, MouseButton.Left);
+            host.Window.MouseUp(origin, MouseButton.Left);
+            Dispatcher.UIThread.RunJobs();
+
+            await Assert.That(host.Opener.Opened).IsEquivalentTo(new[] { "https://example.com/docs" });
+            await host.CloseAsync();
+        });
+    }
+
+    /// Pins the tool row's outcome colour: the glyph takes the brush ToolOutcomeBrushConverter
+    /// maps for the paired result, danger for an error and accent for a success.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task A_paired_tool_row_paints_its_glyph_with_the_outcome_brush() {
+        await RunOnUiAsync(async () => {
+            var host = new Host();
+            await host.LoadAsync(Tmp.CreateFile("tools.jsonl",
+                [ToolCallLine, ToolResultLine, ToolCallLine.Replace("t1", "t2"), ToolErrorLine.Replace("t1", "t2")]));
+
+            await Assert.That(host.Chat.Items.Cast<ToolCallItem>().Select(i => i.Outcome))
+                .IsEquivalentTo([ToolOutcome.Done, ToolOutcome.Error], CollectionOrdering.Matching);
+            var glyphs = host.View.GetVisualDescendants().OfType<TextBlock>()
+                .Where(t => t.Text is "✓" or "✕").ToList();
+
+            await Assert.That(glyphs.Select(g => g.Text!)).IsEquivalentTo(["✓", "✕"], CollectionOrdering.Matching);
+            await Assert.That(glyphs[0].Foreground).IsSameReferenceAs(Brush(isError: false));
+            await Assert.That(glyphs[1].Foreground).IsSameReferenceAs(Brush(isError: true));
+            await host.CloseAsync();
+        });
+    }
+
+    static object? Brush(bool isError) =>
+        ToolOutcomeBrushConverter.Instance.Convert(isError, typeof(IBrush), null, CultureInfo.InvariantCulture);
 
     /// Pins that Enter reaches the send: the composer consumes it, the typed text leaves as one
     /// bracketed paste followed by the CR, and no newline is left behind in the box.
