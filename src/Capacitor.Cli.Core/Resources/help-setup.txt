@@ -109,8 +109,10 @@ Codex runs only hooks you have trusted. After Codex hooks install, the next
 `codex` CLI launch prompts to trust them — accept once to trust them all, or
 run /hooks inside Codex to trust the kcap entries individually. The Codex
 desktop app never shows that prompt: if you only use the desktop app, trust
-the kcap hooks in Settings → Hooks there. Until trusted, the hooks are
-installed but inert and no sessions are captured.
+the kcap hooks in Settings → Hooks there (and since setup detects Codex by
+`codex` on PATH, you may need `kcap plugin install --codex` to install the
+hooks first). Until trusted, the hooks are installed but inert and no
+sessions are captured.
 
 Once you are signed in, on a server that offers browser setup kcap creates a
 setup link, opens your browser on it, and waits while you work through the
