@@ -2,7 +2,7 @@ using System.Text.Json;
 
 namespace Capacitor.Cli.Core;
 
-static class JsonElementExtensions {
+public static class JsonElementExtensions {
     extension(JsonElement el) {
         // The one primitive the property accessors below cannot express: whether the element ITSELF
         // is an object. They all answer about a named property, so a caller guarding a document root

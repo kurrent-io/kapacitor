@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Capacitor.Cli.Core;
 
 namespace Capacitor.App.ViewModels;
 
@@ -18,11 +19,9 @@ public static class ToolDetail {
         if (string.IsNullOrEmpty(inputJson)) return "";
         try {
             using var doc = JsonDocument.Parse(inputJson);
-            if (doc.RootElement.ValueKind != JsonValueKind.Object) return "";
+            if (!doc.RootElement.IsObject) return "";
             foreach (var key in Keys) {
-                if (doc.RootElement.TryGetProperty(key, out var value)
-                    && value.ValueKind == JsonValueKind.String
-                    && value.GetString() is { } s && s.Trim().Length > 0)
+                if (doc.RootElement.Str(key) is { } s && s.Trim().Length > 0)
                     return FirstLine(PathKeys.Contains(key) ? Relative(s.Trim(), root) : s);
             }
         } catch (JsonException) { }
