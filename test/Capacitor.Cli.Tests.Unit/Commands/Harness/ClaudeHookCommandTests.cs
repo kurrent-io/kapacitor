@@ -657,7 +657,10 @@ public class ClaudeHookCommandTests {
         var exit = await fx.HandleAsync($$"""{"hook_event_name":"SubagentStop","session_id":"{{Sid}}","agent_id":"{{AgentId}}","transcript_path":"/none","cwd":"/tmp"}""");
         sw.Stop();
         await Assert.That(exit).IsEqualTo(0);
-        await Assert.That(sw.Elapsed).IsLessThan(TimeSpan.FromSeconds(5)); // did not wait the full 30s
+        // Bounded well clear of the hook's own 5s budget rather than at it: the claim is that the
+        // attempt gave up instead of waiting the server's 30s hold, and a bound equal to the budget
+        // it is measuring has no headroom for a loaded runner (observed 5.24s on a Windows leg).
+        await Assert.That(sw.Elapsed).IsLessThan(TimeSpan.FromSeconds(10));
         await Assert.That(fx.SpoolFiles.Any()).IsTrue();
     }
 
