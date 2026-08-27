@@ -4,6 +4,7 @@ using Avalonia.Controls;
 using Avalonia.Controls.Documents;
 using Avalonia.Headless;
 using Avalonia.Input;
+using Avalonia.Media;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
 using Capacitor.App.Views;
@@ -80,11 +81,11 @@ public class MarkdownBlocksTests {
     [NotInParallel("AvaloniaSession")]
     public async Task A_disallowed_link_and_unknown_constructs_render_as_plain_text() {
         await RunOnUiAsync(async () => {
-            var (window, root, opened) = Show("Bad [link](javascript:alert(1)) and <b>html</b>\n\n| a | b |\n|---|---|\n| 1 | 2 |\n");
+            var (window, root, opened) = Show("Bad [link](javascript:alert(1)) and <b>html</b>\n\n<div>raw</div>\n");
             try {
                 await Assert.That(All<HyperlinkButton>(root)).IsEmpty();
                 await Assert.That(All<SelectableTextBlock>(root).Any(t => t.Inlines!.Any(i => i is Run { Text: "link" }))).IsTrue();
-                await Assert.That(All<SelectableTextBlock>(root).Any(t => Reads(t).Contains("| a | b |"))).IsTrue();
+                await Assert.That(All<SelectableTextBlock>(root).Any(t => Reads(t).Contains("<div>raw</div>"))).IsTrue();
                 await Assert.That(opened).IsEmpty();
                 await Assert.That(root.GetVisualDescendants().OfType<Control>().Any(c => c.Focusable && c is not SelectableTextBlock)).IsFalse();
             } finally { window.Close(); }
@@ -125,6 +126,29 @@ public class MarkdownBlocksTests {
             try {
                 await Assert.That(All<SelectableTextBlock>(root).Single().Inlines!.OfType<Run>().Any(r => r.Text == "![](https://example.com/y.png)")).IsTrue();
                 await Assert.That(All<HyperlinkButton>(root).Single().Content).IsEqualTo("see code here");
+            } finally { window.Close(); }
+        });
+    }
+
+    /// Pins table rendering: a pipe table is a grid with one row per source row, a semibold header,
+    /// inline-rendered cells, and the column alignment the separator row declares.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task A_pipe_table_renders_as_a_grid_with_a_header_and_aligned_cells() {
+        await RunOnUiAsync(async () => {
+            var (window, root, _) = Show("| Issue | Count |\n|---|--:|\n| `x` first | 2 |\n| second | 10 |");
+            try {
+                var table = All<Grid>(root).Single(g => g.Name == "MarkdownTable");
+                await Assert.That(table.RowDefinitions.Count).IsEqualTo(3);
+                await Assert.That(table.ColumnDefinitions.Count).IsEqualTo(2);
+
+                var cells = All<SelectableTextBlock>(table).ToList();
+                await Assert.That(cells.Select(Reads)).IsEquivalentTo(["Issue", "Count", "x first", "2", "second", "10"], CollectionOrdering.Matching);
+                await Assert.That(cells[0].FontWeight).IsEqualTo(FontWeight.SemiBold);
+                await Assert.That(cells[2].FontWeight).IsEqualTo(FontWeight.Normal);
+                await Assert.That(cells[2].Inlines!.OfType<Run>().First().FontFamily.Name).IsNotEqualTo(cells[4].FontFamily.Name);
+                await Assert.That(cells[3].TextAlignment).IsEqualTo(TextAlignment.Right);
+                await Assert.That(cells[2].TextAlignment).IsEqualTo(TextAlignment.Left);
             } finally { window.Close(); }
         });
     }

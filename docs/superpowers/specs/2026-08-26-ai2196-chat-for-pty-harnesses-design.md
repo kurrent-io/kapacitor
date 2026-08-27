@@ -10,7 +10,7 @@ Out of scope, by prior decomposition and by the canvas annotations: structured
 turn frames, the "NEEDS YOU" approval card, permission-mode control and the "+"
 attachment affordance (AI-2197); chat for ACP / app-server sessions, which have
 no PTY and no transcript file the daemon locates (AI-2197); the work-context
-sidebar (AI-2198). Deferred within this slice: markdown tables and images,
+sidebar (AI-2198). Deferred within this slice: markdown images,
 syntax highlighting in code blocks, and rendering thinking or tool-result bodies.
 
 ## Decisions
@@ -324,7 +324,7 @@ already scrolled up keeps their offset untouched.
 `MarkdownView` — a `ContentControl` with a styled `Text` property and an
 `OpenLink` command property — rebuilds its `Content` (a vertical panel of
 block controls) from a Markdig AST (default CommonMark pipeline plus
-auto-links, with precise source locations so an unmapped inline can print its
+auto-links and pipe tables, with precise source locations so an unmapped inline can print its
 own source text — no other extension) on every `Text` change. `MarkdownBlocks` maps: paragraphs and
 headings → `SelectableTextBlock` with inlines (`Bold`, `Italic`, monospace
 `Run` for code spans); a soft line break is a space, as CommonMark renders it,
@@ -337,13 +337,17 @@ nested inside emphasis or a link label degrades to a space; fenced and
 indented code → a `Border`
 around a monospace `SelectableTextBlock`; bullet and ordered lists → marker +
 nested content rows; block quotes → a left rule beside the content; thematic
-breaks → a hairline. A link is an `InlineUIContainer` hosting a link-styled
+breaks → a hairline; a pipe table → a framed `Grid` with one row per source
+row, a semibold header row, cells rendered through the same inline mapper with
+the alignment the separator row declares, the widest column taking the
+remaining width while the others size to content up to a cap, so a prose
+column wraps inside the pane. A link is an `InlineUIContainer` hosting a link-styled
 `HyperlinkButton` (accent, underlined, hand cursor) with **`NavigateUri` left
 unset** — set, the control opens the URI itself and would bypass the policy
 below — and `Command` bound to `OpenLink` with the URL as its parameter; a
 button brings keyboard activation (Enter/Space), focus, and automation
-semantics, which a bare inline `Run` has none of. HTML, tables, images and
-any other node render their literal source text — degraded, never dropped.
+semantics, which a bare inline `Run` has none of. HTML, images and any
+other node render their literal source text — degraded, never dropped.
 User bubbles do not go through it: what the user typed is shown as typed.
 
 Links are agent-authored and untrusted, and `ShellUrlOpener` hands any string
@@ -697,8 +701,8 @@ so it is unchanged. `docs/CHANGES.md` gains a "Session chat" entry.
   blocks, not tokens, so assistant text appears per block, a few hundred
   milliseconds after the vendor writes it. That is what "rendered from the
   transcript" means; token streaming is AI-2197's frames.
-- **Markdown subset.** Unknown constructs degrade to literal text. Tables and
-  images are the likeliest gaps and are deferred knowingly.
+- **Markdown subset.** Unknown constructs degrade to literal text. Images are
+  the likeliest gap and are deferred knowingly.
 - **A never-resolving path** (older daemon, or the poll gave up) leaves Chat in
   `Waiting` with the Terminal tab one click away; the note says what it is
   waiting for.

@@ -7,6 +7,7 @@ using Avalonia.Layout;
 using Avalonia.Media;
 using Capacitor.App.Services;
 using Markdig;
+using Markdig.Extensions.Tables;
 using Markdig.Syntax;
 using Markdig.Syntax.Inlines;
 using MdInline = Markdig.Syntax.Inlines.Inline;
@@ -20,7 +21,7 @@ public static class MarkdownBlocks {
     // without them every inline span is empty and that fallback prints the document's first
     // character. They change recorded positions only, never which constructs parse.
     static readonly MarkdownPipeline Pipeline =
-        new MarkdownPipelineBuilder().UseAutoLinks().UsePreciseSourceLocation().Build();
+        new MarkdownPipelineBuilder().UseAutoLinks().UsePipeTables().UsePreciseSourceLocation().Build();
     static readonly FontFamily Mono = new("Menlo,Monaco,Consolas,Cascadia Mono,DejaVu Sans Mono,monospace");
 
     static IBrush Brush(string key) => Application.Current?.FindResource(key) as IBrush ?? Brushes.Gray;
@@ -39,6 +40,7 @@ public static class MarkdownBlocks {
         CodeBlock c          => CodeBlock(c),
         ListBlock list       => List(source, list, openLink),
         QuoteBlock quote     => Quote(source, quote, openLink),
+        Table table          => Table(source, table, openLink),
         ThematicBreakBlock   => new Border { Height = 1, Background = Brush("KcapBorderBrush"), Margin = new Thickness(0, 4) },
         _                    => Literal(source, block),
     };
@@ -190,6 +192,63 @@ public static class MarkdownBlocks {
             panel.Children.Add(row);
         }
         return panel;
+    }
+
+    // Auto columns wrap only once capped; the widest column takes what is left so a prose column
+    // wraps inside the pane instead of pushing the table past it.
+    const double AutoColumnCap = 240;
+
+    static Control Table(string source, Table table, ICommand? openLink) {
+        var rows = table.OfType<TableRow>().ToList();
+        var columns = Math.Max(table.ColumnDefinitions.Count, rows.Count == 0 ? 0 : rows.Max(r => r.Count));
+        var grid = new Grid { Name = "MarkdownTable" };
+        if (columns == 0) return grid;
+
+        var weight = new int[columns];
+        foreach (var row in rows)
+            foreach (var (cell, column) in row.OfType<TableCell>().Select((c, i) => (c, i)))
+                if (column < columns) weight[column] += SpanText(source, cell.Span).Length;
+        var widest = Array.IndexOf(weight, weight.Max());
+        for (var c = 0; c < columns; c++)
+            grid.ColumnDefinitions.Add(c == widest
+                ? new ColumnDefinition(1, GridUnitType.Star)
+                : new ColumnDefinition(GridLength.Auto) { MaxWidth = AutoColumnCap });
+
+        for (var r = 0; r < rows.Count; r++) {
+            grid.RowDefinitions.Add(new RowDefinition(GridLength.Auto));
+            foreach (var (cell, c) in rows[r].OfType<TableCell>().Select((cell, i) => (cell, i))) {
+                if (c >= columns) break;
+                var align = table.ColumnDefinitions.ElementAtOrDefault(c)?.Alignment switch {
+                    TableColumnAlign.Right  => TextAlignment.Right,
+                    TableColumnAlign.Center => TextAlignment.Center,
+                    _                       => TextAlignment.Left,
+                };
+                var content = InlineText(source, (cell.FirstOrDefault() as ParagraphBlock)?.Inline, openLink, 13, bold: rows[r].IsHeader);
+                Align(content, align);
+                var border = new Border {
+                    Padding = new Thickness(8, 5),
+                    BorderBrush = Brush("KcapBorderBrush"),
+                    BorderThickness = new Thickness(0, 0, 0, r == rows.Count - 1 ? 0 : 1),
+                    Child = content,
+                };
+                Grid.SetRow(border, r);
+                Grid.SetColumn(border, c);
+                grid.Children.Add(border);
+            }
+        }
+        return new Border {
+            BorderBrush = Brush("KcapBorderBrush"),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(8),
+            Child = grid,
+        };
+    }
+
+    static void Align(Control control, TextAlignment alignment) {
+        switch (control) {
+            case SelectableTextBlock text: text.TextAlignment = alignment; break;
+            case Panel panel: foreach (var child in panel.Children) Align(child, alignment); break;
+        }
     }
 
     static Control Quote(string source, QuoteBlock quote, ICommand? openLink) {
