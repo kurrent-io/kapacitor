@@ -1,53 +1,42 @@
 namespace Capacitor.Cli.Core.Harness.Cursor;
 
-public enum OsPlatform { MacOs, Linux, Windows }
-
 /// <summary>
 /// Filesystem layout for Cursor. Two roots, not one: the universal <c>~/.cursor</c> (settings,
 /// hooks.json, projects/ — same on every OS, under the user's home rather than the Electron user
-/// dir) and the per-OS Electron user dir that holds <c>workspaceStorage</c>.
+/// dir) and this host's Electron user dir, which holds <c>workspaceStorage</c>.
+///
+/// <para>Which Electron dir that is depends on the running OS, and this class is the only place that
+/// asks: a layout for an OS this process is not running on is a shape nothing here can read files
+/// through.</para>
 /// </summary>
 public sealed class CursorPaths {
     readonly string _home;
-    readonly string? _perOsUserDir;
+    readonly bool   _userDirIsNameable;
 
-    /// <param name="appData">Windows' Roaming AppData. Null means unset, which leaves the Electron
-    /// user dir unresolvable — detection then rests on <c>~/.cursor</c> alone.</param>
-    public CursorPaths(UserHome home, OsPlatform platform, string? appData) {
+    public CursorPaths(UserHome home) {
         _home = home.Path;
 
-        // Separator from the INJECTED platform, not the host's, so a Windows layout composes with
-        // backslashes even when resolved on a Mac.
-        var sep = platform == OsPlatform.Windows ? '\\' : '/';
-
-        UserDir = platform switch {
-            OsPlatform.MacOs   => Join(sep, _home, "Library", "Application Support", "Cursor", "User"),
-            OsPlatform.Windows => Join(sep, appData ?? "", "Cursor", "User"),
-            _                  => Join(sep, _home, ".config", "Cursor", "User")
-        };
-        WorkspaceStorageDir = UserDir + sep + "workspaceStorage";
-
-        _perOsUserDir = platform switch {
-            OsPlatform.MacOs   => Path.Combine(_home, "Library", "Application Support", "Cursor", "User"),
-            OsPlatform.Windows => appData is null ? null : Path.Combine(appData, "Cursor", "User"),
-            _                  => Path.Combine(_home, ".config", "Cursor", "User")
-        };
-    }
-
-    /// <summary>Current-process platform and AppData; the home comes from the caller.</summary>
-#pragma warning disable RS0030 // Windows' AppData is not derivable from a home
-    public static CursorPaths FromEnvironment(UserHome home) => new(
-        home,
-        OperatingSystem.IsMacOS()   ? OsPlatform.MacOs
-      : OperatingSystem.IsWindows() ? OsPlatform.Windows
-      :                               OsPlatform.Linux,
-        OperatingSystem.IsWindows() ? Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData) : null);
+        // Windows keeps the Electron dir under Roaming AppData, which no home derives; every other
+        // host puts it under the home itself.
+#pragma warning disable RS0030 // Roaming AppData is not derivable from a UserHome
+        var appData = OperatingSystem.IsWindows()
+            ? Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData)
+            : "";
 #pragma warning restore RS0030
 
-    /// <summary>The per-OS Electron user dir.</summary>
+        UserDir = OperatingSystem.IsMacOS()   ? Path.Combine(_home, "Library", "Application Support", "Cursor", "User")
+                : OperatingSystem.IsWindows() ? Path.Combine(appData, "Cursor", "User")
+                :                               Path.Combine(_home, ".config", "Cursor", "User");
+
+        // An AppData the OS declines to name leaves UserDir relative, and probing a relative path
+        // reads the working directory instead. Whether it was named is knowable only here.
+        _userDirIsNameable = !OperatingSystem.IsWindows() || appData.Length > 0;
+    }
+
+    /// <summary>This host's Electron user dir.</summary>
     public string UserDir { get; }
 
-    public string WorkspaceStorageDir { get; }
+    public string WorkspaceStorageDir => Path.Combine(UserDir, "workspaceStorage");
 
     /// <summary>The universal <c>~/.cursor</c> root, on every OS.</summary>
     public string CursorDir => Path.Combine(_home, ".cursor");
@@ -69,12 +58,13 @@ public sealed class CursorPaths {
     public string ProjectsDir => Path.Combine(CursorDir, "projects");
 
     /// <summary>
-    /// True when either Cursor root exists. Detection by directory presence — Cursor IDE users
-    /// without the <c>cursor</c> shell command on PATH must still be detected.
+    /// True when either Cursor root exists, asked now — an install that appears later must be seen.
+    /// Detection by directory presence: Cursor IDE users without the <c>cursor</c> shell command on
+    /// PATH must still be detected.
+    ///
+    /// <para>A root this host could not name is no signal at all, and detection then rests on
+    /// <c>~/.cursor</c> alone.</para>
     /// </summary>
     public bool IsInstalled =>
-        Directory.Exists(CursorDir) || (_perOsUserDir is not null && Directory.Exists(_perOsUserDir));
-
-    static string Join(char sep, string root, params string[] parts)
-        => root.TrimEnd(sep) + sep + string.Join(sep, parts);
+        Directory.Exists(CursorDir) || (_userDirIsNameable && Directory.Exists(UserDir));
 }

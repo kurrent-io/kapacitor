@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Capacitor.Cli.Core.Harness;
 
 namespace Capacitor.Cli.SessionStartMemory;
 
@@ -7,23 +8,23 @@ internal static class SessionStartMemoryOutputAdapters {
     /// OUTPUT layer so its presence never touches the lease/disposition of the memory/guidelines
     /// fragment (which was already decided upstream). It is merged marker-first when it is the only
     /// content, so Pi/OpenCode's marker-gated capture still recognises it.</param>
-    public static string Render(SessionStartHarness harness, string? fragment, string? workItemsNudge = null) {
+    public static string Render(HarnessId harness, string? fragment, string? workItemsNudge = null) {
         fragment = MergeNudge(fragment, workItemsNudge);
-        if (harness == SessionStartHarness.Claude && fragment is null) return "";
-        if (harness is SessionStartHarness.Kiro or SessionStartHarness.Pi or SessionStartHarness.OpenCode)
+        if (harness == HarnessId.Claude && fragment is null) return "";
+        if (harness is HarnessId.Kiro or HarnessId.Pi or HarnessId.OpenCode)
             return fragment is null ? "" : fragment + "\n";
 
         object envelope = harness switch {
-            SessionStartHarness.Claude => fragment is null
+            HarnessId.Claude => fragment is null
                 ? new ClaudeMemoryEnvelope(null!)
                 : new ClaudeMemoryEnvelope(new HookMemoryOutput("SessionStart", fragment)),
-            SessionStartHarness.Codex => fragment is null
+            HarnessId.Codex => fragment is null
                 ? new CodexMemoryEnvelope(true, null!)
                 : new CodexMemoryEnvelope(true, new HookMemoryOutput("SessionStart", fragment)),
-            SessionStartHarness.Cursor => new CursorMemoryEnvelope(fragment),
-            SessionStartHarness.Copilot => new CopilotMemoryEnvelope(fragment),
-            SessionStartHarness.Gemini => new GeminiMemoryEnvelope(fragment is null ? null : new HookMemoryOutput("SessionStart", fragment)),
-            SessionStartHarness.Antigravity => new AntigravityMemoryEnvelope(fragment is null ? null : [new AntigravityMemoryStep(fragment)]),
+            HarnessId.Cursor => new CursorMemoryEnvelope(fragment),
+            HarnessId.Copilot => new CopilotMemoryEnvelope(fragment),
+            HarnessId.Gemini => new GeminiMemoryEnvelope(fragment is null ? null : new HookMemoryOutput("SessionStart", fragment)),
+            HarnessId.Antigravity => new AntigravityMemoryEnvelope(fragment is null ? null : [new AntigravityMemoryStep(fragment)]),
             _ => throw new ArgumentOutOfRangeException(nameof(harness))
         };
 

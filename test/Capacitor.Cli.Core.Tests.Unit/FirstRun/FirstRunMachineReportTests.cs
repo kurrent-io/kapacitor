@@ -1,4 +1,5 @@
 using Capacitor.Cli.Core.FirstRun;
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Core.Setup;
 
 namespace Capacitor.Cli.Core.Tests.Unit.FirstRun;
@@ -6,31 +7,25 @@ namespace Capacitor.Cli.Core.Tests.Unit.FirstRun;
 // The Agents screen is built entirely out of this. Nothing the browser can discover for itself is in
 // it, so a mistake here does not degrade the screen — it empties it.
 public class FirstRunMachineReportTests {
-    static AgentDetectionResult Detection(
-            DetectedAgent? claude = null, DetectedAgent? cursor = null) =>
-        new(claude ?? new(false, false), new(false, false), cursor ?? new(false, false), new(false, false),
-            new(false, false), new(false, false), new(false, false), new(false, false), new(false, false));
-
     static FirstRunMachineReport Evaluate(
-            AgentDetectionResult detected,
-            Func<string, bool>?  isWired = null,
-            HarnessOfferLedger?  ledger  = null,
-            bool?                shell   = null,
-            string?              platform = null) =>
+            HarnessRegistry?    harnesses = null,
+            HarnessOfferLedger? ledger    = null,
+            bool?               shell     = null,
+            string?             platform  = null) =>
         FirstRunMachineReport.Evaluate(
-            "nostromo", "machine-1", detected, isWired ?? (_ => false), ledger ?? new HarnessOfferLedger(), shell,
-            platform);
+            "nostromo", "machine-1", harnesses ?? TestHarnesses.All(),
+            ledger ?? new HarnessOfferLedger(), shell, platform);
 
-    // Key absence is the only way this shape says "we did not look", so every vendor the catalogue
+    // Key absence is the only way this shape says "we did not look", so every harness this build
     // knows has to appear — an omitted one reads as unknown and vanishes from BOTH the found list and
     // the not-found list, which is a probe silently unreported rather than a harness honestly absent.
     [Test]
-    public async Task Reports_every_catalogue_vendor_including_the_ones_it_did_not_find() {
-        var report = Evaluate(Detection());
+    public async Task Reports_every_harness_including_the_ones_it_did_not_find() {
+        var report = Evaluate();
 
-        await Assert.That(report.Harnesses.Count).IsEqualTo(HarnessCatalog.All.Count);
+        await Assert.That(report.Harnesses.Count).IsEqualTo(HarnessRegistry.Identities.Count);
 
-        foreach (var harness in HarnessCatalog.All)
+        foreach (var harness in HarnessRegistry.Identities)
             await Assert.That(report.Harnesses.ContainsKey(harness.VendorId)).IsTrue();
     }
 
@@ -38,7 +33,13 @@ public class FirstRunMachineReportTests {
     // enough to raise a nudge and lossy for a screen that names the signal it saw.
     [Test]
     public async Task Keeps_the_two_detection_signals_apart() {
-        var report = Evaluate(Detection(claude: new(true, false), cursor: new(false, true)));
+        // Claude answers only from PATH and Cursor only from its own state, so a report that folded
+        // the two would show the same shape for both.
+        using var bin      = new TempDir();
+        var       report   = Evaluate(TestHarnesses.Over(
+            TestBinaries.Searching(bin, "claude"),
+            TestHarnesses.Probing(HarnessId.Claude, "claude"),
+            TestHarnesses.Of(HarnessId.Cursor, detected: true)));
 
         await Assert.That(report.Harnesses["claude"].BinaryOnPath).IsTrue();
         await Assert.That(report.Harnesses["claude"].ConfigFound).IsFalse();
@@ -48,7 +49,7 @@ public class FirstRunMachineReportTests {
 
     [Test]
     public async Task Reports_the_wired_probe_per_vendor() {
-        var report = Evaluate(Detection(claude: new(true, false)), isWired: vendor => vendor == "claude");
+        var report = Evaluate(TestHarnesses.All(wired: [HarnessId.Claude]));
 
         await Assert.That(report.Harnesses["claude"].AlreadyWired).IsTrue();
         await Assert.That(report.Harnesses["codex"].AlreadyWired).IsFalse();
@@ -65,7 +66,7 @@ public class FirstRunMachineReportTests {
             }
         };
 
-        var report = Evaluate(Detection(), ledger: ledger);
+        var report = Evaluate(ledger: ledger);
 
         await Assert.That(report.Declined).Contains("cursor");
         await Assert.That(report.Declined).DoesNotContain("codex");
@@ -78,7 +79,7 @@ public class FirstRunMachineReportTests {
     [Arguments("   ")]
     public async Task Reports_a_blank_machine_id_as_unreported(string machineId) {
         var report = FirstRunMachineReport.Evaluate(
-            "nostromo", machineId, Detection(), _ => false, new HarnessOfferLedger(), null);
+            "nostromo", machineId, TestHarnesses.All(), new HarnessOfferLedger(), null);
 
         await Assert.That(report.MachineId).IsNull();
     }
@@ -88,7 +89,7 @@ public class FirstRunMachineReportTests {
     [Arguments(true)]
     [Arguments(false)]
     public async Task Passes_the_login_shell_answer_through_unchanged(bool? shell) {
-        await Assert.That(Evaluate(Detection(), shell: shell).LoginShellFindsCli).IsEqualTo(shell);
+        await Assert.That(Evaluate(shell: shell).LoginShellFindsCli).IsEqualTo(shell);
     }
 
     [Test]
@@ -96,7 +97,7 @@ public class FirstRunMachineReportTests {
     [Arguments(FirstRunPlatforms.MacOs)]
     [Arguments(FirstRunPlatforms.Linux)]
     public async Task Passes_the_platform_through_unchanged(string? platform) {
-        await Assert.That(Evaluate(Detection(), platform: platform).Platform).IsEqualTo(platform);
+        await Assert.That(Evaluate(platform: platform).Platform).IsEqualTo(platform);
     }
 
     // Every one of the three is a value the browser maps; null is what an unrecognised host reports,

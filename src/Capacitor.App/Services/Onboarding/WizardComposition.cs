@@ -4,6 +4,7 @@ using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.LocalIpc;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Setup;
+using Capacitor.Cli.Core.Harness;
 
 namespace Capacitor.App.Services.Onboarding;
 
@@ -47,7 +48,7 @@ internal sealed record WizardGraphOptions(
     PathShimInstaller                                                            ShimInstaller,
     IUrlOpener                                                                   UrlOpener,
     ILoginShellProbe                                                             Probe,
-    Func<ILoginShellProbe, Func<CancellationToken, Task<AgentDetectionResult>>>  DetectionFeed,
+    Func<ILoginShellProbe, Func<CancellationToken, Task<IReadOnlySet<HarnessId>>>> DetectionFeed,
     string?                                                                      CliPath,
     bool                                                                         ShimApplicable,
     string?                                                                      ShimTarget,

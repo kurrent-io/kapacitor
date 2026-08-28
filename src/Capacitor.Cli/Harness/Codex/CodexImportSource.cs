@@ -1,5 +1,6 @@
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Core.Harness.Codex;
 using Capacitor.Cli.Harness.Claude;
 
@@ -17,7 +18,7 @@ namespace Capacitor.Cli.Harness.Codex;
 internal sealed class CodexImportSource(ConfigRoot config, string sessionsDir) : IImportSource {
     readonly string _sessionsDir = sessionsDir;
 
-    public string Vendor => "codex";
+    public HarnessId Vendor => HarnessId.Codex;
 
     public bool IsAvailable => Directory.Exists(_sessionsDir);
 
@@ -109,7 +110,7 @@ internal sealed class CodexImportSource(ConfigRoot config, string sessionsDir) :
             ctx.MinLines,
             ctx.ExcludedRepos?.ToArray(),
             ct,
-            vendor: "codex",
+            vendor: Vendor,
             excludedPaths: ctx.ExcludedPaths?.ToArray()
         );
     }

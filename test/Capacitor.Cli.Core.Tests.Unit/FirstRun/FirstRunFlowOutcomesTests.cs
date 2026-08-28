@@ -1,5 +1,6 @@
 using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.FirstRun;
+using Capacitor.Cli.Core.Harness;
 
 namespace Capacitor.Cli.Core.Tests.Unit.FirstRun;
 
@@ -274,7 +275,7 @@ public class FirstRunFlowOutcomesTests {
     public async Task A_vendor_this_build_does_not_know_is_dropped_from_the_filter() {
         var view = WithImport(Decision(repos: ("o", "n", "Shared")) with { Vendors = ["claude", "telepathy"] });
 
-        await Assert.That(FirstRunFlowOutcomes.Import(view)!.Vendors).IsEquivalentTo(["claude"]);
+        await Assert.That(FirstRunFlowOutcomes.Import(view)!.Vendors).IsEquivalentTo([HarnessId.Claude]);
     }
 
     [Test]

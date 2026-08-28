@@ -3,6 +3,7 @@ using Capacitor.Cli.Core.FirstRun;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
 using WireMock.Server;
+using Capacitor.Cli.Core.Harness;
 
 namespace Capacitor.Cli.Core.Tests.Unit.FirstRun;
 
@@ -256,8 +257,8 @@ public class FirstRunFlowClientTests {
 
         await Assert.That(answer).IsNotNull();
         await Assert.That(answer!.Choices.Count).IsEqualTo(2);
-        await Assert.That(answer.Records("cursor")).IsTrue();
-        await Assert.That(answer.Tools("cursor")).IsFalse();
+        await Assert.That(answer.Records(HarnessId.Cursor)).IsTrue();
+        await Assert.That(answer.Tools(HarnessId.Cursor)).IsFalse();
         await Assert.That(answer.DecidedAt).IsEqualTo(new DateTimeOffset(2026, 8, 25, 9, 30, 0, TimeSpan.Zero));
     }
 
@@ -552,7 +553,7 @@ public class FirstRunFlowClientTests {
 
         await Assert.That(answer.Window).IsEqualTo(FirstRunImportWindows.Last90);
         await Assert.That(answer.Titles).IsEqualTo(FirstRunImportTitles.Server);
-        await Assert.That(answer.Vendors).IsEquivalentTo(["claude"]);
+        await Assert.That(answer.Vendors).IsEquivalentTo([HarnessId.Claude]);
         await Assert.That(answer.Choices.Single().Level).IsEqualTo(FirstRunImportLevel.Shared);
     }
 

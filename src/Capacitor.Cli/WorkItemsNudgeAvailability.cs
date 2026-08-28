@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Core.Harness.Antigravity;
 using Capacitor.Cli.Core.Harness.Claude;
 using Capacitor.Cli.Core.Harness.Codex;
@@ -10,7 +11,6 @@ using Capacitor.Cli.Core.Harness.Gemini;
 using Capacitor.Cli.Core.Harness.Kiro;
 using Capacitor.Cli.Core.Harness.OpenCode;
 using Capacitor.Cli.Core.Harness.Pi;
-using Capacitor.Cli.SessionStartMemory;
 
 namespace Capacitor.Cli;
 
@@ -35,23 +35,21 @@ static class WorkItemsNudgeAvailability {
     const string ServerName = "kcap-workitems";
 
     /// <param name="codexConfigPath">Overrides the Codex <c>config.toml</c> path (test seam); null uses the default.</param>
-    public static bool IsRegisteredFor(SessionStartHarness harness, UserHome home, string? codexConfigPath = null) {
+    public static bool IsRegisteredFor(HarnessId harness, UserHome home, string? codexConfigPath = null) {
         try {
             return harness switch {
                 // Claude carries kcap-workitems in the plugin's bundled .mcp.json, so it is available
                 // exactly when that plugin is effectively installed (enabled + its .mcp.json present).
-                SessionStartHarness.Claude      => ClaudePluginInstaller.IsEffectivelyInstalled(
-                                                       ClaudePaths.FromEnvironment(home).UserSettings),
-                SessionStartHarness.Codex       => CodexHasWorkItems(
-                                       codexConfigPath ?? CodexPaths.FromEnvironment(home).ConfigToml),
-                SessionStartHarness.Cursor      => JsonBlockHasServer(CursorPaths.FromEnvironment(home).UserMcpJson, "mcpServers"),
-                SessionStartHarness.Copilot     => JsonBlockHasServer(CopilotPaths.FromEnvironment(home).McpConfigJson, "mcpServers"),
-                SessionStartHarness.Gemini      => JsonBlockHasServer(GeminiPaths.FromEnvironment(home).SettingsJson, "mcpServers"),
-                SessionStartHarness.Kiro        => JsonBlockHasServer(KiroPaths.FromEnvironment(home).SettingsMcpJson, "mcpServers"),
+                HarnessId.Claude  => ClaudePluginInstaller.IsEffectivelyInstalled(ClaudeHarness.FromEnvironment(home).Paths.UserSettings),
+                HarnessId.Codex   => CodexHasWorkItems(codexConfigPath ?? CodexHarness.FromEnvironment(home).Paths.ConfigToml),
+                HarnessId.Cursor  => JsonBlockHasServer(CursorHarness.FromEnvironment(home).Paths.UserMcpJson, "mcpServers"),
+                HarnessId.Copilot => JsonBlockHasServer(CopilotHarness.FromEnvironment(home).Paths.McpConfigJson, "mcpServers"),
+                HarnessId.Gemini  => JsonBlockHasServer(GeminiHarness.FromEnvironment(home).Paths.SettingsJson, "mcpServers"),
+                HarnessId.Kiro    => JsonBlockHasServer(KiroHarness.FromEnvironment(home).Paths.SettingsMcpJson, "mcpServers"),
                 // OpenCode's block key is `mcp`, not `mcpServers`.
-                SessionStartHarness.OpenCode    => JsonBlockHasServer(OpenCodePaths.FromEnvironment(home).McpConfigJson, "mcp"),
-                SessionStartHarness.Antigravity => JsonBlockHasServer(AntigravityPaths.FromEnvironment(home).McpConfigJson, "mcpServers"),
-                SessionStartHarness.Pi          => PiHasWorkItems(home),
+                HarnessId.OpenCode    => JsonBlockHasServer(OpenCodeHarness.FromEnvironment(home).Paths.McpConfigJson, "mcp"),
+                HarnessId.Antigravity => JsonBlockHasServer(AntigravityHarness.Over(GeminiHarness.FromEnvironment(home)).Paths.McpConfigJson, "mcpServers"),
+                HarnessId.Pi          => PiHasWorkItems(home),
                 _ => false
             };
         } catch {
@@ -73,7 +71,7 @@ static class WorkItemsNudgeAvailability {
 
     static bool PiHasWorkItems(UserHome home) {
         try {
-            var path = PiPaths.FromEnvironment(home).KcapMcpExtension;
+            var path = PiHarness.FromEnvironment(home).Paths.KcapMcpExtension;
             if (!File.Exists(path)) return false;
             // Strip JS comments FIRST so a commented-out `KCAP_MCP_SERVERS = [...]` before the real
             // declaration can't be matched, then find the real `KCAP_MCP_SERVERS = [ … ]` array and

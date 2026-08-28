@@ -5,6 +5,7 @@ using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.Harness.Claude;
 using Capacitor.Cli.SessionStartMemory;
+using Capacitor.Cli.Core.Harness;
 
 namespace Capacitor.Cli.Commands.Harness;
 
@@ -580,7 +581,7 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
                 var slug = node?["slug"]?.GetValue<string>();
 
                 if (slug is not null) {
-                    var planContent = ReadPlanFile(slug, ClaudePaths.FromEnvironment(home));
+                    var planContent = ReadPlanFile(slug, ClaudeHarness.FromEnvironment(home).Paths);
 
                     if (planContent is not null) {
                         node!["plan_content"] = planContent;
@@ -683,7 +684,7 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
                     var resolvedSlug = responseNode["slug"]?.GetValue<string>();
 
                     if (resolvedSlug is not null) {
-                        var planContent = ReadPlanFile(resolvedSlug, ClaudePaths.FromEnvironment(home));
+                        var planContent = ReadPlanFile(resolvedSlug, ClaudeHarness.FromEnvironment(home).Paths);
 
                         if (planContent is not null) {
                             await PostPlanContentAsync(client, Url, sessionId, planContent);
@@ -725,7 +726,7 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
                     // The static work-items nudge. Claude has always carried kcap-workitems, so
                     // the availability gate is always satisfied here; only the opt-out can suppress it.
                     var workItemsNudge = WorkItemsNudgeEmitter.Resolve(
-                        SessionStartHarness.Claude, sessionId, activeProfile?.DisableWorkItemsNudge is true, home);
+                        HarnessId.Claude, sessionId, activeProfile?.DisableWorkItemsNudge is true, home);
                     var harnessNudge = HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true, config, home);
 
                     var envelope = SessionStartAdditionalContext.BuildEnvelope(
@@ -977,7 +978,7 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
                 SessionStartMemoryHookSupport.ClientFactory(config, profiles, Url),
                 disposeClients: true);
             return new SessionStartMemoryOrchestrator(store, provider).GetFragmentAsync(
-                new SessionMemoryLifecycle(SessionStartHarness.Claude, nativeSessionId, null,
+                new SessionMemoryLifecycle(HarnessId.Claude, nativeSessionId, null,
                     IsTopLevel: true, ClassificationAuthoritative: true, reason,
                     CallbackMayRepeat: false),
                 new SessionStartMemoryContextRequest(Url, cwd, disabled, budget, CancellationToken.None));

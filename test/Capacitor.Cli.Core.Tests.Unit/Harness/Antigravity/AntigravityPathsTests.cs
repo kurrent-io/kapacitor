@@ -114,13 +114,14 @@ public class AntigravityPathsTests {
     // lets a CLI-root conversation's transcript/messages resolve under antigravity-cli, not the GUI.
     [Test]
     public async Task Under_helpers_resolve_beneath_the_given_product_root() {
+        var paths = Ags("/h", P);
         var cli = Path.Combine(GeminiRoot, "antigravity-cli");
         const string id = "abc-123";
-        await Assert.That(AntigravityPaths.BrainDirUnder(cli, id))
+        await Assert.That(paths.BrainDirUnder(cli, id))
             .IsEqualTo(Path.Combine(cli, "brain", id));
-        await Assert.That(AntigravityPaths.TranscriptFullPathUnder(cli, id))
+        await Assert.That(paths.TranscriptFullPathUnder(cli, id))
             .IsEqualTo(Path.Combine(cli, "brain", id, ".system_generated", "logs", "transcript_full.jsonl"));
-        await Assert.That(AntigravityPaths.MessagesDirUnder(cli, id))
+        await Assert.That(paths.MessagesDirUnder(cli, id))
             .IsEqualTo(Path.Combine(cli, "brain", id, ".system_generated", "messages"));
     }
 
@@ -128,12 +129,11 @@ public class AntigravityPathsTests {
     // so pre-existing callers (live capture-adjacent) are byte-identical after the refactor.
     [Test]
     public async Task GUI_overloads_equal_the_Under_form_at_the_GUI_root() {
-        var gui = Ags("/h", P).Root;
+        var paths = Ags("/h", P);
+        var gui   = paths.Root;
         const string id = "abc-123";
-        await Assert.That(Ags("/h", P).TranscriptFullPath(id))
-            .IsEqualTo(AntigravityPaths.TranscriptFullPathUnder(gui, id));
-        await Assert.That(Ags("/h", P).MessagesDir(id))
-            .IsEqualTo(AntigravityPaths.MessagesDirUnder(gui, id));
+        await Assert.That(paths.TranscriptFullPath(id)).IsEqualTo(paths.TranscriptFullPathUnder(gui, id));
+        await Assert.That(paths.MessagesDir(id)).IsEqualTo(paths.MessagesDirUnder(gui, id));
     }
 
     // the watcher sees a dashless session id but must resolve the

@@ -21,9 +21,6 @@ public sealed class PiPaths {
             : Path.Combine(Root, "agent");
     }
 
-    /// <summary>Reads the one override Pi honours; the home comes from the caller.</summary>
-    public static PiPaths FromEnvironment(UserHome home) =>
-        new(home, Environment.GetEnvironmentVariable("PI_CODING_AGENT_DIR"));
 
     public string Root     { get; }
     public string AgentDir { get; }

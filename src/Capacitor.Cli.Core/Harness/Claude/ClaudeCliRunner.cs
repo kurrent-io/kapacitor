@@ -580,7 +580,7 @@ static class ClaudeCliRunner {
     /// Searches <c>~/.claude/projects/</c> for a transcript file matching the session ID.
     /// </summary>
     static string? FindTranscriptFile(string sessionId, UserHome home) {
-        var projectsDir = ClaudePaths.FromEnvironment(home).Projects;
+        var projectsDir = ClaudeHarness.FromEnvironment(home).Paths.Projects;
 
         if (!Directory.Exists(projectsDir)) {
             return null;

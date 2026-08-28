@@ -1,3 +1,4 @@
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Core.Setup;
 
 namespace Capacitor.Cli.Core.Tests.Unit.Setup;
@@ -9,8 +10,7 @@ public class HarnessInventoryTests {
     [Test]
     public async Task Covers_all_nine_vendors_with_detected_and_wired() {
         var inv = HarnessInventory.Evaluate(
-            HarnessCatalogTests.DetectionWithOnly("cursor", "antigravity"),
-            isWired: id => id == "cursor",
+            TestHarnesses.All([HarnessId.Cursor, HarnessId.Antigravity], wired: [HarnessId.Cursor]),
             new HarnessOfferLedger(),
             "machine-1");
 
@@ -25,8 +25,7 @@ public class HarnessInventoryTests {
     [Test]
     public async Task Declined_lists_only_dismissed_vendors() {
         var inv = HarnessInventory.Evaluate(
-            HarnessCatalogTests.DetectionWithOnly("antigravity"),
-            isWired: _ => false,
+            TestHarnesses.All([HarnessId.Antigravity]),
             LedgerWith(("antigravity", new HarnessOfferEntry { Declined = true }),
                        ("gemini", new HarnessOfferEntry { LastOffered = DateTimeOffset.UtcNow })),
             "m");
@@ -36,8 +35,7 @@ public class HarnessInventoryTests {
 
     [Test]
     public async Task No_dismissals_yields_empty_declined() {
-        var inv = HarnessInventory.Evaluate(
-            HarnessCatalogTests.DetectionWithOnly(), _ => false, new HarnessOfferLedger(), "m");
+        var inv = HarnessInventory.Evaluate(TestHarnesses.All(), new HarnessOfferLedger(), "m");
         await Assert.That(inv.Declined).IsEmpty();
     }
 }

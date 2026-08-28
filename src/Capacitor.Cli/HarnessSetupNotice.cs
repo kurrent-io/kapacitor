@@ -33,8 +33,7 @@ internal static class HarnessSetupNotice {
 
             var profile = profiles.Effective;
             var notice = HarnessNudgeEmitter.ResolveNotice(
-                HarnessPaths.FromEnvironment(home), BinaryProbe.FromEnvironment(),
-                new HarnessOfferStore(config),
+                HarnessRegistry.FromEnvironment(home), new HarnessOfferStore(config),
                 profile?.DisableHarnessNudge is true, DateTimeOffset.UtcNow);
             if (notice is null) return;
 

@@ -303,13 +303,17 @@ public class HttpClientExtensionsRetryTests {
 
             // Deliberately past the budget and deliberately ignoring the token, so the throw lands in
             // the UNGUARDED transport catch rather than the within-budget one that loops.
-            await Task.Delay(600, CancellationToken.None);
+            await Task.Delay(1_200, CancellationToken.None);
 
             throw new HttpRequestException("connection reset");
         }
 
+        // The budget has to clear the 250ms backoff floor by enough that scheduling jitter on a
+        // loaded runner cannot eat the second attempt — at 400ms it could, and the test then failed
+        // on attempts==1 rather than on the behaviour it pins. The delay above must outlast whatever
+        // budget remains when that attempt starts.
         using var resp = await HttpClientExtensions.SendWithRetryAsync(
-            Send, TimeSpan.FromMilliseconds(400), CancellationToken.None, retryStatuses: true);
+            Send, TimeSpan.FromSeconds(1), CancellationToken.None, retryStatuses: true);
 
         await Assert.That(resp.StatusCode).IsEqualTo(HttpStatusCode.ServiceUnavailable);
         await Assert.That(attempts).IsEqualTo(2);

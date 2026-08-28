@@ -1,4 +1,5 @@
 using Capacitor.Cli.Core.Setup;
+using Capacitor.Cli.Core.Harness;
 
 namespace Capacitor.Cli.Core.Tests.Unit.Setup;
 
@@ -28,7 +29,7 @@ public class HarnessOfferStoreTests {
         var ledger = new HarnessOfferStore(config.Root).Load();
         await Assert.That(ledger.Vendors).IsNotNull();
         await Assert.That(ledger.Vendors).IsEmpty();
-        await Assert.That(ledger.Entry("antigravity")).IsNull();
+        await Assert.That(ledger.Entry(HarnessId.Antigravity)).IsNull();
     }
 
     [Test]
@@ -41,7 +42,7 @@ public class HarnessOfferStoreTests {
             Vendors = { ["antigravity"] = new HarnessOfferEntry { FirstSeen = when, LastOffered = when, Declined = true } }
         });
 
-        var entry = store.Load().Entry("antigravity")!;
+        var entry = store.Load().Entry(HarnessId.Antigravity)!;
         await Assert.That(entry.Declined).IsTrue();
         await Assert.That(entry.LastOffered).IsEqualTo(when);
         await Assert.That(entry.FirstSeen).IsEqualTo(when);
@@ -56,7 +57,7 @@ public class HarnessOfferStoreTests {
             Vendors = new(l.Vendors) { ["kiro"] = new HarnessOfferEntry { Declined = true } }
         });
 
-        await Assert.That(store.Load().Entry("kiro")!.Declined).IsTrue();
+        await Assert.That(store.Load().Entry(HarnessId.Kiro)!.Declined).IsTrue();
     }
 
     [Test]
@@ -84,9 +85,9 @@ public class HarnessOfferStoreTests {
         using var config = new TempConfigRoot();
         var store = new HarnessOfferStore(config.Root);
 
-        store.StampOffered(["antigravity"], Now);
+        store.StampOffered([HarnessId.Antigravity], Now);
 
-        var entry = store.Load().Entry("antigravity")!;
+        var entry = store.Load().Entry(HarnessId.Antigravity)!;
         await Assert.That(entry.LastOffered).IsEqualTo(Now);
         await Assert.That(entry.FirstSeen).IsEqualTo(Now);
         await Assert.That(entry.Declined).IsFalse();
@@ -99,9 +100,9 @@ public class HarnessOfferStoreTests {
         var       earlier = Now.AddDays(-30);
 
         store.Save(new HarnessOfferLedger { Vendors = { ["kiro"] = new HarnessOfferEntry { FirstSeen = earlier, LastOffered = earlier } } });
-        store.StampOffered(["kiro"], Now);
+        store.StampOffered([HarnessId.Kiro], Now);
 
-        var entry = store.Load().Entry("kiro")!;
+        var entry = store.Load().Entry(HarnessId.Kiro)!;
         await Assert.That(entry.FirstSeen).IsEqualTo(earlier);
         await Assert.That(entry.LastOffered).IsEqualTo(Now);
     }
@@ -114,9 +115,9 @@ public class HarnessOfferStoreTests {
         var store = new HarnessOfferStore(config.Root);
 
         store.Save(new HarnessOfferLedger { Vendors = { ["cursor"] = new HarnessOfferEntry { Declined = true } } });
-        store.StampOffered(["cursor"], Now);
+        store.StampOffered([HarnessId.Cursor], Now);
 
-        var entry = store.Load().Entry("cursor")!;
+        var entry = store.Load().Entry(HarnessId.Cursor)!;
         await Assert.That(entry.Declined).IsTrue();
         await Assert.That(entry.LastOffered).IsNull();
     }

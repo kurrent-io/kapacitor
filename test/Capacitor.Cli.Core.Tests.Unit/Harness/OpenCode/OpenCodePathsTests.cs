@@ -43,7 +43,7 @@ public class OpenCodePathsTests {
         using var xdgC = EnvScope.Exclusive("XDG_CONFIG_HOME", "/xdg");
         using var xdgD = EnvScope.Exclusive("XDG_DATA_HOME", "/xdgd");
 
-        var paths = OpenCodePaths.FromEnvironment(new("/fake/home"));
+        var paths = OpenCodeHarness.FromEnvironment(new("/fake/home")).Paths;
 
         await Assert.That(paths.ConfigDir).IsEqualTo(relocated);
         await Assert.That(paths.KcapPlugin).IsEqualTo(Path.Combine(relocated, "plugins", "kcap.ts"));

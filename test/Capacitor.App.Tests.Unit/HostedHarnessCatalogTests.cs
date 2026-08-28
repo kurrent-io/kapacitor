@@ -1,5 +1,5 @@
 using Capacitor.App.Services;
-using Capacitor.Cli.Core.Setup;
+using Capacitor.Cli.Core.Harness;
 
 namespace Capacitor.App.Tests.Unit;
 
@@ -36,9 +36,9 @@ public class HostedHarnessCatalogTests {
     /// This turns that into a red suite on the PR that adds it. The runtime fallback stays — a
     /// vendor only the DAEMON knows about must still be listed, not dropped.
     [Test]
-    public async Task Every_core_vendor_has_an_explicit_transport_family() {
+    public async Task Every_harness_has_an_explicit_transport_family() {
         var mapped = new HashSet<string>(HostedHarnessCatalog.MappedVendors, StringComparer.OrdinalIgnoreCase);
-        var unmapped = HarnessCatalog.All.Select(k => k.VendorId).Where(v => !mapped.Contains(v)).ToList();
+        var unmapped = HarnessRegistry.Identities.Select(h => h.VendorId).Where(v => !mapped.Contains(v)).ToList();
 
         await Assert.That(unmapped).IsEmpty();
     }

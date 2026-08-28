@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Core.Setup;
 
 namespace Capacitor.Cli;
@@ -14,7 +15,7 @@ namespace Capacitor.Cli;
 static class SessionStartInventory {
     public static void Stamp(JsonObject body, ConfigRoot config, UserHome home) {
         try {
-            var inv  = HarnessInventory.EvaluateCurrent(config, home);
+            var inv  = HarnessInventory.EvaluateCurrent(config, HarnessRegistry.FromEnvironment(home));
             var json = JsonSerializer.Serialize(inv, CapacitorJsonContext.Default.HarnessInventory);
             body["harness_inventory"] = JsonNode.Parse(json);
         } catch {

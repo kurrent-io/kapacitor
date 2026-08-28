@@ -3,6 +3,7 @@ using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.Harness.Kiro;
 using Capacitor.Cli.SessionStartMemory;
+using Capacitor.Cli.Core.Harness;
 
 namespace Capacitor.Cli.Commands.Harness;
 
@@ -54,7 +55,7 @@ sealed class KiroHookCommand(ConfigRoot config, ProfileContext profiles, HookClo
         string payload;
 
         try {
-            payload = SessionStartMemoryOutputAdapters.Render(SessionStartHarness.Kiro, fragment, workItemsNudge);
+            payload = SessionStartMemoryOutputAdapters.Render(HarnessId.Kiro, fragment, workItemsNudge);
         } catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException) {
             return;
         }
@@ -101,7 +102,7 @@ sealed class KiroHookCommand(ConfigRoot config, ProfileContext profiles, HookClo
                 disposeClients: true);
 
             return new SessionStartMemoryOrchestrator(store, provider).GetFragmentAsync(
-                new SessionMemoryLifecycle(SessionStartHarness.Kiro, sessionId, LifecycleInstanceId: null,
+                new SessionMemoryLifecycle(HarnessId.Kiro, sessionId, LifecycleInstanceId: null,
                     IsTopLevel: true, ClassificationAuthoritative: true,
                     SessionLifecycleReason.RepeatedTurnCallback, CallbackMayRepeat: true),
                 new SessionStartMemoryContextRequest(Url, scopeRoot, disabled, budget, CancellationToken.None,
@@ -209,7 +210,7 @@ sealed class KiroHookCommand(ConfigRoot config, ProfileContext profiles, HookClo
         // Model lives in the sibling {id}.json (the JSONL turn lines carry none),
         // so the server gets it only from this hook. Best-effort: at agentSpawn the
         // file may not exist yet — the next agentSpawn (fires every prompt) backfills.
-        if (ReadKiroModel(KiroPaths.FromEnvironment(home), dashedSessionId) is { } model) {
+        if (ReadKiroModel(KiroHarness.FromEnvironment(home).Paths, dashedSessionId) is { } model) {
             forwarded["model"] = model;
         }
 
@@ -255,7 +256,7 @@ sealed class KiroHookCommand(ConfigRoot config, ProfileContext profiles, HookClo
         // whose lease was spent for nothing.
         var fragment = await SessionStartMemoryHookSupport.AwaitBounded(memoryTask, budget);
         var workItemsNudge = HarnessNudgeEmitter.Combine(
-            WorkItemsNudgeEmitter.Resolve(SessionStartHarness.Kiro, sessionId, activeProfile?.DisableWorkItemsNudge is true, home),
+            WorkItemsNudgeEmitter.Resolve(HarnessId.Kiro, sessionId, activeProfile?.DisableWorkItemsNudge is true, home),
             HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true, config, home));
         WriteAgentSpawnOutput(Console.Out, fragment, workItemsNudge);
         await Console.Out.FlushAsync();
@@ -287,7 +288,7 @@ sealed class KiroHookCommand(ConfigRoot config, ProfileContext profiles, HookClo
         // The watcher also owns session-end: GetCodingAgentPid() inside
         // SpawnWatcher passes the kiro-cli pid as --parent-pid, so the watcher
         // POSTs session-end/kiro when kiro-cli exits.
-        var transcriptPath = KiroPaths.FromEnvironment(home).SessionJsonl(dashedSessionId);
+        var transcriptPath = KiroHarness.FromEnvironment(home).Paths.SessionJsonl(dashedSessionId);
 
         // Bounded for the same reason as the POST, and this is the LAST step between the committed
         // injection and the zero exit. Not cheap in the worst case: the stale-watcher path kills and

@@ -1,4 +1,4 @@
-using Capacitor.Cli.Core.Setup;
+using Capacitor.Cli.Core.Harness;
 
 namespace Capacitor.App.Services;
 
@@ -15,9 +15,9 @@ public sealed record ModelChoice(string Slug, string Label);
 public static class HostedHarnessCatalog {
     // Transport family for each vendor: how the daemon hosts it (pty, acp, or rpc).
     // Vendors absent from this map default to "rpc" — which reads as "chat" in the picker, true or
-    // not, so HostedHarnessCatalogTests pins every vendor in Core's HarnessCatalog to an entry
-    // here. The fallback stays for a vendor only the DAEMON knows about; it is not a licence to
-    // skip a tenth entry when one is added to Core.
+    // not, so HostedHarnessCatalogTests pins every harness Core knows to an entry here. The fallback
+    // stays for a vendor only the DAEMON knows about; it is not a licence to skip a tenth entry when
+    // one is added to Core.
     static readonly Dictionary<string, string> TransportFamilies = new(StringComparer.OrdinalIgnoreCase) {
         { "claude",      "pty" },
         { "codex",       "pty" },
@@ -40,17 +40,18 @@ public static class HostedHarnessCatalog {
             ? null
             : new HashSet<string>(supportedVendors, StringComparer.OrdinalIgnoreCase);
 
-        var options = HarnessCatalog.All
-            .Select(k => new HarnessOption(
-                k.VendorId,
-                k.Label,
-                TransportFamilies.TryGetValue(k.VendorId, out var family) ? family : "rpc",
-                advertised?.Contains(k.VendorId) ?? true))
+        var options = HarnessRegistry.Identities
+            .Select(h => (h.VendorId, h.Label))
+            .Select(h => new HarnessOption(
+                h.VendorId,
+                h.Label,
+                TransportFamilies.TryGetValue(h.VendorId, out var family) ? family : "rpc",
+                advertised?.Contains(h.VendorId) ?? true))
             .ToList();
 
         if (advertised is null) return options;
 
-        var known = new HashSet<string>(HarnessCatalog.All.Select(k => k.VendorId), StringComparer.OrdinalIgnoreCase);
+        var known = new HashSet<string>(options.Select(o => o.Vendor), StringComparer.OrdinalIgnoreCase);
         foreach (var extra in supportedVendors!.Where(v => !known.Contains(v)).Distinct(StringComparer.OrdinalIgnoreCase))
             options.Add(new HarnessOption(extra, extra, "rpc", true));
 

@@ -2,6 +2,7 @@ using Capacitor.Cli.Commands.Harness;
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.SessionStartMemory;
 using Capacitor.Cli.Tests.Unit.SessionStartMemory;
+using Capacitor.Cli.Core.Harness;
 
 namespace Capacitor.Cli.Tests.Unit.Harness.Antigravity;
 
@@ -97,7 +98,7 @@ public class AntigravitySessionStartMemoryTests {
     public async Task Lifecycle_is_a_repeating_top_level_callback() {
         var lifecycle = AntigravityHookCommand.LifecycleFor("e80c33bfc10f4d2fb626b0043f488fc0");
 
-        await Assert.That(lifecycle.Harness).IsEqualTo(SessionStartHarness.Antigravity);
+        await Assert.That(lifecycle.Harness).IsEqualTo(HarnessId.Antigravity);
         await Assert.That(lifecycle.IsTopLevel).IsTrue();
         await Assert.That(lifecycle.ClassificationAuthoritative).IsTrue();
         await Assert.That(lifecycle.Reason).IsEqualTo(SessionLifecycleReason.RepeatedTurnCallback);

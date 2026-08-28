@@ -28,12 +28,6 @@ public sealed class OpenCodePaths {
         ImportLedgerJson = Path.Combine(home.Path, ".cache", "kcap", "opencode-imported.json");
     }
 
-    /// <summary>Reads the three overrides OpenCode honours; the home comes from the caller.</summary>
-    public static OpenCodePaths FromEnvironment(UserHome home) => new(
-        home,
-        Environment.GetEnvironmentVariable("OPENCODE_CONFIG_DIR"),
-        Environment.GetEnvironmentVariable("XDG_CONFIG_HOME"),
-        Environment.GetEnvironmentVariable("XDG_DATA_HOME"));
 
     public string ConfigDir { get; }
     public string DataDir   { get; }

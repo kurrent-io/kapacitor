@@ -1,4 +1,5 @@
 using Capacitor.Cli.Core.FirstRun;
+using Capacitor.Cli.Core.Harness;
 
 namespace Capacitor.Cli.Core.Tests.Unit.FirstRun;
 
@@ -26,10 +27,10 @@ public class FirstRunAgentsAnswerTests {
         var answer = FirstRunFlowOutcomes.Agents(View([Choice("claude"), Choice("cursor", tools: false)], Decided));
 
         await Assert.That(answer!.Choices.Count).IsEqualTo(2);
-        await Assert.That(answer.Records("claude")).IsTrue();
-        await Assert.That(answer.Tools("claude")).IsTrue();
-        await Assert.That(answer.Records("cursor")).IsTrue();
-        await Assert.That(answer.Tools("cursor")).IsFalse();
+        await Assert.That(answer.Records(HarnessId.Claude)).IsTrue();
+        await Assert.That(answer.Tools(HarnessId.Claude)).IsTrue();
+        await Assert.That(answer.Records(HarnessId.Cursor)).IsTrue();
+        await Assert.That(answer.Tools(HarnessId.Cursor)).IsFalse();
         await Assert.That(answer.IsDecline).IsFalse();
         await Assert.That(answer.Unrecognised).IsEqualTo(0);
     }
@@ -55,8 +56,10 @@ public class FirstRunAgentsAnswerTests {
         var answer = FirstRunFlowOutcomes.Agents(View([Choice("claude"), Choice("kimi")], Decided));
 
         await Assert.That(answer!.Choices.Count).IsEqualTo(1);
-        await Assert.That(answer.Records("claude")).IsTrue();
-        await Assert.That(answer.Records("kimi")).IsFalse();
+        await Assert.That(answer.Records(HarnessId.Claude)).IsTrue();
+        // The unreadable one is counted, not carried: nothing this build can name records it.
+        await Assert.That(HarnessRegistry.Identities.Where(h => answer.Records(h.Id)).Select(h => h.Id))
+                    .IsEquivalentTo(new[] { HarnessId.Claude });
         await Assert.That(answer.Unrecognised).IsEqualTo(1);
     }
 
@@ -95,7 +98,7 @@ public class FirstRunAgentsAnswerTests {
             View([Choice("claude", record: false, tools: false), Choice("claude")], Decided));
 
         await Assert.That(answer!.Choices.Count).IsEqualTo(1);
-        await Assert.That(answer.Records("claude")).IsTrue();
+        await Assert.That(answer.Records(HarnessId.Claude)).IsTrue();
     }
 
     [Test]
@@ -104,7 +107,7 @@ public class FirstRunAgentsAnswerTests {
             View([Choice("claude", tools: true), Choice("claude", tools: false)], Decided));
 
         await Assert.That(answer!.Choices.Count).IsEqualTo(1);
-        await Assert.That(answer.Tools("claude")).IsTrue();
+        await Assert.That(answer.Tools(HarnessId.Claude)).IsTrue();
     }
 
     [Test]

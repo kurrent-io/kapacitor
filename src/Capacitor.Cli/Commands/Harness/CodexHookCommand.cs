@@ -3,6 +3,7 @@ using System.Text.Json.Nodes;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.SessionStartMemory;
+using Capacitor.Cli.Core.Harness;
 
 // ReSharper disable ShortLivedHttpClient
 
@@ -92,7 +93,7 @@ sealed class CodexHookCommand(ConfigRoot config, ProfileContext profiles, HookCl
             // (with the trailing newline the fragment-bearing shape already ships).
             payload = fragment is null && string.IsNullOrWhiteSpace(workItemsNudge)
                 ? SessionScopedOutputJson
-                : SessionStartMemoryOutputAdapters.Render(SessionStartHarness.Codex, fragment, workItemsNudge);
+                : SessionStartMemoryOutputAdapters.Render(HarnessId.Codex, fragment, workItemsNudge);
         } catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException) {
             payload = SessionScopedOutputJson;
         }
@@ -181,7 +182,7 @@ sealed class CodexHookCommand(ConfigRoot config, ProfileContext profiles, HookCl
                 disposeClients: true);
 
             return new SessionStartMemoryOrchestrator(store, provider).GetFragmentAsync(
-                new SessionMemoryLifecycle(SessionStartHarness.Codex, sessionId!, LifecycleInstanceId: null,
+                new SessionMemoryLifecycle(HarnessId.Codex, sessionId!, LifecycleInstanceId: null,
                     IsTopLevel: true, ClassificationAuthoritative: true, SessionLifecycleReason.New,
                     CallbackMayRepeat: false),
                 new SessionStartMemoryContextRequest(Url, scopeRoot, disabled, budget, CancellationToken.None,
@@ -425,7 +426,7 @@ sealed class CodexHookCommand(ConfigRoot config, ProfileContext profiles, HookCl
         // The static work-items nudge, resolved (availability-gated + opt-out) independently
         // of the lease-driven memory/guidelines fragment and merged only at the output layer.
         var workItemsNudge = HarnessNudgeEmitter.Combine(
-            WorkItemsNudgeEmitter.Resolve(SessionStartHarness.Codex, sessionId, activeProfile?.DisableWorkItemsNudge is true, home),
+            WorkItemsNudgeEmitter.Resolve(HarnessId.Codex, sessionId, activeProfile?.DisableWorkItemsNudge is true, home),
             HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true, config, home));
 
         await RunSessionStartHandshakeForTest(

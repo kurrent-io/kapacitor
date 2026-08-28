@@ -2,6 +2,7 @@ using System.Text.Json.Nodes;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.SessionStartMemory;
+using Capacitor.Cli.Core.Harness;
 
 namespace Capacitor.Cli.Commands.Harness;
 
@@ -169,7 +170,7 @@ sealed class OpenCodeHookCommand(ConfigRoot config, ProfileContext profiles, Hoo
         // stdout regardless of what the watcher did.
         var fragment = await SessionStartMemoryHookSupport.AwaitBounded(memoryTask, budget);
         var workItemsNudge = canConsumeFragment
-            ? WorkItemsNudgeEmitter.Resolve(SessionStartHarness.OpenCode, sessionId, activeProfile?.DisableWorkItemsNudge is true, home)
+            ? WorkItemsNudgeEmitter.Resolve(HarnessId.OpenCode, sessionId, activeProfile?.DisableWorkItemsNudge is true, home)
             : null;
         // The harness nudge is independent of the once-per-session memory lease — it has its own
         // 6h evaluation throttle, so it can surface even on a re-fired session that can't reconsume.
@@ -207,7 +208,7 @@ sealed class OpenCodeHookCommand(ConfigRoot config, ProfileContext profiles, Hoo
     internal static string RenderMemoryOutput(string? fragment, string? workItemsNudge = null) =>
         fragment is null && string.IsNullOrWhiteSpace(workItemsNudge)
             ? ""
-            : SessionStartMemoryOutputAdapters.Render(SessionStartHarness.OpenCode, fragment, workItemsNudge);
+            : SessionStartMemoryOutputAdapters.Render(HarnessId.OpenCode, fragment, workItemsNudge);
 
     /// <summary>
     /// The lifecycle this harness reports. <c>CallbackMayRepeat</c> is true because the plugin's start
@@ -221,7 +222,7 @@ sealed class OpenCodeHookCommand(ConfigRoot config, ProfileContext profiles, Hoo
     /// property of the plugin's existing fail-closed classification, not an assumption made here.</para>
     /// </summary>
     internal static SessionMemoryLifecycle LifecycleFor(string sessionId) =>
-        new(SessionStartHarness.OpenCode, sessionId, LifecycleInstanceId: null,
+        new(HarnessId.OpenCode, sessionId, LifecycleInstanceId: null,
             IsTopLevel: true, ClassificationAuthoritative: true,
             SessionLifecycleReason.RepeatedTurnCallback, CallbackMayRepeat: true);
 

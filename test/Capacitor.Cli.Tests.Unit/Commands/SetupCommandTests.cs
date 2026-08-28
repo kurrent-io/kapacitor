@@ -8,6 +8,7 @@ using Capacitor.Cli.Core.FirstRun;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
 using WireMock.Server;
+using Capacitor.Cli.Core.Harness;
 
 namespace Capacitor.Cli.Tests.Unit.Commands;
 
@@ -64,15 +65,15 @@ public class SetupCommandTests {
 
     // --- What Step 4 says when the browser already answered it ---
 
-    static FirstRunAgentsAnswer Answer(int unrecognised, params string[] vendors) =>
-        new([.. vendors.Select(v => new FirstRunAgentsChoice(v, true, true))],
+    static FirstRunAgentsAnswer Answer(int unrecognised, params HarnessId[] harnesses) =>
+        new([.. harnesses.Select(h => new FirstRunAgentsChoice(h, true, true))],
             new DateTimeOffset(2026, 8, 25, 9, 30, 0, TimeSpan.Zero),
             unrecognised);
 
     // Step 4 must omit a choice the live progress line already named, or the same fact lands twice.
     [Test]
     public async Task BrowserAgentsSummary_omits_a_choice_the_live_line_already_named() {
-        var lines = SetupCommand.BrowserAgentsSummary(Answer(0, "cursor", "claude"));
+        var lines = SetupCommand.BrowserAgentsSummary(Answer(0, HarnessId.Cursor, HarnessId.Claude));
 
         await Assert.That(string.Join("\n", lines)).DoesNotContain("Claude Code");
     }
@@ -162,14 +163,14 @@ public class SetupCommandTests {
     // why — the vendor was simply dropped as unreadable by a CLI older than the server.
     [Test]
     public async Task BrowserAgentsSummary_says_when_this_build_could_not_read_part_of_the_answer() {
-        var lines = SetupCommand.BrowserAgentsSummary(Answer(2, "claude"));
+        var lines = SetupCommand.BrowserAgentsSummary(Answer(2, HarnessId.Claude));
 
         await Assert.That(string.Join("\n", lines)).Contains("kcap update");
     }
 
     [Test]
     public async Task BrowserAgentsSummary_says_nothing_at_all_when_it_read_the_whole_answer() {
-        var lines = SetupCommand.BrowserAgentsSummary(Answer(0, "claude"));
+        var lines = SetupCommand.BrowserAgentsSummary(Answer(0, HarnessId.Claude));
 
         await Assert.That(lines.Count).IsEqualTo(0);
     }
@@ -241,7 +242,7 @@ public class SetupCommandTests {
     }
 
     static FirstRunAgentsAnswer VisibilityAnswer(string? visibility) =>
-        new([new FirstRunAgentsChoice("claude", true, true)],
+        new([new FirstRunAgentsChoice(HarnessId.Claude, true, true)],
             new DateTimeOffset(2026, 8, 26, 9, 0, 0, TimeSpan.Zero),
             0,
             visibility);

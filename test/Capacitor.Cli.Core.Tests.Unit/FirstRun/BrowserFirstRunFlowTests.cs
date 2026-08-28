@@ -1,5 +1,6 @@
 using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.FirstRun;
+using Capacitor.Cli.Core.Harness;
 using Microsoft.Extensions.Time.Testing;
 
 namespace Capacitor.Cli.Core.Tests.Unit.FirstRun;
@@ -237,7 +238,7 @@ public class BrowserFirstRunFlowTests {
     sealed class FakeImportLane(Log log) : IFirstRunImportLane {
         public ReportFirstRunImportRequest? Found { get; set; } = Report();
 
-        public List<IReadOnlyList<string>?> Scans   { get; } = [];
+        public List<IReadOnlyList<HarnessId>?> Scans   { get; } = [];
         public List<FirstRunImportAnswer>   Imports { get; } = [];
 
         /// <summary>Set to throw out of the scan, which must leave the screen waiting rather than
@@ -254,7 +255,7 @@ public class BrowserFirstRunFlowTests {
         public List<DateTimeOffset> ScanStamps { get; } = [];
 
         public Task<ReportFirstRunImportRequest?> DiscoverAsync(
-                IReadOnlyList<string>? vendors, DateTimeOffset asOf, CancellationToken ct) {
+                IReadOnlyList<HarnessId>? vendors, DateTimeOffset asOf, CancellationToken ct) {
             log.Add("scan");
             ScanStamps.Add(asOf);
             Advance?.Invoke();
@@ -1296,7 +1297,7 @@ public class BrowserFirstRunFlowTests {
 
         await Run(h);
 
-        await Assert.That(h.Importing!.Scans.Single()).DoesNotContain("claude");
+        await Assert.That(h.Importing!.Scans.Single()).DoesNotContain(HarnessId.Claude);
     }
 
     [Test]
@@ -1312,9 +1313,9 @@ public class BrowserFirstRunFlowTests {
 
         var scanned = h.Importing!.Scans.Single()!;
 
-        await Assert.That(scanned).DoesNotContain("claude");
-        await Assert.That(scanned).Contains("gemini").Because("never reported, so never offered");
-        await Assert.That(scanned).Contains("cursor").Because("declined locally is not offered, so not refused here");
+        await Assert.That(scanned).DoesNotContain(HarnessId.Claude);
+        await Assert.That(scanned).Contains(HarnessId.Gemini).Because("never reported, so never offered");
+        await Assert.That(scanned).Contains(HarnessId.Cursor).Because("declined locally is not offered, so not refused here");
     }
 
     [Test]
@@ -1327,7 +1328,7 @@ public class BrowserFirstRunFlowTests {
 
         await Run(h);
 
-        await Assert.That(h.Importing!.Scans.Single()!).Contains("codex");
+        await Assert.That(h.Importing!.Scans.Single()!).Contains(HarnessId.Codex);
     }
 
     [Test]
@@ -1338,7 +1339,7 @@ public class BrowserFirstRunFlowTests {
 
         await Run(h);
 
-        await Assert.That(h.Importing!.Scans.Single()!).Contains("claude");
+        await Assert.That(h.Importing!.Scans.Single()!).Contains(HarnessId.Claude);
     }
 
     [Test]

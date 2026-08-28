@@ -1,5 +1,6 @@
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Harness;
 
 namespace Capacitor.Cli.Harness.Claude;
 
@@ -14,7 +15,7 @@ namespace Capacitor.Cli.Harness.Claude;
 internal sealed class ClaudeImportSource(ConfigRoot config, string projectsDir) : IImportSource {
     readonly string _projectsDir = projectsDir;
 
-    public string Vendor => "claude";
+    public HarnessId Vendor => HarnessId.Claude;
 
     public bool IsAvailable => Directory.Exists(_projectsDir);
 
@@ -94,7 +95,7 @@ internal sealed class ClaudeImportSource(ConfigRoot config, string projectsDir) 
             ctx.MinLines,
             ctx.ExcludedRepos?.ToArray(),
             ct,
-            vendor: "claude",
+            vendor: Vendor,
             excludedPaths: ctx.ExcludedPaths?.ToArray()
         );
     }

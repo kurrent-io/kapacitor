@@ -19,9 +19,6 @@ public sealed class ClaudePaths {
         UserSkillsDir  = Path.Combine(home.Path, ".claude", "skills");
     }
 
-    /// <summary>Reads the one override Claude honours; the home comes from the caller.</summary>
-    public static ClaudePaths FromEnvironment(UserHome home) =>
-        new(home, Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR"));
 
     public string Home { get; }
 

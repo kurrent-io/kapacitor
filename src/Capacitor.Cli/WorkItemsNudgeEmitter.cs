@@ -1,4 +1,5 @@
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Harness;
 
 namespace Capacitor.Cli;
 
@@ -29,7 +30,7 @@ static class WorkItemsNudgeEmitter {
     /// otherwise the built nudge. <paramref name="codexConfigPath"/> is the availability gate's test
     /// seam and is null in production.
     /// </summary>
-    public static string? Resolve(SessionStartMemory.SessionStartHarness harness, string? sessionId, bool optedOut,
+    public static string? Resolve(HarnessId harness, string? sessionId, bool optedOut,
                                   UserHome home, string? codexConfigPath = null) {
         if (optedOut) return null;
         if (!WorkItemsNudgeAvailability.IsRegisteredFor(harness, home, codexConfigPath)) return null;

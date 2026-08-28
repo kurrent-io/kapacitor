@@ -13,7 +13,7 @@ internal sealed partial class CodexLauncher(
         UserHome               home,
         ILogger<CodexLauncher> logger
     ) : IHostedAgentLauncher {
-    readonly CodexPaths _paths = CodexPaths.FromEnvironment(home);
+    readonly CodexPaths _paths = CodexHarness.FromEnvironment(home).Paths;
 
     public string Vendor  => "codex";
     public string CliPath => config.CodexPath;

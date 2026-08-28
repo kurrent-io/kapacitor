@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Core.Harness.Cursor;
 
 namespace Capacitor.Cli.Harness.Cursor;
@@ -93,7 +94,7 @@ internal sealed class CursorImportSource : IImportSource {
         return p.Length == 0 ? "/" : p;
     }
 
-    public string Vendor => "cursor";
+    public HarnessId Vendor => HarnessId.Cursor;
 
     public bool IsAvailable => Directory.Exists(_projectsDir);
 
@@ -974,7 +975,7 @@ internal sealed class CursorImportSource : IImportSource {
         EncodedCwd       = "",
         Meta             = meta,
         Status           = status,
-        Vendor           = "cursor",
+        Vendor           = HarnessId.Cursor,
         ProbeErrorReason = probeErrorReason,
         TotalLines       = totalLines,
         SourceMeta       = s.SourceMeta,

@@ -1,5 +1,6 @@
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Harness.Pi;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
@@ -86,7 +87,7 @@ public class PiImportSourceImportTests : IDisposable {
             CancellationToken.None);
         await Assert.That(classified.Count).IsEqualTo(1);
         await Assert.That(classified[0].Status).IsEqualTo(ImportCommand.ClassificationStatus.New);
-        await Assert.That(classified[0].Vendor).IsEqualTo("pi");
+        await Assert.That(classified[0].Vendor).IsEqualTo(HarnessId.Pi);
 
         var outcome = await source.ImportSessionAsync(
             classified[0],

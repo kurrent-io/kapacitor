@@ -9,11 +9,13 @@ using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.LocalIpc;
 using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.Config;
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Core.Harness.Claude;
 using Capacitor.Cli.Core.Harness.Codex;
 using Capacitor.Cli.Daemon.Harness.Antigravity;
 using Capacitor.Cli.Daemon.Harness.Claude;
 using Capacitor.Cli.Daemon.Harness.Codex;
+using Capacitor.Cli.Core.Setup;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
@@ -483,7 +485,9 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     int _quarantineSweepRunning;
     readonly DaemonConfig                                      _config;
     readonly ConfigRoot                                        _configRoot;
-    readonly UserHome                                          _home;
+    // The vendors this daemon sees, resolved once for its lifetime: an override cannot change under
+    // a running process, and the inventory refresh would otherwise re-resolve all nine per TTL.
+    readonly HarnessRegistry                                   _harnesses;
     readonly ServerConnection                                  _server;
     readonly WorktreeManager                                   _worktreeManager;
     readonly RepoMatcher                                       _repoMatcher;
@@ -611,7 +615,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         _shutdownCts       = CancellationTokenSource.CreateLinkedTokenSource(lifetime.ApplicationStopping);
         _config            = config;
         _configRoot        = configRoot;
-        _home              = home;
+        _harnesses         = HarnessRegistry.FromEnvironment(home);
         _server            = server;
         _worktreeManager   = worktreeManager;
         _repoMatcher       = repoMatcher;
@@ -992,7 +996,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             if (_harnessInventory is not null &&
                 DateTimeOffset.UtcNow - _harnessInventoryEvaluatedAt < HarnessInventoryTtl) return;
             try {
-                _harnessInventory = Capacitor.Cli.Core.Setup.HarnessInventory.EvaluateCurrent(_configRoot, _home);
+                _harnessInventory = HarnessInventory.EvaluateCurrent(_configRoot, _harnesses);
             } catch (Exception ex) {
                 // Keep the last cached value (or null); inventory must never break the report path.
                 _logger.LogDebug(ex, "Harness inventory evaluation failed — keeping last cached");
@@ -2433,7 +2437,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     /// when the file is missing/unreadable or has no top-level model key.
     /// </summary>
     string CodexResolvedModel(string fallback) {
-        var fromConfig = CodexConfigToml.ReadTopLevelModel(CodexPaths.FromEnvironment(_home).ConfigToml);
+        var fromConfig = CodexConfigToml.ReadTopLevelModel(_harnesses.Of<CodexHarness>().Paths.ConfigToml);
 
         return string.IsNullOrWhiteSpace(fromConfig) ? fallback : fromConfig;
     }
@@ -4414,9 +4418,9 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     Task DetectSessionIdAsync(AgentInstance agent, string vendor, DateTime spawnedAtUtc) {
         Func<ISet<string>, (string SessionId, string Path)?>? locate = vendor.ToLowerInvariant() switch {
             "claude" => ruledOut => SessionTranscriptLocator.TryLocateWinner(
-                ClaudePaths.FromEnvironment(_home).ProjectDir(agent.Worktree.Path), agent.Worktree.Path, spawnedAtUtc, ruledOut),
+                _harnesses.Of<ClaudeHarness>().Paths.ProjectDir(agent.Worktree.Path), agent.Worktree.Path, spawnedAtUtc, ruledOut),
             "codex"  => ruledOut => CodexSessionRolloutLocator.TryLocateWinner(
-                CodexPaths.FromEnvironment(_home).Sessions, agent.Worktree.Path, spawnedAtUtc, ruledOut),
+                _harnesses.Of<CodexHarness>().Paths.Sessions, agent.Worktree.Path, spawnedAtUtc, ruledOut),
             _        => null,
         };
         if (locate is null) return Task.CompletedTask;

@@ -1,5 +1,6 @@
 using System.Globalization;
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Harness.Antigravity;
 
 namespace Capacitor.Cli.Tests.Unit.Harness.Antigravity;
@@ -81,7 +82,7 @@ public class AntigravityImportSourceTests {
         await Assert.That(discovered.Count).IsEqualTo(1);
         var root = discovered[0];
         await Assert.That(root.SessionId).IsEqualTo(Dashless(Root));
-        await Assert.That(root.Vendor).IsEqualTo("antigravity");
+        await Assert.That(root.Vendor).IsEqualTo(HarnessId.Antigravity);
         await Assert.That(root.FirstTimestamp).IsEqualTo(DateTimeOffset.Parse("2026-07-02T19:00:00Z", CultureInfo.InvariantCulture));
 
         var children = (List<string>)root.SourceMeta!["Children"]!;

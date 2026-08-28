@@ -1,4 +1,5 @@
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.Core.Harness;
 
 namespace Capacitor.Cli.Tests.Unit.Harness.Antigravity;
 
@@ -8,14 +9,10 @@ namespace Capacitor.Cli.Tests.Unit.Harness.Antigravity;
 public class AntigravityStatusLineTests {
     [Test]
     public async Task Status_line_shows_antigravity_installed_state() {
-        var installed = StatusCommand.BuildHooksStatusLine(
-            claude: true, codex: true, cursor: true, copilot: true,
-            gemini: true, kiro: true, pi: true, opencode: true, antigravity: true);
+        var installed = StatusCommand.BuildHooksStatusLine([(HarnessId.Antigravity, true)]);
         await Assert.That(installed).Contains("Antigravity ✓");
 
-        var missing = StatusCommand.BuildHooksStatusLine(
-            claude: false, codex: false, cursor: false, copilot: false,
-            gemini: false, kiro: false, pi: false, opencode: false, antigravity: false);
+        var missing = StatusCommand.BuildHooksStatusLine([(HarnessId.Antigravity, false)]);
         await Assert.That(missing).Contains("Antigravity ✗");
     }
 }

@@ -353,9 +353,10 @@ switch (command) {
     case "use":
         return await new UseCommand(config).HandleAsync(args);
     case "status":
-        return await new StatusCommand(daemonPaths, profiles, config, home).HandleAsync(args);
+        return await new StatusCommand(
+            daemonPaths, profiles, config, HarnessRegistry.FromEnvironment(home)).HandleAsync(args);
     case "harness":
-        return await new HarnessCommand(config, home).HandleAsync(args);
+        return await new HarnessCommand(config, HarnessRegistry.FromEnvironment(home)).HandleAsync(args);
     case "config":
         return await new ConfigCommand(config).HandleAsync(args);
     case "ignore":

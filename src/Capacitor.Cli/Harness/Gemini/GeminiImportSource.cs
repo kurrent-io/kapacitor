@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Core.Harness.Gemini;
 
 namespace Capacitor.Cli.Harness.Gemini;
@@ -33,7 +34,7 @@ internal sealed class GeminiImportSource : IImportSource {
             ? StringComparison.OrdinalIgnoreCase
             : StringComparison.Ordinal;
 
-    public string Vendor => "gemini";
+    public HarnessId Vendor => HarnessId.Gemini;
 
     public bool IsAvailable => Directory.Exists(_tmpDir);
 
@@ -403,7 +404,7 @@ internal sealed class GeminiImportSource : IImportSource {
         EncodedCwd       = "",
         Meta             = meta,
         Status           = status,
-        Vendor           = "gemini",
+        Vendor           = HarnessId.Gemini,
         ProbeErrorReason = probeErrorReason,
         TotalLines       = totalLines,
         SourceMeta       = s.SourceMeta,

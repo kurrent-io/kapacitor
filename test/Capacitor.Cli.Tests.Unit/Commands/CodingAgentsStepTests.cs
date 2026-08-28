@@ -4,6 +4,7 @@ using Capacitor.Cli.Core.Mcp;
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core.FirstRun;
 using static Capacitor.Cli.Commands.CodingAgentsStep;
+using Capacitor.Cli.Core.Harness;
 
 namespace Capacitor.Cli.Tests.Unit.Commands;
 
@@ -829,7 +830,7 @@ public class CodingAgentsStepTests {
             SkipGemini: true, SkipPi: true, SkipOpenCode: true, SkipAntigravity: true);
 
         var answer = new FirstRunAgentsAnswer(
-            [new FirstRunAgentsChoice("cursor", Record: true, Tools: true)],
+            [new FirstRunAgentsChoice(HarnessId.Cursor, Record: true, Tools: true)],
             new DateTimeOffset(2026, 8, 25, 9, 30, 0, TimeSpan.Zero), Unrecognised: 0);
 
         var detected = new DetectedAgents(Claude: false, Codex: false, Cursor: true, Copilot: false);

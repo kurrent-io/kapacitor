@@ -4,11 +4,11 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading.Channels;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Core.Harness.Claude;
 using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.FirstRun;
 using Capacitor.Cli.Core.RepoEvidence;
-using Capacitor.Cli.Core.Setup;
 using Capacitor.Cli.Harness.Claude;
 using Capacitor.Cli.Harness.Cursor;
 using Spectre.Console;
@@ -290,9 +290,9 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
         public required SessionMetadata      Meta       { get; init; }
         public required ClassificationStatus Status     { get; init; }
 
-        /// <summary>"claude" (default) or "codex" — picks the matching metadata extractor,
-        /// title extractor, session-start hook shape, and TranscriptBatch.Vendor tag.</summary>
-        public string Vendor { get; init; } = "claude";
+        /// <summary>Picks the matching metadata extractor, title extractor, session-start hook
+        /// shape, and TranscriptBatch.Vendor tag.</summary>
+        public HarnessId Vendor { get; init; } = HarnessId.Claude;
 
         /// <summary>Only populated when Status == Partial.</summary>
         public int ResumeFromLine { get; init; }
@@ -628,15 +628,15 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
     /// what this machine has. A caller reporting figures upstream needs this rather than its own
     /// request, or it claims to have looked somewhere it did not.</param>
     internal sealed record ImportDiscoveryResult(
-        ImportDiscoverySummary Summary,
-        IReadOnlyList<string>  ScannedVendors);
+        ImportDiscoverySummary   Summary,
+        IReadOnlyList<HarnessId> ScannedVendors);
 
     /// <summary>
     /// Every "found nothing" exit still reports. Zero sessions is an answer; no output at all is
     /// indistinguishable from the process having died.
     /// </summary>
     static int WriteEmptyDiscoveryReport(
-            Action<ImportDiscoveryResult> sink, IReadOnlyList<string> scanned, DateTimeOffset? windowsAsOf) {
+            Action<ImportDiscoveryResult> sink, IReadOnlyList<HarnessId> scanned, DateTimeOffset? windowsAsOf) {
         sink(new ImportDiscoveryResult(
             ImportDiscoverySummary.Build(
                 [], new Dictionary<string, (string, string)?>(), DiscoveryWindows(windowsAsOf)),
@@ -645,11 +645,11 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
         return 0;
     }
 
-    /// <summary>In catalogue order, so two runs of an unchanged machine report the same list.</summary>
-    static IReadOnlyList<string> ScannedVendors(IReadOnlyList<IImportSource> sources) {
-        var walked = sources.Select(s => s.Vendor).ToHashSet(StringComparer.Ordinal);
+    /// <summary>In registry order, so two runs of an unchanged machine report the same list.</summary>
+    static IReadOnlyList<HarnessId> ScannedVendors(IReadOnlyList<IImportSource> sources) {
+        var walked = sources.Select(s => s.Vendor).ToHashSet();
 
-        return [.. HarnessCatalog.All.Select(h => h.VendorId).Where(walked.Contains)];
+        return [.. HarnessRegistry.Identities.Select(h => h.Id).Where(walked.Contains)];
     }
 
     static void WriteDiscoveryReport(ImportDiscoverySummary summary, bool asJson) =>
@@ -731,7 +731,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
         // Back-compat: a null caller (legacy or test) means "Claude only". Once
         // Program.cs migrates in E3, every production caller passes sources
         // explicitly.
-        sources ??= [new ClaudeImportSource(config, ClaudePaths.FromEnvironment(home).Projects)];
+        sources ??= [new ClaudeImportSource(config, ClaudeHarness.FromEnvironment(home).Paths.Projects)];
 
         // --- No-source exit policy ---
         var available = sources.Where(s => s.IsAvailable).ToList();
@@ -739,7 +739,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
 
         if (available.Count == 0) {
             if (explicitVendorSelection) {
-                var flagList = string.Join(", ", missing.Select(v => "--" + v));
+                var flagList = string.Join(", ", missing.Select(v => v.Flag));
 
                 await Console.Error.WriteLineAsync(
                     $"{flagList} specified but no matching installation detected on this machine."
@@ -761,7 +761,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
 
         if (explicitVendorSelection) {
             foreach (var v in missing) {
-                await Console.Error.WriteLineAsync($"Skipping {v} (not detected on this machine).");
+                await Console.Error.WriteLineAsync($"Skipping {v.VendorId} (not detected on this machine).");
             }
         }
 
@@ -786,7 +786,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
 
         for (var i = 0; i < sources.Count; i++) {
             var count = discoveriesPerSource[i].Count;
-            display.Line($"Found {count} {sources[i].Vendor} session{(count == 1 ? "" : "s")}.");
+            display.Line($"Found {count} {sources[i].Vendor.VendorId} session{(count == 1 ? "" : "s")}.");
         }
 
         var totalDiscovered = discoveriesPerSource.Sum(d => d.Count);
@@ -816,7 +816,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
         }
 
         // Build a vendor → source map for downstream lookups.
-        var byVendor = sources.ToDictionary(s => s.Vendor, StringComparer.Ordinal);
+        var byVendor = sources.ToDictionary(s => s.Vendor);
 
         // --- Cwd resolution for scope filtering ---
         // For file-based sources (Claude/Codex) extract cwd from the transcript.
@@ -825,7 +825,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
         // per-source: file-based sources project their DiscoveredSessions into
         // (SessionId, FilePath, EncodedCwd) tuples; for Cursor we resolve cwd→repo
         // directly here.
-        var allFileTuples = new List<(string SessionId, string FilePath, string EncodedCwd, string Vendor)>();
+        var allFileTuples = new List<(string SessionId, string FilePath, string EncodedCwd, HarnessId Vendor)>();
         var cursorCwds    = new Dictionary<string, string?>(StringComparer.Ordinal); // sessionId → workspace path
 
         for (var i = 0; i < sources.Count; i++) {
@@ -855,7 +855,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
         var sessionCwds        = new Dictionary<string, string>(StringComparer.Ordinal);
         var worktreeAttributed = new HashSet<string>(StringComparer.Ordinal);
 
-        foreach (var vendor in new[] { "claude", "codex" }) {
+        foreach (var vendor in new[] { HarnessId.Claude, HarnessId.Codex }) {
             var slice = allFileTuples
                 .Where(t => t.Vendor == vendor)
                 .Select(t => (t.SessionId, t.FilePath, t.EncodedCwd))
@@ -863,7 +863,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
 
             if (slice.Count == 0) continue;
 
-            var partial                                  = await ResolveTranscriptReposAsync(slice, codex: vendor == "codex", display, cwdRemap, sessionCwds, worktreeAttributed);
+            var partial                                  = await ResolveTranscriptReposAsync(slice, codex: vendor is HarnessId.Codex, display, cwdRemap, sessionCwds, worktreeAttributed);
             foreach (var kv in partial) resolved[kv.Key] = kv.Value;
         }
 
@@ -1116,9 +1116,9 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
             for (var i = 0; i < sources.Count; i++) {
                 // Skip Codex (already pruned in CodexPaths.Discover) and Cursor
                 // (no FilePath to stat). Only Claude needs the post-classify mtime
-                // fallback. Detect this by vendor string to keep the orchestrator
-                // agnostic of source-implementation details.
-                if (sources[i].Vendor != "claude") continue;
+                // fallback. Asked by identity, so the orchestrator stays agnostic of
+                // source-implementation details.
+                if (sources[i].Vendor is not HarnessId.Claude) continue;
 
                 classificationsPerSource[i] = [
                     .. classificationsPerSource[i]
@@ -1206,8 +1206,8 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
 
         if (sources.Count > 1) {
             planBySource = classifications
-                .GroupBy(c => c.Vendor, StringComparer.Ordinal)
-                .ToDictionary(g => g.Key, g => ComputeCounts(g.ToList()), StringComparer.Ordinal);
+                .GroupBy(c => c.Vendor)
+                .ToDictionary(g => g.Key.VendorId, g => ComputeCounts(g.ToList()), StringComparer.Ordinal);
         }
 
         display.BeginPhase("Plan");
@@ -1343,7 +1343,8 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
                             await concurrencyLimit.WaitAsync();
 
                             try {
-                                var rc = await new WhatsDoneCommand(config, profiles, home).GenerateForSessionAsync(baseUrl, sid, _ => { }, vnd);
+                                var rc = await new WhatsDoneCommand(config, profiles, home)
+                                    .GenerateForSessionAsync(baseUrl, sid, _ => { }, vnd.VendorId);
 
                                 if (rc == 0) Interlocked.Increment(ref summariesGenerated);
                                 else {
@@ -1370,7 +1371,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
         // routedLoaded/routedExcluded/routedErrored above remain authoritative
         // for the totals row; this tracker is what feeds doneBySource so the
         // sub-grid attributes Skipped-at-import to Excluded (not Errored).
-        var routedOutcomesByVendor = new ConcurrentDictionary<string, (int Loaded, int Skipped, int Failed)>(StringComparer.Ordinal);
+        var routedOutcomesByVendor = new ConcurrentDictionary<HarnessId, (int Loaded, int Skipped, int Failed)>();
 
         // A SEPARATE tracker from `importedSessionIds`, feeding ONLY the --private pass and never
         // the Done-grid counting. Membership in `importedSessionIds` keys off the raw
@@ -1406,7 +1407,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
         var replayChildContentVendors = byVendor.Values
             .Where(s => s.AttachesChildContentOnReplay)
             .Select(s => s.Vendor)
-            .ToHashSet(StringComparer.Ordinal);
+            .ToHashSet();
 
         static (int Loaded, int Skipped, int Failed) AddRoutedOutcome(
                 (int Loaded, int Skipped, int Failed) prev,
@@ -1727,7 +1728,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
                                         case ImportOutcome.Loaded:
                                         case ImportOutcome.Resumed:
                                             AnsiConsole.MarkupLine(
-                                                $"[green]✓[/] Loading [cyan]{Markup.Escape(c.SessionId)}[/] ({Markup.Escape(c.Vendor)})"
+                                                $"[green]✓[/] Loading [cyan]{Markup.Escape(c.SessionId)}[/] ({c.Vendor.VendorId})"
                                             );
 
                                             break;
@@ -1776,7 +1777,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
                         switch (resolved) {
                             case ImportOutcome.Loaded:
                             case ImportOutcome.Resumed:
-                                display.Line($"Loading {c.SessionId} ({c.Vendor})");
+                                display.Line($"Loading {c.SessionId} ({c.Vendor.VendorId})");
 
                                 break;
                             case ImportOutcome.Skipped:
@@ -1926,9 +1927,9 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
             var importedSet = importedSessionIds.ToHashSet(StringComparer.Ordinal);
 
             doneBySource = classifications
-                .GroupBy(c => c.Vendor, StringComparer.Ordinal)
+                .GroupBy(c => c.Vendor)
                 .ToDictionary(
-                    g => g.Key,
+                    g => g.Key.VendorId,
                     g => {
                         var slice    = g.ToList();
                         var imported = slice.Count(c => importedSet.Contains(c.SessionId));
@@ -2742,9 +2743,9 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
     internal static string NormalizeGuid(string value) =>
         Guid.TryParse(value, out var guid) ? guid.ToString("N") : value;
 
-    async Task<TitleResult> GenerateTitleForImportAsync(HttpClient httpClient, string baseUrl, string sessionId, string filePath, string vendor) {
+    async Task<TitleResult> GenerateTitleForImportAsync(HttpClient httpClient, string baseUrl, string sessionId, string filePath, HarnessId vendor) {
         try {
-            var (userText, assistantText) = vendor == "codex"
+            var (userText, assistantText) = vendor is HarnessId.Codex
                 ? TitleGenerator.ExtractCodexTitleContext(filePath)
                 : TitleGenerator.ExtractTitleContext(filePath);
 
@@ -2752,7 +2753,8 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
                 return TitleResult.Skipped;
             }
 
-            var result = await TitleGenerator.GenerateAsync(userText, assistantText, _ => { }, profiles.Resolution.Profile, home, vendor);
+            var result = await TitleGenerator.GenerateAsync(
+                userText, assistantText, _ => { }, profiles.Resolution.Profile, home, vendor.VendorId);
 
             if (result is null) {
                 return TitleResult.Skipped;
@@ -2822,7 +2824,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
         public bool TrackPerSessionProgress { get; init; }
 
         /// <summary>Fired when a successfully-imported session is ready for title generation.</summary>
-        public required Action<(string SessionId, string FilePath, string? PreviousSessionId, string Vendor)> OnTitleTaskReady { get; init; }
+        public required Action<(string SessionId, string FilePath, string? PreviousSessionId, HarnessId Vendor)> OnTitleTaskReady { get; init; }
 
         /// <summary>
         /// Fired when a session's session-end hook returned, signalling that the
@@ -2830,7 +2832,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
         /// Renamed from the previous `OnSessionEnded` to disambiguate from the
         /// slot-aware lifecycle event above.
         /// </summary>
-        public required Action<(string SessionId, bool GenerateWhatsDone, string Vendor)> OnBackgroundWorkReady { get; init; }
+        public required Action<(string SessionId, bool GenerateWhatsDone, HarnessId Vendor)> OnBackgroundWorkReady { get; init; }
     }
 
     /// <summary>
@@ -2989,7 +2991,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
 
                 using var endContent = new StringContent(resumeEndHook.ToJsonString(), Encoding.UTF8, "application/json");
                 using var endResp    = await httpClient.PostWithRetryAsync(
-                    $"{baseUrl}/hooks/session-end/{session.Vendor}", endContent, ct: ct, retryStatuses: true);
+                    $"{baseUrl}/hooks/session-end/{session.Vendor.VendorId}", endContent, ct: ct, retryStatuses: true);
 
                 if (!endResp.IsSuccessStatusCode) {
                     events.OnSessionErrored(slot, session.SessionId, $"resume session-end failed: HTTP {(int)endResp.StatusCode}");
@@ -3044,7 +3046,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
         // RepositoryDetection probe (which reads the live git config and might disagree
         // with what was true when the rollout was recorded). Detection still runs as a
         // fallback for fields the rollout omits (user_name / user_email).
-        var codexRepo = session.Vendor == "codex" ? ExtractCodexGitInfo(session.FilePath) : null;
+        var codexRepo = session.Vendor is HarnessId.Codex ? ExtractCodexGitInfo(session.FilePath) : null;
 
         if (cwd is not null) {
             // The imported session-start payload carries no PR fields (only owner/repo/branch/user),
@@ -3079,11 +3081,11 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
         // workspace_root above nor the cwd-based repository detection could find anything —
         // fall back to scanning the transcript's own tool-use paths for a resolvable git root,
         // same evidence rule the live watcher applies for sessions launched outside a repo.
-        if (session.Vendor == "claude"
+        if (session.Vendor is HarnessId.Claude
             && !startHook.ContainsKey("repository")
             && (cwd is null || GitRepository.FindRoot(cwd) is null)) {
             var evidenceNode = await TryBuildEvidenceRepositoryNodeAsync(
-                session.Vendor,
+                session.Vendor.VendorId,
                 session.FilePath,
                 GitRepository.FindRoot,
                 root => RepositoryDetection.DetectRepositoryAsync(config, root, detectPullRequest: false));
@@ -3100,7 +3102,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
         try {
             using var startContent = new StringContent(startHook.ToJsonString(), Encoding.UTF8, "application/json");
             using var startResp    = await httpClient.PostWithRetryAsync(
-                $"{baseUrl}/hooks/session-start/{session.Vendor}", startContent, ct: ct, retryStatuses: true);
+                $"{baseUrl}/hooks/session-start/{session.Vendor.VendorId}", startContent, ct: ct, retryStatuses: true);
 
             if (!startResp.IsSuccessStatusCode) {
                 events.OnSessionErrored(slot, session.SessionId, $"session-start failed: HTTP {(int)startResp.StatusCode}");
@@ -3153,7 +3155,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
         try {
             using var endContent = new StringContent(endHook.ToJsonString(), Encoding.UTF8, "application/json");
             using var endResp    = await httpClient.PostWithRetryAsync(
-                    $"{baseUrl}/hooks/session-end/{session.Vendor}", endContent, ct: ct, retryStatuses: true);
+                    $"{baseUrl}/hooks/session-end/{session.Vendor.VendorId}", endContent, ct: ct, retryStatuses: true);
 
             if (endResp.IsSuccessStatusCode) {
                 try {

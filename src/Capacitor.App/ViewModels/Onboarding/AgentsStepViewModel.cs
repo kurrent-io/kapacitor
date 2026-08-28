@@ -8,16 +8,16 @@ using ReactiveUI;
 
 namespace Capacitor.App.ViewModels.Onboarding;
 
-/// One coding-agent vendor: label, its exclusive plugin-install flag (null = Claude's flagless
-/// default), and its AgentDetectionResult selector. Order is display AND sequential-install
-/// order (spec §5's exclusive-flag list, Claude first) — shared by the Agents and Import steps.
-internal sealed record AgentVendor(string Label, string? Flag, Func<AgentDetectionResult, DetectedAgent> Select);
+/// One coding-agent vendor: its id, label and exclusive plugin-install flag (null = Claude's
+/// flagless default). Order is display AND sequential-install order (Claude first) — shared by the
+/// Agents and Import steps.
+internal sealed record AgentVendor(HarnessId Id, string Label, string? Flag);
 
-/// Re-derived from the Core <see cref="HarnessCatalog"/> so the app and the CLI enumerate the same
-/// vendors, in the same order — a tenth harness added to the catalog appears here automatically.
+/// Taken from Core's registry so the app and the CLI enumerate the same vendors, in the same order —
+/// a tenth harness appears here without an edit.
 internal static class AgentVendors {
     public static readonly IReadOnlyList<AgentVendor> All =
-        HarnessCatalog.All.Select(h => new AgentVendor(h.Label, h.InstallFlag, h.Select)).ToList();
+        [.. HarnessRegistry.Identities.Select(h => new AgentVendor(h.Id, h.Label, h.Id.PluginInstallFlag))];
 }
 
 public enum AgentInstallStatus { NotRun, Installing, Succeeded, Failed }
@@ -25,16 +25,12 @@ public enum AgentInstallStatus { NotRun, Installing, Succeeded, Failed }
 /// One vendor row on the Agents step, with its own checkbox and its own Retry command.
 public sealed class AgentVendorRow : ReactiveObject {
     internal readonly string? Flag;
-    readonly Func<AgentDetectionResult, DetectedAgent> _select;
-
-    bool _isSelected;
-    AgentInstallStatus _status = AgentInstallStatus.NotRun;
-    string? _message;
+    readonly HarnessId _id;
 
     internal AgentVendorRow(AgentVendor vendor, Func<AgentVendorRow, Task> retry, IObservable<bool> canRetry) {
-        Label   = vendor.Label;
-        Flag    = vendor.Flag;
-        _select = vendor.Select;
+        Label = vendor.Label;
+        Flag  = vendor.Flag;
+        _id   = vendor.Id;
 
         RetryCommand = ReactiveCommand.CreateFromTask(() => retry(this), canRetry);
     }
@@ -42,23 +38,23 @@ public sealed class AgentVendorRow : ReactiveObject {
     public string Label { get; }
 
     public bool IsSelected {
-        get => _isSelected;
-        set => this.RaiseAndSetIfChanged(ref _isSelected, value);
+        get;
+        set => this.RaiseAndSetIfChanged(ref field, value);
     }
 
     public AgentInstallStatus Status {
-        get => _status;
+        get;
         internal set {
-            this.RaiseAndSetIfChanged(ref _status, value);
+            this.RaiseAndSetIfChanged(ref field, value);
             this.RaisePropertyChanged(nameof(Glyph));
             this.RaisePropertyChanged(nameof(Failed));
             this.RaisePropertyChanged(nameof(Succeeded));
         }
-    }
+    } = AgentInstallStatus.NotRun;
 
     public string? Message {
-        get => _message;
-        internal set => this.RaiseAndSetIfChanged(ref _message, value);
+        get;
+        internal set => this.RaiseAndSetIfChanged(ref field, value);
     }
 
     public string Glyph => Status switch {
@@ -73,22 +69,20 @@ public sealed class AgentVendorRow : ReactiveObject {
 
     public ReactiveCommand<Unit, Unit> RetryCommand { get; }
 
-    internal bool DetectedIn(AgentDetectionResult result) => _select(result).Detected;
+    internal bool DetectedIn(IReadOnlySet<HarnessId> detected) => detected.Contains(_id);
 }
 
-/// spec §3 step 5 / decision 8: one checkbox per coding-agent vendor, pre-checked when detected.
-/// Install runs sequentially (Claude first, then §5's exclusive-flag order) so one vendor's
-/// failure never blocks the rest — successes stand, and only the failed row offers Retry.
+/// One checkbox per coding-agent vendor, pre-checked when detected. Install runs sequentially, in
+/// registry order, so one vendor's failure never blocks the rest — successes stand, and only the
+/// failed row offers Retry.
 public sealed class AgentsStepViewModel : ReactiveObject, IWizardStep {
     readonly IKcapCli _cli;
-    readonly Func<CancellationToken, Task<AgentDetectionResult>> _detect;
+    readonly Func<CancellationToken, Task<IReadOnlySet<HarnessId>>> _detect;
 
-    AgentDetectionResult? _detected;
-    Task? _inFlight;
-    bool _busy;
-    bool _satisfied;
+    IReadOnlySet<HarnessId>? _detected;
+    Task?             _inFlight;
 
-    public AgentsStepViewModel(IKcapCli cli, Func<CancellationToken, Task<AgentDetectionResult>> detect) {
+    public AgentsStepViewModel(IKcapCli cli, Func<CancellationToken, Task<IReadOnlySet<HarnessId>>> detect) {
         _cli    = cli;
         _detect = detect;
 
@@ -108,9 +102,9 @@ public sealed class AgentsStepViewModel : ReactiveObject, IWizardStep {
     public string? Message => CliAvailable ? null : "kcap CLI not found";
 
     public bool Busy {
-        get => _busy;
+        get;
         private set {
-            this.RaiseAndSetIfChanged(ref _busy, value);
+            this.RaiseAndSetIfChanged(ref field, value);
             this.RaisePropertyChanged(nameof(Idle));
         }
     }
@@ -118,8 +112,8 @@ public sealed class AgentsStepViewModel : ReactiveObject, IWizardStep {
     public bool Idle => !Busy;
 
     public bool Satisfied {
-        get => _satisfied;
-        private set => this.RaiseAndSetIfChanged(ref _satisfied, value);
+        get;
+        private set => this.RaiseAndSetIfChanged(ref field, value);
     }
 
     public ReactiveCommand<Unit, Unit> InstallCommand { get; }
@@ -127,7 +121,7 @@ public sealed class AgentsStepViewModel : ReactiveObject, IWizardStep {
     public async Task OnEnterAsync(CancellationToken ct) {
         if (_detected is not null) return; // cached: re-entering the step must not stomp user choices
 
-        AgentDetectionResult detected;
+        IReadOnlySet<HarnessId> detected;
         try { detected = await _detect(ct).ConfigureAwait(false); }
         catch (OperationCanceledException) { return; }
 
@@ -203,12 +197,19 @@ public sealed class AgentsStepViewModel : ReactiveObject, IWizardStep {
     /// The login-shell terminal PATH when the probe resolves one, in place of the process's own: a
     /// GUI launch inherits only launchd's PATH, and the app spawns kcap with the terminal's — so
     /// detecting through the wider process PATH would report agents its own installs cannot reach.
-    public static Func<CancellationToken, Task<AgentDetectionResult>> BuildDetectionFeed(ILoginShellProbe probe, UserHome home) =>
-        async ct => {
+    public static Func<CancellationToken, Task<IReadOnlySet<HarnessId>>> BuildDetectionFeed(
+            ILoginShellProbe probe, UserHome home) {
+        // Resolved once, outside the closure: both vendor steps share one feed and each entry calls
+        // it, so resolving inside would read the overrides again per step.
+        var harnesses = HarnessRegistry.FromEnvironment(home);
+
+        return async ct => {
             var terminalPath = await probe.TerminalPathAsync(ct).ConfigureAwait(false);
-            var binaries     = terminalPath is null
-                ? BinaryProbe.FromEnvironment()
-                : BinaryProbe.Searching(terminalPath);
-            return AgentDetection.Detect(HarnessPaths.FromEnvironment(home), binaries);
+            var searched     = terminalPath is null ? harnesses : harnesses.Searching(BinaryProbe.Searching(terminalPath));
+
+            // A set rather than the live registry: the step pre-checks its rows once and must not
+            // have them move under the user while they are choosing.
+            return searched.Where(h => searched.Detected(h.Id)).Select(h => h.Id).ToHashSet();
         };
+    }
 }

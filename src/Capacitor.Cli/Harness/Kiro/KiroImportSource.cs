@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Core.Harness.Kiro;
 
 namespace Capacitor.Cli.Harness.Kiro;
@@ -44,7 +45,7 @@ internal sealed class KiroImportSource : IImportSource {
         }
     }
 
-    public string Vendor => "kiro";
+    public HarnessId Vendor => HarnessId.Kiro;
 
     public bool IsAvailable => Directory.Exists(_sessionsDir);
 
@@ -387,7 +388,7 @@ internal sealed class KiroImportSource : IImportSource {
         EncodedCwd       = "",
         Meta             = meta,
         Status           = status,
-        Vendor           = "kiro",
+        Vendor           = HarnessId.Kiro,
         ProbeErrorReason = probeErrorReason,
         TotalLines       = totalLines,
         SourceMeta       = s.SourceMeta,

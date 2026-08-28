@@ -1,5 +1,5 @@
 using Capacitor.Cli.Core.Config;
-using Capacitor.Cli.Core.Setup;
+using Capacitor.Cli.Core.Harness;
 
 namespace Capacitor.Cli.Core.FirstRun;
 
@@ -123,12 +123,12 @@ public static class FirstRunFlowOutcomes {
         if (view?.Agents is not { } entries) return null;
         if (view.AgentsDecidedAt is not { } decidedAt) return null;
 
-        var seen         = new HashSet<string>(StringComparer.Ordinal);
+        var seen         = new HashSet<HarnessId>();
         var choices      = new List<FirstRunAgentsChoice>();
         var unrecognised = 0;
 
         foreach (var entry in entries) {
-            if (HarnessCatalog.ById(entry.Vendor) is null) {
+            if (HarnessId.From(entry.Vendor) is not { } harness) {
                 unrecognised++;
 
                 continue;
@@ -145,9 +145,9 @@ public static class FirstRunFlowOutcomes {
             // A vendor named twice cannot happen against the server this was written for, which
             // validates on the way in. Keeping the first is the reading that installs what was asked
             // for once rather than picking a side between two contradictory entries.
-            if (!seen.Add(entry.Vendor)) continue;
+            if (!seen.Add(harness)) continue;
 
-            choices.Add(new FirstRunAgentsChoice(entry.Vendor, entry.Record, entry.Tools));
+            choices.Add(new FirstRunAgentsChoice(harness, entry.Record, entry.Tools));
         }
 
         return new FirstRunAgentsAnswer(choices, decidedAt, unrecognised, Visibility(view.DefaultVisibility));
@@ -198,7 +198,7 @@ public static class FirstRunFlowOutcomes {
     }
 
     /// <summary>
-    /// The vendors to scan for importable history: everything in the catalogue except what this
+    /// The vendors to scan for importable history: every one this build knows except what this
     /// machine offered and the user did not keep.
     ///
     /// <para><b>Only an explicit refusal drops a vendor.</b> The server normalises a harness nothing
@@ -208,15 +208,19 @@ public static class FirstRunFlowOutcomes {
     ///
     /// <para>An unanswered step scans everything: no answer is not a refusal either.</para>
     /// </summary>
-    public static IReadOnlyList<string> VendorsToImportFrom(
+    public static IReadOnlyList<HarnessId> VendorsToImportFrom(
             FirstRunMachineReport report, FirstRunAgentsAnswer? agents) {
-        var all = HarnessCatalog.All.Select(h => h.VendorId);
+        var all = HarnessRegistry.Identities.Select(h => h.Id);
 
         if (agents is null) return [.. all];
 
-        var refused = report.Detected.Where(v => !agents.Records(v)).ToHashSet(StringComparer.Ordinal);
+        var refused = new HashSet<HarnessId>();
 
-        return [.. all.Where(v => !refused.Contains(v))];
+        foreach (var vendorId in report.Detected) {
+            if (HarnessId.From(vendorId) is { } harness && !agents.Records(harness)) refused.Add(harness);
+        }
+
+        return [.. all.Where(id => !refused.Contains(id))];
     }
 
     /// <summary>The level a wire name means, or null when this build has never heard of it.</summary>
@@ -280,8 +284,8 @@ public static class FirstRunFlowOutcomes {
     /// nothing — and a vendor this build does not know is dropped, which can turn a non-empty list
     /// into an empty one: importing from nothing beats importing from everything on an answer that
     /// named neither.</summary>
-    static IReadOnlyList<string>? Vendors(List<string>? vendors) =>
-        vendors is null ? null : [.. HarnessCatalog.All.Select(h => h.VendorId).Where(vendors.Contains)];
+    static IReadOnlyList<HarnessId>? Vendors(List<string>? vendors) =>
+        vendors is null ? null : [.. HarnessRegistry.Identities.Where(h => vendors.Contains(h.VendorId)).Select(h => h.Id)];
 
     /// <summary>The Import decision behind a finished leg, on the same terms as
     /// <see cref="Agents(FirstRunFlowResult)"/>: only from a view whose Import step has settled, and

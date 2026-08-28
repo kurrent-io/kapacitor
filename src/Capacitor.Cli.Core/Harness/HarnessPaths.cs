@@ -41,18 +41,18 @@ public sealed record HarnessPaths {
     public static HarnessPaths FromEnvironment(UserHome home) {
         // Antigravity's whole layout hangs off Gemini's root, so it is composed from the SAME
         // instance: two derivations from one variable could otherwise disagree.
-        var gemini = GeminiPaths.FromEnvironment(home);
+        var gemini = GeminiHarness.FromEnvironment(home);
 
         return new() {
-            Claude      = ClaudePaths.FromEnvironment(home),
-            Codex       = CodexPaths.FromEnvironment(home),
-            Cursor      = CursorPaths.FromEnvironment(home),
-            Copilot     = CopilotPaths.FromEnvironment(home),
-            Gemini      = gemini,
-            Antigravity = new AntigravityPaths(gemini),
-            Kiro        = KiroPaths.FromEnvironment(home),
-            Pi          = PiPaths.FromEnvironment(home),
-            OpenCode    = OpenCodePaths.FromEnvironment(home),
+            Claude      = ClaudeHarness.FromEnvironment(home).Paths,
+            Codex       = CodexHarness.FromEnvironment(home).Paths,
+            Cursor      = CursorHarness.FromEnvironment(home).Paths,
+            Copilot     = CopilotHarness.FromEnvironment(home).Paths,
+            Gemini      = gemini.Paths,
+            Antigravity = AntigravityHarness.Over(gemini).Paths,
+            Kiro        = KiroHarness.FromEnvironment(home).Paths,
+            Pi          = PiHarness.FromEnvironment(home).Paths,
+            OpenCode    = OpenCodeHarness.FromEnvironment(home).Paths,
             Agents      = new AgentsPaths(home),
         };
     }

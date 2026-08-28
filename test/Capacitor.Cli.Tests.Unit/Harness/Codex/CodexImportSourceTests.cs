@@ -1,4 +1,5 @@
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Core.Harness.Codex;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Harness.Codex;
@@ -12,13 +13,13 @@ public class CodexImportSourceTests {
 
     [Test]
     public async Task vendor_is_codex() {
-        var src = new CodexImportSource(Config.Root, CodexPaths.FromEnvironment(Home).Sessions);
-        await Assert.That(src.Vendor).IsEqualTo("codex");
+        var src = new CodexImportSource(Config.Root, CodexHarness.FromEnvironment(Home).Paths.Sessions);
+        await Assert.That(src.Vendor).IsEqualTo(HarnessId.Codex);
     }
 
     [Test]
     public async Task supports_title_generation() {
-        var src = new CodexImportSource(Config.Root, CodexPaths.FromEnvironment(Home).Sessions);
+        var src = new CodexImportSource(Config.Root, CodexHarness.FromEnvironment(Home).Paths.Sessions);
         await Assert.That(src.SupportsTitleGeneration).IsTrue();
     }
 
@@ -38,14 +39,14 @@ public class CodexImportSourceTests {
 
     [Test]
     public async Task import_session_async_throws_not_implemented() {
-        var src = new CodexImportSource(Config.Root, CodexPaths.FromEnvironment(Home).Sessions);
+        var src = new CodexImportSource(Config.Root, CodexHarness.FromEnvironment(Home).Paths.Sessions);
         var classification = new ImportCommand.SessionClassification {
             SessionId  = "abc",
             FilePath   = "/tmp/none",
             EncodedCwd = "",
             Meta       = new SessionMetadata(),
             Status     = ImportCommand.ClassificationStatus.New,
-            Vendor     = "codex",
+            Vendor     = HarnessId.Codex,
         };
         var ctx = new ImportContext(new HttpClient(), "http://localhost", ForcePrivate: false);
 

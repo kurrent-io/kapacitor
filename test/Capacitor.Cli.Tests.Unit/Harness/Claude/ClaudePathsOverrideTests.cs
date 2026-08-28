@@ -42,7 +42,7 @@ public class ClaudePathsOverrideTests {
 
         using var env = EnvScope.Exclusive("CLAUDE_CONFIG_DIR", relocated);
 
-        var paths = ClaudePaths.FromEnvironment(new("/fake/home"));
+        var paths = ClaudeHarness.FromEnvironment(new("/fake/home")).Paths;
 
         await Assert.That(paths.Home).IsEqualTo(relocated);
         await Assert.That(paths.Projects).IsEqualTo(Path.Combine(relocated, "projects"));
@@ -56,7 +56,7 @@ public class ClaudePathsOverrideTests {
     public async Task FromEnvironment_without_the_override_falls_back_to_the_home() {
         using var env = EnvScope.Exclusive("CLAUDE_CONFIG_DIR", null);
 
-        var paths = ClaudePaths.FromEnvironment(new("/fake/home"));
+        var paths = ClaudeHarness.FromEnvironment(new("/fake/home")).Paths;
 
         await Assert.That(paths.Home).IsEqualTo(Path.Combine("/fake/home", ".claude"));
         await Assert.That(paths.UserConfigJson).IsEqualTo(Path.Combine("/fake/home", ".claude.json"));

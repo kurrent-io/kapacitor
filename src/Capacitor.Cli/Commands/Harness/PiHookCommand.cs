@@ -4,6 +4,7 @@ using System.Text.Json.Nodes;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.SessionStartMemory;
+using Capacitor.Cli.Core.Harness;
 
 namespace Capacitor.Cli.Commands.Harness;
 
@@ -171,7 +172,7 @@ sealed class PiHookCommand(ConfigRoot config, ProfileContext profiles, HookClock
         // stdout regardless of exit code, so no commit gate is needed (unlike Copilot).
         var fragment = await SessionStartMemoryHookSupport.AwaitBounded(memoryTask, budget);
         var workItemsNudge = HarnessNudgeEmitter.Combine(
-            WorkItemsNudgeEmitter.Resolve(SessionStartHarness.Pi, sessionId, activeProfile?.DisableWorkItemsNudge is true, home),
+            WorkItemsNudgeEmitter.Resolve(HarnessId.Pi, sessionId, activeProfile?.DisableWorkItemsNudge is true, home),
             HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true, config, home));
         await WriteMemoryFragment(stdout, fragment, workItemsNudge);
 
@@ -283,7 +284,7 @@ sealed class PiHookCommand(ConfigRoot config, ProfileContext profiles, HookClock
     internal static string RenderMemoryOutput(string? fragment, string? workItemsNudge = null) =>
         fragment is null && string.IsNullOrWhiteSpace(workItemsNudge)
             ? ""
-            : SessionStartMemoryOutputAdapters.Render(SessionStartHarness.Pi, fragment, workItemsNudge);
+            : SessionStartMemoryOutputAdapters.Render(HarnessId.Pi, fragment, workItemsNudge);
 
     /// <summary>
     /// The lifecycle this harness reports. SessionId is the session FILE PATH — the identity
@@ -293,7 +294,7 @@ sealed class PiHookCommand(ConfigRoot config, ProfileContext profiles, HookClock
     /// and resumes re-fire session_start for the same file.
     /// </summary>
     internal static SessionMemoryLifecycle LifecycleFor(string file, string? reason) =>
-        new(SessionStartHarness.Pi, file, LifecycleInstanceId: null,
+        new(HarnessId.Pi, file, LifecycleInstanceId: null,
             IsTopLevel: true, ClassificationAuthoritative: true,
             MapReason(reason), CallbackMayRepeat: true);
 

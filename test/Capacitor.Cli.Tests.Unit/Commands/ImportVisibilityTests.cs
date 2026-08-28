@@ -1,3 +1,4 @@
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Core.Harness.Antigravity;
 using Capacitor.Cli.Core.Harness.Copilot;
 using Capacitor.Cli.Core.Harness.Gemini;
@@ -677,7 +678,7 @@ public class ImportVisibilityTests : IDisposable {
             Dictionary<string, object?>         sourceMeta,
             int                                 resumeFromLine = 0,
             int                                 totalLines     = 0,
-            string?                             vendor         = null
+            HarnessId?                          vendor         = null
         ) => new() {
         SessionId      = sessionId,
         FilePath       = "",
@@ -687,7 +688,7 @@ public class ImportVisibilityTests : IDisposable {
         ResumeFromLine = resumeFromLine,
         TotalLines     = totalLines,
         SourceMeta     = sourceMeta,
-        Vendor         = vendor ?? "claude",
+        Vendor         = vendor ?? HarnessId.Claude,
     };
 
     // --- Copilot ---
@@ -701,7 +702,7 @@ public class ImportVisibilityTests : IDisposable {
 
         using var client = new HttpClient();
         var ctx = new ImportContext(client, _server.Url!, ForcePrivate: false, DefaultVisibility: "org_public");
-        await new CopilotImportSource(Config.Root, CopilotPaths.FromEnvironment(Home)).ImportSessionAsync(c, ctx, CancellationToken.None);
+        await new CopilotImportSource(Config.Root, CopilotHarness.FromEnvironment(Home).Paths).ImportSessionAsync(c, ctx, CancellationToken.None);
 
         var body = SessionStartBody("copilot");
         await Assert.That(body["default_visibility"]?.GetValue<string>()).IsEqualTo("org_public");
@@ -716,13 +717,13 @@ public class ImportVisibilityTests : IDisposable {
         var partialPath = WriteTranscript("copilot-partial.jsonl");
         var partial = RoutedClassification("copilot-partial-1", ImportCommand.ClassificationStatus.Partial,
             new() { ["TranscriptPath"] = partialPath }, resumeFromLine: 2);
-        await new CopilotImportSource(Config.Root, CopilotPaths.FromEnvironment(Home)).ImportSessionAsync(partial, ctx, CancellationToken.None);
+        await new CopilotImportSource(Config.Root, CopilotHarness.FromEnvironment(Home).Paths).ImportSessionAsync(partial, ctx, CancellationToken.None);
         await Assert.That(SessionStartBody("copilot").ContainsKey("default_visibility")).IsFalse();
 
         var alreadyPath = WriteTranscript("copilot-already.jsonl");
         var already = RoutedClassification("copilot-already-1", ImportCommand.ClassificationStatus.AlreadyLoaded,
             new() { ["TranscriptPath"] = alreadyPath }, totalLines: 5);
-        await new CopilotImportSource(Config.Root, CopilotPaths.FromEnvironment(Home)).ImportSessionAsync(already, ctx, CancellationToken.None);
+        await new CopilotImportSource(Config.Root, CopilotHarness.FromEnvironment(Home).Paths).ImportSessionAsync(already, ctx, CancellationToken.None);
 
         var alreadyBody = JsonNode.Parse(
             _server.LogEntries.Where(e => e.RequestMessage.Path == "/hooks/session-start/copilot")
@@ -740,7 +741,7 @@ public class ImportVisibilityTests : IDisposable {
 
         using var client = new HttpClient();
         var ctx = new ImportContext(client, _server.Url!, ForcePrivate: true, DefaultVisibility: "org_public");
-        await new CopilotImportSource(Config.Root, CopilotPaths.FromEnvironment(Home)).ImportSessionAsync(c, ctx, CancellationToken.None);
+        await new CopilotImportSource(Config.Root, CopilotHarness.FromEnvironment(Home).Paths).ImportSessionAsync(c, ctx, CancellationToken.None);
 
         await Assert.That(SessionStartBody("copilot")["default_visibility"]?.GetValue<string>())
             .IsEqualTo("private");
@@ -757,7 +758,7 @@ public class ImportVisibilityTests : IDisposable {
 
         using var client = new HttpClient();
         var ctx = new ImportContext(client, _server.Url!, ForcePrivate: false, DefaultVisibility: "org_public");
-        await new GeminiImportSource(GeminiPaths.FromEnvironment(Home).TmpDir).ImportSessionAsync(c, ctx, CancellationToken.None);
+        await new GeminiImportSource(GeminiHarness.FromEnvironment(Home).Paths.TmpDir).ImportSessionAsync(c, ctx, CancellationToken.None);
 
         var body = SessionStartBody("gemini");
         await Assert.That(body["default_visibility"]?.GetValue<string>()).IsEqualTo("org_public");
@@ -772,7 +773,7 @@ public class ImportVisibilityTests : IDisposable {
 
         using var client = new HttpClient();
         var ctx = new ImportContext(client, _server.Url!, ForcePrivate: false, DefaultVisibility: "org_public");
-        await new GeminiImportSource(GeminiPaths.FromEnvironment(Home).TmpDir).ImportSessionAsync(c, ctx, CancellationToken.None);
+        await new GeminiImportSource(GeminiHarness.FromEnvironment(Home).Paths.TmpDir).ImportSessionAsync(c, ctx, CancellationToken.None);
 
         await Assert.That(SessionStartBody("gemini").ContainsKey("default_visibility")).IsFalse();
     }
@@ -786,7 +787,7 @@ public class ImportVisibilityTests : IDisposable {
 
         using var client = new HttpClient();
         var ctx = new ImportContext(client, _server.Url!, ForcePrivate: true, DefaultVisibility: "org_public");
-        await new GeminiImportSource(GeminiPaths.FromEnvironment(Home).TmpDir).ImportSessionAsync(c, ctx, CancellationToken.None);
+        await new GeminiImportSource(GeminiHarness.FromEnvironment(Home).Paths.TmpDir).ImportSessionAsync(c, ctx, CancellationToken.None);
 
         await Assert.That(SessionStartBody("gemini")["default_visibility"]?.GetValue<string>())
             .IsEqualTo("private");
@@ -803,7 +804,7 @@ public class ImportVisibilityTests : IDisposable {
 
         using var client = new HttpClient();
         var ctx = new ImportContext(client, _server.Url!, ForcePrivate: false, DefaultVisibility: "org_public");
-        await new KiroImportSource(Config.Root, KiroPaths.FromEnvironment(Home).SessionsDir).ImportSessionAsync(c, ctx, CancellationToken.None);
+        await new KiroImportSource(Config.Root, KiroHarness.FromEnvironment(Home).Paths.SessionsDir).ImportSessionAsync(c, ctx, CancellationToken.None);
 
         var body = SessionStartBody("kiro");
         await Assert.That(body["default_visibility"]?.GetValue<string>()).IsEqualTo("org_public");
@@ -818,7 +819,7 @@ public class ImportVisibilityTests : IDisposable {
 
         using var client = new HttpClient();
         var ctx = new ImportContext(client, _server.Url!, ForcePrivate: false, DefaultVisibility: "org_public");
-        await new KiroImportSource(Config.Root, KiroPaths.FromEnvironment(Home).SessionsDir).ImportSessionAsync(c, ctx, CancellationToken.None);
+        await new KiroImportSource(Config.Root, KiroHarness.FromEnvironment(Home).Paths.SessionsDir).ImportSessionAsync(c, ctx, CancellationToken.None);
 
         await Assert.That(SessionStartBody("kiro").ContainsKey("default_visibility")).IsFalse();
     }
@@ -832,7 +833,7 @@ public class ImportVisibilityTests : IDisposable {
 
         using var client = new HttpClient();
         var ctx = new ImportContext(client, _server.Url!, ForcePrivate: true, DefaultVisibility: "org_public");
-        await new KiroImportSource(Config.Root, KiroPaths.FromEnvironment(Home).SessionsDir).ImportSessionAsync(c, ctx, CancellationToken.None);
+        await new KiroImportSource(Config.Root, KiroHarness.FromEnvironment(Home).Paths.SessionsDir).ImportSessionAsync(c, ctx, CancellationToken.None);
 
         await Assert.That(SessionStartBody("kiro")["default_visibility"]?.GetValue<string>())
             .IsEqualTo("private");
@@ -849,7 +850,7 @@ public class ImportVisibilityTests : IDisposable {
 
         using var client = new HttpClient();
         var ctx = new ImportContext(client, _server.Url!, ForcePrivate: false, DefaultVisibility: "org_public");
-        await new PiImportSource(Config.Root, PiPaths.FromEnvironment(Home).SessionsDir).ImportSessionAsync(c, ctx, CancellationToken.None);
+        await new PiImportSource(Config.Root, PiHarness.FromEnvironment(Home).Paths.SessionsDir).ImportSessionAsync(c, ctx, CancellationToken.None);
 
         var body = SessionStartBody("pi");
         await Assert.That(body["default_visibility"]?.GetValue<string>()).IsEqualTo("org_public");
@@ -864,7 +865,7 @@ public class ImportVisibilityTests : IDisposable {
 
         using var client = new HttpClient();
         var ctx = new ImportContext(client, _server.Url!, ForcePrivate: false, DefaultVisibility: "org_public");
-        await new PiImportSource(Config.Root, PiPaths.FromEnvironment(Home).SessionsDir).ImportSessionAsync(c, ctx, CancellationToken.None);
+        await new PiImportSource(Config.Root, PiHarness.FromEnvironment(Home).Paths.SessionsDir).ImportSessionAsync(c, ctx, CancellationToken.None);
 
         await Assert.That(SessionStartBody("pi").ContainsKey("default_visibility")).IsFalse();
     }
@@ -878,7 +879,7 @@ public class ImportVisibilityTests : IDisposable {
 
         using var client = new HttpClient();
         var ctx = new ImportContext(client, _server.Url!, ForcePrivate: true, DefaultVisibility: "org_public");
-        await new PiImportSource(Config.Root, PiPaths.FromEnvironment(Home).SessionsDir).ImportSessionAsync(c, ctx, CancellationToken.None);
+        await new PiImportSource(Config.Root, PiHarness.FromEnvironment(Home).Paths.SessionsDir).ImportSessionAsync(c, ctx, CancellationToken.None);
 
         // Pi's existing forcePrivate behavior (stamping the literal "private") is untouched —
         // the new guard must never override it with the org-level default.
@@ -1003,7 +1004,7 @@ public class ImportVisibilityTests : IDisposable {
 
         using var client = new HttpClient();
         var ctx = new ImportContext(client, _server.Url!, ForcePrivate: false, DefaultVisibility: "org_public");
-        await new AntigravityImportSource(AntigravityPaths.FromEnvironment(Home)).ImportSessionAsync(c, ctx, CancellationToken.None);
+        await new AntigravityImportSource(AntigravityHarness.Over(GeminiHarness.FromEnvironment(Home)).Paths).ImportSessionAsync(c, ctx, CancellationToken.None);
 
         var body = SessionStartBody("antigravity");
         await Assert.That(body["default_visibility"]?.GetValue<string>()).IsEqualTo("org_public");
@@ -1018,7 +1019,7 @@ public class ImportVisibilityTests : IDisposable {
 
         using var client = new HttpClient();
         var ctx = new ImportContext(client, _server.Url!, ForcePrivate: false, DefaultVisibility: "org_public");
-        await new AntigravityImportSource(AntigravityPaths.FromEnvironment(Home)).ImportSessionAsync(c, ctx, CancellationToken.None);
+        await new AntigravityImportSource(AntigravityHarness.Over(GeminiHarness.FromEnvironment(Home)).Paths).ImportSessionAsync(c, ctx, CancellationToken.None);
 
         await Assert.That(SessionStartBody("antigravity").ContainsKey("default_visibility")).IsFalse();
     }
@@ -1034,7 +1035,7 @@ public class ImportVisibilityTests : IDisposable {
 
         using var client = new HttpClient();
         var ctx = new ImportContext(client, _server.Url!, ForcePrivate: false, DefaultVisibility: "org_public");
-        await new AntigravityImportSource(AntigravityPaths.FromEnvironment(Home)).ImportSessionAsync(c, ctx, CancellationToken.None);
+        await new AntigravityImportSource(AntigravityHarness.Over(GeminiHarness.FromEnvironment(Home)).Paths).ImportSessionAsync(c, ctx, CancellationToken.None);
 
         await Assert.That(SessionStartBody("antigravity").ContainsKey("default_visibility")).IsFalse();
     }
@@ -1048,7 +1049,7 @@ public class ImportVisibilityTests : IDisposable {
 
         using var client = new HttpClient();
         var ctx = new ImportContext(client, _server.Url!, ForcePrivate: true, DefaultVisibility: "org_public");
-        await new AntigravityImportSource(AntigravityPaths.FromEnvironment(Home)).ImportSessionAsync(c, ctx, CancellationToken.None);
+        await new AntigravityImportSource(AntigravityHarness.Over(GeminiHarness.FromEnvironment(Home)).Paths).ImportSessionAsync(c, ctx, CancellationToken.None);
 
         var body = SessionStartBody("antigravity");
         await Assert.That(body["default_visibility"]?.GetValue<string>()).IsEqualTo("private");
@@ -1063,7 +1064,7 @@ public class ImportVisibilityTests : IDisposable {
         StubAllHookEndpoints();
         var path = WriteTranscript("cursor-new.jsonl");
         var c = RoutedClassification("cursor-new-1", ImportCommand.ClassificationStatus.New,
-            new() { ["TranscriptPath"] = path, ["WorkspaceFolder"] = "/Users/me/proj" }, vendor: "cursor");
+            new() { ["TranscriptPath"] = path, ["WorkspaceFolder"] = "/Users/me/proj" }, vendor: HarnessId.Cursor);
 
         using var client = new HttpClient();
         var ctx = new ImportContext(client, _server.Url!, ForcePrivate: false, DefaultVisibility: "org_public");
@@ -1083,7 +1084,7 @@ public class ImportVisibilityTests : IDisposable {
         var path = WriteTranscript("cursor-partial.jsonl");
         var c = RoutedClassification("cursor-partial-1", ImportCommand.ClassificationStatus.Partial,
             new() { ["TranscriptPath"] = path, ["WorkspaceFolder"] = "/Users/me/proj" },
-            resumeFromLine: 2, vendor: "cursor");
+            resumeFromLine: 2, vendor: HarnessId.Cursor);
 
         using var client = new HttpClient();
         var ctx = new ImportContext(client, _server.Url!, ForcePrivate: false, DefaultVisibility: "org_public");
@@ -1101,7 +1102,7 @@ public class ImportVisibilityTests : IDisposable {
         StubAllHookEndpoints();
         var path = WriteTranscript("cursor-fp.jsonl");
         var c = RoutedClassification("cursor-fp-1", ImportCommand.ClassificationStatus.New,
-            new() { ["TranscriptPath"] = path, ["WorkspaceFolder"] = "/Users/me/proj" }, vendor: "cursor");
+            new() { ["TranscriptPath"] = path, ["WorkspaceFolder"] = "/Users/me/proj" }, vendor: HarnessId.Cursor);
 
         using var client = new HttpClient();
         var ctx = new ImportContext(client, _server.Url!, ForcePrivate: true, DefaultVisibility: "org_public");
@@ -1169,27 +1170,27 @@ public class ImportVisibilityTests : IDisposable {
 
     /// <summary>One routed source's shape for the generic matrix helpers below.</summary>
     sealed record RoutedSourceCase(
-        string                                      Vendor,
-        Func<IImportSource>                          MakeSource,
-        Func<string, Dictionary<string, object?>>    MakeSourceMeta);
+        HarnessId                                 Vendor,
+        Func<IImportSource>                       MakeSource,
+        Func<string, Dictionary<string, object?>> MakeSourceMeta);
 
     RoutedSourceCase CopilotCase() =>
-        new("copilot", () => new CopilotImportSource(Config.Root, CopilotPaths.FromEnvironment(Home)), p => new() { ["TranscriptPath"] = p });
+        new(HarnessId.Copilot, () => new CopilotImportSource(Config.Root, CopilotHarness.FromEnvironment(Home).Paths), p => new() { ["TranscriptPath"] = p });
 
     RoutedSourceCase GeminiCase() =>
-        new("gemini", () => new GeminiImportSource(GeminiPaths.FromEnvironment(Home).TmpDir), p => new() { ["TranscriptPath"] = p });
+        new(HarnessId.Gemini, () => new GeminiImportSource(GeminiHarness.FromEnvironment(Home).Paths.TmpDir), p => new() { ["TranscriptPath"] = p });
 
     RoutedSourceCase KiroCase() =>
-        new("kiro", () => new KiroImportSource(Config.Root, KiroPaths.FromEnvironment(Home).SessionsDir), p => new() { ["TranscriptPath"] = p });
+        new(HarnessId.Kiro, () => new KiroImportSource(Config.Root, KiroHarness.FromEnvironment(Home).Paths.SessionsDir), p => new() { ["TranscriptPath"] = p });
 
     RoutedSourceCase PiCase() =>
-        new("pi", () => new PiImportSource(Config.Root, PiPaths.FromEnvironment(Home).SessionsDir), p => new() { ["TranscriptPath"] = p });
+        new(HarnessId.Pi, () => new PiImportSource(Config.Root, PiHarness.FromEnvironment(Home).Paths.SessionsDir), p => new() { ["TranscriptPath"] = p });
 
     RoutedSourceCase AntigravityCase() =>
-        new("antigravity", () => new AntigravityImportSource(AntigravityPaths.FromEnvironment(Home)), p => new() { ["TranscriptPath"] = p });
+        new(HarnessId.Antigravity, () => new AntigravityImportSource(AntigravityHarness.Over(GeminiHarness.FromEnvironment(Home)).Paths), p => new() { ["TranscriptPath"] = p });
 
     RoutedSourceCase CursorCase() =>
-        new("cursor",
+        new(HarnessId.Cursor,
             () => new CursorImportSource(Config.Root, 
                 Path.Combine(_tempDir, $"unused-cursor-projects-{Guid.NewGuid():N}"),
                 Path.Combine(_tempDir, $"unused-cursor-workspace-storage-{Guid.NewGuid():N}")),
@@ -1197,21 +1198,21 @@ public class ImportVisibilityTests : IDisposable {
 
     async Task AssertAlreadyLoadedOmitsDefaultVisibility(RoutedSourceCase rc) {
         StubAllHookEndpoints();
-        var path = WriteTranscript($"{rc.Vendor}-already-matrix.jsonl");
-        var c = RoutedClassification($"{rc.Vendor}-already-matrix-1", ImportCommand.ClassificationStatus.AlreadyLoaded,
+        var path = WriteTranscript($"{rc.Vendor.VendorId}-already-matrix.jsonl");
+        var c = RoutedClassification($"{rc.Vendor.VendorId}-already-matrix-1", ImportCommand.ClassificationStatus.AlreadyLoaded,
             rc.MakeSourceMeta(path), totalLines: 5, vendor: rc.Vendor);
 
         using var client = new HttpClient();
         var ctx = new ImportContext(client, _server.Url!, ForcePrivate: false, DefaultVisibility: "org_public");
         await rc.MakeSource().ImportSessionAsync(c, ctx, CancellationToken.None);
 
-        await Assert.That(SessionStartBody(rc.Vendor).ContainsKey("default_visibility")).IsFalse();
+        await Assert.That(SessionStartBody(rc.Vendor.VendorId).ContainsKey("default_visibility")).IsFalse();
     }
 
     async Task AssertForcePrivateStampsPrivateOnAlreadyLoaded(RoutedSourceCase rc) {
         StubAllHookEndpoints();
-        var path = WriteTranscript($"{rc.Vendor}-fp-already-matrix.jsonl");
-        var c = RoutedClassification($"{rc.Vendor}-fp-already-matrix-1", ImportCommand.ClassificationStatus.AlreadyLoaded,
+        var path = WriteTranscript($"{rc.Vendor.VendorId}-fp-already-matrix.jsonl");
+        var c = RoutedClassification($"{rc.Vendor.VendorId}-fp-already-matrix-1", ImportCommand.ClassificationStatus.AlreadyLoaded,
             rc.MakeSourceMeta(path), totalLines: 5, vendor: rc.Vendor);
 
         using var client = new HttpClient();
@@ -1220,14 +1221,14 @@ public class ImportVisibilityTests : IDisposable {
 
         // The lifecycle-repair path, which several sources reach through a branch of their own
         // rather than the one the New/Partial rows exercise.
-        await Assert.That(SessionStartBody(rc.Vendor)["default_visibility"]?.GetValue<string>())
+        await Assert.That(SessionStartBody(rc.Vendor.VendorId)["default_visibility"]?.GetValue<string>())
             .IsEqualTo("private");
     }
 
     async Task AssertForcePrivateStampsPrivateOnReplay(RoutedSourceCase rc) {
         StubAllHookEndpoints();
-        var path = WriteTranscript($"{rc.Vendor}-fp-replay-matrix.jsonl");
-        var c = RoutedClassification($"{rc.Vendor}-fp-replay-matrix-1", ImportCommand.ClassificationStatus.Partial,
+        var path = WriteTranscript($"{rc.Vendor.VendorId}-fp-replay-matrix.jsonl");
+        var c = RoutedClassification($"{rc.Vendor.VendorId}-fp-replay-matrix-1", ImportCommand.ClassificationStatus.Partial,
             rc.MakeSourceMeta(path), resumeFromLine: 2, vendor: rc.Vendor);
 
         using var client = new HttpClient();
@@ -1236,21 +1237,21 @@ public class ImportVisibilityTests : IDisposable {
 
         // Private does not gate on status, unlike the Step-3 default: it is a floor, and
         // re-asserting it on a replay can only narrow what is already there.
-        await Assert.That(SessionStartBody(rc.Vendor)["default_visibility"]?.GetValue<string>())
+        await Assert.That(SessionStartBody(rc.Vendor.VendorId)["default_visibility"]?.GetValue<string>())
             .IsEqualTo("private");
     }
 
     async Task AssertNullDefaultVisibilityOmitsField(RoutedSourceCase rc) {
         StubAllHookEndpoints();
-        var path = WriteTranscript($"{rc.Vendor}-null-default-matrix.jsonl");
-        var c = RoutedClassification($"{rc.Vendor}-null-default-matrix-1", ImportCommand.ClassificationStatus.New,
+        var path = WriteTranscript($"{rc.Vendor.VendorId}-null-default-matrix.jsonl");
+        var c = RoutedClassification($"{rc.Vendor.VendorId}-null-default-matrix-1", ImportCommand.ClassificationStatus.New,
             rc.MakeSourceMeta(path), vendor: rc.Vendor);
 
         using var client = new HttpClient();
         var ctx = new ImportContext(client, _server.Url!, ForcePrivate: false, DefaultVisibility: null);
         await rc.MakeSource().ImportSessionAsync(c, ctx, CancellationToken.None);
 
-        await Assert.That(SessionStartBody(rc.Vendor).ContainsKey("default_visibility")).IsFalse();
+        await Assert.That(SessionStartBody(rc.Vendor.VendorId).ContainsKey("default_visibility")).IsFalse();
     }
 
     // --- AlreadyLoaded: missing for Gemini, Kiro, Pi, Cursor (Copilot/Antigravity/OpenCode

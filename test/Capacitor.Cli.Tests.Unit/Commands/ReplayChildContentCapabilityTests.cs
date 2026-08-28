@@ -1,4 +1,5 @@
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Core.Harness.Copilot;
 using Capacitor.Cli.Core.Harness.Kiro;
 using Capacitor.Cli.Core.Harness.Pi;
@@ -72,16 +73,17 @@ public class ReplayChildContentCapabilityTests {
     [Test]
     public async Task every_import_source_is_covered_by_this_table() {
         var declared = new[] {
-            "cursor", "antigravity", "gemini", "claude", "codex", "copilot", "kiro", "pi", "opencode",
+            HarnessId.Cursor, HarnessId.Antigravity, HarnessId.Gemini, HarnessId.Claude, HarnessId.Codex,
+            HarnessId.Copilot, HarnessId.Kiro, HarnessId.Pi, HarnessId.OpenCode,
         };
 
         var actual = typeof(IImportSource).Assembly.GetTypes()
             .Where(t => t is { IsAbstract: false, IsInterface: false } && typeof(IImportSource).IsAssignableFrom(t))
             .Select(t => MakeSource(VendorOf(t)).Vendor)
-            .ToHashSet(StringComparer.Ordinal);
+            .ToHashSet();
 
-        await Assert.That(actual.Except(declared, StringComparer.Ordinal)).IsEmpty();
-        await Assert.That(declared.Except(actual, StringComparer.Ordinal)).IsEmpty();
+        await Assert.That(actual.Except(declared)).IsEmpty();
+        await Assert.That(declared.Except(actual)).IsEmpty();
     }
 
     static string VendorOf(Type t) => t.Name.Replace("ImportSource", "").ToLowerInvariant();
@@ -94,11 +96,11 @@ public class ReplayChildContentCapabilityTests {
         return vendor switch {
             "claude"      => new ClaudeImportSource(Config.Root, scratch),
             "codex"       => new CodexImportSource(Config.Root, scratch),
-            "copilot"     => new CopilotImportSource(Config.Root, CopilotPaths.FromEnvironment(Home)),
+            "copilot"     => new CopilotImportSource(Config.Root, CopilotHarness.FromEnvironment(Home).Paths),
             "cursor"      => new CursorImportSource(Config.Root, scratch, scratch),
             "gemini"      => new GeminiImportSource(scratch),
-            "kiro"        => new KiroImportSource(Config.Root, KiroPaths.FromEnvironment(Home).SessionsDir),
-            "pi"          => new PiImportSource(Config.Root, PiPaths.FromEnvironment(Home).SessionsDir),
+            "kiro"        => new KiroImportSource(Config.Root, KiroHarness.FromEnvironment(Home).Paths.SessionsDir),
+            "pi"          => new PiImportSource(Config.Root, PiHarness.FromEnvironment(Home).Paths.SessionsDir),
             "opencode"    => new OpenCodeImportSource(Path.Combine(scratch, "db"), Path.Combine(scratch, "ledger")),
             "antigravity" => new AntigravityImportSource(new(new(scratch), "")),
             _             => throw new ArgumentOutOfRangeException(nameof(vendor), vendor, "unclassified import source"),
