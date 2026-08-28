@@ -124,15 +124,13 @@ public sealed class BrowserFirstRunFlow(
         progress.Opening(setupUrl);
         launcher.TryOpen(setupUrl);
 
-        // ONE write decides the reason, and it is the poll's own assignment — so an interrupt either sees
-        // a leg still waiting (the machine is dying: `stopped`) or the reason its result names, never a
-        // half-decided state. Computing the reason into a second variable would reopen exactly that gap.
+        // The poll's own assignment is the single write that publishes the result, so an interrupt sees
+        // either a leg still waiting or a settled one, never a half-decided state.
         FirstRunFlowResult? settled = null;
 
-        using var notice = _interrupts.Arm(token =>
-            ReasonToSend(Volatile.Read(ref settled)) is { } reason
-                ? RelinquishAsync(serverUrl, flowId, reason, token)
-                : Task.CompletedTask);
+        using var notice = _interrupts.Arm(
+            (reason, token) => RelinquishAsync(serverUrl, flowId, reason, token),
+            interruptReason: () => InterruptReason(Volatile.Read(ref settled)));
 
         try {
             Volatile.Write(ref settled, await PollAsync(serverUrl, flowId, report, ct));
@@ -140,19 +138,15 @@ public sealed class BrowserFirstRunFlow(
             progress.WaitEnded();
         }
 
-        // The same notice the interrupt handler would have sent, claimed once: whichever path gets there
-        // first is the only one that sends, so the browser cannot be told two opposite things.
-        await notice.SendAsync(ct);
+        // Claimed once, so whichever path gets there first is the only one that sends and the browser
+        // cannot be told two opposite things.
+        await notice.SendAsync(ReasonFor(settled!), ct);
 
         return settled!;
     }
 
     /// <summary>
-    /// What to tell the browser, or null when there is nothing to tell it.
-    ///
-    /// <para><b>A leg still waiting reads as <c>stopped</c></b>, because the only way to observe that is
-    /// from an interrupt handler: the process is being killed, so nothing is carrying on whatever the
-    /// screen currently offers.</para>
+    /// What the LEG tells the browser about its own ending, or null when there is nothing to tell it.
     ///
     /// <para><b>A dismissal is a handover and nothing else is.</b> It is the one exit where the terminal
     /// carries on with everything the browser settled, so it is the one where the page must not send anyone
@@ -163,12 +157,25 @@ public sealed class BrowserFirstRunFlow(
     /// own terms and the browser is rendering the payoff. Expired needs nothing either — the server already
     /// refuses a flow past its lifetime, and the page says so.</para>
     /// </summary>
-    static string? ReasonToSend(FirstRunFlowResult? settled) => settled switch {
-        null                                                     => FirstRunRelinquishReasons.Stopped,
-        FirstRunFlowResult.Dismissed                             => FirstRunRelinquishReasons.Handover,
-        FirstRunFlowResult.Abandoned or FirstRunFlowResult.Failed => FirstRunRelinquishReasons.Stopped,
-        _                                                        => null
+    static string? ReasonFor(FirstRunFlowResult settled) => settled switch {
+        FirstRunFlowResult.Dismissed                              => FirstRunRelinquishReasons.Handover,
+        FirstRunFlowResult.Abandoned or FirstRunFlowResult.Failed  => FirstRunRelinquishReasons.Stopped,
+        _                                                         => null
     };
+
+    /// <summary>
+    /// What an INTERRUPT tells the browser, given whatever the leg has published so far.
+    ///
+    /// <para><b>Never the leg's own reason.</b> An interrupt is the process being killed, so nothing is
+    /// carrying on however the poll ended — borrowing <see cref="ReasonFor"/> here would tell someone who
+    /// had chosen their terminal that it had taken over, as it died, leaving the one tail that states no
+    /// remedy at all.</para>
+    ///
+    /// <para><b>The published result decides only WHETHER there is anything to say.</b> A leg that would
+    /// send nothing stays silent under an interrupt too, so a flow that reached its payoff keeps it.</para>
+    /// </summary>
+    static string? InterruptReason(FirstRunFlowResult? settled) =>
+        settled is null || ReasonFor(settled) is not null ? FirstRunRelinquishReasons.Stopped : null;
 
     /// <summary>Says the machine has gone. Swallows everything: this runs as the leg ends, and a setup that
     /// otherwise worked must not report a failure because one best-effort POST did not land.</summary>

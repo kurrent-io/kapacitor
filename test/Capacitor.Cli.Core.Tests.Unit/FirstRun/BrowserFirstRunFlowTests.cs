@@ -155,11 +155,11 @@ public class BrowserFirstRunFlowTests {
 
         public int Arms { get; private set; }
 
-        public IFirstRunNotice Arm(Func<CancellationToken, Task> send) {
+        public IFirstRunNotice Arm(Func<string, CancellationToken, Task> send, Func<string?> interruptReason) {
             Arms++;
             _log.Add("arm");
 
-            var notice = new FirstRunNotice(send, onDispose: _ => _log.Add("disarm"));
+            var notice = new FirstRunNotice(send, interruptReason, onDispose: _ => _log.Add("disarm"));
 
             _interrupt = notice.RunBeforeExit;
 
@@ -188,8 +188,16 @@ public class BrowserFirstRunFlowTests {
 
         public List<(int Repos, int? Sessions)> Imports { get; } = [];
 
-        public void PollTick()  => Ticks++;
-        public void WaitEnded() => WaitEnds++;
+        /// <summary>Run when the wait ends, which is between the poll publishing its result and the leg
+        /// sending its own reason — the one window where an interrupt can claim with a result in view.</summary>
+        public Action? OnWaitEnded { get; set; }
+
+        public void PollTick() => Ticks++;
+
+        public void WaitEnded() {
+            WaitEnds++;
+            OnWaitEnded?.Invoke();
+        }
 
         public void PerformingAction(string capability) {
             log.Add("warn");
@@ -1746,14 +1754,48 @@ public class BrowserFirstRunFlowTests {
     public async Task An_interrupt_that_wins_the_claim_is_the_only_send() {
         var h = Build(new FakeKeys(canWatch: true, pressAfter: 2));
 
-        // On the last poll, before the leg has a result — so the interrupt sends `stopped` and the
-        // dismissal's own `handover` must not follow it.
+        // On a poll, before the leg has a result.
         h.Channel.OnPoll = () => h.Interrupts.Interrupt();
 
         var result = await Run(h);
 
         await Assert.That(result).IsTypeOf<FirstRunFlowResult.Dismissed>();
         await Assert.That(h.Channel.Relinquished).IsEquivalentTo([FirstRunRelinquishReasons.Stopped]);
+    }
+
+    /// <summary>
+    /// An interrupt winning the claim AFTER the leg published a dismissal must still say <c>stopped</c>.
+    /// Borrowing the leg's reason here tells someone their terminal took over at the moment that terminal
+    /// is killed — a dead end with no remedy stated, and the whole reason the two claimants carry their own
+    /// reasons rather than reading one shared field.
+    /// </summary>
+    [Test]
+    public async Task An_interrupt_after_a_dismissal_still_says_the_machine_stopped() {
+        var h = Build(new FakeKeys(canWatch: true, pressAfter: 2));
+
+        // Fires once the result is published and before the leg's own send — the window a shared reason
+        // leaves open.
+        h.Progress.OnWaitEnded = () => h.Interrupts.Interrupt();
+
+        var result = await Run(h);
+
+        await Assert.That(result).IsTypeOf<FirstRunFlowResult.Dismissed>();
+        await Assert.That(h.Channel.Relinquished).IsEquivalentTo([FirstRunRelinquishReasons.Stopped]);
+    }
+
+    /// <summary>And a flow that reached its payoff keeps it: the published result decides whether there is
+    /// anything to say at all, so a finished leg stays silent under an interrupt too.</summary>
+    [Test]
+    public async Task An_interrupt_after_a_finish_says_nothing() {
+        var h = Build();
+        h.Channel.Polls.Enqueue(new(200, Done()));
+
+        h.Progress.OnWaitEnded = () => h.Interrupts.Interrupt();
+
+        var result = await Run(h);
+
+        await Assert.That(result).IsTypeOf<FirstRunFlowResult.Finished>();
+        await Assert.That(h.Channel.Relinquished).IsEmpty();
     }
 
     /// <summary>A leg that never reached a flow arms nothing: there is no id to name.</summary>
