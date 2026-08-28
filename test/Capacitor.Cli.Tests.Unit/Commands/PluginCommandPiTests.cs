@@ -181,5 +181,7 @@ public class PluginCommandPiTests {
         ResolvePluginPath: () => null,
         Stdout:            TextWriter.Null,
         Stderr:            TextWriter.Null
-    );
+    ) {
+        Paths = TestHarnessPaths.NoOverrides(new(fakeHome)),
+    };
 }

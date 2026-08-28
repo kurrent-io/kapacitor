@@ -238,5 +238,7 @@ public class PluginCommandSkillsTests {
         ResolvePluginPath: () => pluginPath,
         Stdout:            stdout ?? TextWriter.Null,
         Stderr:            stderr ?? TextWriter.Null
-    );
+    ) {
+        Paths = TestHarnessPaths.NoOverrides(new(fakeHome)),
+    };
 }

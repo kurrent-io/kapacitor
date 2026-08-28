@@ -7,9 +7,6 @@ using Capacitor.Cli.Core.Mcp;
 
 namespace Capacitor.Cli.Tests.Unit.Commands;
 
-// PluginEnvironment resolves every vendor layout when it is built, so these read each
-// override variable a peer suite clears.
-[NotInParallel("VendorEnvOverrides")]
 public class PluginCommandCursorTests {
     [Test]
     public async Task install_cursor_if_installed_noops_when_marker_absent() {
@@ -189,6 +186,9 @@ public class PluginCommandCursorTests {
         ResolvePluginPath: () => null,
         Stdout:            TextWriter.Null,
         Stderr:            TextWriter.Null
-    ) { ResolveMcpBinaryPath = () => TestBinaryPath };
+    ) {
+        Paths = TestHarnessPaths.NoOverrides(new(fakeHome)),
+        ResolveMcpBinaryPath = () => TestBinaryPath
+    };
 
 }

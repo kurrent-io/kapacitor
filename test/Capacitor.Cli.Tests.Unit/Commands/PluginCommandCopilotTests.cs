@@ -14,11 +14,9 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 // home (COPILOT_HOME otherwise replaces the entire ~/.copilot path). The
 // `--if-installed` refresh branch is used (hooks pre-seeded, version marker
 // dropped) so the "kcap on PATH" precheck on the fresh-install path never runs.
-[NotInParallel("VendorEnvOverrides")]
 public class PluginCommandCopilotTests {
     [Test]
     public async Task install_copilot_registers_mcp_servers_preserving_user_entries() {
-        using var _    = new EnvScope("COPILOT_HOME", null);
         using var home = new TempHome();
         var env = TestEnv(home.Path);
 
@@ -48,7 +46,6 @@ public class PluginCommandCopilotTests {
 
     [Test]
     public async Task install_copilot_skip_flag_leaves_mcp_config_untouched() {
-        using var _    = new EnvScope("COPILOT_HOME", null);
         using var home = new TempHome();
         var env = TestEnv(home.Path);
 
@@ -64,7 +61,6 @@ public class PluginCommandCopilotTests {
 
     [Test]
     public async Task install_copilot_if_installed_does_not_write_mcp_config_when_never_opted_in() {
-        using var _    = new EnvScope("COPILOT_HOME", null);
         using var home = new TempHome();
         var env = TestEnv(home.Path);
 
@@ -77,7 +73,6 @@ public class PluginCommandCopilotTests {
 
     [Test]
     public async Task install_copilot_if_installed_heals_mcp_and_instructions_when_hooks_current() {
-        using var _    = new EnvScope("COPILOT_HOME", null);
         using var home = new TempHome();
         var env = TestEnv(home.Path);
 
@@ -96,7 +91,6 @@ public class PluginCommandCopilotTests {
 
     [Test]
     public async Task install_copilot_if_installed_heals_mcp_and_instructions_when_hook_rewrite_fails() {
-        using var _    = new EnvScope("COPILOT_HOME", null);
         using var home = new TempHome();
         var env = TestEnv(home.Path);
 
@@ -117,7 +111,6 @@ public class PluginCommandCopilotTests {
 
     [Test]
     public async Task remove_copilot_unregisters_mcp_servers_preserving_user_entries() {
-        using var _    = new EnvScope("COPILOT_HOME", null);
         using var home = new TempHome();
         var env = TestEnv(home.Path);
 
@@ -143,7 +136,6 @@ public class PluginCommandCopilotTests {
 
     [Test]
     public async Task remove_copilot_retains_marker_on_failed_unregister_then_retry_removes_entries() {
-        using var _    = new EnvScope("COPILOT_HOME", null);
         using var home = new TempHome();
         var env = TestEnv(home.Path);
 
@@ -172,7 +164,6 @@ public class PluginCommandCopilotTests {
 
     [Test]
     public async Task install_copilot_installs_instructions_preserving_user_content() {
-        using var _    = new EnvScope("COPILOT_HOME", null);
         using var home = new TempHome();
         var env = TestEnv(home.Path);
 
@@ -194,7 +185,6 @@ public class PluginCommandCopilotTests {
 
     [Test]
     public async Task install_copilot_skip_instructions_flag_leaves_file_untouched() {
-        using var _    = new EnvScope("COPILOT_HOME", null);
         using var home = new TempHome();
         var env = TestEnv(home.Path);
 
@@ -210,7 +200,6 @@ public class PluginCommandCopilotTests {
 
     [Test]
     public async Task remove_copilot_strips_instructions_block_keeping_user_content() {
-        using var _    = new EnvScope("COPILOT_HOME", null);
         using var home = new TempHome();
         var env = TestEnv(home.Path);
 
@@ -238,6 +227,9 @@ public class PluginCommandCopilotTests {
         ResolvePluginPath: () => null,
         Stdout:            TextWriter.Null,
         Stderr:            TextWriter.Null
-    ) { ResolveMcpBinaryPath = () => TestBinaryPath };
+    ) {
+        Paths = TestHarnessPaths.NoOverrides(new(fakeHome)),
+        ResolveMcpBinaryPath = () => TestBinaryPath
+    };
 
 }

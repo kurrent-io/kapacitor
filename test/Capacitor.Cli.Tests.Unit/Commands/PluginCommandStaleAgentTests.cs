@@ -18,6 +18,8 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 /// one is a re-install.
 /// </para>
 /// </remarks>
+// PATH: the fresh-install precheck resolves `kcap` through it, and so does every peer that
+// probes for a vendor CLI.
 [NotInParallel("VendorEnvOverrides")]
 public sealed class PluginCommandStaleAgentTests {
     static readonly StaleAgentProcess Running = new("kiro", 4821, "/home/dev/gaffer");
@@ -25,7 +27,6 @@ public sealed class PluginCommandStaleAgentTests {
     [Test]
     public async Task A_first_install_names_a_session_that_was_already_running() {
         using var onPath   = new KcapOnPath();
-        using var kiroHome = new EnvScope("KIRO_HOME", null);
         using var home     = new TempHome();
         using var pipe     = new StringWriter();
         var env = Env(home.Path, pipe, found: [Running]);
@@ -40,7 +41,6 @@ public sealed class PluginCommandStaleAgentTests {
     [Test]
     public async Task Re_installing_over_an_existing_agent_says_nothing() {
         using var onPath   = new KcapOnPath();
-        using var kiroHome = new EnvScope("KIRO_HOME", null);
         using var home     = new TempHome();
         using var pipe     = new StringWriter();
         var env = Env(home.Path, pipe, found: [Running]);
@@ -59,7 +59,6 @@ public sealed class PluginCommandStaleAgentTests {
     [Test]
     public async Task A_first_install_with_nothing_running_says_nothing() {
         using var onPath   = new KcapOnPath();
-        using var kiroHome = new EnvScope("KIRO_HOME", null);
         using var home     = new TempHome();
         using var pipe     = new StringWriter();
         var env = Env(home.Path, pipe, found: []);
@@ -73,7 +72,6 @@ public sealed class PluginCommandStaleAgentTests {
     [Test]
     public async Task An_install_that_failed_claims_nothing_about_future_sessions() {
         using var onPath   = new KcapOnPath();
-        using var kiroHome = new EnvScope("KIRO_HOME", null);
         using var home     = new TempHome();
         using var pipe     = new StringWriter();
         var env = Env(home.Path, pipe, found: [Running]);
@@ -127,6 +125,7 @@ public sealed class PluginCommandStaleAgentTests {
         Stdout:            stdout,
         Stderr:            TextWriter.Null
     ) {
+        Paths = TestHarnessPaths.NoOverrides(new(home)),
         ResolveMcpBinaryPath = () => "/usr/local/bin/kcap",
         // Never the real process table: what a CI box happens to be running must not decide a result.
         FindStaleAgents      = _ => found,

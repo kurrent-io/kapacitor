@@ -479,7 +479,9 @@ public class PluginCommandCodexTests {
         ResolvePluginPath: () => pluginPath,
         Stdout:            stdout ?? TextWriter.Null,
         Stderr:            stderr ?? TextWriter.Null
-    );
+    ) {
+        Paths = TestHarnessPaths.NoOverrides(new(fakeHome)),
+    };
 
     static void WriteSkill(string root, string name, string body) {
         var dir = Path.Combine(root, name);
@@ -659,5 +661,7 @@ public class PluginCommandCodexInstallIntegrationTests {
         ResolvePluginPath: () => pluginPath,
         Stdout:            stdout ?? TextWriter.Null,
         Stderr:            stderr ?? TextWriter.Null
-    );
+    ) {
+        Paths = TestHarnessPaths.NoOverrides(new(fakeHome)),
+    };
 }

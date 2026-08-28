@@ -10,11 +10,9 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 // `plugin install/remove --gemini` (un)registers kcap's MCP servers in the SHARED ~/.gemini/settings.json
 // and installs the steering block in the separate ~/.gemini/GEMINI.md. TempHome + a cleared
 // GEMINI_CLI_HOME isolate GeminiPaths under a temp home.
-[NotInParallel("VendorEnvOverrides")]
 public class PluginCommandGeminiTests {
     [Test]
     public async Task install_gemini_registers_mcp_servers_into_shared_settings_preserving_user_config() {
-        using var _    = new EnvScope("GEMINI_CLI_HOME", null);
         using var home = new TempHome();
         var env = TestEnv(home.Path);
 
@@ -58,7 +56,6 @@ public class PluginCommandGeminiTests {
 
     [Test]
     public async Task install_gemini_skip_mcp_flag_leaves_settings_without_mcp_servers() {
-        using var _    = new EnvScope("GEMINI_CLI_HOME", null);
         using var home = new TempHome();
         var env = TestEnv(home.Path);
 
@@ -76,7 +73,6 @@ public class PluginCommandGeminiTests {
 
     [Test]
     public async Task install_gemini_if_installed_does_not_write_anything_when_never_opted_in() {
-        using var _    = new EnvScope("GEMINI_CLI_HOME", null);
         using var home = new TempHome();
         var env = TestEnv(home.Path);
 
@@ -90,7 +86,6 @@ public class PluginCommandGeminiTests {
 
     [Test]
     public async Task install_gemini_if_installed_heals_mcp_and_instructions_when_hooks_current() {
-        using var _    = new EnvScope("GEMINI_CLI_HOME", null);
         using var home = new TempHome();
         var env = TestEnv(home.Path);
 
@@ -108,7 +103,6 @@ public class PluginCommandGeminiTests {
 
     [Test]
     public async Task install_gemini_if_installed_heals_instructions_when_settings_unparseable() {
-        using var _    = new EnvScope("GEMINI_CLI_HOME", null);
         using var home = new TempHome();
         var env = TestEnv(home.Path);
 
@@ -130,7 +124,6 @@ public class PluginCommandGeminiTests {
 
     [Test]
     public async Task install_gemini_if_installed_reinstalls_hooks_when_settings_deleted() {
-        using var _    = new EnvScope("GEMINI_CLI_HOME", null);
         using var home = new TempHome();
         var env = TestEnv(home.Path);
 
@@ -151,7 +144,6 @@ public class PluginCommandGeminiTests {
 
     [Test]
     public async Task remove_gemini_unregisters_mcp_servers_preserving_user_entries() {
-        using var _    = new EnvScope("GEMINI_CLI_HOME", null);
         using var home = new TempHome();
         var env = TestEnv(home.Path);
 
@@ -179,7 +171,6 @@ public class PluginCommandGeminiTests {
 
     [Test]
     public async Task remove_gemini_retains_marker_on_failed_unregister_then_retry_removes_entries() {
-        using var _    = new EnvScope("GEMINI_CLI_HOME", null);
         using var home = new TempHome();
         var env = TestEnv(home.Path);
 
@@ -208,7 +199,6 @@ public class PluginCommandGeminiTests {
 
     [Test]
     public async Task install_gemini_installs_instructions_preserving_user_content() {
-        using var _    = new EnvScope("GEMINI_CLI_HOME", null);
         using var home = new TempHome();
         var env = TestEnv(home.Path);
 
@@ -230,7 +220,6 @@ public class PluginCommandGeminiTests {
 
     [Test]
     public async Task install_gemini_skip_instructions_flag_leaves_gemini_md_untouched() {
-        using var _    = new EnvScope("GEMINI_CLI_HOME", null);
         using var home = new TempHome();
         var env = TestEnv(home.Path);
 
@@ -246,7 +235,6 @@ public class PluginCommandGeminiTests {
 
     [Test]
     public async Task remove_gemini_strips_instructions_block_keeping_user_content() {
-        using var _    = new EnvScope("GEMINI_CLI_HOME", null);
         using var home = new TempHome();
         var env = TestEnv(home.Path);
 
@@ -265,7 +253,6 @@ public class PluginCommandGeminiTests {
 
     [Test]
     public async Task remove_gemini_clears_mcp_marker_even_when_settings_file_absent() {
-        using var _    = new EnvScope("GEMINI_CLI_HOME", null);
         using var home = new TempHome();
         var env = TestEnv(home.Path);
 
@@ -295,6 +282,9 @@ public class PluginCommandGeminiTests {
         ResolvePluginPath: () => null,
         Stdout:            TextWriter.Null,
         Stderr:            TextWriter.Null
-    ) { ResolveMcpBinaryPath = () => TestBinaryPath };
+    ) {
+        Paths = TestHarnessPaths.NoOverrides(new(fakeHome)),
+        ResolveMcpBinaryPath = () => TestBinaryPath
+    };
 
 }

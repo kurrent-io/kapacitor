@@ -12,7 +12,6 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 // ~/.gemini/GEMINI.md. TempHome + a cleared GEMINI_CLI_HOME isolate the paths under a temp home;
 // the --if-installed refresh branch (hooks pre-seeded, marker staled) skips the fresh "kcap on PATH"
 // precheck. (Skills install to ~/.gemini/skills is covered at the CodingAgentsStep layer.)
-[NotInParallel("VendorEnvOverrides")]
 public class PluginCommandAntigravityTests {
     // Seed installed-but-stale hooks so `--if-installed` refreshes (and registers MCP + instructions).
     static void SeedStaleHooks(PluginEnvironment env) {
@@ -24,7 +23,6 @@ public class PluginCommandAntigravityTests {
 
     [Test]
     public async Task install_antigravity_registers_mcp_into_own_config_preserving_user_servers() {
-        using var _    = new EnvScope("GEMINI_CLI_HOME", null);
         using var home = new TempHome();
         var env = TestEnv(home.Path);
         SeedStaleHooks(env);
@@ -53,7 +51,6 @@ public class PluginCommandAntigravityTests {
 
     [Test]
     public async Task install_antigravity_installs_instructions_into_shared_gemini_md() {
-        using var _    = new EnvScope("GEMINI_CLI_HOME", null);
         using var home = new TempHome();
         var env = TestEnv(home.Path);
         SeedStaleHooks(env);
@@ -72,7 +69,6 @@ public class PluginCommandAntigravityTests {
 
     [Test]
     public async Task install_antigravity_skip_mcp_flag_leaves_config_untouched() {
-        using var _    = new EnvScope("GEMINI_CLI_HOME", null);
         using var home = new TempHome();
         var env = TestEnv(home.Path);
         SeedStaleHooks(env);
@@ -86,7 +82,6 @@ public class PluginCommandAntigravityTests {
 
     [Test]
     public async Task install_antigravity_skip_instructions_flag_leaves_gemini_md_untouched() {
-        using var _    = new EnvScope("GEMINI_CLI_HOME", null);
         using var home = new TempHome();
         var env = TestEnv(home.Path);
         SeedStaleHooks(env);
@@ -100,7 +95,6 @@ public class PluginCommandAntigravityTests {
 
     [Test]
     public async Task remove_antigravity_unregisters_mcp_and_strips_instructions() {
-        using var _    = new EnvScope("GEMINI_CLI_HOME", null);
         using var home = new TempHome();
         var env = TestEnv(home.Path);
 
@@ -129,7 +123,6 @@ public class PluginCommandAntigravityTests {
 
     [Test]
     public async Task remove_antigravity_keeps_shared_instructions_when_gemini_installed() {
-        using var _    = new EnvScope("GEMINI_CLI_HOME", null);
         using var home = new TempHome();
         var env = TestEnv(home.Path);
 
@@ -162,5 +155,8 @@ public class PluginCommandAntigravityTests {
         ResolvePluginPath: () => null,   // skills source unavailable → skills install no-ops (covered elsewhere)
         Stdout:            TextWriter.Null,
         Stderr:            TextWriter.Null
-    ) { ResolveMcpBinaryPath = () => TestBinaryPath };
+    ) {
+        Paths = TestHarnessPaths.NoOverrides(new(fakeHome)),
+        ResolveMcpBinaryPath = () => TestBinaryPath
+    };
 }

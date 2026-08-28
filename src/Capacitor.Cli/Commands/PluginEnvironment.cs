@@ -42,11 +42,12 @@ public sealed record PluginEnvironment(
     } = StaleAgentProbe.Find;
 
     /// <summary>
-    /// Every vendor's layout, resolved once when this record is built. A later mutation of a vendor
-    /// override variable does NOT move an existing instance — that is the point: two members of one
-    /// vendor cannot name different roots.
+    /// Every vendor's layout. Supplied rather than resolved here: this type is the process-state
+    /// seam, so reading nine override variables to build itself would put back the ambient read it
+    /// exists to remove. Held as one instance, so two members of one vendor cannot name different
+    /// roots however the environment moves afterwards.
     /// </summary>
-    public HarnessPaths Paths { get; init; } = HarnessPaths.FromEnvironment(Home);
+    public required HarnessPaths Paths { get; init; }
 
     public static PluginEnvironment FromProcess(ProfileConfig profiles, UserHome home) => new(
         Home:              home,
@@ -54,5 +55,5 @@ public sealed record PluginEnvironment(
         ResolvePluginPath: () => SetupCommand.ResolvePluginPath(),
         Stdout:            Console.Out,
         Stderr:            Console.Error
-    );
+    ) { Paths = HarnessPaths.FromEnvironment(home) };
 }

@@ -193,21 +193,6 @@ public class FlowsDriverSchemaConformanceTests {
 
     /// <summary>Every environment variable any kcap path resolver consults. Kept together so a new
     /// override cannot be added without this list being the obvious place to add it.</summary>
-    static readonly string[] PathOverrideVariables = [
-        "CODEX_HOME",            // CodexPaths
-        "COPILOT_HOME",          // CopilotPaths
-        "GEMINI_CLI_HOME",       // GeminiPaths — and AntigravityPaths, which reuses GeminiPaths.Root
-        "KIRO_HOME",             // KiroPaths
-        "OPENCODE_CONFIG_DIR",   // OpenCodePaths
-        "XDG_CONFIG_HOME",       // OpenCodePaths fallback
-        "XDG_DATA_HOME",         // OpenCodePaths plugin dir fallback
-    ];
-
-    sealed class EnvScopes(IEnumerable<string> keys) : IDisposable {
-        readonly List<EnvScope> _scopes = [.. keys.Select(k => new EnvScope(k, null))];
-        public void Dispose() { foreach (var s in _scopes) s.Dispose(); }
-    }
-
     /// <summary>Deterministic native-binary path injected into every installer arm. Registration
     /// writes the resolved binary as the command (default: Environment.ProcessPath) — under the
     /// test host that default would be the test-runner executable, so the suite injects its own
@@ -217,6 +202,7 @@ public class FlowsDriverSchemaConformanceTests {
     static PluginEnvironment TestEnv(string home, string? pluginRoot = null) =>
         new(Home: new(home), Profiles: new ProfileConfig(), ResolvePluginPath: () => pluginRoot,
             Stdout: TextWriter.Null, Stderr: TextWriter.Null) {
+            Paths = TestHarnessPaths.NoOverrides(new(home)),
             ResolveMcpBinaryPath = () => InjectedBinaryPath
         };
 
@@ -315,7 +301,6 @@ public class FlowsDriverSchemaConformanceTests {
         // against a pre-existing entry. The names are easy to get individually wrong (GeminiPaths
         // reads GEMINI_CLI_HOME, not GEMINI_HOME; OpenCode falls back to XDG_CONFIG_HOME; CodexPaths
         // gives ambient CODEX_HOME precedence), which is exactly why the list is not per-arm.
-        using var overrides = new EnvScopes(PathOverrideVariables);
         using var home      = new TempHome();
         var env = TestEnv(home.Path, arm.BareInstall ? PlantFakePlugin() : null);
 
@@ -339,7 +324,6 @@ public class FlowsDriverSchemaConformanceTests {
         Arms.Select(a => (Func<Arm>)(() => a));
 
     [Test]
-    [NotInParallel("VendorEnvOverrides")]
     [MethodDataSource(nameof(InstallerArms))]
     public async Task Every_installed_driver_launches_the_same_flows_server(Arm arm) {
         var p = await InstallAndRead(arm);

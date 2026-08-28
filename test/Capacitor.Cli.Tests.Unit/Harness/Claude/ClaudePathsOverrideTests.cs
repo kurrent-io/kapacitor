@@ -1,5 +1,3 @@
-using Capacitor.Cli.Commands;
-using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.Harness.Claude;
 
 namespace Capacitor.Cli.Tests.Unit.Harness.Claude;
@@ -64,28 +62,4 @@ public class ClaudePathsOverrideTests {
         await Assert.That(paths.UserConfigJson).IsEqualTo(Path.Combine("/fake/home", ".claude.json"));
     }
 
-    /// <summary>The aggregate reads CLAUDE_CONFIG_DIR through <see cref="ClaudePaths"/>, so a
-    /// relocated Claude moves with it — resolved once per instance, which is why each half builds
-    /// its own rather than re-reading one.</summary>
-    [Test]
-    [NotInParallel]
-    public async Task Plugin_environment_claude_paths_honour_the_override() {
-        static PluginEnvironment Env() =>
-            new(new("/fake/home"), new ProfileConfig(), () => null, TextWriter.Null, TextWriter.Null);
-
-        using (EnvScope.Exclusive("CLAUDE_CONFIG_DIR", null)) {
-            var claude = Env().Paths.Claude;
-            await Assert.That(claude.Home).IsEqualTo(Path.Combine("/fake/home", ".claude"));
-            await Assert.That(claude.UserSettings)
-                .IsEqualTo(Path.Combine("/fake/home", ".claude", "settings.json"));
-        }
-
-        var relocated = Path.Combine(Path.GetTempPath(), "kcap-claude-pe");
-
-        using (EnvScope.Exclusive("CLAUDE_CONFIG_DIR", relocated)) {
-            var claude = Env().Paths.Claude;
-            await Assert.That(claude.Home).IsEqualTo(relocated);
-            await Assert.That(claude.UserSettings).IsEqualTo(Path.Combine(relocated, "settings.json"));
-        }
-    }
 }

@@ -6,9 +6,6 @@ using Capacitor.Cli.Core.Harness.Claude;
 
 namespace Capacitor.Cli.Tests.Unit.Commands;
 
-// PluginEnvironment resolves every vendor layout when it is built, so these read each
-// override variable a peer suite clears.
-[NotInParallel("VendorEnvOverrides")]
 public class PluginCommandClaudeTests {
     [Test]
     public async Task InstallPlugin_stamps_marker_on_success() {
@@ -175,5 +172,7 @@ public class PluginCommandClaudeTests {
         ResolvePluginPath: () => pluginPath,
         Stdout:            stdout ?? TextWriter.Null,
         Stderr:            stderr ?? TextWriter.Null
-    );
+    ) {
+        Paths = TestHarnessPaths.NoOverrides(new(fakeHome)),
+    };
 }

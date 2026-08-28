@@ -10,7 +10,6 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 /// `plugin install/remove --kiro` MCP registration in <c>~/.kiro/settings/mcp.json</c>. Uses a
 /// TempHome + cleared KIRO_HOME; <c>--if-installed</c> (agent pre-seeded) skips the kiro-cli clone.
 /// </summary>
-[NotInParallel("VendorEnvOverrides")]
 public class PluginCommandKiroTests {
     // Seed an installed kcap agent at the current version so `--if-installed` treats it as current
     // and skips the (kiro-cli-dependent) clone, proceeding straight to MCP registration.
@@ -22,7 +21,6 @@ public class PluginCommandKiroTests {
 
     [Test]
     public async Task install_kiro_registers_mcp_servers_preserving_user_entries() {
-        using var _    = new EnvScope("KIRO_HOME", null);
         using var home = new TempHome();
         var env = TestEnv(home.Path);
         SeedAgent(env);
@@ -54,7 +52,6 @@ public class PluginCommandKiroTests {
 
     [Test]
     public async Task install_kiro_skip_mcp_flag_leaves_config_untouched() {
-        using var _    = new EnvScope("KIRO_HOME", null);
         using var home = new TempHome();
         var env = TestEnv(home.Path);
         SeedAgent(env);
@@ -68,7 +65,6 @@ public class PluginCommandKiroTests {
 
     [Test]
     public async Task install_kiro_creates_settings_dir_when_missing() {
-        using var _    = new EnvScope("KIRO_HOME", null);
         using var home = new TempHome();
         var env = TestEnv(home.Path);
         SeedAgent(env);
@@ -83,7 +79,6 @@ public class PluginCommandKiroTests {
 
     [Test]
     public async Task remove_kiro_unregisters_mcp_servers_preserving_user_entries() {
-        using var _    = new EnvScope("KIRO_HOME", null);
         using var home = new TempHome();
         var env = TestEnv(home.Path);
 
@@ -105,7 +100,6 @@ public class PluginCommandKiroTests {
 
     [Test]
     public async Task install_kiro_if_installed_heals_mcp_only_install_without_cloning_agent() {
-        using var _    = new EnvScope("KIRO_HOME", null);
         using var home = new TempHome();
         var env = TestEnv(home.Path);
 
@@ -131,7 +125,6 @@ public class PluginCommandKiroTests {
 
     [Test]
     public async Task install_kiro_if_installed_noop_when_nothing_installed() {
-        using var _    = new EnvScope("KIRO_HOME", null);
         using var home = new TempHome();
         var env = TestEnv(home.Path);
 
@@ -154,6 +147,9 @@ public class PluginCommandKiroTests {
         ResolvePluginPath: () => null,
         Stdout:            TextWriter.Null,
         Stderr:            TextWriter.Null
-    ) { ResolveMcpBinaryPath = () => TestBinaryPath };
+    ) {
+        Paths = TestHarnessPaths.NoOverrides(new(fakeHome)),
+        ResolveMcpBinaryPath = () => TestBinaryPath
+    };
 
 }

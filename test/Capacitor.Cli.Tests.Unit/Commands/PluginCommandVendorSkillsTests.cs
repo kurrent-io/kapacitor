@@ -17,6 +17,8 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 /// top a tree up, never create one. The npm postinstall runs it for every vendor on each
 /// `npm install -g`, so creating there would undo a deliberate `plugin remove --skills`.
 /// </remarks>
+// PATH: the install refuses unless `kcap` resolves through it, and a peer probing for a vendor
+// CLI reads the same variable.
 [NotInParallel("VendorEnvOverrides")]
 public class PluginCommandVendorSkillsTests {
     [Test]
@@ -135,18 +137,15 @@ public class PluginCommandVendorSkillsTests {
         yield return () => Vendor.OpenCode;
     }
 
-    public sealed record Vendor(string Flag, string[] ClearedEnvVars) {
-        public static readonly Vendor Cursor      = new("cursor", []);
-        public static readonly Vendor Copilot     = new("copilot", ["COPILOT_HOME"]);
-        public static readonly Vendor Gemini      = new("gemini", ["GEMINI_CLI_HOME"]);
-        public static readonly Vendor Pi          = new("pi", ["PI_CODING_AGENT_DIR"]);
-        public static readonly Vendor Kiro        = new("kiro", ["KIRO_HOME"]);
-        public static readonly Vendor Antigravity = new("antigravity", []);
+    public sealed record Vendor(string Flag) {
+        public static readonly Vendor Cursor      = new("cursor");
+        public static readonly Vendor Copilot     = new("copilot");
+        public static readonly Vendor Gemini      = new("gemini");
+        public static readonly Vendor Pi          = new("pi");
+        public static readonly Vendor Kiro        = new("kiro");
+        public static readonly Vendor Antigravity = new("antigravity");
 
-        // OpenCode resolves its config dir from OPENCODE_CONFIG_DIR then XDG_CONFIG_HOME before the
-        // home it is handed, so both have to go or the install lands in the real user config.
-        public static readonly Vendor OpenCode =
-            new("opencode", ["OPENCODE_CONFIG_DIR", "XDG_CONFIG_HOME"]);
+        public static readonly Vendor OpenCode = new("opencode");
 
         public string[] InstallArgs(string home) => Flag switch {
             "cursor"   => ["plugin", "install", "--cursor",
@@ -173,9 +172,6 @@ public class PluginCommandVendorSkillsTests {
             _home   = new TempHome();
             _binDir = new TempDir();
 
-            foreach (var key in vendor.ClearedEnvVars)
-                _envScopes.Add(new EnvScope(key, null));
-
             // The fresh path refuses to install unless `kcap` resolves — it is what the hooks it
             // writes will invoke. Both names, because the Windows leg matches on PATHEXT.
             foreach (var name in new[] { "kcap", "kcap.exe" }) {
@@ -195,7 +191,10 @@ public class PluginCommandVendorSkillsTests {
                 ResolvePluginPath: RepoTree.KcapDir,
                 Stdout:            TextWriter.Null,
                 Stderr:            TextWriter.Null
-            ) { ResolveMcpBinaryPath = () => Path.Combine(_binDir.Path, "kcap") };
+            ) {
+                Paths = TestHarnessPaths.NoOverrides(new(_home.Path)),
+                ResolveMcpBinaryPath = () => Path.Combine(_binDir.Path, "kcap")
+            };
         }
 
         public string            Home => _home.Path;

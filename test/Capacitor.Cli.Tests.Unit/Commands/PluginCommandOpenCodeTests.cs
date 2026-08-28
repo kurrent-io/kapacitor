@@ -21,7 +21,6 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 /// install the AGENTS.md block; they use a TempHome + clear OPENCODE_CONFIG_DIR /
 /// XDG_CONFIG_HOME so OpenCodePaths resolves under it (env mutation → NotInParallel).
 /// </summary>
-[NotInParallel("VendorEnvOverrides")]
 public class PluginCommandOpenCodeTests {
     [Test]
     public async Task Install_opencode_with_if_installed_is_noop_when_not_installed() {
@@ -81,8 +80,6 @@ public class PluginCommandOpenCodeTests {
     public async Task Remove_opencode_deletes_plugin_and_marker() {
         // remove also unregisters MCP + strips AGENTS.md (both under ConfigDir); clear
         // OPENCODE_CONFIG_DIR/XDG so those resolve under the TempDir, not the real config.
-        using var _   = new EnvScope("OPENCODE_CONFIG_DIR", null);
-        using var __  = new EnvScope("XDG_CONFIG_HOME", null);
         using var tmp = new TempDir();
         var dir = tmp.CreateDir("plugins");
         var pluginPath = dir.PathTo("kcap.ts");
@@ -106,8 +103,6 @@ public class PluginCommandOpenCodeTests {
 
     [Test]
     public async Task install_opencode_registers_mcp_into_opencode_json_preserving_user_config() {
-        using var _   = new EnvScope("OPENCODE_CONFIG_DIR", null);
-        using var __  = new EnvScope("XDG_CONFIG_HOME", null);
         using var home = new TempHome();
         var env = TestEnv(home.Path);
         SeedPlugin(env);
@@ -140,8 +135,6 @@ public class PluginCommandOpenCodeTests {
 
     [Test]
     public async Task install_opencode_skip_mcp_flag_leaves_config_untouched() {
-        using var _   = new EnvScope("OPENCODE_CONFIG_DIR", null);
-        using var __  = new EnvScope("XDG_CONFIG_HOME", null);
         using var home = new TempHome();
         var env = TestEnv(home.Path);
         SeedPlugin(env);
@@ -155,8 +148,6 @@ public class PluginCommandOpenCodeTests {
 
     [Test]
     public async Task install_opencode_installs_instructions_into_agents_md() {
-        using var _   = new EnvScope("OPENCODE_CONFIG_DIR", null);
-        using var __  = new EnvScope("XDG_CONFIG_HOME", null);
         using var home = new TempHome();
         var env = TestEnv(home.Path);
         SeedPlugin(env);
@@ -175,8 +166,6 @@ public class PluginCommandOpenCodeTests {
 
     [Test]
     public async Task install_opencode_skip_instructions_flag_leaves_file_untouched() {
-        using var _   = new EnvScope("OPENCODE_CONFIG_DIR", null);
-        using var __  = new EnvScope("XDG_CONFIG_HOME", null);
         using var home = new TempHome();
         var env = TestEnv(home.Path);
         SeedPlugin(env);
@@ -190,8 +179,6 @@ public class PluginCommandOpenCodeTests {
 
     [Test]
     public async Task remove_opencode_unregisters_mcp_and_strips_instructions() {
-        using var _   = new EnvScope("OPENCODE_CONFIG_DIR", null);
-        using var __  = new EnvScope("XDG_CONFIG_HOME", null);
         using var home = new TempHome();
         var env = TestEnv(home.Path);
 
@@ -229,5 +216,8 @@ public class PluginCommandOpenCodeTests {
         ResolvePluginPath: () => null,
         Stdout:            TextWriter.Null,
         Stderr:            TextWriter.Null
-    ) { ResolveMcpBinaryPath = () => TestBinaryPath };
+    ) {
+        Paths = TestHarnessPaths.NoOverrides(new(fakeHome)),
+        ResolveMcpBinaryPath = () => TestBinaryPath
+    };
 }
