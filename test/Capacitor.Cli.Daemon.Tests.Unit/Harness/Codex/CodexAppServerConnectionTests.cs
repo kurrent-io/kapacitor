@@ -463,4 +463,17 @@ public class CodexAppServerConnectionTests {
         // Idempotent: a second CloseInputAsync (and the eventual DisposeAsync in the harness) must not throw.
         await harness.Connection.CloseInputAsync();
     }
+
+    /// <summary>After DisposeAsync, a write is turned away cleanly (ObjectDisposedException) and
+    /// CloseInputAsync is a prompt no-op — never a hang. DisposeAsync leaves the write gate UNDISPOSED
+    /// (disposing a SemaphoreSlim abandons a queued waiter — it neither completes nor honors its
+    /// timeout), so a bounded wait can always make progress; the IsDisposed guards do the turning-away.</summary>
+    [Test]
+    public async Task After_dispose_writes_are_turned_away_and_close_input_is_a_prompt_noop() {
+        var harness = new Harness();
+        await harness.DisposeAsync();
+
+        await Assert.ThrowsAsync<ObjectDisposedException>(async () => await harness.Connection.NotifyAsync("x", null));
+        await harness.Connection.CloseInputAsync().WaitAsync(HangGuard); // must return promptly, not hang
+    }
 }
