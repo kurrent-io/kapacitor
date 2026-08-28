@@ -63,16 +63,19 @@ jobs:
           node npm/kcap/bin/refresh.test.js
 
       - name: Run tests
-        # --maximum-parallel-tests caps only TUnit's unkeyed bucket — keyed [NotInParallel] tests
-        # still run concurrently with disjoint-key classes, so anything touching process-global
-        # state must hold the SAME key as every other toucher. A cap of 1 narrows race windows
-        # rather than closing them, so it hides a missing key instead of failing on it.
-        #
-        # Assembly parallelism is on: the cross-assembly sharing points that forced one module at a
-        # time (KCAP_CONFIG_DIR, the daemons dir, temp roots) are pinned per assembly now. A
-        # cross-assembly race shows up here as a failure no local run reproduces, so if this reddens
-        # in a way a single suite does not, restore --max-parallel-test-modules 1 first.
-        run: dotnet test --solution Capacitor.slnx --no-build -- --maximum-parallel-tests 4
+        # --max-parallel-test-modules 1 runs one assembly at a time. Two things block lifting it,
+        # both measured with it off: five concurrent assemblies starve the tests that assert a
+        # wall-clock budget on the two-core Windows runner (a 1s cap measured 1.004s), and an
+        # Integration test's temp working directory vanished mid-test on Linux — a cross-assembly
+        # sharing point no in-assembly [NotInParallel] key can serialise. It halves CI wall-clock,
+        # so it is worth another attempt once budget assertions take an injected clock.
+        # --maximum-parallel-tests caps only TUnit's unkeyed bucket — keyed
+        # [NotInParallel] tests still run concurrently with disjoint-key classes, so
+        # anything touching process-global state must hold the SAME key as every other
+        # toucher. A cap of 1 narrows race windows rather than closing them, so it hides
+        # a missing key instead of failing on it; 4 is wide enough to surface one.
+        # Local dev runs stay parallel; both flags live only in CI.
+        run: dotnet test --solution Capacitor.slnx --no-build --max-parallel-test-modules 1 -- --maximum-parallel-tests 4
 
   lint-linear-ids:
     name: No Linear issue IDs in C# source
