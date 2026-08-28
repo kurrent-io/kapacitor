@@ -18,6 +18,11 @@ public class BrowserFirstRunFlowTests {
         public IReadOnlyList<string> Entries => _entries;
 
         public void Add(string entry) => _entries.Add(entry);
+
+        /// <summary>Whether <paramref name="first"/> was logged before <paramref name="second"/>. -1 for an
+        /// absent entry makes a missing one read as "before", so callers assert its presence too.</summary>
+        public bool Precedes(string first, string second) =>
+            _entries.IndexOf(first) < _entries.IndexOf(second);
     }
 
     sealed class FakeChannel(Log log, FakeTimeProvider? clock = null) : IFirstRunFlowChannel {
@@ -121,10 +126,14 @@ public class BrowserFirstRunFlowTests {
         /// <summary>Thrown on the next relinquish, to prove an unexpected fault does not escape the leg.</summary>
         public Exception? RelinquishThrows { get; set; }
 
+        /// <summary>Run on each relinquish, to model something happening at that exact moment.</summary>
+        public Action? OnRelinquish { get; set; }
+
         public Task<FirstRunRelinquishOutcome> RelinquishAsync(
                 string serverUrl, string flowId, string reason, CancellationToken ct) {
             log.Add("relinquish");
             Relinquished.Add(reason);
+            OnRelinquish?.Invoke();
 
             if (RelinquishThrows is { } boom) throw boom;
 
@@ -135,19 +144,18 @@ public class BrowserFirstRunFlowTests {
 
     /// <summary>Holds the leg's interrupt callback where a test can fire it, instead of the process-global
     /// sink — which is what keeps this class out of assembly-wide exclusion.</summary>
-    sealed class FakeInterrupts : IFirstRunInterrupts {
+    sealed class FakeInterrupts(Log log) : IFirstRunInterrupts {
+        readonly Log _log = log;
+
         Func<CancellationToken, Task>? _armed;
 
         public int Arms    { get; private set; }
         public int Disarms { get; private set; }
 
-        /// <summary>Whether something is armed right now. The whole point of the seam is that this is
-        /// false the moment the leg has a result.</summary>
-        public bool IsArmed => _armed is not null;
-
         public IDisposable Arm(Func<CancellationToken, Task> relinquish) {
             Arms++;
             _armed = relinquish;
+            _log.Add("arm");
 
             return new Handle(this);
         }
@@ -159,6 +167,7 @@ public class BrowserFirstRunFlowTests {
             public void Dispose() {
                 owner.Disarms++;
                 owner._armed = null;
+                owner._log.Add("disarm");
             }
         }
     }
@@ -366,7 +375,7 @@ public class BrowserFirstRunFlowTests {
         var browser  = new RecordingBrowser();
         var actions  = capabilities is null ? null : new FakeActions(log, capabilities);
         var lane     = importing ? new FakeImportLane(log) : null;
-        var signals  = new FakeInterrupts();
+        var signals  = new FakeInterrupts(log);
 
         keys ??= new FakeKeys(canWatch: false);
 
@@ -1695,27 +1704,44 @@ public class BrowserFirstRunFlowTests {
     }
 
     /// <summary>
-    /// Disarmed the moment the leg has a result, and this is the guard that matters: the callback can only
-    /// ever say <c>stopped</c>, so left armed it would race the reason the result names — gambling
+    /// Disarmed before anything the result decides, and this is the guard that matters: the callback can
+    /// only ever say <c>stopped</c>, so left armed it would race the reason the result names — gambling
     /// <c>handover</c> against <c>stopped</c> on a dismissal, and relinquishing at all on a finish.
+    ///
+    /// <para><b>Asserted as ORDERING, because nothing observable after the leg can tell the two shapes
+    /// apart:</b> an arm scoped to the whole method has also been disposed by then, so a test that only
+    /// looked afterwards would pass either way and prove nothing.</para>
     /// </summary>
     [Test]
     [Arguments(true)]
     [Arguments(false)]
-    public async Task Nothing_is_left_armed_once_the_leg_has_a_result(bool dismissed) {
+    public async Task The_arm_is_gone_before_the_result_is_acted_on(bool dismissed) {
         var h = Build(dismissed ? new FakeKeys(canWatch: true, pressAfter: 2) : null);
+
+        // Fires whatever is still armed at the moment the result's own reason is being sent. Left armed,
+        // that is a second POST saying the opposite thing.
+        //
+        // ONCE, or the second POST re-enters this hook and recurses until the stack goes — which aborts the
+        // run instead of failing an assertion, and an unreadable red is nearly as bad as a green.
+        var fired = false;
+
+        h.Channel.OnRelinquish = () => {
+            if (fired) return;
+
+            fired = true;
+
+            h.Interrupts.FireAsync().GetAwaiter().GetResult();
+        };
 
         if (!dismissed) h.Channel.Polls.Enqueue(new(200, Done()));
 
         await Run(h);
 
-        await Assert.That(h.Interrupts.IsArmed).IsFalse();
         await Assert.That(h.Interrupts.Arms).IsEqualTo(1);
         await Assert.That(h.Interrupts.Disarms).IsEqualTo(1);
+        await Assert.That(h.Log.Precedes("arm", "disarm")).IsTrue();
 
-        // Firing now sends nothing, so the reason on the wire is only ever the one the result named.
-        await h.Interrupts.FireAsync();
-
+        // Exactly the reason the result named, and nothing behind it.
         string[] expected = dismissed ? [FirstRunRelinquishReasons.Handover] : [];
 
         await Assert.That(h.Channel.Relinquished).IsEquivalentTo(expected);
