@@ -14,15 +14,23 @@ namespace Capacitor.Cli;
 /// noise, and a spinner nobody can see is worse than the transitions printed plainly.</param>
 /// <param name="control">Where the cursor codes go. Injectable so a test can read the moves and hides
 /// back, which is the half of this nothing else can observe.</param>
-sealed class TerminalWaitLine(bool tty, TextWriter? control = null) : IDisposable {
+/// <param name="measure">The terminal's width, or null where it cannot be read. Injectable because the
+/// wrap it guards against happens inside Spectre's writer, where no test can see it.</param>
+sealed class TerminalWaitLine(bool tty, TextWriter? control = null, Func<int?>? measure = null) : IDisposable {
     static readonly IReadOnlyList<string> Frames = Spinner.Known.Dots.Frames;
 
     static readonly TimeSpan FrameInterval = TimeSpan.FromMilliseconds(100);
+
+    /// <summary>Below this the block is not drawn at all. The prefix is four cells before a character
+    /// of the wait, so a narrower terminal wraps on the prefix alone however hard the text is clipped.</summary>
+    const int MinWidth = 20;
 
     const string ClearLine = "\u001b[2K\r";
     const string CursorUp  = "\u001b[1A";
 
     readonly TextWriter _control = control ?? Console.Out;
+
+    readonly Func<int?> _measure = measure ?? Measure;
 
     readonly object _gate = new();
 
@@ -32,6 +40,7 @@ sealed class TerminalWaitLine(bool tty, TextWriter? control = null) : IDisposabl
     int     _drawn;
     int     _frame;
     bool    _running;
+    bool    _hidden;
 
     /// <summary>How many rows the block currently occupies. The one piece of state a wrong erase would
     /// corrupt, so it is readable rather than inferred.</summary>
@@ -52,7 +61,6 @@ sealed class TerminalWaitLine(bool tty, TextWriter? control = null) : IDisposabl
 
             if (!_running) {
                 _running = true;
-                Cursor(visible: false);
                 _timer = new Timer(_ => Tick(), null, FrameInterval, FrameInterval);
             }
 
@@ -80,7 +88,7 @@ sealed class TerminalWaitLine(bool tty, TextWriter? control = null) : IDisposabl
             _timer = null;
 
             Erase();
-            Cursor(visible: true);
+            ShowCursor();
 
             _text  = null;
             _offer = null;
@@ -104,9 +112,15 @@ sealed class TerminalWaitLine(bool tty, TextWriter? control = null) : IDisposabl
     void Draw() {
         Erase();
 
-        if (!_running || _text is null) return;
+        if (!_running || _text is null) { ShowCursor(); return; }
 
-        var width = Width();
+        // A terminal too narrow for the prefix, or one whose width cannot be read, cannot host a pinned
+        // block: the prefix alone wraps and costs the erase above a row it does not know about. Nothing
+        // is drawn rather than drawn wrong, which leaves the permanent lines standing on their own -
+        // the redirected-output behaviour, reached by a second route. A later widening resumes.
+        if (_measure() is not { } width || width < MinWidth) { ShowCursor(); return; }
+
+        HideCursor();
 
         AnsiConsole.Markup($"  [cyan]{Frames[_frame]}[/] {Markup.Escape(Clip(_text, width - 5))}");
         _drawn = 1;
@@ -135,18 +149,13 @@ sealed class TerminalWaitLine(bool tty, TextWriter? control = null) : IDisposabl
 
     /// <summary>Read live rather than from <c>AnsiConsole.Profile.Width</c>, which Spectre fixes when the
     /// console is created: a terminal narrowed mid-wait would be clipped against the old width, wrap, and
-    /// desync the row count. A resize can still reflow rows underneath the block — beyond a hand-rolled
-    /// one — but nothing here should be the cause of it.</summary>
-    static int Width() {
+    /// desync the row count. Null where it cannot be read — there is no safe number to guess, since one
+    /// wider than the terminal wraps and one narrower is the same lie the caller is being spared.</summary>
+    static int? Measure() {
         try {
-            var measured = Console.WindowWidth;
-
-            // Not raised to a comfortable minimum: a genuinely narrow terminal would then be clipped
-            // against columns it does not have, wrap, and cost the erase a row. Zero means a console
-            // that could not be measured, not one with no columns.
-            return measured > 0 ? measured : 80;
+            return Console.WindowWidth is var w and > 0 ? w : null;
         } catch (Exception ex) when (ex is IOException or PlatformNotSupportedException) {
-            return 80;
+            return null;
         }
     }
 
@@ -155,5 +164,19 @@ sealed class TerminalWaitLine(bool tty, TextWriter? control = null) : IDisposabl
     static string Clip(string text, int width) =>
         text.Length <= width ? text : text[..Math.Max(0, width)];
 
-    void Cursor(bool visible) => _control.Write(visible ? "\u001b[?25h" : "\u001b[?25l");
+    // Both idempotent: the block is torn down more ways than it is set up, and a show with no matching
+    // hide is a stray escape in the middle of output somebody else owns.
+    void HideCursor() {
+        if (_hidden) return;
+
+        _hidden = true;
+        _control.Write("\u001b[?25l");
+    }
+
+    void ShowCursor() {
+        if (!_hidden) return;
+
+        _hidden = false;
+        _control.Write("\u001b[?25h");
+    }
 }

@@ -130,10 +130,21 @@ Lines are **truncated rather than wrapped**: a wrapped line costs a row the curs
 know about, and the block would then erase the wrong rows. `Drawn` is exposed for the same reason — an
 erase that gets the count wrong takes a line the caller already committed to the scrollback with it.
 
-Three ways that arithmetic can be lost, all fixed rather than accepted. The measured width is used as
-measured: raising it to a comfortable floor renders a genuinely narrow terminal as though it had columns it
-does not have, which is the same wrap by another route — zero means a console that could not be measured,
-not one with no columns. The width is read from
+Four ways that arithmetic can be lost, all fixed rather than accepted, and the width took three passes to
+get right — worth recording, because each pass fixed half of it.
+
+The width is read live, not from `AnsiConsole.Profile.Width`, which Spectre fixes when the console is
+created: a terminal narrowed mid-wait would be clipped against the old width and wrap. It is then used as
+measured, with no floor — raising a narrow terminal to a comfortable minimum renders it as though it had
+columns it does not have, which is the same wrap by another route. And **clipping the text was never
+enough**: four cells of prefix sit before a character of it, so below the prefix's own width the prefix
+wraps however hard the text is clipped, and an unreadable width has no safe number to stand in for it
+(wider wraps, narrower is the same lie). So the block is drawn only when the width is known and at least
+`MinWidth`; otherwise nothing is drawn and the permanent lines stand on their own, which is the
+redirected-output behaviour reached by a second route. A later widening resumes.
+
+The width is injected for the same reason the control writer is: the wrap happens inside Spectre's writer,
+so the row count is its only observable consequence and a test host's real console is not the subject. The width is read from
 `Console.WindowWidth` on every draw, not from `AnsiConsole.Profile.Width` which Spectre fixes when the
 console is created — a terminal narrowed mid-wait would otherwise be clipped against the old width and
 wrap. And the move between the two rows writes CR as well as LF: a lone LF does not return to column 0 on
