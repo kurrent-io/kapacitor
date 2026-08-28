@@ -50,8 +50,11 @@ Settled with the owner during brainstorming, 2026-08-28:
    hub's existing `RespondToPermission` — the method the web UI calls, gated on
    the caller owning the agent, which the daemon's own hub connection satisfies
    — so the web card clears with no kcap-server change. A server claim settles
-   the app by a `PermissionResolved` push over the local socket. The two
-   authorities are not mutually locked: a web answer that reaches the server's
+   the app by a `PermissionResolved` push over the local socket, and **every
+   app indicator clears from that one push**: the Chat card, the session and
+   worktree pips, and the tray's Attention all derive from the service's
+   pending cache, so an answer given on the web leaves nothing lit in the app.
+   The two authorities are not mutually locked: a web answer that reaches the server's
    tracker in the same instant as an app claim leaves the server recording the
    web answer while the hook follows the daemon's claim (§4).
 4. **A request is identified by a daemon-minted GUID, no identity echo.** The
@@ -768,9 +771,14 @@ exist on a newer daemon; the daemon-update nudge already covers that.
   agent dto ends up with a relative detail; `RailSessionViewModelTests` and
   `RailWorktreeViewModelTests` — `NeedsYou` flips with the set and with the
   status, and a collapsed worktree shows a permission-only alert;
-  `TrayViewModelTests` — Attention and header text; `ChatTabViewSmokeTests` —
-  the card and its three buttons render headless and the row collapses when
-  empty. A `FakePermissionService` joins `FakeConsentService`.
+  `TrayViewModelTests` — Attention and header text; one end-to-end
+  `PermissionServiceTests` case feeding a `Resolved(source: "server")` for a
+  cached request and asserting all three derivations clear together —
+  `Pending` drops the entry, `AgentsWithPending` drops the agent,
+  `PendingCount` decrements — so a web answer leaves no card, pip or tray
+  state behind; `ChatTabViewSmokeTests` — the card and its three buttons
+  render headless and the row collapses when empty. A `FakePermissionService`
+  joins `FakeConsentService`.
 
 ## Risks
 
