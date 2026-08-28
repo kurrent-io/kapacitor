@@ -458,9 +458,14 @@ transport failure into deny. So:
   `GetContextAsync` returns, takes the gate: if admission is closed it answers
   the context 503 and closes it without ever entering the tracked set;
   otherwise it increments the count **before** scheduling the handler, and
-  the handler decrements in its `finally`. `GetContextAsync` itself cannot be
-  cancelled, so a context that arrives after shutdown began is exactly this
-  rejected case, never an untracked handler.
+  the handler decrements in its `finally`. The tracked wrapper is scheduled
+  with **no scheduling token** — `Task.Run(() => RunTrackedAsync(context))`,
+  not today's `Task.Run(…, ct)` — because a delegate cancelled before it
+  starts never runs, so its `finally` would never decrement and the drain
+  would always expire. The bridge token still reaches `HandleAsync` for its
+  own waits; it just never decides whether the wrapper runs. `GetContextAsync`
+  itself cannot be cancelled, so a context that arrives after shutdown began
+  is exactly the rejected case, never an untracked handler.
 - A claimed response is written under a **response token** — a fresh
   `CancellationTokenSource(ResponseWriteTimeout = 2 s)`, never the bridge
   token.
@@ -747,8 +752,10 @@ exist on a newer daemon; the daemon-update nudge already covers that.
   barrier on either side of the token (the app's `Ok=true` always matches
   what the hook receives) driven through the real `StopAsync` — the claimed
   response is delivered inside the drain, and a handler past the drain is the
-  only loss —, a context accepted but not yet scheduled when `StopAsync`
-  begins (tracked and drained), a context `GetContextAsync` returns after
+  only loss —, a context admitted and counted whose delegate is held before
+  entry while `StopAsync` begins with the bridge token already cancelled (the
+  wrapper still runs, the count reaches zero, shutdown completes without
+  consuming `ShutdownDrain`), a context `GetContextAsync` returns after
   admission closed (503, untracked, listener close does not abort a drained
   handler), a hook response write that throws still leaves the record,
   registry cleanup after every interleaving;
