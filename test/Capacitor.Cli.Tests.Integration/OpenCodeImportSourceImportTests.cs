@@ -12,6 +12,8 @@ namespace Capacitor.Cli.Tests.Integration;
 /// strict-send abort, subagent routing, repair-above-HWM, and ledger skip-on-rerun.
 /// </summary>
 public class OpenCodeImportSourceImportTests : IDisposable {
+    [TempHome] public required TempHome Home { get; init; }
+
     readonly WireMockServer    _server = WireMockServer.Start();
     readonly OpenCodeDbFixtureIt _fix  = new();
 
@@ -46,7 +48,7 @@ public class OpenCodeImportSourceImportTests : IDisposable {
         var source     = new OpenCodeImportSource(_fix.DbPath, _fix.LedgerPath);
         var discovered = await source.DiscoverAsync(new DiscoveryFilters(null, null, null, 0), CancellationToken.None);
         var classified = await source.ClassifyAsync(discovered,
-            new ClassifyContext(client, _server.Url!, 0, null, null), CancellationToken.None);
+            new ClassifyContext(client, _server.Url!, 0, null, null, Home), CancellationToken.None);
         await Assert.That(classified[0].Status).IsEqualTo(ImportCommand.ClassificationStatus.New);
 
         var outcome = await source.ImportSessionAsync(classified[0],
@@ -76,7 +78,7 @@ public class OpenCodeImportSourceImportTests : IDisposable {
         var source     = new OpenCodeImportSource(_fix.DbPath, _fix.LedgerPath);
         var discovered = await source.DiscoverAsync(new DiscoveryFilters(null, null, null, 0), CancellationToken.None);
         var classified = await source.ClassifyAsync(discovered,
-            new ClassifyContext(client, _server.Url!, 0, null, null), CancellationToken.None);
+            new ClassifyContext(client, _server.Url!, 0, null, null, Home), CancellationToken.None);
 
         var outcome = await source.ImportSessionAsync(classified[0],
             new ImportContext(client, _server.Url!, false), CancellationToken.None);
@@ -102,7 +104,7 @@ public class OpenCodeImportSourceImportTests : IDisposable {
         var discovered = await source.DiscoverAsync(new DiscoveryFilters(null, null, null, 0), CancellationToken.None);
         await Assert.That(discovered.Select(d => d.SessionId)).IsEquivalentTo(new[] { "ses_root" });
         var classified = await source.ClassifyAsync(discovered,
-            new ClassifyContext(client, _server.Url!, 0, null, null), CancellationToken.None);
+            new ClassifyContext(client, _server.Url!, 0, null, null, Home), CancellationToken.None);
 
         var outcome = await source.ImportSessionAsync(classified[0],
             new ImportContext(client, _server.Url!, false), CancellationToken.None);
@@ -145,7 +147,7 @@ public class OpenCodeImportSourceImportTests : IDisposable {
         var source     = new OpenCodeImportSource(_fix.DbPath, _fix.LedgerPath);
         var discovered = await source.DiscoverAsync(new DiscoveryFilters(null, null, null, 0), CancellationToken.None);
         var classified = await source.ClassifyAsync(discovered,
-            new ClassifyContext(client, _server.Url!, 0, null, null), CancellationToken.None);
+            new ClassifyContext(client, _server.Url!, 0, null, null, Home), CancellationToken.None);
         await Assert.That(classified[0].Status).IsEqualTo(ImportCommand.ClassificationStatus.Partial);
 
         var outcome = await source.ImportSessionAsync(classified[0],
@@ -170,7 +172,7 @@ public class OpenCodeImportSourceImportTests : IDisposable {
         StubOk("/hooks/session-start/opencode", "/hooks/transcript", "/hooks/set-title", "/hooks/session-end/opencode");
 
         using var client = new HttpClient();
-        var ctx       = new ClassifyContext(client, _server.Url!, 0, null, null);
+        var ctx       = new ClassifyContext(client, _server.Url!, 0, null, null, Home);
         var importCtx = new ImportContext(client, _server.Url!, false);
 
         var s1 = new OpenCodeImportSource(_fix.DbPath, _fix.LedgerPath);
@@ -229,7 +231,7 @@ public class OpenCodeImportSourceImportTests : IDisposable {
         var source     = new OpenCodeImportSource(_fix.DbPath, _fix.LedgerPath);
         var discovered = await source.DiscoverAsync(new DiscoveryFilters(null, null, null, 0), CancellationToken.None);
         var classified = await source.ClassifyAsync(discovered,
-            new ClassifyContext(client, _server.Url!, 0, null, null), CancellationToken.None);
+            new ClassifyContext(client, _server.Url!, 0, null, null, Home), CancellationToken.None);
 
         var outcome = await source.ImportSessionAsync(classified[0],
             new ImportContext(client, _server.Url!, false), CancellationToken.None);
@@ -274,7 +276,7 @@ public class OpenCodeImportSourceImportTests : IDisposable {
         var source     = new OpenCodeImportSource(_fix.DbPath, _fix.LedgerPath);
         var discovered = await source.DiscoverAsync(new DiscoveryFilters(null, null, null, 0), CancellationToken.None);
         var classified = await source.ClassifyAsync(discovered,
-            new ClassifyContext(client, _server.Url!, 0, null, null), CancellationToken.None);
+            new ClassifyContext(client, _server.Url!, 0, null, null, Home), CancellationToken.None);
 
         var outcome = await source.ImportSessionAsync(classified[0],
             new ImportContext(client, _server.Url!, false), CancellationToken.None);
@@ -310,7 +312,7 @@ public class OpenCodeImportSourceImportTests : IDisposable {
         var source     = new OpenCodeImportSource(_fix.DbPath, _fix.LedgerPath);
         var discovered = await source.DiscoverAsync(new DiscoveryFilters(null, null, null, 0), CancellationToken.None);
         var classified = await source.ClassifyAsync(discovered,
-            new ClassifyContext(client, _server.Url!, 0, null, null), CancellationToken.None);
+            new ClassifyContext(client, _server.Url!, 0, null, null, Home), CancellationToken.None);
 
         var outcome = await source.ImportSessionAsync(classified[0],
             new ImportContext(client, _server.Url!, false), CancellationToken.None);
@@ -341,7 +343,7 @@ public class OpenCodeImportSourceImportTests : IDisposable {
         var source     = new OpenCodeImportSource(_fix.DbPath, _fix.LedgerPath);
         var discovered = await source.DiscoverAsync(new DiscoveryFilters(null, null, null, 0), CancellationToken.None);
         var classified = await source.ClassifyAsync(discovered,
-            new ClassifyContext(client, _server.Url!, 0, null, null), CancellationToken.None);
+            new ClassifyContext(client, _server.Url!, 0, null, null, Home), CancellationToken.None);
 
         // NOT AlreadyLoaded — the stale ledger entry is cache-busted by the version bump.
         await Assert.That(classified[0].Status).IsNotEqualTo(ImportCommand.ClassificationStatus.AlreadyLoaded);
@@ -367,7 +369,7 @@ public class OpenCodeImportSourceImportTests : IDisposable {
             _fix.AddMessageWithText("ses_root", $"msg_{i:D3}", $"line {i}", 100 + i);
 
         using var client = new HttpClient();
-        var ctx       = new ClassifyContext(client, _server.Url!, 0, null, null);
+        var ctx       = new ClassifyContext(client, _server.Url!, 0, null, null, Home);
         var importCtx = new ImportContext(client, _server.Url!, false);
         var source    = new OpenCodeImportSource(_fix.DbPath, _fix.LedgerPath);
 
@@ -436,7 +438,7 @@ public class OpenCodeImportSourceImportTests : IDisposable {
         var source     = new OpenCodeImportSource(_fix.DbPath, _fix.LedgerPath);
         var discovered = await source.DiscoverAsync(new DiscoveryFilters(null, null, null, 0), CancellationToken.None);
         var classified = await source.ClassifyAsync(discovered,
-            new ClassifyContext(client, _server.Url!, 0, null, null), CancellationToken.None);
+            new ClassifyContext(client, _server.Url!, 0, null, null, Home), CancellationToken.None);
 
         await Assert.That(async () =>
             await source.ImportSessionAsync(classified[0], new ImportContext(client, _server.Url!, false), cts.Token)
@@ -475,7 +477,7 @@ public class OpenCodeImportSourceImportTests : IDisposable {
         var source     = new OpenCodeImportSource(_fix.DbPath, _fix.LedgerPath);
         var discovered = await source.DiscoverAsync(new DiscoveryFilters(null, null, null, 0), CancellationToken.None);
         var classified = await source.ClassifyAsync(discovered,
-            new ClassifyContext(client, _server.Url!, 0, null, null), CancellationToken.None);
+            new ClassifyContext(client, _server.Url!, 0, null, null, Home), CancellationToken.None);
 
         await Assert.That(async () =>
             await source.ImportSessionAsync(classified[0], new ImportContext(client, _server.Url!, false), cts.Token)
@@ -490,7 +492,7 @@ public class OpenCodeImportSourceImportTests : IDisposable {
         var source2 = new OpenCodeImportSource(_fix.DbPath, _fix.LedgerPath);
         var c2 = await source2.ClassifyAsync(
             await source2.DiscoverAsync(new DiscoveryFilters(null, null, null, 0), CancellationToken.None),
-            new ClassifyContext(freshClient, _server.Url!, 0, null, null), CancellationToken.None);
+            new ClassifyContext(freshClient, _server.Url!, 0, null, null, Home), CancellationToken.None);
         await Assert.That(c2[0].Status).IsNotEqualTo(ImportCommand.ClassificationStatus.AlreadyLoaded);
     }
 
@@ -534,7 +536,7 @@ public class OpenCodeImportSourceImportTests : IDisposable {
                "/hooks/subagent-start", "/hooks/subagent-stop", "/hooks/session-end/opencode");
 
         using var client = new HttpClient();
-        var ctx       = new ClassifyContext(client, _server.Url!, 0, null, null);
+        var ctx       = new ClassifyContext(client, _server.Url!, 0, null, null, Home);
         var importCtx = new ImportContext(client, _server.Url!, false);
 
         // Run 1: root + depths 1..8 (all within the import cap) — fully imported, ledger marked.

@@ -30,7 +30,7 @@ public sealed partial class DaemonStore(string directory) {
         if (Environment.GetEnvironmentVariable(DaemonsDirEnvVar) is { Length: > 0 } configured)
             return new(configured);
 
-        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        var home = UserHome.FromEnvironment().Path;
 
         return new(Path.Combine(home, ".config", "kcap", "daemons"));
     }

@@ -11,7 +11,6 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 /// </summary>
 // PristineNativePath resolves under HOME, so a concurrent HOME mutator sends it at that test's temp
 // directory and the pin lookup finds nothing.
-[NotInParallel("HomeEnvVarMutation")]
 public class SqliteNativeResolverTests {
     /// <summary>
     /// Drift guard for ALL shipped RIDs, not just the test runner's: the SourceGear.sqlite3
@@ -96,7 +95,9 @@ public class SqliteNativeResolverTests {
     // (NOT SQLitePCLRaw.lib.e_sqlite3). EngineVersion is its version; this path exists on any
     // machine that restored the project, so the drift guard fails loudly if the bundle bumps.
     static string PristineNativePath(string rid) {
+#pragma warning disable RS0030 // the real package cache is what the drift guard reads
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+#pragma warning restore RS0030
         return Path.Combine(home, ".nuget", "packages", "sourcegear.sqlite3",
             SqliteNativeResolver.EngineVersion, "runtimes", rid, "native",
             SqliteNativeResolver.Assets[rid].FileName);

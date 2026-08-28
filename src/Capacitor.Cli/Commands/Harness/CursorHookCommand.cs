@@ -18,7 +18,7 @@ namespace Capacitor.Cli.Commands.Harness;
 /// shared 2-second wall-clock budget, a per-session canonical-event
 /// spool, and a watermark-driven transcript-line backfill.
 /// </summary>
-public sealed class CursorHookCommand(ConfigRoot config, ProfileContext profiles, HookClock clock) {
+public sealed class CursorHookCommand(ConfigRoot config, ProfileContext profiles, HookClock clock, UserHome home) {
     readonly WatcherManager _watchers = new(config, profiles);
     readonly CursorMarkers  _markers  = new(config);
 
@@ -78,7 +78,7 @@ public sealed class CursorHookCommand(ConfigRoot config, ProfileContext profiles
             ct => HttpClientExtensions.CreateClientWithAuthStatusAsync(config, profiles, Url, ct),
             () => {
                 var s = new HookSpool(config);
-                MigrateLegacyCursorSpool(s, CursorPaths.SpoolDir());
+                MigrateLegacyCursorSpool(s, CursorPaths.FromEnvironment(home).SpoolDir);
                 s.ReapOlderThan(TimeSpan.FromDays(30));
                 return s;
             });
@@ -251,12 +251,12 @@ public sealed class CursorHookCommand(ConfigRoot config, ProfileContext profiles
                 eventName == "sessionStart" ? SessionStartMemoryOutputAdapters.Render(SessionStartHarness.Cursor, null) : null;
 
             NormalizeGuidField(node, "session_id");
-            node["home_dir"] = PathHelpers.HomeDirectory;
+            node["home_dir"] = home.Path;
             var agentHostId = Environment.GetEnvironmentVariable("KCAP_AGENT_ID");
             if (agentHostId is not null) node["agent_host_id"] = agentHostId;
 
             // Surface 3: attach this machine's harness inventory, session-start only.
-            if (eventName == "sessionStart") SessionStartInventory.Stamp(node.AsObject(), config);
+            if (eventName == "sessionStart") SessionStartInventory.Stamp(node.AsObject(), config, home);
 
             if (eventName == "afterAgentThought") {
                 var sid = TryGetString(node, "session_id") ?? "";
@@ -520,8 +520,8 @@ public sealed class CursorHookCommand(ConfigRoot config, ProfileContext profiles
             // orchestration), so re-read it; sessionStart fires once per session and the read is
             // fail-open under the surrounding catch.
             var nudgeProfile   = profiles.Effective;
-            var workItemsNudge = WorkItemsNudgeEmitter.Resolve(SessionStartHarness.Cursor, sessionId, nudgeProfile?.DisableWorkItemsNudge is true);
-            var harnessNudge   = HarnessNudgeEmitter.ResolveFragmentForHook(nudgeProfile?.DisableHarnessNudge is true, config);
+            var workItemsNudge = WorkItemsNudgeEmitter.Resolve(SessionStartHarness.Cursor, sessionId, nudgeProfile?.DisableWorkItemsNudge is true, home);
+            var harnessNudge   = HarnessNudgeEmitter.ResolveFragmentForHook(nudgeProfile?.DisableHarnessNudge is true, config, home);
             return SessionStartMemoryOutputAdapters.Render(SessionStartHarness.Cursor, fragment,
                 HarnessNudgeEmitter.Combine(workItemsNudge, harnessNudge));
         } catch {

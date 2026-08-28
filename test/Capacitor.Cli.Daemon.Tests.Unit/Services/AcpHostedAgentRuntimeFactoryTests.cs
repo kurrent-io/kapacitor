@@ -29,6 +29,8 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 /// </summary>
 [ParallelLimiter<SubprocessLimit>]
 public class AcpHostedAgentRuntimeFactoryTests : IDisposable {
+    [TempHome] public required TempHome Home { get; init; }
+
     readonly List<TempDaemonStore> _daemons = [];
     public void Dispose() { foreach (var daemons in _daemons) daemons.Dispose(); }
 
@@ -1715,7 +1717,7 @@ public class AcpHostedAgentRuntimeFactoryTests : IDisposable {
         var realBinary = Environment.ProcessPath!;
 
         var psi = AcpHostedAgentRuntimeFactory.BuildProcessStartInfo(
-            AcpVendorDescriptors.Copilot, new DaemonConfig { CopilotPath = realBinary },
+            AcpVendorDescriptors.Copilot, new DaemonConfig { CopilotPath = realBinary, Home = Home },
             ctx, supported, BrokeredEnv());
         var argv = psi.ArgumentList.ToArray();
 
@@ -1850,8 +1852,10 @@ public class AcpHostedAgentRuntimeFactoryTests : IDisposable {
         await Assert.That(env[ConfigRoot.ConfigDirEnvVar])
             .IsEqualTo(Path.Combine("/snap/b1.vendor-state", "home", ".config", "kcap"));
         // The user's real home must not leak in through either variable.
+#pragma warning disable RS0030 // the operator's real home is what must not leak into the child
         await Assert.That(env["HOME"]).IsNotEqualTo(
             Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
+#pragma warning restore RS0030
     }
 
     /// <summary>The paired direction: a NON-borrowed launch gets no state redirection and no brokered
@@ -1961,7 +1965,7 @@ public class AcpHostedAgentRuntimeFactoryTests : IDisposable {
     /// so any borrowed-argv test using <c>new DaemonConfig()</c> passes only on a machine that happens
     /// to have Copilot installed — green locally, red on CI, which is exactly what happened. The test
     /// host's own binary is guaranteed to exist and be executable everywhere.</para></summary>
-    static DaemonConfig ResolvableConfig() => new() { CopilotPath = Environment.ProcessPath! };
+    DaemonConfig ResolvableConfig() => new() { CopilotPath = Environment.ProcessPath!, Home = Home };
 
     /// <summary>The borrowed-snapshot binary is the plainly configured one — the same path every
     /// other vendor and every other launch shape uses. A configured path that matches no validated

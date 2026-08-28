@@ -11,6 +11,8 @@ namespace Capacitor.Cli.Tests.Unit.Services;
 /// a real launchd install — so the write path has to establish owner-only mode itself, and prove it.
 /// </summary>
 public partial class ServiceFilesTests {
+    [TempHome] public required TempHome Home { get; init; }
+
     [TempConfigRoot] public required TempConfigRoot Config { get; init; }
 
     [LibraryImport("libc", EntryPoint = "umask")]
@@ -170,7 +172,7 @@ public partial class ServiceFilesTests {
     [Test]
     public async Task Launchd_writes_its_plist_through_the_secure_writer() {
         var seen = new List<string>();
-        var mgr  = new LaunchdServiceManager((path, content, _) => seen.Add(path + "|" + content));
+        var mgr  = new LaunchdServiceManager(Home, (path, content, _) => seen.Add(path + "|" + content));
 
         mgr.WriteUnitFiles(Spec());
 
@@ -182,7 +184,7 @@ public partial class ServiceFilesTests {
     [Test]
     public async Task Systemd_writes_its_unit_through_the_secure_writer() {
         var seen = new List<string>();
-        var mgr  = new SystemdServiceManager((path, content, _) => seen.Add(path + "|" + content));
+        var mgr  = new SystemdServiceManager(Home, (path, content, _) => seen.Add(path + "|" + content));
 
         mgr.WriteUnitFiles(Spec());
 

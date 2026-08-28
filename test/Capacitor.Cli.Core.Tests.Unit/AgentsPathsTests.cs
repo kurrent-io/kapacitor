@@ -1,33 +1,13 @@
 namespace Capacitor.Cli.Core.Tests.Unit;
 
-[NotInParallel("HomeEnvVarMutation")]
 public class AgentsPathsTests {
-    [Test]
-    public async Task Home_resolves_under_HOME_dot_agents() {
-        using var tmp = new TempDir();
-        var originalHome = Environment.GetEnvironmentVariable("HOME");
-
-        try {
-            _ = AgentsPaths.Home; // force any static init
-            Environment.SetEnvironmentVariable("HOME", tmp.Path);
-            await Assert.That(AgentsPaths.Home).IsEqualTo(tmp.PathTo(".agents"));
-        } finally {
-            Environment.SetEnvironmentVariable("HOME", originalHome);
-        }
-    }
+    [TempDir] public required TempDir Tmp { get; init; }
 
     [Test]
-    public async Task UserSkillsDir_resolves_under_HOME_dot_agents_skills() {
-        using var tmp = new TempDir();
-        var originalHome = Environment.GetEnvironmentVariable("HOME");
+    public async Task Paths_resolve_under_the_injected_home() {
+        var paths = new AgentsPaths(new(Tmp.Path));
 
-        try {
-            _ = AgentsPaths.UserSkillsDir;
-            Environment.SetEnvironmentVariable("HOME", tmp.Path);
-            await Assert.That(AgentsPaths.UserSkillsDir)
-                .IsEqualTo(tmp.PathTo(".agents", "skills"));
-        } finally {
-            Environment.SetEnvironmentVariable("HOME", originalHome);
-        }
+        await Assert.That(paths.Home).IsEqualTo(Tmp.PathTo(".agents"));
+        await Assert.That(paths.UserSkillsDir).IsEqualTo(Tmp.PathTo(".agents", "skills"));
     }
 }

@@ -750,7 +750,7 @@ public class AntigravityReviewerLaunchTests {
 
         // Shared read: this file lives in the child's own config dir, so agy may rewrite it. A
         // write-denying open is mandatory sharing on Windows and invisible on macOS/Linux.
-        return await ReadAllTextSharedAsync(path);
+        return await File.ReadAllTextSharedAsync(path);
     }
 
     /// <summary>
@@ -1000,7 +1000,7 @@ public class AntigravityReviewerLaunchTests {
     static async Task<string?> SettingsOf(SpyTurnSource spy) {
         var path = Path.Combine(spy.Spawns[0].Environment["HOME"]!, ".gemini", "antigravity-cli", "settings.json");
 
-        return File.Exists(path) ? await ReadAllTextSharedAsync(path) : null;
+        return File.Exists(path) ? await File.ReadAllTextSharedAsync(path) : null;
     }
 
     /// <summary>The delivery half of a review launch, asserted at the launch boundary rather than only
@@ -1329,15 +1329,5 @@ public class AntigravityReviewerLaunchTests {
         public ValueTask DisposeAsync()                        => ValueTask.CompletedTask;
     }
 
-    /// <summary>Reads a whole file without denying Write to anyone else — <c>File.ReadAllText*</c>
-    /// opens <see cref="FileShare.Read"/>, which locks the agent out of the file it owns (mandatory
-    /// on Windows only, invisible here; see CLAUDE.md). Copied rather than taken from the CLI's
-    /// <c>WatchCommand</c>: four lines with no invariant are not worth an assembly reference.</summary>
-    static async Task<string> ReadAllTextSharedAsync(string path) {
-        await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-        using var reader = new StreamReader(stream);
-
-        return await reader.ReadToEndAsync();
-    }
 
 }

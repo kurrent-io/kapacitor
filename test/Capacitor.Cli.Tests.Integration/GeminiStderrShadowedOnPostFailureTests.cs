@@ -23,6 +23,8 @@ namespace Capacitor.Cli.Tests.Integration;
 /// same write also has to carry the memory envelope.</para>
 /// </summary>
 public class GeminiStderrShadowedOnPostFailureTests : IDisposable {
+    [TempHome] public required TempHome Home { get; init; }
+
     [TempConfigRoot] public required TempConfigRoot Config { get; init; }
 
     readonly WireMockServer _server = WireMockServer.Start();
@@ -93,7 +95,7 @@ public class GeminiStderrShadowedOnPostFailureTests : IDisposable {
         using var capture = ConsoleOutput.StartFullCapture();
 
 
-        var exit = await new GeminiHookCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), new HookClock(TimeProvider.System)).Handle(new StringReader(payload));
+        var exit = await new GeminiHookCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), new HookClock(TimeProvider.System), Home).Handle(new StringReader(payload));
 
         return (exit, capture.GetCapturedOutput(), capture.GetCapturedError());
     }

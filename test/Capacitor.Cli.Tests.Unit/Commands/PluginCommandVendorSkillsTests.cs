@@ -17,7 +17,9 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 /// top a tree up, never create one. The npm postinstall runs it for every vendor on each
 /// `npm install -g`, so creating there would undo a deliberate `plugin remove --skills`.
 /// </remarks>
-[NotInParallel("HomeEnvVarMutation")]
+// PATH: the install refuses unless `kcap` resolves through it, and a peer probing for a vendor
+// CLI reads the same variable.
+[NotInParallel("VendorEnvOverrides")]
 public class PluginCommandVendorSkillsTests {
     [Test]
     [MethodDataSource(nameof(Vendors))]
@@ -29,7 +31,7 @@ public class PluginCommandVendorSkillsTests {
         await Assert.That(exit).IsEqualTo(0);
 
         foreach (var name in AgentsSkillsInstaller.SourceNames)
-            await Assert.That(AgentsSkillsInstaller.HasSkill(scope.Env.AgentsSkillsDir, name))
+            await Assert.That(AgentsSkillsInstaller.HasSkill(scope.Env.Paths.Agents.UserSkillsDir, name))
                         .IsTrue()
                         .Because($"`plugin install --{vendor.Flag}` should have written kcap-{name}");
     }
@@ -43,7 +45,7 @@ public class PluginCommandVendorSkillsTests {
             [.. vendor.InstallArgs(scope.Home), "--if-installed"]);
 
         await Assert.That(exit).IsEqualTo(0);
-        await Assert.That(Directory.Exists(scope.Env.AgentsSkillsDir))
+        await Assert.That(Directory.Exists(scope.Env.Paths.Agents.UserSkillsDir))
                     .IsFalse()
                     .Because("the npm postinstall runs this on every upgrade; it must not install "
                            + "skills for someone who never opted into anything");
@@ -57,13 +59,13 @@ public class PluginCommandVendorSkillsTests {
         // Install for real, then remove the skills the way a user would.
         await new PluginCommand(scope.Env).HandleAsync(vendor.InstallArgs(scope.Home));
         await new PluginCommand(scope.Env).HandleAsync(["plugin", "remove", "--skills"]);
-        await Assert.That(AgentsSkillsInstaller.IsInstalled(scope.Env.AgentsSkillsDir)).IsFalse();
+        await Assert.That(AgentsSkillsInstaller.IsInstalled(scope.Env.Paths.Agents.UserSkillsDir)).IsFalse();
 
         var exit = await new PluginCommand(scope.Env).HandleAsync(
             [.. vendor.InstallArgs(scope.Home), "--if-installed"]);
 
         await Assert.That(exit).IsEqualTo(0);
-        await Assert.That(AgentsSkillsInstaller.IsInstalled(scope.Env.AgentsSkillsDir))
+        await Assert.That(AgentsSkillsInstaller.IsInstalled(scope.Env.Paths.Agents.UserSkillsDir))
                     .IsFalse()
                     .Because("`remove --skills` drops the marker so an upgrade cannot undo it — a "
                            + "vendor refresh must respect that too, or the removal comes back on a "
@@ -77,8 +79,8 @@ public class PluginCommandVendorSkillsTests {
         await new PluginCommand(scope.Env).HandleAsync(["plugin", "install", "--kiro"]);
 
         // Kiro reads ~/.kiro/skills; writing the shared tree instead would be silently useless to it.
-        await Assert.That(AgentsSkillsInstaller.IsInstalled(scope.Env.KiroSkillsDir)).IsTrue();
-        await Assert.That(Directory.Exists(scope.Env.AgentsSkillsDir)).IsFalse();
+        await Assert.That(AgentsSkillsInstaller.IsInstalled(scope.Env.Paths.Kiro.SkillsDir)).IsTrue();
+        await Assert.That(Directory.Exists(scope.Env.Paths.Agents.UserSkillsDir)).IsFalse();
     }
 
     [Test]
@@ -87,8 +89,8 @@ public class PluginCommandVendorSkillsTests {
 
         await new PluginCommand(scope.Env).HandleAsync(["plugin", "install", "--antigravity"]);
 
-        await Assert.That(AgentsSkillsInstaller.IsInstalled(scope.Env.AntigravitySkillsDir)).IsTrue();
-        await Assert.That(Directory.Exists(scope.Env.AgentsSkillsDir)).IsFalse();
+        await Assert.That(AgentsSkillsInstaller.IsInstalled(scope.Env.Paths.Antigravity.SkillsDir)).IsTrue();
+        await Assert.That(Directory.Exists(scope.Env.Paths.Agents.UserSkillsDir)).IsFalse();
     }
 
     [Test]
@@ -100,7 +102,7 @@ public class PluginCommandVendorSkillsTests {
             [.. vendor.InstallArgs(scope.Home), $"--skip-{vendor.Flag}-skills"]);
 
         await Assert.That(exit).IsEqualTo(0);
-        await Assert.That(Directory.Exists(scope.Env.AgentsSkillsDir))
+        await Assert.That(Directory.Exists(scope.Env.Paths.Agents.UserSkillsDir))
                     .IsFalse()
                     .Because("every other artifact these installs write has a skip flag, so the shared "
                            + "tree needs one too — nothing else lets you take hooks without it");
@@ -111,10 +113,10 @@ public class PluginCommandVendorSkillsTests {
         using var scope = new VendorScope(Vendor.Cursor);
 
         await new PluginCommand(scope.Env).HandleAsync(Vendor.Cursor.InstallArgs(scope.Home));
-        await Assert.That(AgentsSkillsInstaller.IsCurrent(scope.Env.AgentsSkillsDir)).IsTrue();
+        await Assert.That(AgentsSkillsInstaller.IsCurrent(scope.Env.Paths.Agents.UserSkillsDir)).IsTrue();
 
         // A pre-migration machine still carrying the old Codex-only copy.
-        var legacy = Path.Combine(scope.Env.LegacyCodexSkills, "kcap-recap");
+        var legacy = Path.Combine(scope.Env.Paths.Codex.SkillsDir, "kcap-recap");
         Directory.CreateDirectory(legacy);
 
         await new PluginCommand(scope.Env).HandleAsync(Vendor.Cursor.InstallArgs(scope.Home));
@@ -135,18 +137,15 @@ public class PluginCommandVendorSkillsTests {
         yield return () => Vendor.OpenCode;
     }
 
-    public sealed record Vendor(string Flag, string[] ClearedEnvVars) {
-        public static readonly Vendor Cursor      = new("cursor", []);
-        public static readonly Vendor Copilot     = new("copilot", ["COPILOT_HOME"]);
-        public static readonly Vendor Gemini      = new("gemini", ["GEMINI_CLI_HOME"]);
-        public static readonly Vendor Pi          = new("pi", ["PI_CODING_AGENT_DIR"]);
-        public static readonly Vendor Kiro        = new("kiro", ["KIRO_HOME"]);
-        public static readonly Vendor Antigravity = new("antigravity", []);
+    public sealed record Vendor(string Flag) {
+        public static readonly Vendor Cursor      = new("cursor");
+        public static readonly Vendor Copilot     = new("copilot");
+        public static readonly Vendor Gemini      = new("gemini");
+        public static readonly Vendor Pi          = new("pi");
+        public static readonly Vendor Kiro        = new("kiro");
+        public static readonly Vendor Antigravity = new("antigravity");
 
-        // OpenCode resolves its config dir from OPENCODE_CONFIG_DIR then XDG_CONFIG_HOME before the
-        // home it is handed, so both have to go or the install lands in the real user config.
-        public static readonly Vendor OpenCode =
-            new("opencode", ["OPENCODE_CONFIG_DIR", "XDG_CONFIG_HOME"]);
+        public static readonly Vendor OpenCode = new("opencode");
 
         public string[] InstallArgs(string home) => Flag switch {
             "cursor"   => ["plugin", "install", "--cursor",
@@ -165,16 +164,13 @@ public class PluginCommandVendorSkillsTests {
     /// <see cref="PluginEnvironment"/> pointed at the shipped skills tree.
     /// </summary>
     sealed class VendorScope : IDisposable {
-        readonly FakeUserHome    _home;
+        readonly TempHome    _home;
         readonly TempDir         _binDir;
         readonly List<EnvScope>  _envScopes = [];
 
         public VendorScope(Vendor vendor) {
-            _home   = new FakeUserHome();
+            _home   = new TempHome();
             _binDir = new TempDir();
-
-            foreach (var key in vendor.ClearedEnvVars)
-                _envScopes.Add(new EnvScope(key, null));
 
             // The fresh path refuses to install unless `kcap` resolves — it is what the hooks it
             // writes will invoke. Both names, because the Windows leg matches on PATHEXT.
@@ -188,14 +184,17 @@ public class PluginCommandVendorSkillsTests {
                 "PATH", _binDir.Path + Path.PathSeparator + Environment.GetEnvironmentVariable("PATH")));
 
             Env = new PluginEnvironment(
-                HomeDirectory:     _home.Path,
+                Home:     new(_home.Path),
                 Profiles:          new ProfileConfig(),
                 // The siblings pass `() => null`, which short-circuits the skills copy to a warning and
                 // would make every assertion here vacuous.
                 ResolvePluginPath: RepoTree.KcapDir,
                 Stdout:            TextWriter.Null,
                 Stderr:            TextWriter.Null
-            ) { ResolveMcpBinaryPath = () => Path.Combine(_binDir.Path, "kcap") };
+            ) {
+                Paths = TestHarnessPaths.NoOverrides(new(_home.Path)),
+                ResolveMcpBinaryPath = () => Path.Combine(_binDir.Path, "kcap")
+            };
         }
 
         public string            Home => _home.Path;

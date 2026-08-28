@@ -36,6 +36,8 @@ namespace Capacitor.Cli.Tests.Integration;
 /// </para>
 /// </summary>
 public class CursorPrivatizeLifecycleFailureTests : IDisposable {
+    [TempHome] public required TempHome Home { get; init; }
+
     [TempConfigRoot] public required TempConfigRoot Config { get; init; }
 
     readonly WireMockServer _server = WireMockServer.Start();
@@ -99,7 +101,7 @@ public class CursorPrivatizeLifecycleFailureTests : IDisposable {
 
         var source = new CursorImportSource(Config.Root, WriteOneCursorSession(), WorkspaceStorageDir);
 
-        var exitCode = await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root)).HandleImport(
+        var exitCode = await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), Home).HandleImport(
             filterCwd: null,
             minLines: 0,
             sources: [source],
@@ -138,7 +140,7 @@ public class CursorPrivatizeLifecycleFailureTests : IDisposable {
 
         var source = new CursorImportSource(Config.Root, WriteOneCursorSession(), WorkspaceStorageDir);
 
-        var exitCode = await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root)).HandleImport(
+        var exitCode = await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), Home).HandleImport(
             filterCwd: null,
             minLines: 0,
             sources: [source],
@@ -174,7 +176,7 @@ public class CursorPrivatizeLifecycleFailureTests : IDisposable {
 
         var source = new CursorImportSource(Config.Root, WriteOneCursorSession(), WorkspaceStorageDir);
 
-        var exitCode = await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root)).HandleImport(
+        var exitCode = await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), Home).HandleImport(
             filterCwd: null,
             minLines: 0,
             sources: [source],
@@ -265,7 +267,7 @@ public class CursorPrivatizeLifecycleFailureTests : IDisposable {
 
         var source = new CursorImportSource(Config.Root, WriteParentWithCorrelatedChild(), WorkspaceStorageDir);
 
-        var exitCode = await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root)).HandleImport(
+        var exitCode = await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), Home).HandleImport(
             filterCwd: null,
             minLines: 0,
             sources: [source],

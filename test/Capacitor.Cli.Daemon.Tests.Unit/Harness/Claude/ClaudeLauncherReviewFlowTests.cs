@@ -10,8 +10,10 @@ using TUnit.Assertions.Enums;
 namespace Capacitor.Cli.Daemon.Tests.Unit.Harness.Claude;
 
 public class ClaudeLauncherReviewFlowTests {
-    static ClaudeLauncher NewLauncher(string? serverUrl = null, string capacitorPath = "kcap") =>
-        new(new DaemonConfig { ClaudePath = "claude", ServerUrl = serverUrl ?? "", CapacitorPath = capacitorPath }, NullLogger<ClaudeLauncher>.Instance);
+    [TempHome] public required TempHome Home { get; init; }
+
+    ClaudeLauncher NewLauncher(string? serverUrl = null, string capacitorPath = "kcap") =>
+        new(new DaemonConfig { ClaudePath = "claude", ServerUrl = serverUrl ?? "", CapacitorPath = capacitorPath }, Home, NullLogger<ClaudeLauncher>.Instance);
 
     static LauncherContext NewCtx(bool isReviewFlow, string? prompt = "review this", string model = "sonnet") =>
         new(

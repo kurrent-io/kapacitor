@@ -1,3 +1,5 @@
+using Capacitor.Cli.Core;
+
 namespace Capacitor.Cli;
 
 /// <summary>
@@ -7,14 +9,14 @@ namespace Capacitor.Cli;
 /// match cwds reported as the canonical path (or vice versa).
 /// </summary>
 static class PathExclusion {
-    public static bool IsExcluded(string? cwd, IReadOnlyList<string>? excludedPaths) {
+    public static bool IsExcluded(string? cwd, IReadOnlyList<string>? excludedPaths, UserHome home) {
         if (string.IsNullOrWhiteSpace(cwd)) return false;
         if (excludedPaths is null or { Count: 0 }) return false;
 
         string normalizedCwd;
 
         try {
-            normalizedCwd = Normalize(cwd);
+            normalizedCwd = Normalize(cwd, home);
         } catch {
             return false;
         }
@@ -27,7 +29,7 @@ static class PathExclusion {
             if (string.IsNullOrWhiteSpace(entry)) continue;
 
             try {
-                var normalizedEntry = Normalize(entry);
+                var normalizedEntry = Normalize(entry, home);
 
                 if (string.IsNullOrEmpty(normalizedEntry)) continue;
                 if (Contains(normalizedEntry, normalizedCwd)) return true;
@@ -42,16 +44,15 @@ static class PathExclusion {
     /// <summary>
     /// Resolves a user-supplied path to an absolute form with all symlinks
     /// expanded (including parent components), and no trailing separator.
-    /// Expands <c>~</c> to the user's home dir. Non-existent components are
+    /// Expands <c>~</c> to the given home dir. Non-existent components are
     /// preserved as-is.
     /// </summary>
-    public static string Normalize(string path) {
+    public static string Normalize(string path, UserHome home) {
         if (string.IsNullOrEmpty(path)) return path;
 
         if (path == "~" || path.StartsWith("~/", StringComparison.Ordinal)
                         || path.StartsWith("~" + Path.DirectorySeparatorChar, StringComparison.Ordinal)) {
-            var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-            path = path.Length == 1 ? home : Path.Combine(home, path[2..]);
+            path = path.Length == 1 ? home.Path : Path.Combine(home.Path, path[2..]);
         }
 
         var full = Path.GetFullPath(path);

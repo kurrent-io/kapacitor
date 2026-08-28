@@ -15,30 +15,28 @@ namespace Capacitor.Cli.Core.Harness.Kiro;
 ///     lifecycle hooks into <see cref="KcapAgentJson"/>.</item>
 /// </list>
 /// </summary>
-public static class KiroPaths {
-    /// <summary>Kiro's config root (<c>~/.kiro</c>). Relocated by <c>KIRO_HOME</c>.</summary>
-    public static string ConfigRoot(string? home = null, string? kiroHome = null) {
-        kiroHome ??= Environment.GetEnvironmentVariable("KIRO_HOME");
-        if (!string.IsNullOrEmpty(kiroHome)) return kiroHome;
+public sealed class KiroPaths {
+    public KiroPaths(UserHome home, string? kiroHome) =>
+        ConfigRoot = !string.IsNullOrEmpty(kiroHome) ? kiroHome : Path.Combine(home.Path, ".kiro");
 
-        home ??= PathHelpers.HomeDirectory;
-        return Path.Combine(home, ".kiro");
-    }
+    /// <summary>Reads the one override Kiro honours; the home comes from the caller.</summary>
+    public static KiroPaths FromEnvironment(UserHome home) =>
+        new(home, Environment.GetEnvironmentVariable("KIRO_HOME"));
+
+    /// <summary>Kiro's config root (<c>~/.kiro</c>), or <c>KIRO_HOME</c> when set.</summary>
+    public string ConfigRoot { get; }
 
     /// <summary>Per-session JSONL store: <c>~/.kiro/sessions/cli</c>.</summary>
-    public static string SessionsDir(string? home = null) =>
-        Path.Combine(ConfigRoot(home), "sessions", "cli");
+    public string SessionsDir => Path.Combine(ConfigRoot, "sessions", "cli");
 
     /// <summary>Conversation log for a session id (the dashed UUID Kiro names the file with).</summary>
-    public static string SessionJsonl(string sessionId, string? home = null) =>
-        Path.Combine(SessionsDir(home), $"{sessionId}.jsonl");
+    public string SessionJsonl(string sessionId) => Path.Combine(SessionsDir, $"{sessionId}.jsonl");
 
     /// <summary>Metadata sibling for a session id (cwd / model / title / timestamps).</summary>
-    public static string SessionJson(string sessionId, string? home = null) =>
-        Path.Combine(SessionsDir(home), $"{sessionId}.json");
+    public string SessionJson(string sessionId) => Path.Combine(SessionsDir, $"{sessionId}.json");
 
     /// <summary>User-level agent config dir (<c>~/.kiro/agents</c>).</summary>
-    public static string AgentsDir(string? home = null) => Path.Combine(ConfigRoot(home), "agents");
+    public string AgentsDir => Path.Combine(ConfigRoot, "agents");
 
     /// <summary>
     /// Kiro CLI settings file (<c>~/.kiro/settings/cli.json</c>). Holds dotted
@@ -46,13 +44,11 @@ public static class KiroPaths {
     /// latter is what <c>kiro-cli agent set-default</c> writes, and what kcap
     /// flips to its cloned agent so hooks fire for every session.
     /// </summary>
-    public static string SettingsFile(string? home = null) =>
-        Path.Combine(ConfigRoot(home), "settings", "cli.json");
+    public string SettingsFile => Path.Combine(ConfigRoot, "settings", "cli.json");
 
     /// <summary>Kiro's user-level MCP config (<c>~/.kiro/settings/mcp.json</c>) — a plain
     /// <c>mcpServers</c> merge, independent of the agent-hooks file.</summary>
-    public static string SettingsMcpJson(string? home = null) =>
-        Path.Combine(ConfigRoot(home), "settings", "mcp.json");
+    public string SettingsMcpJson => Path.Combine(ConfigRoot, "settings", "mcp.json");
 
     /// <summary>
     /// Global skills dir Kiro agents read (<c>~/.kiro/skills</c>). The default agent's
@@ -60,7 +56,7 @@ public static class KiroPaths {
     /// its skills here to steer Kiro toward the kcap MCP tools (Kiro does not read the
     /// agent-agnostic <c>~/.agents/skills</c>). Mirrors <c>AntigravityPaths.SkillsDir</c>.
     /// </summary>
-    public static string SkillsDir(string? home = null) => Path.Combine(ConfigRoot(home), "skills");
+    public string SkillsDir => Path.Combine(ConfigRoot, "skills");
 
     /// <summary>
     /// kcap's owned agent-hooks file. Mirrors the Copilot model: kcap owns its own
@@ -68,33 +64,15 @@ public static class KiroPaths {
     /// Kiro reads every <c>agents/*.json</c>, so the lifecycle hooks here apply to
     /// Kiro sessions.
     /// </summary>
-    public static string KcapAgentJson(string? home = null) => Path.Combine(AgentsDir(home), "kcap.json");
-
-    /// <summary>Pure kcap-agent path for fully-injected callers (nudge wiring-probe): built from
-    /// <see cref="ConfigRootPure"/>, so a null <paramref name="kiroHome"/> means "unset → home
-    /// default", never a real <c>KIRO_HOME</c> read — matching how detection resolves the root.</summary>
-    public static string KcapAgentJsonPure(string? home, string? kiroHome) =>
-        Path.Combine(ConfigRootPure(home, kiroHome), "agents", "kcap.json");
-
-    /// <summary>The running process's name — a real binary, so an exact match.</summary>
-    public const string ProcessName = "kiro-cli";
+    public string KcapAgentJson => Path.Combine(AgentsDir, "kcap.json");
 
     /// <summary>
     /// Detection: the config tree exists. The binary name (<c>kiro</c> /
-    /// <c>kiro-cli</c>) is also probed by callers via <c>AgentDetection.BinaryOnPath</c>;
+    /// <c>kiro-cli</c>) is also probed by callers via <c>BinaryProbe.OnPath</c>;
     /// OR the two for the widest coverage.
     /// </summary>
-    public static bool IsInstalled(string? home = null, string? kiroHome = null) =>
-        Directory.Exists(ConfigRoot(home, kiroHome));
+    public bool IsInstalled => Directory.Exists(ConfigRoot);
 
-    /// <summary>Pure variant of <see cref="ConfigRoot"/> for fully-injected callers (e.g.
-    /// <see cref="Setup.AgentDetection"/>) — <paramref name="kiroHome"/> null means "not set",
-    /// never falls back to a real <c>KIRO_HOME</c> process-env read.</summary>
-    public static string ConfigRootPure(string? home, string? kiroHome) =>
-        !string.IsNullOrEmpty(kiroHome) ? kiroHome : Path.Combine(home ?? PathHelpers.HomeDirectory, ".kiro");
-
-    /// <summary>Pure variant of <see cref="IsInstalled"/> — never falls back to the real process
-    /// environment for <c>KIRO_HOME</c>.</summary>
-    public static bool IsInstalledPure(string? home, string? kiroHome) =>
-        Directory.Exists(ConfigRootPure(home, kiroHome));
+    /// <summary>The running process's name — a real binary, so an exact match.</summary>
+    public const string ProcessName = "kiro-cli";
 }

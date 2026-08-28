@@ -24,7 +24,7 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace Capacitor.Cli.Commands;
 
-partial class WatchCommand(ConfigRoot config, ProfileContext profiles) {
+partial class WatchCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
     readonly CursorMarkers  _markers  = new(config);
     readonly WatcherManager _watchers = new(config, profiles);
 
@@ -131,12 +131,12 @@ partial class WatchCommand(ConfigRoot config, ProfileContext profiles) {
     /// "not yet complete" for that iteration; the delay between iterations is likewise best-effort so
     /// cancellation/short-lived environments can't turn this into a hang.
     /// <para>Shares read+write: this polls while the vendor flushes its final records, so it must not
-    /// block that write (see <see cref="ReadAllTextSharedAsync"/>).</para>
+    /// block that write (see <see cref="SharedFileText"/>).</para>
     /// </summary>
     internal static async Task<bool> WaitForFinalLineCompletionAsync(string path, int attempts = 4, int delayMs = 500) {
         for (var i = 0; i < attempts; i++) {
             try {
-                if (IsFinalLineComplete(await ReadAllTextSharedAsync(path))) return true;
+                if (IsFinalLineComplete(await File.ReadAllTextSharedAsync(path))) return true;
             } catch {
                 // Transient read failure (e.g. concurrent write) — try again on the next iteration.
             }
@@ -149,37 +149,6 @@ partial class WatchCommand(ConfigRoot config, ProfileContext profiles) {
         }
 
         return false;
-    }
-
-    /// <summary>Reads a whole file without denying Write to anyone else. Use this for anything the
-    /// agent writes: <c>File.ReadAllText*</c> opens <see cref="FileShare.Read"/>, which locks the agent
-    /// out of its own transcript (mandatory on Windows only — see CLAUDE.md).</summary>
-    internal static async Task<string> ReadAllTextSharedAsync(string path) {
-        await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-        using var reader = new StreamReader(stream);
-
-        return await reader.ReadToEndAsync();
-    }
-
-    /// <summary>Synchronous <see cref="ReadAllTextSharedAsync"/>, for the sync sidecar-enrichment
-    /// paths. Same reason: the vendor owns that file and must never be locked out of it.</summary>
-    internal static string ReadAllTextShared(string path) {
-        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-        using var reader = new StreamReader(stream);
-
-        return reader.ReadToEnd();
-    }
-
-    /// <summary>Line-yielding sibling of <see cref="ReadAllTextShared"/> — same FileShare.ReadWrite
-    /// reasoning, but streamed (like <c>File.ReadLines</c>) rather than materialized, for a
-    /// best-effort evidence scan that wants to stop reading as soon as it finds what it needs.
-    /// <c>File.ReadLines</c> opens FileShare.Read, which is mandatory-exclusive on Windows and can
-    /// block the very agent whose transcript is being scanned mid-flush.</summary>
-    internal static IEnumerable<string> ReadLinesShared(string path) {
-        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-        using var reader = new StreamReader(stream);
-
-        while (reader.ReadLine() is { } line) yield return line;
     }
 
     /// <summary>
@@ -514,7 +483,7 @@ partial class WatchCommand(ConfigRoot config, ProfileContext profiles) {
                 p => p.Owner is not null && p.RepoName is not null);
 
             try {
-                foreach (var line in ReadLinesShared(transcriptPath)) {
+                foreach (var line in File.ReadLinesShared(transcriptPath)) {
                     if (await state.EvidenceScanner.OnLineAsync(vendor, line) is { } repo) {
                         ApplyEvidenceRepo(state, repo);
 
@@ -2846,7 +2815,7 @@ partial class WatchCommand(ConfigRoot config, ProfileContext profiles) {
             var metaPath = Path.ChangeExtension(transcriptPath, ".json");
             if (!File.Exists(metaPath)) return 0;
 
-            var anchors = KiroUsage.AnchorMap(ReadAllTextShared(metaPath)); // never lock Kiro out of its own sidecar
+            var anchors = KiroUsage.AnchorMap(File.ReadAllTextShared(metaPath)); // never lock Kiro out of its own sidecar
             var offset  = 0;
 
             foreach (var (anchor, usage) in anchors) {
@@ -2883,7 +2852,7 @@ partial class WatchCommand(ConfigRoot config, ProfileContext profiles) {
             var siblingJson = Path.ChangeExtension(transcriptPath, ".json");
             if (!File.Exists(siblingJson)) return lines;
 
-            var anchors = KiroUsage.AnchorMap(ReadAllTextShared(siblingJson)); // never lock Kiro out of its own sidecar
+            var anchors = KiroUsage.AnchorMap(File.ReadAllTextShared(siblingJson)); // never lock Kiro out of its own sidecar
             if (anchors.Count == 0) return lines;
 
             return lines.Select(l => KiroUsage.EnrichLine(l, anchors)).ToList();
@@ -3224,7 +3193,7 @@ partial class WatchCommand(ConfigRoot config, ProfileContext profiles) {
 
     async Task GenerateTitleAsync(HubConnection hubConnection, string sessionId, WatchState state, string vendor) {
         try {
-            var result = await TitleGenerator.GenerateAsync(state.FirstUserText!, state.FirstAssistantText, Log, profiles.Resolution.Profile, vendor);
+            var result = await TitleGenerator.GenerateAsync(state.FirstUserText!, state.FirstAssistantText, Log, profiles.Resolution.Profile, home, vendor);
 
             if (result is null) {
                 Log($"Title generation attempt {state.TitleAttempts}/5 returned no usable result (CLI failure, refusal-like output, or empty title)");

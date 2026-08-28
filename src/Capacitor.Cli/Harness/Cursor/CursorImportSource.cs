@@ -50,14 +50,14 @@ internal sealed class CursorImportSource : IImportSource {
 
     public CursorImportSource(
         ConfigRoot                               config,
-        string?                                  projectsDirOverride         = null,
-        string?                                  workspaceStorageDirOverride = null,
+        string                                   projectsDir,
+        string                                   workspaceStorageDir,
         Func<string, Task<RepositoryPayload?>>?  repoDetector                = null
     ) {
         _config              = config;
         _markers             = new CursorMarkers(config);
-        _projectsDir         = projectsDirOverride         ?? CursorPaths.ProjectsDir();
-        _workspaceStorageDir = workspaceStorageDirOverride ?? CursorPaths.Resolve().WorkspaceStorageDir;
+        _projectsDir         = projectsDir;
+        _workspaceStorageDir = workspaceStorageDir;
         _sanitizedToFolder   = new Lazy<IReadOnlyDictionary<string, string?>>(BuildSanitizedToFolderMap);
         // historical import must never attach a live PR to an old session —
         // stamping today's open PR onto a transcript from weeks ago is an anachronism, and it's
@@ -1076,8 +1076,8 @@ internal sealed class CursorImportSource : IImportSource {
         string? excludedPathKey = null;
         if (cwd is not null && ctx.ExcludedPaths is { Count: > 0 } paths) {
             foreach (var entry in paths) {
-                if (PathExclusion.IsExcluded(cwd, [entry])) {
-                    excludedPathKey = PathExclusion.Normalize(entry);
+                if (PathExclusion.IsExcluded(cwd, [entry], ctx.Home)) {
+                    excludedPathKey = PathExclusion.Normalize(entry, ctx.Home);
                     break;
                 }
             }

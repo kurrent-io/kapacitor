@@ -18,7 +18,9 @@ namespace Capacitor.Cli.Tests.Unit.Harness.Cursor;
 /// itself can't be driven without a live SignalR reconnect).
 /// </summary>
 public class CursorReconnectRewindTests {
-    WatchCommand Watch => field ??= new(Config.Root, Resolutions.None(Config.Root));
+    [TempHome] public required TempHome Home { get; init; }
+
+    WatchCommand Watch => field ??= new(Config.Root, Resolutions.None(Config.Root), Home);
 
     CursorMarkers Markers => new(Config.Root);
 

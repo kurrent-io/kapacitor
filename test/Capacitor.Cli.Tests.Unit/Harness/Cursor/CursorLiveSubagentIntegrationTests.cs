@@ -27,8 +27,12 @@ namespace Capacitor.Cli.Tests.Unit.Harness.Cursor;
 /// docs/superpowers/specs/2026-07-30-ai1505-cursor-subagent-classification-design.md
 /// </para>
 /// </summary>
-[NotInParallel("HomeEnvVarMutation")]
+// The hook resolves the harness nudge through HarnessPaths, so it reads every vendor override
+// variable a peer suite clears mid-test.
+[NotInParallel("VendorEnvOverrides")]
 public class CursorLiveSubagentIntegrationTests {
+    [TempHome] public required TempHome Home { get; init; }
+
     [TempConfigRoot] public required TempConfigRoot Config { get; init; }
 
     [Test]
@@ -103,7 +107,7 @@ public class CursorLiveSubagentIntegrationTests {
     }
 
     sealed class Fixture : IDisposable {
-        readonly TempDir _tmp = new();
+        readonly TempHome _home = new();
 
         public string TranscriptsRoot { get; }
         public string SpoolDir        { get; }
@@ -118,8 +122,8 @@ public class CursorLiveSubagentIntegrationTests {
 
         public Fixture(ConfigRoot config, HttpStatusCode postStatus = HttpStatusCode.OK) {
             PostStatus      = postStatus;
-            TranscriptsRoot = _tmp.CreateDir("agent-transcripts");
-            SpoolDir        = _tmp.PathTo("spool");
+            TranscriptsRoot = _home.CreateDir("agent-transcripts");
+            SpoolDir        = _home.PathTo("spool");
             Spool           = new HookSpool(SpoolDir);
             Config          = config;
 
@@ -172,7 +176,7 @@ public class CursorLiveSubagentIntegrationTests {
         }
 
         public Task<int> HandleAsync(string sessionId, string eventName, string? transcriptPath, string extraFields = "") =>
-            new CursorHookCommand(Config, Resolutions.At("http://localhost", Config), new HookClock(TimeProvider.System)).HandleCore(
+            new CursorHookCommand(Config, Resolutions.At("http://localhost", Config), new HookClock(TimeProvider.System), _home).HandleCore(
                 Client,
                 stdin: new StringReader(
                     $$"""{"hook_event_name":"{{eventName}}","session_id":"{{sessionId}}","transcript_path":"{{transcriptPath?.Replace(@"\", @"\\")}}"{{extraFields}}}"""
@@ -193,7 +197,7 @@ public class CursorLiveSubagentIntegrationTests {
                 // HasSubagentStartAck check could read it.
                 try { File.Delete(new CursorMarkers(Config).SubagentStartAckPath(m)); } catch { }
             }
-            _tmp.Dispose();
+            _home.Dispose();
         }
     }
 

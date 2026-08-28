@@ -10,6 +10,7 @@ namespace Capacitor.Cli.Tests.Unit.Harness.Codex;
 
 public class CodexImportTests {
     [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+    [TempHome] public required TempHome Home { get; init; }
 
     [Test]
     public async Task ExtractCodexSessionMetadata_pulls_cwd_model_provider_and_first_timestamp() {
@@ -238,6 +239,7 @@ public class CodexImportTests {
 
         var result = await TranscriptFileClassification.ClassifyAsync(
             Config.Root,
+            Home,
             client,
             server.Url!,
             transcripts,
@@ -276,6 +278,7 @@ public class CodexImportTests {
 
         var result = await TranscriptFileClassification.ClassifyAsync(
             Config.Root,
+            Home,
             client,
             server.Url!,
             transcripts,

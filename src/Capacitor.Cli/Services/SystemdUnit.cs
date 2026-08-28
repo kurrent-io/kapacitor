@@ -9,10 +9,10 @@ static class SystemdUnit {
 
     public static string UnitName(string id) => $"{Prefix}{id}.service";
 
-    public static string UserUnitDir() =>
-        Path.Combine(PathHelpers.HomeDirectory, ".config", "systemd", "user");
+    public static string UserUnitDir(UserHome home) =>
+        Path.Combine(home.Path, ".config", "systemd", "user");
 
-    public static string UnitPath(string id) => Path.Combine(UserUnitDir(), UnitName(id));
+    public static string UnitPath(UserHome home, string id) => Path.Combine(UserUnitDir(home), UnitName(id));
 
     public static string Unit(ServiceSpec spec) {
         var sb = new StringBuilder();

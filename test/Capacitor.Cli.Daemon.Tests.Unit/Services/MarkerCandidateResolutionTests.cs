@@ -5,6 +5,10 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 
 public class MarkerCandidateResolutionTests {
+    // Unique per test: the env-marker scan authorises a kill by KCAP_DAEMON_ID, so two
+    // tests sharing one id reap each other's marked children.
+    readonly string _daemonId = "did-" + Guid.NewGuid().ToString("N")[..8];
+
     static (AgentPidRecordStore store, MarkerCandidateStore markers, string dir) New(TempDir tmp) =>
         (new AgentPidRecordStore(tmp.Path, NullLogger.Instance), new MarkerCandidateStore(tmp.Path, NullLogger.Instance), tmp.Path);
 
@@ -14,10 +18,10 @@ public class MarkerCandidateResolutionTests {
         using var tmp = new TempDir();
         var (store, markers, _) = New(tmp);
         using var dummy = DummyProcess.StartSleep(30, new Dictionary<string, string> {
-            ["KCAP_AGENT_ID"] = "rec-less", ["KCAP_DAEMON_ID"] = "did", ["KCAP_DAEMON_EPOCH"] = "old" });
+            ["KCAP_AGENT_ID"] = "rec-less", ["KCAP_DAEMON_ID"] = _daemonId, ["KCAP_DAEMON_EPOCH"] = "old" });
 
         var resolved = new List<(string, string)>();
-        var reaper = new OrphanReaper(store, "did", "new", NullLogger.Instance,
+        var reaper = new OrphanReaper(store, _daemonId, "new", NullLogger.Instance,
             markerStore: markers, onMarkerResolved: (a, e) => resolved.Add((a, e)));
         await reaper.ReapOnceAsync();
 
@@ -34,10 +38,10 @@ public class MarkerCandidateResolutionTests {
         var (store, markers, _) = New(tmp);
         // A persisted marker-candidate whose pid is now occupied by an UNRELATED process (no triple).
         using var occupant = DummyProcess.StartSleep(30); // no KCAP_* env
-        markers.Write(new MarkerCandidate("stale", "did", "old", occupant.Pid));
+        markers.Write(new MarkerCandidate("stale", _daemonId, "old", occupant.Pid));
 
         var resolved = new List<(string, string)>();
-        var reaper = new OrphanReaper(store, "did", "new", NullLogger.Instance,
+        var reaper = new OrphanReaper(store, _daemonId, "new", NullLogger.Instance,
             markerStore: markers, onMarkerResolved: (a, e) => resolved.Add((a, e)));
         await reaper.ReapOnceAsync(); // boot reconciliation re-reads the source, re-runs (a)/(b)/(c)
 
@@ -54,10 +58,10 @@ public class MarkerCandidateResolutionTests {
         var (store, markers, _) = New(tmp);
         using var dummy = DummyProcess.StartSleep(30);
         var pid = dummy.Pid; dummy.Kill(); dummy.WaitForExit(TimeSpan.FromSeconds(5)); // dead per IsAlive
-        markers.Write(new MarkerCandidate("dead1", "did", "old", pid));
+        markers.Write(new MarkerCandidate("dead1", _daemonId, "old", pid));
 
         var resolved = new List<(string, string)>();
-        var reaper = new OrphanReaper(store, "did", "new", NullLogger.Instance,
+        var reaper = new OrphanReaper(store, _daemonId, "new", NullLogger.Instance,
             markerStore: markers, onMarkerResolved: (a, e) => resolved.Add((a, e)));
         await reaper.ReapOnceAsync();
 
@@ -73,17 +77,18 @@ public class MarkerCandidateResolutionTests {
         var (store, markers, _) = New(tmp);
         using var dummy = DummyProcess.StartSleep(30);
         var pid = dummy.Pid; dummy.Kill(); dummy.WaitForExit(TimeSpan.FromSeconds(5)); // dead per IsAlive (branch a)
-        markers.Write(new MarkerCandidate("mk-gone", "did", "old", pid));
+        markers.Write(new MarkerCandidate("mk-gone", _daemonId, "old", pid));
+
 
         // Crash BEFORE the emit: onMarkerResolved throws before the ledger append -> no entry, source persists.
-        var crashing = new OrphanReaper(store, "did", "new", NullLogger.Instance,
+        var crashing = new OrphanReaper(store, _daemonId, "new", NullLogger.Instance,
             markerStore: markers, onMarkerResolved: (_, _) => throw new IOException("crash before append"));
         try { await crashing.ReapOnceAsync(); } catch { /* per-source faults swallowed */ }
         await Assert.That(markers.ReadAll()).IsNotEmpty(); // source persists (never a source-less window)
 
         // Next boot reconciles: re-read the on-disk source, (a) dead -> single emit + delete.
         var resolved = new List<(string, string)>();
-        var restarted = new OrphanReaper(store, "did", "new", NullLogger.Instance,
+        var restarted = new OrphanReaper(store, _daemonId, "new", NullLogger.Instance,
             markerStore: markers, onMarkerResolved: (a, e) => resolved.Add((a, e)));
         await restarted.ReapOnceAsync();
         await Assert.That(resolved).IsEquivalentTo(new[] { ("mk-gone", "old") });
@@ -98,12 +103,12 @@ public class MarkerCandidateResolutionTests {
         var ledger = new ResolvedCandidatesLedger(dir, NullLogger.Instance);
         using var dummy = DummyProcess.StartSleep(30);
         var pid = dummy.Pid; dummy.Kill(); dummy.WaitForExit(TimeSpan.FromSeconds(5));
-        markers.Write(new MarkerCandidate("mk-gone", "did", "old", pid));
+        markers.Write(new MarkerCandidate("mk-gone", _daemonId, "old", pid));
         var committed = ledger.Upsert("mk-gone", "old", null, null); // append happened
         // crash before markerStore.Delete -> committed entry + leftover marker source
 
         // Next boot: reconciliation re-reads the source, (a) dead -> idempotent Upsert (key (AgentId,OldEpoch)) + delete.
-        var restarted = new OrphanReaper(store, "did", "new", NullLogger.Instance,
+        var restarted = new OrphanReaper(store, _daemonId, "new", NullLogger.Instance,
             markerStore: markers, onMarkerResolved: (a, e) => ledger.Upsert(a, e, null, null));
         await restarted.ReapOnceAsync();
         await Assert.That(ledger.Snapshot().Single().Generation).IsEqualTo(committed.Generation); // single emit
@@ -133,15 +138,15 @@ public class MarkerCandidateResolutionTests {
         // corroborates — the record pass skips a current-epoch record, so the live process is untouched.
         var leaderPid = Environment.ProcessId; // alive, distinct from the reaped pid, carries no KCAP_* env
         store.Write(new AgentPidRecord("leader-x", leaderPid, "tok", PidIdentityKind.Present,
-            "ReviewFlow", "codex", "flow-x", "leader", "did", "cur", DateTimeOffset.UtcNow));
+            "ReviewFlow", "codex", "flow-x", "leader", _daemonId, "cur", DateTimeOffset.UtcNow));
 
         // The marker candidate carries the descendant's INHERITED agentId (leader-x), the PRIOR epoch,
         // and the reaped (dead) pid.
-        markers.Write(new MarkerCandidate("leader-x", "did", "old", reapedPid));
+        markers.Write(new MarkerCandidate("leader-x", _daemonId, "old", reapedPid));
 
         var recordResolved = new List<(string a, string e, string? fr, string? role)>();
         var markerResolved = new List<(string, string)>();
-        var reaper = new OrphanReaper(store, "did", "cur", NullLogger.Instance,
+        var reaper = new OrphanReaper(store, _daemonId, "cur", NullLogger.Instance,
             onRecordResolved: (a, e, fr, role) => recordResolved.Add((a, e, fr, role)),
             markerStore: markers, onMarkerResolved: (a, e) => markerResolved.Add((a, e)));
         await reaper.ReapOnceAsync();
@@ -172,9 +177,9 @@ public class MarkerCandidateResolutionTests {
 
         // A live prior-epoch recordless survivor the scan discovers and tries (and fails) to capture.
         using var dummy = DummyProcess.StartSleep(30, new Dictionary<string, string> {
-            ["KCAP_AGENT_ID"] = "surv", ["KCAP_DAEMON_ID"] = "did", ["KCAP_DAEMON_EPOCH"] = "old" });
+            ["KCAP_AGENT_ID"] = "surv", ["KCAP_DAEMON_ID"] = _daemonId, ["KCAP_DAEMON_EPOCH"] = "old" });
 
-        var reaper = new OrphanReaper(store, "did", "new", NullLogger.Instance, markerStore: failingMarkers);
+        var reaper = new OrphanReaper(store, _daemonId, "new", NullLogger.Instance, markerStore: failingMarkers);
         await reaper.ReapOnceAsync();
 
         // The source write failed, so the pass is not a completeness proof.
@@ -193,12 +198,12 @@ public class MarkerCandidateResolutionTests {
         var pid = dummy.Pid; dummy.Kill(); dummy.WaitForExit(TimeSpan.FromSeconds(5)); // dead per IsAlive (branch a)
         // A Linux identity_unavailable RECORD (capture failed) co-existing with a marker-candidate source.
         store.Write(new AgentPidRecord("iu", pid, "", PidIdentityKind.IdentityUnavailable, "ReviewFlow",
-            "codex", "flow-9", "reviewer", "did", "old", DateTimeOffset.UtcNow));
-        markers.Write(new MarkerCandidate("iu", "did", "old", pid));
+            "codex", "flow-9", "reviewer", _daemonId, "old", DateTimeOffset.UtcNow));
+        markers.Write(new MarkerCandidate("iu", _daemonId, "old", pid));
 
         var recordResolved = new List<(string a, string e, string? fr, string? role)>();
         var markerResolved = new List<(string, string)>();
-        var reaper = new OrphanReaper(store, "did", "new", NullLogger.Instance,
+        var reaper = new OrphanReaper(store, _daemonId, "new", NullLogger.Instance,
             onRecordResolved: (a, e, fr, role) => recordResolved.Add((a, e, fr, role)),
             markerStore: markers, onMarkerResolved: (a, e) => markerResolved.Add((a, e)));
         await reaper.ReapOnceAsync();

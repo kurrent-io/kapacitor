@@ -32,6 +32,8 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 /// test fail even though the daemon code path is correct).
 /// </summary>
 public class AcpHostedAgentRuntimeFactoryLiveTests {
+    [TempHome] public required TempHome Home { get; init; }
+
     const string LiveGateEnvVar = "KCAP_ACP_LIVE";
 
     static readonly TimeSpan HandshakeTimeout = TimeSpan.FromSeconds(20);
@@ -191,6 +193,7 @@ public class AcpHostedAgentRuntimeFactoryLiveTests {
         var connection = new CaptureServerConnection();
         var config = new DaemonConfig {
             WorktreeRoot = rootDirTemp.PathTo("snapshots"),
+            Home = Home,
             DebugFrames = true
         };
         var manager = new WorktreeManager(config, NullLogger<WorktreeManager>.Instance);

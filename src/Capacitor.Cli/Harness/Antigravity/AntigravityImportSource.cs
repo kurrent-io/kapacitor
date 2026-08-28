@@ -42,19 +42,14 @@ internal sealed class AntigravityImportSource : IImportSource {
         "USER_INPUT", "PLANNER_RESPONSE", "RUN_COMMAND", "VIEW_FILE", "LIST_DIRECTORY", "CODE_ACTION"
     };
 
-    readonly string? _home;
-    readonly string? _geminiCliHome;
+    readonly AntigravityPaths _paths;
 
-    public AntigravityImportSource(string? home = null, string? geminiCliHome = null) {
-        _home          = home;
-        _geminiCliHome = geminiCliHome;
-    }
+    public AntigravityImportSource(AntigravityPaths paths) => _paths = paths;
 
     // Both product roots' brain dirs (GUI + agy CLI), in fixed order. Import enumerates every one
     // that exists — an agy-only machine has only the CLI root, and before this it was invisible.
     IReadOnlyList<string> BrainRoots =>
-        AntigravityPaths.BrainProductRoots(_home, _geminiCliHome)
-            .Select(r => Path.Combine(r, "brain")).ToList();
+        _paths.BrainProductRoots.Select(r => Path.Combine(r, "brain")).ToList();
 
     public string Vendor => "antigravity";
     public bool   IsAvailable => BrainRoots.Any(Directory.Exists);
@@ -326,7 +321,7 @@ internal sealed class AntigravityImportSource : IImportSource {
         // but the fold stays truthful rather than silently mis-resolving a CLI child).
         var productRoot = sourceMeta.TryGetValue("ProductRoot", out var pr) && pr is string { Length: > 0 } p
             ? p
-            : AntigravityPaths.Root(_home, _geminiCliHome);
+            : _paths.Root;
 
         var anyChildContentSent = false;
 

@@ -36,7 +36,7 @@ public class AntigravitySubagentsTests {
         MakeBrainDir(home.Path, "P"); // at least one brain dir so the scan loop runs
         using var cts = new CancellationTokenSource();
         cts.Cancel();
-        await Assert.That(() => AntigravitySubagents.BuildParentMap(home: home.Path, geminiCliHome: "", ct: cts.Token))
+        await Assert.That(() => AntigravitySubagents.BuildParentMap(new(new(home.Path), ""), ct: cts.Token))
             .Throws<OperationCanceledException>();
     }
 
@@ -52,7 +52,7 @@ public class AntigravitySubagentsTests {
         tmp.WriteTranscript("bbbbbbbb-0000-0000-0000-000000000001" /* child1 */,
             """{"type":"USER_INPUT","content":"hi"}""");
 
-        var map = AntigravitySubagents.BuildParentMap(home: tmp.Home, geminiCliHome: "");
+        var map = AntigravitySubagents.BuildParentMap(new(new(tmp.Home), ""));
         await Assert.That(map["bbbbbbbb-0000-0000-0000-000000000001"]).IsEqualTo("aaaaaaaa-0000-0000-0000-000000000001");
     }
 
@@ -77,7 +77,7 @@ public class AntigravitySubagentsTests {
         await Assert.That(map[child]).IsEqualTo(parent);
 
         // And the GUI-root overload sees nothing here — proving the roots are scanned independently.
-        var guiMap = AntigravitySubagents.BuildParentMap(home: tmp.Home, geminiCliHome: "");
+        var guiMap = AntigravitySubagents.BuildParentMap(new(new(tmp.Home), ""));
         await Assert.That(guiMap.ContainsKey(child)).IsFalse();
     }
 
@@ -92,7 +92,7 @@ public class AntigravitySubagentsTests {
         tmp.WriteTranscript("deadbeef-0000-0000-0000-00000000dead" /* leaf */,
             """{"type":"USER_INPUT","content":"x"}""");
 
-        var map = AntigravitySubagents.BuildParentMap(home: tmp.Home, geminiCliHome: "");
+        var map = AntigravitySubagents.BuildParentMap(new(new(tmp.Home), ""));
         await Assert.That(map["deadbeef-0000-0000-0000-00000000dead"]).IsEqualTo("cccccccc-0000-0000-0000-000000000ccc");
         await Assert.That(map.ContainsKey("cccccccc-0000-0000-0000-000000000ccc")).IsFalse(); // root has no parent
     }
@@ -105,7 +105,7 @@ public class AntigravitySubagentsTests {
         tmp.WriteTranscript("eeeeeeee-0000-0000-0000-00000000000e" /* p */,
             """{"type":"INVOKE_SUBAGENT","content":"[{\"conversationId\":\"e4404400-0000-0000-0000-0000000e4404\"}]"}""");
         // no transcript for the errored child dir on disk beyond the invoke — still mapped
-        var map = AntigravitySubagents.BuildParentMap(home: tmp.Home, geminiCliHome: "");
+        var map = AntigravitySubagents.BuildParentMap(new(new(tmp.Home), ""));
         await Assert.That(map["e4404400-0000-0000-0000-0000000e4404"]).IsEqualTo("eeeeeeee-0000-0000-0000-00000000000e");
     }
 
@@ -118,7 +118,7 @@ public class AntigravitySubagentsTests {
         // A brain dir with no transcript_full.jsonl at all is skipped, not an error.
         MakeBrainDir(tmp.Home, "22222222-0000-0000-0000-000000000002");
 
-        var map = AntigravitySubagents.BuildParentMap(home: tmp.Home, geminiCliHome: "");
+        var map = AntigravitySubagents.BuildParentMap(new(new(tmp.Home), ""));
         await Assert.That(map.Count).IsEqualTo(0);
     }
 
@@ -126,7 +126,7 @@ public class AntigravitySubagentsTests {
     public async Task BuildParentMap_is_empty_when_no_antigravity_data() {
         using var home = new TempDir();
 
-        await Assert.That(AntigravitySubagents.BuildParentMap(home: home.Path, geminiCliHome: "").Count).IsEqualTo(0);
+        await Assert.That(AntigravitySubagents.BuildParentMap(new(new(home.Path), "")).Count).IsEqualTo(0);
     }
 
     [Test]
@@ -139,7 +139,7 @@ public class AntigravitySubagentsTests {
         tmp.WriteTranscript("6a000000-0000-0000-0000-00000000000b" /* Pz, sorts after Pa */,
             """{"type":"INVOKE_SUBAGENT","content":"{\"conversationId\":\"cc000000-0000-0000-0000-0000000000cc\"}"}""");
 
-        var map = AntigravitySubagents.BuildParentMap(home: tmp.Home, geminiCliHome: "");
+        var map = AntigravitySubagents.BuildParentMap(new(new(tmp.Home), ""));
         await Assert.That(map["cc000000-0000-0000-0000-0000000000cc"]).IsEqualTo("6a000000-0000-0000-0000-00000000000a");
     }
 
@@ -149,10 +149,8 @@ public class AntigravitySubagentsTests {
         tmp.WriteTranscript("3a000000-0000-0000-0000-00000000003a" /* parent */,
             """{"type":"INVOKE_SUBAGENT","content":"{\"conversationId\":\"3b000000-0000-0000-0000-00000000003b\"}"}""");
 
-        await Assert.That(AntigravitySubagents.ResolveParent(
-            "3b000000-0000-0000-0000-00000000003b", home: tmp.Home, geminiCliHome: "")).IsEqualTo("3a000000-0000-0000-0000-00000000003a");
-        await Assert.That(AntigravitySubagents.ResolveParent(
-            "3a000000-0000-0000-0000-00000000003a", home: tmp.Home, geminiCliHome: "")).IsNull();
+        await Assert.That(AntigravitySubagents.ResolveParent("3b000000-0000-0000-0000-00000000003b", new(new(tmp.Home), ""))).IsEqualTo("3a000000-0000-0000-0000-00000000003a");
+        await Assert.That(AntigravitySubagents.ResolveParent("3a000000-0000-0000-0000-00000000003a", new(new(tmp.Home), ""))).IsNull();
     }
 
     [Test]

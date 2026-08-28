@@ -35,16 +35,8 @@ public interface IMcpMarker {
 /// fingerprint-less entries that keep the legacy command check, and the next
 /// <see cref="Record(string, IReadOnlyList{KeyValuePair{string, JsonNode?}})"/> rewrites the file as v2.</para>
 /// </summary>
-public sealed class McpMarker(string harness, Func<string, string>? markerPathFor = null) : IMcpMarker {
+public sealed class McpMarker(string harness, UserHome home, Func<string, string>? markerPathFor = null) : IMcpMarker {
     const int Version = 2;
-
-    // Test seam: redirect the CENTRAL marker root (normally the user profile's `.kcap`) so unit tests
-    // never read/write the real shared `~/.kcap/mcp-markers` — a single process-global dir that races
-    // across parallel suites and pollutes the developer's home. Pinned once for the whole test
-    // assembly by `McpMarkerGlobalSetup` (mirrors `DaemonPathsGlobalSetup`). Volatile so the
-    // assembly-hook write publishes to every test thread.
-    static volatile string? _centralRootOverride;
-    internal static void OverrideCentralRootForTesting(string? kcapRoot) => _centralRootOverride = kcapRoot;
 
     public bool Owns(string configPath, string name, JsonNode entry) {
         if (!ReadEntries(MarkerPath(configPath), configPath).TryGetValue(name, out var fingerprint)) return false;
@@ -147,16 +139,14 @@ public sealed class McpMarker(string harness, Func<string, string>? markerPathFo
         if (markerPathFor is not null) return markerPathFor(configPath);
         // Heuristic: a config under the user's home harness dir → sidecar; else central state.
         var dir = Path.GetDirectoryName(Path.GetFullPath(configPath))!;
-        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        var isUserScope = dir.StartsWith(home, StringComparison.Ordinal)
+        var isUserScope = dir.StartsWith(home.Path, StringComparison.Ordinal)
                           && !IsInsideRepo(dir);
         // Per-config sidecar (include the config file name) so multiple configs sharing a
         // directory never overwrite each other's ownership record.
         if (isUserScope) return Path.Combine(dir, $".kcap-mcp-version-{Path.GetFileName(configPath)}");
 
         var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(Path.GetFullPath(configPath))))[..16].ToLowerInvariant();
-        var centralRoot = _centralRootOverride ?? Path.Combine(home, ".kcap");
-        return Path.Combine(centralRoot, "mcp-markers", $"{harness}-{hash}.json");
+        return Path.Combine(home.Path, ".kcap", "mcp-markers", $"{harness}-{hash}.json");
     }
 
     static bool IsInsideRepo(string dir) {

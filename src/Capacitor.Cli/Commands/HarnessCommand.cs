@@ -1,4 +1,5 @@
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Core.Setup;
 
 namespace Capacitor.Cli.Commands;
@@ -9,36 +10,36 @@ namespace Capacitor.Cli.Commands;
 /// nudge; <c>reset</c> undoes a dismissal. All three run their own detection pass and neither read
 /// nor claim the shared 6-hour evaluation throttle (the nudge surfaces' concern, not the commands').
 /// </summary>
-public sealed class HarnessCommand(ConfigRoot config) {
+public sealed class HarnessCommand(ConfigRoot config, UserHome home) {
     public Task<int> HandleAsync(string[] args) {
         if (args.Length < 2) { PrintUsage(); return Task.FromResult(1); }
 
         var store    = new HarnessOfferStore(config);
-        var inputs   = AgentDetection.FromEnvironment();
-        var detected = AgentDetection.Detect(inputs);
+        var paths    = HarnessPaths.FromEnvironment(home);
+        var detected = AgentDetection.Detect(paths, BinaryProbe.FromEnvironment());
 
         return Task.FromResult(args[1] switch {
-            "list"                    => List(detected, inputs, store),
-            "dismiss"                 => Dismiss(args, detected, inputs, store),
+            "list"                    => List(detected, paths, store),
+            "dismiss"                 => Dismiss(args, detected, paths, store),
             "reset"                   => Reset(args, store),
             "--help" or "-h" or "help" => Help(),
             _                         => Unknown(args[1]),
         });
     }
 
-    static int List(AgentDetectionResult detected, AgentDetectionInputs inputs, HarnessOfferStore store) {
+    static int List(AgentDetectionResult detected, HarnessPaths paths, HarnessOfferStore store) {
         var ledger = store.Load();
         Console.WriteLine($"  {"Harness",-14}{"Installed",-11}{"kcap wired",-12}Dismissed");
         foreach (var h in HarnessCatalog.All) {
             var isDetected = h.Select(detected).Detected;
-            var isWired    = HarnessIntegrationProbe.IsWired(h.VendorId, inputs);
+            var isWired    = paths.IsWired(h.VendorId);
             var isDismissed = ledger.Entry(h.VendorId) is { Declined: true };
             Console.WriteLine($"  {h.Label,-14}{YesNo(isDetected),-11}{YesNo(isWired),-12}{YesNo(isDismissed)}");
         }
         return 0;
     }
 
-    static int Dismiss(string[] args, AgentDetectionResult detected, AgentDetectionInputs inputs, HarnessOfferStore store) {
+    static int Dismiss(string[] args, AgentDetectionResult detected, HarnessPaths paths, HarnessOfferStore store) {
         var rest = args.Skip(2).ToArray();
         List<KnownHarness> targets;
 
@@ -47,7 +48,7 @@ public sealed class HarnessCommand(ConfigRoot config) {
             // installed after this dismiss is a new event and nudges once. The "never ask about any
             // harness" switch is the `disable_harness_nudge` profile setting, not `--all`.
             targets = HarnessCatalog.All
-                .Where(h => h.Select(detected).Detected && !HarnessIntegrationProbe.IsWired(h.VendorId, inputs))
+                .Where(h => h.Select(detected).Detected && !paths.IsWired(h.VendorId))
                 .ToList();
             if (targets.Count == 0) {
                 Console.WriteLine("No detected-but-unconfigured harnesses to dismiss.");

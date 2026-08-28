@@ -23,6 +23,7 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 /// </summary>
 public class DaemonStatusWiringTests {
     [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+    [TempHome] public required TempHome Home { get; init; }
 
     [Test]
     public async Task ServerConnection_resolved_via_DI_shares_the_one_registered_notifier() {
@@ -92,6 +93,7 @@ public class DaemonStatusWiringTests {
         services.AddSingleton(typeof(ILogger<>), typeof(NullLogger<>));
         services.AddSingleton(Config.Root);
         services.AddSingleton<DaemonStatusNotifier>();
+        services.AddSingleton(Home.Home);
         services.AddSingleton<ServerConnection>();
         services.AddSingleton<WorktreeManager>();
         services.AddSingleton<RepoMatcher>();

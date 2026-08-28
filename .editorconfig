@@ -288,6 +288,9 @@ dotnet_diagnostic.cs4014.severity = error   ; Not awaited async call
 dotnet_diagnostic.cs8509.severity = error   ; Switch expression is not exhaustive
 dotnet_diagnostic.cs8524.severity = suggestion ; Switch expression is not exhaustive (unnamed enum value)
 
+; --- Banned APIs (BannedSymbols.txt) ---
+dotnet_diagnostic.rs0030.severity = error   ; Banned symbol used
+
 ; --- Code Analysis Rules ---
 dotnet_diagnostic.ca1801.severity = warning
 dotnet_diagnostic.ca1802.severity = warning

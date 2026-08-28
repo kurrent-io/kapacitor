@@ -59,6 +59,7 @@ namespace Capacitor.Cli.Tests.Integration;
 /// </summary>
 public class AntigravitySkippedChildOverrideRoutedLoopTests : IDisposable {
     [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+    [TempHome] public required TempHome Home { get; init; }
 
     readonly WireMockServer _server         = WireMockServer.Start();
     readonly TempDir        _tmp            = new();
@@ -159,12 +160,12 @@ public class AntigravitySkippedChildOverrideRoutedLoopTests : IDisposable {
         _server.Given(Request.Create().WithPath("/api/sessions/*/visibility").UsingPut())
             .RespondWith(Response.Create().WithStatusCode(200));
 
-        var antigravity = new AntigravityImportSource(home: _home, geminiCliHome: "");
-        var gemini      = new GeminiImportSource(tmpDirOverride: _geminiTmpDir);
+        var antigravity = new AntigravityImportSource(new(new(_home), ""));
+        var gemini      = new GeminiImportSource(_geminiTmpDir);
 
         var exitCode = 0;
         var stdout = await CaptureStdoutAsync(async () => {
-            exitCode = await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root)).HandleImport(
+            exitCode = await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), Home).HandleImport(
                 filterCwd: null,
                 minLines: 0,
                 sources: [antigravity, gemini],

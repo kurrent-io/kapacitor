@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using Capacitor.Cli.Core;
 using Capacitor.Cli.Daemon.Acp;
 
 namespace Capacitor.Cli.Daemon.Tests.Unit.Acp;
@@ -12,6 +13,8 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Acp;
 /// logs and <c>etc</c> holds service configuration, and a code reviewer has no business in either.</para>
 /// </summary>
 public class BorrowedReviewRuntimeRootsTests {
+    [TempHome] public required TempHome Home { get; init; }
+
     /// <summary>These fixtures are POSIX-absolute, and on Windows <see cref="Path.GetFullPath(string)"/>
     /// anchors such a path to the current drive (<c>/opt/hb</c> becomes <c>D:\opt\hb</c>), so every
     /// synthetic path would miss its fixture for a reason unrelated to the rules under test.
@@ -53,7 +56,8 @@ public class BorrowedReviewRuntimeRootsTests {
             string binary, Func<string, bool> exists, string userHome = "/Users/nobody",
             params string[] measured) =>
         BorrowedReviewRuntimeRoots.Resolve(
-            binary, exists, userHome, measuredPrefixes: measured.Length == 0 ? ["/opt/hb"] : measured);
+            binary, new UserHome(userHome), exists,
+            measuredPrefixes: measured.Length == 0 ? ["/opt/hb"] : measured);
 
     static IReadOnlyList<string> Resolve(
             string binary, Func<string, bool> exists, string userHome = "/Users/nobody",
@@ -132,7 +136,7 @@ public class BorrowedReviewRuntimeRootsTests {
     [Arguments("./copilot")]
     [Arguments("bin/copilot")]
     public async Task A_bare_or_relative_command_name_grants_nothing(string binary) {
-        var grants = BorrowedReviewRuntimeRoots.Resolve(binary, _ => true, userHome: "/Users/nobody");
+        var grants = BorrowedReviewRuntimeRoots.Resolve(binary, new UserHome("/Users/nobody"), _ => true);
 
         await Assert.That(grants.Directories).IsEmpty()
             .Because("a relative path would resolve against the daemon's current directory");
@@ -161,8 +165,8 @@ public class BorrowedReviewRuntimeRootsTests {
         // ~/bin exists but there is no sibling lib, so no prefix is recognized.
         var grants = BorrowedReviewRuntimeRoots.Resolve(
             $"{home}/bin/copilot",
-            path => Posix(path) is $"{home}/bin" or home,
-            userHome: home);
+            new UserHome(home),
+            path => Posix(path) is $"{home}/bin" or home);
 
         await Assert.That(grants.Files.Select(Posix)).Contains($"{home}/bin/copilot");
         await Assert.That(grants.Directories).IsEmpty()
@@ -203,8 +207,8 @@ public class BorrowedReviewRuntimeRootsTests {
         string[] present = [prefix, $"{prefix}/bin", $"{prefix}/lib", $"{prefix}/share"];
 
         var grants = BorrowedReviewRuntimeRoots.Resolve(
-            $"{prefix}/bin/copilot", path => present.Contains(Posix(path)),
-            userHome: "/Users/nobody", measuredPrefixes: ["/opt/homebrew"]);
+            $"{prefix}/bin/copilot", new UserHome("/Users/nobody"), path => present.Contains(Posix(path)),
+            measuredPrefixes: ["/opt/homebrew"]);
 
         await Assert.That(grants.Directories).IsEmpty()
             .Because($"{prefix} has a plausible layout but has never been measured");
@@ -232,9 +236,9 @@ public class BorrowedReviewRuntimeRootsTests {
                             "/opt/other", "/opt/other/bin", "/opt/other/lib"];
 
         var admitted = BorrowedReviewRuntimeRoots.Resolve(
-            "/opt/homebrew/bin/copilot", path => present.Contains(Posix(path)), userHome: "/Users/nobody");
+            "/opt/homebrew/bin/copilot", new UserHome("/Users/nobody"), path => present.Contains(Posix(path)));
         var refused = BorrowedReviewRuntimeRoots.Resolve(
-            "/opt/other/bin/copilot", path => present.Contains(Posix(path)), userHome: "/Users/nobody");
+            "/opt/other/bin/copilot", new UserHome("/Users/nobody"), path => present.Contains(Posix(path)));
 
         await Assert.That(admitted.Directories.Select(Posix)).Contains("/opt/homebrew/lib");
         await Assert.That(refused.Directories).IsEmpty();
@@ -323,7 +327,7 @@ public class BorrowedReviewRuntimeRootsTests {
         // measured-list rule, or this test would pass for the wrong reason.
         var grants = BorrowedReviewRuntimeRoots.Resolve(
             $"{prefix}/lib/node_modules/@vendor/tool/loader.js",
-            path => present.Contains(Posix(path)), userHome: home, measuredPrefixes: [prefix]);
+            new UserHome(home), path => present.Contains(Posix(path)), measuredPrefixes: [prefix]);
 
         await Assert.That(grants.Directories).IsEmpty()
             .Because($"{prefix} matches bin+lib but is user-controlled, so it is not a safe prefix");
@@ -364,7 +368,7 @@ public class BorrowedReviewRuntimeRootsTests {
             .StartsWith(Path.GetFullPath(logicalHome), StringComparison.Ordinal)).IsFalse();
 
         var grants = BorrowedReviewRuntimeRoots.Resolve(
-            binary, userHome: logicalHome, measuredPrefixes: [prefix]);
+            binary, new UserHome(logicalHome), measuredPrefixes: [prefix]);
 
         await Assert.That(grants.Directories).IsEmpty()
             .Because("the prefix is beneath home once home is resolved to its physical form");
@@ -377,7 +381,7 @@ public class BorrowedReviewRuntimeRootsTests {
     [Arguments("   ")]
     public async Task An_unusable_home_admits_no_prefix(string home) {
         var grants = BorrowedReviewRuntimeRoots.Resolve(
-            "/opt/hb/lib/node_modules/@vendor/tool/loader.js", Prefix("/opt/hb"), userHome: home,
+            "/opt/hb/lib/node_modules/@vendor/tool/loader.js", new UserHome(home), Prefix("/opt/hb"),
             measuredPrefixes: ["/opt/hb"]);
 
         await Assert.That(grants.Directories).IsEmpty();
@@ -434,7 +438,7 @@ public class BorrowedReviewRuntimeRootsTests {
         const string binary = "/opt/homebrew/bin/copilot";
         Skip.Unless(File.Exists(binary), "Copilot CLI not installed on this host");
 
-        var roots    = BorrowedReviewRuntimeRoots.Resolve(binary).Directories;
+        var roots    = BorrowedReviewRuntimeRoots.Resolve(binary, Home).Directories;
         var resolved = new FileInfo(binary).ResolveLinkTarget(returnFinalTarget: true)?.FullName ?? binary;
 
         await Assert.That(roots.Any(root =>

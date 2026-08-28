@@ -22,6 +22,8 @@ namespace Capacitor.Cli.Tests.Integration;
 /// host — the unguarded auth discovery in the lifecycle poster, tracked separately.</para>
 /// </summary>
 public class CodexSessionStartHandshakeOnPostFailureTests : IDisposable {
+    [TempHome] public required TempHome Home { get; init; }
+
     [TempConfigRoot] public required TempConfigRoot Config { get; init; }
 
     readonly WireMockServer _server         = WireMockServer.Start();
@@ -54,7 +56,7 @@ public class CodexSessionStartHandshakeOnPostFailureTests : IDisposable {
 
         using var capture = ConsoleOutput.StartCapture();
 
-        var exit = await new CodexHookCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), new HookClock(TimeProvider.System)).Handle(new StringReader(payload));
+        var exit = await new CodexHookCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), new HookClock(TimeProvider.System), Home).Handle(new StringReader(payload));
 
         // The rejection is still reported — this is not "pretend it worked".
         await Assert.That(exit).IsEqualTo(1);

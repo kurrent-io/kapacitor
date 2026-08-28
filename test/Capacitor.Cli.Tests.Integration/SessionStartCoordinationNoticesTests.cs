@@ -26,6 +26,8 @@ namespace Capacitor.Cli.Tests.Integration;
 /// so no watcher spawns and no memory-index GET fires.
 /// </summary>
 public class SessionStartCoordinationNoticesTests : IDisposable {
+    [TempHome] public required TempHome Home { get; init; }
+
     [TempConfigRoot] public required TempConfigRoot Config { get; init; }
 
     readonly WireMockServer _server     = WireMockServer.Start();
@@ -80,7 +82,7 @@ public class SessionStartCoordinationNoticesTests : IDisposable {
             """);
 
         var stdout = new StringWriter();
-        await new ClaudeHookCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), new HookClock(TimeProvider.System)).Handle(new StringReader(Payload()), stdout: stdout);
+        await new ClaudeHookCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), new HookClock(TimeProvider.System), Home).Handle(new StringReader(Payload()), stdout: stdout);
 
         // Capability advertised on the request.
         await Assert.That(PostedBody()["coordination_notices"]?.GetValue<string>()).IsEqualTo("v1");
@@ -99,7 +101,7 @@ public class SessionStartCoordinationNoticesTests : IDisposable {
         GivenServerReturns("""{ "coordination_notices": [ { "text": "someone else is on this bug" } ] }""");
 
         var stdout = new StringWriter();
-        await new ClaudeHookCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), new HookClock(TimeProvider.System)).Handle(new StringReader(Payload()), stdout: stdout);
+        await new ClaudeHookCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), new HookClock(TimeProvider.System), Home).Handle(new StringReader(Payload()), stdout: stdout);
 
         await Assert.That(PostedBody()["coordination_notices"]).IsNull();
         await Assert.That(stdout.ToString()).DoesNotContain("## Coordination notices");
@@ -113,7 +115,7 @@ public class SessionStartCoordinationNoticesTests : IDisposable {
         GivenServerReturns("""{ "coordination_notices": "v1" }""");
 
         var stdout = new StringWriter();
-        await new ClaudeHookCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), new HookClock(TimeProvider.System)).Handle(new StringReader(Payload()), stdout: stdout);
+        await new ClaudeHookCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), new HookClock(TimeProvider.System), Home).Handle(new StringReader(Payload()), stdout: stdout);
 
         // Capability still advertised; render silently emits nothing (fail-open, no crash).
         await Assert.That(PostedBody()["coordination_notices"]?.GetValue<string>()).IsEqualTo("v1");

@@ -13,6 +13,8 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Harness.Codex;
 /// so no child process runs; the delegation cases never touch the launcher at all.
 /// </summary>
 public class CodexHostedAgentRuntimeFactoryTests {
+    [TempHome] public required TempHome Home { get; init; }
+
     static readonly TimeSpan HangGuard = TimeSpan.FromSeconds(5);
 
     // ── Test doubles ─────────────────────────────────────────────────────────────────────────
@@ -55,9 +57,9 @@ public class CodexHostedAgentRuntimeFactoryTests {
         public ValueTask DisposeAsync() { HasExited = true; return ValueTask.CompletedTask; }
     }
 
-    static CodexLauncher NewLauncher() =>
+    CodexLauncher NewLauncher() =>
         new(new DaemonConfig { CodexPath = "codex", CapacitorPath = "/opt/kcap", ServerUrl = "https://t.example" },
-            NullLogger<CodexLauncher>.Instance) {
+            Home, NullLogger<CodexLauncher>.Instance) {
             ReadInheritedMcpServers = static () => [],
         };
 
@@ -68,7 +70,7 @@ public class CodexHostedAgentRuntimeFactoryTests {
         IsReview: false, IsReviewFlow: isReviewFlow, Review: null,
         Cols: 80, Rows: 24, ServerUrl: "https://t.example", DaemonBridgeUrl: null, CapacitorPath: "/opt/kcap");
 
-    static CodexHostedAgentRuntimeFactory Factory(
+    CodexHostedAgentRuntimeFactory Factory(
             RecordingPtyFactory pty, bool appServerActive, CodexAppServerSpawnFactory? spawn = null) =>
         new(NewLauncher(), pty,
             new DaemonConfig { CodexAppServerActive = appServerActive, Version = "0.146.0" },
@@ -113,13 +115,11 @@ public class CodexHostedAgentRuntimeFactoryTests {
     [Test]
     [NotInParallel]
     public async Task Active_review_flow_produces_an_app_server_runtime_via_the_spawn_seam() {
-        using var home = new TempDir();
         using var wt   = new TempDir();
         WriteWorktreeHooks(wt);
         await using var fake = new FakeCodexAppServer();
 
-        using var homeEnv  = EnvScope.Exclusive("HOME", home.Path);
-        using var codexEnv = EnvScope.Exclusive("CODEX_HOME", home.PathTo(".codex"));
+        using var codexEnv = EnvScope.Exclusive("CODEX_HOME", Home.PathTo(".codex"));
 
         var pty = new RecordingPtyFactory();
         CodexAppServerSpawnFactory seam = (_, _, _, _, _, _, _) =>
@@ -153,14 +153,12 @@ public class CodexHostedAgentRuntimeFactoryTests {
     [Test]
     [NotInParallel]
     public async Task App_server_launch_is_envelope_sourced_after_activation() {
-        using var home = new TempDir();
         using var wt   = new TempDir();
         WriteWorktreeHooks(wt);
         await using var fake = new FakeCodexAppServer();
         IReadOnlyDictionary<string, string>? capturedEnv = null;
 
-        using var homeEnv  = EnvScope.Exclusive("HOME", home.Path);
-        using var codexEnv = EnvScope.Exclusive("CODEX_HOME", home.PathTo(".codex"));
+        using var codexEnv = EnvScope.Exclusive("CODEX_HOME", Home.PathTo(".codex"));
 
         CodexAppServerSpawnFactory seam = (_, _, _, _, env, _, _) => {
             capturedEnv = env;
@@ -206,11 +204,11 @@ public class CodexHostedAgentRuntimeFactoryTests {
     [Test]
     [NotInParallel]
     public async Task Missing_hooks_on_the_app_server_route_fails_closed() {
-        using var home = new TempDir(); // empty — no user-scope hooks
         using var wt   = new TempDir(); // empty — no worktree hooks
 
-        using var homeEnv  = EnvScope.Exclusive("HOME", home.Path);
-        using var codexEnv = EnvScope.Exclusive("CODEX_HOME", home.PathTo(".codex"));
+        // Both hook scopes have to be genuinely absent or the fail-closed assertion proves nothing:
+        // the worktree above is empty, and so is the home this points CODEX_HOME into.
+        using var codexEnv = EnvScope.Exclusive("CODEX_HOME", Home.PathTo(".codex"));
 
         CodexAppServerSpawnFactory seam = (_, _, _, _, _, _, _) =>
             throw new InvalidOperationException("spawn must never be reached when hooks are missing");
@@ -223,13 +221,11 @@ public class CodexHostedAgentRuntimeFactoryTests {
     [Test]
     [NotInParallel]
     public async Task Handshake_failure_disposes_the_spawned_child() {
-        using var home = new TempDir();
         using var wt   = new TempDir();
         WriteWorktreeHooks(wt);
         await using var fake = new FakeCodexAppServer { ThreadId = "" }; // thread/start returns no id -> StartAsync throws
 
-        using var homeEnv  = EnvScope.Exclusive("HOME", home.Path);
-        using var codexEnv = EnvScope.Exclusive("CODEX_HOME", home.PathTo(".codex"));
+        using var codexEnv = EnvScope.Exclusive("CODEX_HOME", Home.PathTo(".codex"));
 
         var process = new FakeAcpProcess();
         CodexAppServerSpawnFactory seam = (_, _, _, _, _, _, _) =>

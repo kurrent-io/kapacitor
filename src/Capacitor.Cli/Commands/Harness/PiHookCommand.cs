@@ -31,7 +31,7 @@ namespace Capacitor.Cli.Commands.Harness;
 /// text, no envelope) for the extension to append to each turn's chained system prompt. Diagnostics go
 /// to stderr. Every other event keeps writing nothing at all.</para>
 /// </summary>
-sealed class PiHookCommand(ConfigRoot config, ProfileContext profiles, HookClock clock) {
+sealed class PiHookCommand(ConfigRoot config, ProfileContext profiles, HookClock clock, UserHome home) {
     readonly WatcherManager  _watchers = new(config, profiles);
     readonly AgentHookPoster _poster   = new(config, profiles);
 
@@ -89,7 +89,7 @@ sealed class PiHookCommand(ConfigRoot config, ProfileContext profiles, HookClock
         var activeProfile = profiles.Effective;
 
         if (activeProfile?.ExcludedPaths is { Length: > 0 } excludedPaths
-         && PathExclusion.IsExcluded(cwd, excludedPaths)) {
+         && PathExclusion.IsExcluded(cwd, excludedPaths, home)) {
             return 0;
         }
 
@@ -120,7 +120,7 @@ sealed class PiHookCommand(ConfigRoot config, ProfileContext profiles, HookClock
             ["hook_event_name"] = "sessionStart",
             ["session_id"]      = sessionId,
             ["source"]          = source,
-            ["home_dir"]        = PathHelpers.HomeDirectory
+            ["home_dir"]        = home.Path
         };
 
         if (cwd is not null) {
@@ -136,7 +136,7 @@ sealed class PiHookCommand(ConfigRoot config, ProfileContext profiles, HookClock
         // JsonString round-trip (same rationale as the Codex/Copilot dispatchers).
         if (activeProfile?.DefaultVisibility is { } visibility) forwarded["default_visibility"] = visibility;
 
-        SessionStartInventory.Stamp(forwarded, config);
+        SessionStartInventory.Stamp(forwarded, config, home);
         var enriched = await RepositoryDetection.EnrichWithRepositoryInfo(config, forwarded.ToJsonString());
 
         if (activeProfile?.ExcludedRepos is { Length: > 0 } excludedRepos
@@ -171,8 +171,8 @@ sealed class PiHookCommand(ConfigRoot config, ProfileContext profiles, HookClock
         // stdout regardless of exit code, so no commit gate is needed (unlike Copilot).
         var fragment = await SessionStartMemoryHookSupport.AwaitBounded(memoryTask, budget);
         var workItemsNudge = HarnessNudgeEmitter.Combine(
-            WorkItemsNudgeEmitter.Resolve(SessionStartHarness.Pi, sessionId, activeProfile?.DisableWorkItemsNudge is true),
-            HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true, config));
+            WorkItemsNudgeEmitter.Resolve(SessionStartHarness.Pi, sessionId, activeProfile?.DisableWorkItemsNudge is true, home),
+            HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true, config, home));
         await WriteMemoryFragment(stdout, fragment, workItemsNudge);
 
         if (!AgentHookPoster.ShouldSpawnAfter(outcome, Url)) return outcome == HookPostOutcome.Failed ? 1 : 0;
@@ -210,7 +210,7 @@ sealed class PiHookCommand(ConfigRoot config, ProfileContext profiles, HookClock
             ["hook_event_name"] = "sessionEnd",
             ["session_id"]      = sessionId,
             ["reason"]          = string.IsNullOrEmpty(reason) ? "quit" : reason,
-            ["home_dir"]        = PathHelpers.HomeDirectory,
+            ["home_dir"]        = home.Path,
             ["ended_at"]        = DateTimeOffset.UtcNow.ToString("O")
         };
 

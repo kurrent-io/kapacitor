@@ -16,8 +16,10 @@ namespace Capacitor.Cli.Tests.Unit.Harness.Cursor;
 /// already states for this project).
 /// </summary>
 public class CursorGuardWiringTests {
+    [TempHome] public required TempHome Home { get; init; }
+
     WatchCommand? _watch;
-    WatchCommand Watch => _watch ??= new(Config.Root, Resolutions.None(Config.Root));
+    WatchCommand Watch => _watch ??= new(Config.Root, Resolutions.None(Config.Root), Home);
 
     CursorMarkers Markers => new(Config.Root);
 

@@ -4,7 +4,6 @@ namespace Capacitor.Cli.Tests.Unit.Services;
 
 // Real-manager counterpart to ServiceVerifyStartGateProductionPathTests, covering the same
 // discriminated-read contract for InstallVerifiedAsync's marker recovery.
-[NotInParallel(["HomeEnvVarMutation"])]
 public class ServiceVerifyInstallProductionPathTests {
     const string Id = "prodpath-install";
 
@@ -19,7 +18,7 @@ public class ServiceVerifyInstallProductionPathTests {
         Skip.When(OperatingSystem.IsWindows(), "launchd/HOME-based plist resolution is POSIX-only");
 
         using var fx = new ProdPathFixture(Id);
-        Directory.CreateDirectory(LaunchdUnit.AgentsDir());
+        Directory.CreateDirectory(LaunchdUnit.AgentsDir(fx.Home));
         Directory.CreateDirectory(fx.PlistPath); // a DIRECTORY sits at the plist path, not a file
 
         // The fingerprint value is irrelevant — recovery must never reach the fingerprint compare

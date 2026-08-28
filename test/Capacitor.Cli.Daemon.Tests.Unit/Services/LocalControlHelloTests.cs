@@ -5,6 +5,7 @@ using Capacitor.Cli.Daemon.Pty;
 using Capacitor.Cli.Daemon.Services;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
+using TUnit.Core.Enums;
 
 namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 
@@ -17,7 +18,10 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 /// orchestrator (and the consent plumbing) only need to exist to satisfy
 /// LocalControlServer's constructor.
 /// </summary>
+[ExcludeOn(OS.Windows)] // Unix-domain socket path
 public class LocalControlHelloTests {
+    [TempHome] public required TempHome Home { get; init; }
+
     [TempConfigRoot] public required TempConfigRoot Config { get; init; }
 
     sealed class NoopHostLifetime : IHostApplicationLifetime {
@@ -66,7 +70,7 @@ public class LocalControlHelloTests {
         var permissionBridge = new LocalPermissionBridge(connection, NullLogger<LocalPermissionBridge>.Instance);
 
         var orchestrator = new AgentOrchestrator(
-            config, Config.Root, connection, worktreeManager, repoMatcher,
+            config, Config.Root, Home, connection, worktreeManager, repoMatcher,
             new NoopPtyProcessFactory(), new NoopHttpClientFactory(),
             permissionBridge, new Dictionary<string, IHostedAgentLauncher>(),
             new Dictionary<string, IHostedAgentRuntimeFactory>(), new NoopHostLifetime(),
@@ -116,8 +120,6 @@ public class LocalControlHelloTests {
 
     [Test]
     public async Task Hello_with_client_info_gets_a_reply_naming_version_name_and_capabilities() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         await RunAsync("hello-a", async (h, ct) => {
             await using var s = await ConnectAsync(h.SockPath, ct);
             var clientHello = JsonSerializer.Serialize(
@@ -136,8 +138,6 @@ public class LocalControlHelloTests {
 
     [Test]
     public async Task Hello_with_empty_payload_gets_an_identical_reply() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         await RunAsync("hello-b", async (h, ct) => {
             await using var s = await ConnectAsync(h.SockPath, ct);
             await FrameCodec.WriteAsync(s, new LocalFrame(FrameType.Hello), ct);
@@ -154,8 +154,6 @@ public class LocalControlHelloTests {
 
     [Test]
     public async Task Hello_with_malformed_json_payload_is_treated_as_empty_and_still_replies() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         await RunAsync("hello-c", async (h, ct) => {
             await using var s = await ConnectAsync(h.SockPath, ct);
             // Payload is diagnostics-only — malformed JSON must not drop the connection or
@@ -175,8 +173,6 @@ public class LocalControlHelloTests {
 
     [Test]
     public async Task Hello_reply_carries_pid_and_instance_id() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         await RunAsync("hello-id", async (h, ct) => {
             h.Config.InstanceId = "inst-test-1";
             await using var s = await ConnectAsync(h.SockPath, ct);
@@ -191,8 +187,6 @@ public class LocalControlHelloTests {
 
     [Test]
     public async Task List_still_returns_AgentList_alongside_the_new_Hello_route() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         await RunAsync("hello-d", async (h, ct) => {
             await using var s = await ConnectAsync(h.SockPath, ct);
             await FrameCodec.WriteAsync(s, new LocalFrame(FrameType.List), ct);
@@ -204,8 +198,6 @@ public class LocalControlHelloTests {
 
     [Test]
     public async Task Unrouted_frame_type_gets_an_error_reply_mentioning_hello() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         await RunAsync("hello-e", async (h, ct) => {
             await using var s = await ConnectAsync(h.SockPath, ct);
             // Detach is a valid, decodable FrameType that LocalControlServer's switch doesn't

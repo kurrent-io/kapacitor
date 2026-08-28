@@ -1,14 +1,6 @@
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Config;
-using Capacitor.Cli.Core.Harness.Antigravity;
-using Capacitor.Cli.Core.Harness.Claude;
-using Capacitor.Cli.Core.Harness.Codex;
-using Capacitor.Cli.Core.Harness.Copilot;
-using Capacitor.Cli.Core.Harness.Cursor;
-using Capacitor.Cli.Core.Harness.Gemini;
-using Capacitor.Cli.Core.Harness.Kiro;
-using Capacitor.Cli.Core.Harness.OpenCode;
-using Capacitor.Cli.Core.Harness.Pi;
+using Capacitor.Cli.Core.Harness;
 
 namespace Capacitor.Cli.Commands;
 
@@ -24,7 +16,7 @@ namespace Capacitor.Cli.Commands;
 /// <c>remove</c>, <c>--cursor</c>, or early-exit invocations.
 /// </summary>
 public sealed record PluginEnvironment(
-    string         HomeDirectory,
+    UserHome       Home,
     // The resolved snapshot, not a ConfigRoot: the only reader wants EVERY profile's server_url
     // (the Codex sandbox allowlist covers all of them), never "which profile applies" — and the
     // process already resolved it, so a root here would only buy a second read of the same file.
@@ -49,40 +41,19 @@ public sealed record PluginEnvironment(
         get; init;
     } = StaleAgentProbe.Find;
 
-    public string ClaudeHome          => ClaudePaths.Home(HomeDirectory);
-    public string ClaudeUserSettings  => Path.Combine(ClaudeHome, "settings.json");
-    public string CodexHome           => CodexPaths.Home(HomeDirectory);
-    public string CodexUserHooksJson  => Path.Combine(CodexHome, "hooks.json");
-    public string CodexConfigTomlPath => Path.Combine(CodexHome, "config.toml");
-    public string CursorUserHooksJson => CursorPaths.UserHooksJson(HomeDirectory);
-    public string CursorMcpJson       => CursorPaths.UserMcpJson(HomeDirectory);
-    public string CopilotKcapHooksJson => CopilotPaths.KcapHooksJson(HomeDirectory);
-    public string CopilotMcpConfigJson => CopilotPaths.McpConfigJson(HomeDirectory);
-    public string CopilotInstructionsMd => CopilotPaths.InstructionsMd(HomeDirectory);
-    public string GeminiSettingsJson   => GeminiPaths.SettingsJson(HomeDirectory);
-    public string GeminiInstructionsMd => GeminiPaths.GeminiMd(HomeDirectory);
-    public string KiroKcapAgentJson    => KiroPaths.KcapAgentJson(HomeDirectory);
-    public string KiroSettingsJson     => KiroPaths.SettingsFile(HomeDirectory);
-    public string KiroMcpJson          => KiroPaths.SettingsMcpJson(HomeDirectory);
-    public string KiroSkillsDir        => KiroPaths.SkillsDir(HomeDirectory);
-    public string PiKcapExtension      => PiPaths.KcapExtension(HomeDirectory);
-    public string PiKcapMcpExtension   => PiPaths.KcapMcpExtension(HomeDirectory);
-    public string PiAgentsMd           => PiPaths.AgentsMd(HomeDirectory);
-    public string OpenCodeKcapPlugin    => OpenCodePaths.KcapPlugin(HomeDirectory);
-    public string OpenCodeMcpConfigJson => OpenCodePaths.McpConfigJson(HomeDirectory);
-    public string OpenCodeAgentsMd      => OpenCodePaths.AgentsMd(HomeDirectory);
-    public string AntigravityHooksJson  => AntigravityPaths.GlobalHooksJson(HomeDirectory);
-    public string AntigravityMcpConfigJson  => AntigravityPaths.McpConfigJson(HomeDirectory);
-    public string AntigravityInstructionsMd => AntigravityPaths.InstructionsMd(HomeDirectory);
-    public string AntigravitySkillsDir      => AntigravityPaths.SkillsDir(HomeDirectory);
-    public string AgentsSkillsDir     => Path.Combine(HomeDirectory, ".agents", "skills");
-    public string LegacyCodexSkills   => Path.Combine(CodexHome, "skills");
+    /// <summary>
+    /// Every vendor's layout. Supplied rather than resolved here: this type is the process-state
+    /// seam, so reading nine override variables to build itself would put back the ambient read it
+    /// exists to remove. Held as one instance, so two members of one vendor cannot name different
+    /// roots however the environment moves afterwards.
+    /// </summary>
+    public required HarnessPaths Paths { get; init; }
 
-    public static PluginEnvironment FromProcess(ProfileConfig profiles) => new(
-        HomeDirectory:     PathHelpers.HomeDirectory,
+    public static PluginEnvironment FromProcess(ProfileConfig profiles, UserHome home) => new(
+        Home:              home,
         Profiles:          profiles,
         ResolvePluginPath: () => SetupCommand.ResolvePluginPath(),
         Stdout:            Console.Out,
         Stderr:            Console.Error
-    );
+    ) { Paths = HarnessPaths.FromEnvironment(home) };
 }

@@ -150,11 +150,10 @@ static class WindowsTaskUnit {
     ///
     /// <para><c>"</c>, CR, LF — structural: they end the quoted command or the line.</para>
     ///
-    /// <para>Reachability, since <c>PathHelpers</c> composing the path does NOT make it safe — review made
-    /// exactly that point: the path runs through the config directory, so it carries the account name, and
-    /// Windows permits both <c>%</c> and <c>&amp;</c> in an account name; <c>KCAP_CONFIG_DIR</c> can set it
-    /// outright. <c>&amp;</c> itself is handled by the nested-quote form below rather than refused, so an
-    /// ordinary path keeps working.</para>
+    /// <para>Reachability: composing the path in code does NOT make it safe. It runs through the config
+    /// directory, so it carries the account name, and Windows permits both <c>%</c> and <c>&amp;</c> in an
+    /// account name; <c>KCAP_CONFIG_DIR</c> can set it outright. <c>&amp;</c> itself is handled by the
+    /// nested-quote form below rather than refused, so an ordinary path keeps working.</para>
     /// </summary>
     static void RequireSafeWrapperPath(string wrapperPath) {
         var bad = wrapperPath.Contains('%') ? "a percent sign"

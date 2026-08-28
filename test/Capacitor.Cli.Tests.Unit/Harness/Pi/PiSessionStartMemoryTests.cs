@@ -13,6 +13,7 @@ namespace Capacitor.Cli.Tests.Unit.Harness.Pi;
 /// </summary>
 public class PiSessionStartMemoryTests {
     [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+    [TempHome] public required TempHome Home { get; init; }
 
 
     // Instance, not static: the hook writes under the config dir (the repo-detection cache,
@@ -21,7 +22,7 @@ public class PiSessionStartMemoryTests {
     // The server URL is the resolution's, so a test proving the url guard fires hands in the bad one
     // here rather than as an argument.
     PiHookCommand Hook(string serverUrl = "http://localhost:5100") =>
-        new(Config.Root, Resolutions.At(serverUrl, Config.Root), new HookClock(TimeProvider.System));
+        new(Config.Root, Resolutions.At(serverUrl, Config.Root), new HookClock(TimeProvider.System), Home);
     static string Render(string? fragment) => PiHookCommand.RenderMemoryOutput(fragment);
 
     // Byte-identical to pre-feature behaviour on every no-index path (opt-out, failure, spent lease):

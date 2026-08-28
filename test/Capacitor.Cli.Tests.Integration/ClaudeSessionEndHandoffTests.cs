@@ -71,7 +71,7 @@ public class ClaudeSessionEndHandoffTests : IDisposable {
         // The continuation's output lands in the session log, where the watcher's already goes.
         var log = Config.PathTo("logs", $"{sid}.log");
         await Assert.That(File.Exists(log)).IsTrue();
-        await Assert.That(SharedFileText.ReadAllText(log)).Contains($"Inline drain for {sid}");
+        await Assert.That(File.ReadAllTextShared(log)).Contains($"Inline drain for {sid}");
     }
 
     async Task<JsonNode?> WaitForSessionEndAsync(TimeSpan budget) {

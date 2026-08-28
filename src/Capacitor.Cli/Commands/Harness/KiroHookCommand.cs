@@ -32,7 +32,7 @@ namespace Capacitor.Cli.Commands.Harness;
 /// The raw fragment is written with no JSON envelope and no diagnostics: whatever lands on stdout
 /// becomes conversation context verbatim.
 /// </remarks>
-sealed class KiroHookCommand(ConfigRoot config, ProfileContext profiles, HookClock clock) {
+sealed class KiroHookCommand(ConfigRoot config, ProfileContext profiles, HookClock clock, UserHome home) {
     readonly WatcherManager  _watchers = new(config, profiles);
     readonly AgentHookPoster _poster   = new(config, profiles);
 
@@ -164,7 +164,7 @@ sealed class KiroHookCommand(ConfigRoot config, ProfileContext profiles, HookClo
         // runs once after enrichment, then marks the session disabled so later
         // agentSpawn firings take the fast path above.
         if (activeProfile?.ExcludedPaths is { Length: > 0 } excludedPaths
-         && PathExclusion.IsExcluded(cwd, excludedPaths)) {
+         && PathExclusion.IsExcluded(cwd, excludedPaths, home)) {
             return 0;
         }
 
@@ -184,7 +184,7 @@ sealed class KiroHookCommand(ConfigRoot config, ProfileContext profiles, HookClo
         var forwarded = new JsonObject {
             ["hook_event_name"] = "agentSpawn",
             ["session_id"]      = dashedSessionId,
-            ["home_dir"]        = PathHelpers.HomeDirectory
+            ["home_dir"]        = home.Path
         };
 
         if (cwd is not null) {
@@ -209,11 +209,11 @@ sealed class KiroHookCommand(ConfigRoot config, ProfileContext profiles, HookClo
         // Model lives in the sibling {id}.json (the JSONL turn lines carry none),
         // so the server gets it only from this hook. Best-effort: at agentSpawn the
         // file may not exist yet — the next agentSpawn (fires every prompt) backfills.
-        if (ReadKiroModel(dashedSessionId) is { } model) {
+        if (ReadKiroModel(KiroPaths.FromEnvironment(home), dashedSessionId) is { } model) {
             forwarded["model"] = model;
         }
 
-        SessionStartInventory.Stamp(forwarded, config);
+        SessionStartInventory.Stamp(forwarded, config, home);
         var enriched = await RepositoryDetection.EnrichWithRepositoryInfo(config, forwarded.ToJsonString());
 
         if (activeProfile?.ExcludedRepos is { Length: > 0 } excludedRepos
@@ -255,8 +255,8 @@ sealed class KiroHookCommand(ConfigRoot config, ProfileContext profiles, HookClo
         // whose lease was spent for nothing.
         var fragment = await SessionStartMemoryHookSupport.AwaitBounded(memoryTask, budget);
         var workItemsNudge = HarnessNudgeEmitter.Combine(
-            WorkItemsNudgeEmitter.Resolve(SessionStartHarness.Kiro, sessionId, activeProfile?.DisableWorkItemsNudge is true),
-            HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true, config));
+            WorkItemsNudgeEmitter.Resolve(SessionStartHarness.Kiro, sessionId, activeProfile?.DisableWorkItemsNudge is true, home),
+            HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true, config, home));
         WriteAgentSpawnOutput(Console.Out, fragment, workItemsNudge);
         await Console.Out.FlushAsync();
 
@@ -287,7 +287,7 @@ sealed class KiroHookCommand(ConfigRoot config, ProfileContext profiles, HookClo
         // The watcher also owns session-end: GetCodingAgentPid() inside
         // SpawnWatcher passes the kiro-cli pid as --parent-pid, so the watcher
         // POSTs session-end/kiro when kiro-cli exits.
-        var transcriptPath = KiroPaths.SessionJsonl(dashedSessionId);
+        var transcriptPath = KiroPaths.FromEnvironment(home).SessionJsonl(dashedSessionId);
 
         // Bounded for the same reason as the POST, and this is the LAST step between the committed
         // injection and the zero exit. Not cheap in the worst case: the stale-watcher path kills and
@@ -313,12 +313,13 @@ sealed class KiroHookCommand(ConfigRoot config, ProfileContext profiles, HookClo
     /// Returns null when the file is absent (agentSpawn can fire before Kiro
     /// writes it) or unparseable — model is best-effort enrichment.
     /// </summary>
-    static string? ReadKiroModel(string dashedSessionId) {
+    static string? ReadKiroModel(KiroPaths paths, string dashedSessionId) {
         try {
-            var path = KiroPaths.SessionJson(dashedSessionId);
+            var path = paths.SessionJson(dashedSessionId);
             if (!File.Exists(path)) return null;
 
-            var model = JsonNode.Parse(File.ReadAllText(path))
+            // Shared open: never lock Kiro out of its own sidecar.
+            var model = JsonNode.Parse(File.ReadAllTextShared(path))
                 ?["session_state"]?["rts_model_state"]?["model_info"]?["model_id"]?.GetValue<string>();
 
             return string.IsNullOrWhiteSpace(model) ? null : model;

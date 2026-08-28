@@ -1,9 +1,13 @@
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Config;
 
 namespace Capacitor.Cli.Tests.Unit.Commands;
 
 public class ImportMissingCwdsReportTests {
+    // Every path reported below is outside this home, so the ~ shortening never fires.
+    static readonly UserHome Home = new("/no/such/home");
+
     [Test, NotInParallel]
     public async Task Reports_missing_cwds_with_session_count_and_sample() {
         using var tmp = new TempDir();
@@ -14,7 +18,7 @@ public class ImportMissingCwdsReportTests {
             ["s4"] = tmp.Path,
         };
 
-        var output = Capture(d => ImportCommand.ReportMissingCwds(sessionCwds, cwdRemap: null, d));
+        var output = Capture(d => ImportCommand.ReportMissingCwds(sessionCwds, cwdRemap: null, d, Home));
 
         await Assert.That(output).Contains("3 sessions reference 2 distinct paths that no longer exist on disk");
         await Assert.That(output).Contains("/does/not/exist/repo-a");
@@ -30,7 +34,7 @@ public class ImportMissingCwdsReportTests {
         };
 
         var rules  = new[] { new CwdRemap { From = "/old", To = "/new" } };
-        var output = Capture(d => ImportCommand.ReportMissingCwds(sessionCwds, rules, d));
+        var output = Capture(d => ImportCommand.ReportMissingCwds(sessionCwds, rules, d, Home));
 
         await Assert.That(output).Contains("update or add mappings");
     }
@@ -42,14 +46,14 @@ public class ImportMissingCwdsReportTests {
             ["s1"] = tmp.Path,
         };
 
-        var output = Capture(d => ImportCommand.ReportMissingCwds(sessionCwds, cwdRemap: null, d));
+        var output = Capture(d => ImportCommand.ReportMissingCwds(sessionCwds, cwdRemap: null, d, Home));
 
         await Assert.That(output).IsEmpty();
     }
 
     [Test, NotInParallel]
     public async Task Stays_silent_when_no_sessions_have_cwds() {
-        var output = Capture(d => ImportCommand.ReportMissingCwds(new Dictionary<string, string>(), cwdRemap: null, d));
+        var output = Capture(d => ImportCommand.ReportMissingCwds(new Dictionary<string, string>(), cwdRemap: null, d, Home));
 
         await Assert.That(output).IsEmpty();
     }
@@ -117,7 +121,7 @@ public class ImportMissingCwdsReportTests {
             ["s4"] = "/dev/other-repo",
         };
 
-        var output = Capture(d => ImportCommand.ReportMissingCwds(sessionCwds, cwdRemap: null, d));
+        var output = Capture(d => ImportCommand.ReportMissingCwds(sessionCwds, cwdRemap: null, d, Home));
 
         // 2 distinct roots (kapacitor + other-repo), 4 sessions still affected.
         await Assert.That(output).Contains("4 sessions reference 2 distinct paths");
@@ -157,7 +161,7 @@ public class ImportMissingCwdsReportTests {
             ["s7"] = "/missing/g",
         };
 
-        var output = Capture(d => ImportCommand.ReportMissingCwds(sessionCwds, cwdRemap: null, d));
+        var output = Capture(d => ImportCommand.ReportMissingCwds(sessionCwds, cwdRemap: null, d, Home));
 
         await Assert.That(output).Contains("... and 2 more");
     }

@@ -3,52 +3,52 @@ using Capacitor.Cli.Core.Harness.Gemini;
 namespace Capacitor.Cli.Core.Tests.Unit.Harness.Gemini;
 
 public class GeminiPathsTests {
-    // Parallel-safe: the override param is non-null, so no env var is read.
+    static GeminiPaths Gem(string home, string? geminiCliHome) => new(new(home), geminiCliHome);
+
     [Test]
     public async Task Root_gemini_cli_home_param_is_parent_of_dot_gemini() {
-        await Assert.That(GeminiPaths.Root(home: "/fake/home", geminiCliHome: "/foo"))
+        await Assert.That(Gem("/fake/home", "/foo").Root)
             .IsEqualTo(Path.Combine("/foo", ".gemini"));
     }
 
     [Test]
     public async Task Root_defaults_to_dot_gemini_under_home() {
-        await Assert.That(GeminiPaths.Root(home: "/fake/home", geminiCliHome: null))
+        await Assert.That(Gem("/fake/home", null).Root)
+            .IsEqualTo(Path.Combine("/fake/home", ".gemini"));
+    }
+
+    // Bare: GEMINI_CLI_HOME is inherited by any child a concurrent test spawns.
+    [Test]
+    [NotInParallel]
+    public async Task FromEnvironment_reads_GEMINI_CLI_HOME_as_the_parent_of_dot_gemini() {
+        var parent = Path.Combine(Path.GetTempPath(), "kcap-gemini-cfg");
+
+        using var env = EnvScope.Exclusive("GEMINI_CLI_HOME", parent);
+
+        await Assert.That(GeminiPaths.FromEnvironment(new("/fake/home")).SettingsJson)
+            .IsEqualTo(Path.Combine(parent, ".gemini", "settings.json"));
+    }
+
+    // The defunct GEMINI_HOME must NOT be honored.
+    [Test]
+    [NotInParallel]
+    public async Task FromEnvironment_ignores_GEMINI_HOME() {
+        using var cli = EnvScope.Exclusive("GEMINI_CLI_HOME", null);
+        using var old = EnvScope.Exclusive("GEMINI_HOME", "/should/be/ignored");
+
+        await Assert.That(GeminiPaths.FromEnvironment(new("/fake/home")).Root)
             .IsEqualTo(Path.Combine("/fake/home", ".gemini"));
     }
 
     [Test]
-    [NotInParallel("HomeEnvVarMutation")]
-    public async Task Root_reads_GEMINI_CLI_HOME_and_ignores_GEMINI_HOME() {
-        var originalCli = Environment.GetEnvironmentVariable("GEMINI_CLI_HOME");
-        var originalOld = Environment.GetEnvironmentVariable("GEMINI_HOME");
-        try {
-            // The defunct GEMINI_HOME must NOT be honored.
-            Environment.SetEnvironmentVariable("GEMINI_CLI_HOME", null);
-            Environment.SetEnvironmentVariable("GEMINI_HOME", "/should/be/ignored");
-            await Assert.That(GeminiPaths.Root(home: "/fake/home"))
-                .IsEqualTo(Path.Combine("/fake/home", ".gemini"));
-
-            // GEMINI_CLI_HOME is the parent of .gemini, and SettingsJson follows.
-            var parent = Path.Combine(Path.GetTempPath(), "kcap-gemini-cfg");
-            Environment.SetEnvironmentVariable("GEMINI_CLI_HOME", parent);
-            await Assert.That(GeminiPaths.Root()).IsEqualTo(Path.Combine(parent, ".gemini"));
-            await Assert.That(GeminiPaths.SettingsJson())
-                .IsEqualTo(Path.Combine(parent, ".gemini", "settings.json"));
-        } finally {
-            Environment.SetEnvironmentVariable("GEMINI_CLI_HOME", originalCli);
-            Environment.SetEnvironmentVariable("GEMINI_HOME", originalOld);
-        }
-    }
-
-    [Test]
     public async Task GeminiMd_defaults_to_dot_gemini_under_home() {
-        await Assert.That(GeminiPaths.GeminiMd(home: "/fake/home", geminiCliHome: null))
+        await Assert.That(Gem("/fake/home", null).GeminiMd)
             .IsEqualTo(Path.Combine("/fake/home", ".gemini", "GEMINI.md"));
     }
 
     [Test]
     public async Task GeminiMd_follows_GEMINI_CLI_HOME_relocation() {
-        await Assert.That(GeminiPaths.GeminiMd(home: "/fake/home", geminiCliHome: "/foo"))
+        await Assert.That(Gem("/fake/home", "/foo").GeminiMd)
             .IsEqualTo(Path.Combine("/foo", ".gemini", "GEMINI.md"));
     }
 
@@ -60,7 +60,7 @@ public class GeminiPathsTests {
         // Antigravity-only: ~/.gemini exists but holds only antigravity subdirs.
         tmp.CreateDir(".gemini", "antigravity", "brain");
         tmp.CreateDir(".gemini", "antigravity-cli");
-        await Assert.That(GeminiPaths.IsInstalled(home: tmp.Path, geminiCliHome: "")).IsFalse();
+        await Assert.That(Gem(tmp.Path, "").IsInstalled).IsFalse();
     }
 
     [Test]
@@ -69,13 +69,13 @@ public class GeminiPathsTests {
     public async Task IsInstalled_true_on_gemini_marker_file(string marker) {
         using var tmp = new TempDir();
         tmp.CreateFile([".gemini", marker], "{}");
-        await Assert.That(GeminiPaths.IsInstalled(home: tmp.Path, geminiCliHome: "")).IsTrue();
+        await Assert.That(Gem(tmp.Path, "").IsInstalled).IsTrue();
     }
 
     [Test]
     public async Task IsInstalled_true_on_tmp_recordings_dir() {
         using var tmp = new TempDir();
         tmp.CreateDir(".gemini", "tmp");
-        await Assert.That(GeminiPaths.IsInstalled(home: tmp.Path, geminiCliHome: "")).IsTrue();
+        await Assert.That(Gem(tmp.Path, "").IsInstalled).IsTrue();
     }
 }

@@ -19,7 +19,9 @@ public class DaemonStoreIsolationTests {
         await Assert.That(pinned).IsNotNullOrEmpty();
 
         var realHomeDaemons = Path.Combine(
+#pragma warning disable RS0030 // the real home is what the pin must not resolve to
             Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".config", "kcap", "daemons");
+#pragma warning restore RS0030
 
         var paths = new DaemonStore(pinned!);
         await Assert.That(paths.PidPath(Environment.UserName)

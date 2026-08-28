@@ -24,6 +24,7 @@ namespace Capacitor.Cli.Tests.Integration;
 /// </summary>
 public class GeminiSessionStartHandshakeOnPostFailureTests : IDisposable {
     [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+    [TempHome] public required TempHome Home { get; init; }
 
     readonly WireMockServer _server = WireMockServer.Start();
 
@@ -97,7 +98,7 @@ public class GeminiSessionStartHandshakeOnPostFailureTests : IDisposable {
         // The real memory factory, resolving against this test's own config root: discovery finds no
         // /auth/config, falls back to a token store that holds nothing, and hands back an
         // unauthenticated client — which is exactly what the stub wants, without a seam.
-        var exit = await new GeminiHookCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), new HookClock(TimeProvider.System))
+        var exit = await new GeminiHookCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), new HookClock(TimeProvider.System), Home)
             .Handle(new StringReader(payload));
 
         return (exit, capture.GetCapturedOutput());

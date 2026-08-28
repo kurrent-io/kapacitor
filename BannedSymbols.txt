@@ -1,0 +1,2 @@
+M:System.Environment.GetFolderPath(System.Environment.SpecialFolder);Take a UserHome.
+M:System.Environment.GetFolderPath(System.Environment.SpecialFolder,System.Environment.SpecialFolderOption);Take a UserHome.

@@ -4,6 +4,8 @@ using Capacitor.Cli.Core.Harness.Claude;
 namespace Capacitor.Cli.Core.Tests.Unit.Harness.Claude;
 
 public class ClaudeCliRunnerTests {
+    [TempHome] public required TempHome Home { get; init; }
+
     [Test]
     public async Task ParseResponse_ValidJsonWithAllFields_ParsesCorrectly() {
         const string json = """
@@ -139,13 +141,14 @@ public class ClaudeCliRunnerTests {
     public async Task RunAsync_WithMcpConfigAndEmptyAllowedTools_Throws() =>
         await AssertAllowedToolsGuard(allowedTools: []);
 
-    static async Task AssertAllowedToolsGuard(string[]? allowedTools) {
+    async Task AssertAllowedToolsGuard(string[]? allowedTools) {
         var ex = await Assert.ThrowsAsync<ArgumentException>(() =>
             ClaudeCliRunner.RunAsync(
                 prompt:        "irrelevant",
                 timeout:       TimeSpan.FromSeconds(1),
                 log:           _ => { },
                 profile:       null,
+                home:          Home,
                 mcpConfigJson: """{"mcpServers":{}}""",
                 allowedTools:  allowedTools
             )
@@ -350,7 +353,7 @@ public class ClaudeCliRunnerTests {
                             """;
         var logs = new List<string>();
 
-        var result = ClaudeCliRunner.TryReadTranscriptFallback(json, logs.Add);
+        var result = ClaudeCliRunner.TryReadTranscriptFallback(json, logs.Add, Home);
 
         await Assert.That(result).IsNull();
         await Assert.That(logs).Contains(l => l.Contains("is_error", StringComparison.Ordinal));

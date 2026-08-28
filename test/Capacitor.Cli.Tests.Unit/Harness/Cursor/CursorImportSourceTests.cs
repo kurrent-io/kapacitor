@@ -5,6 +5,7 @@ using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Harness.Cursor;
 using Capacitor.Cli.Harness.Cursor;
+using TUnit.Core.Enums;
 
 namespace Capacitor.Cli.Tests.Unit.Harness.Cursor;
 
@@ -18,6 +19,8 @@ namespace Capacitor.Cli.Tests.Unit.Harness.Cursor;
 // still parallel with every other test class.
 [NotInParallel(nameof(CursorImportSourceTests))]
 public class CursorImportSourceTests {
+    [TempHome] public required TempHome Home { get; init; }
+
     [TempConfigRoot] public required TempConfigRoot Config { get; init; }
 
     CursorMarkers Markers => new(Config.Root);
@@ -466,7 +469,7 @@ public class CursorImportSourceTests {
         await Assert.That(endNode["reason"]!.GetValue<string>()).IsEqualTo("historical-import");
     }
 
-    [Test]
+    [Test, ExcludeOn(OS.Linux)]
     public async Task import_session_populates_started_at_and_ended_at_from_file_times() {
         // synthetic lifecycle hooks must carry the JSONL file's
         // creation/last-write time so the server records canonical
@@ -478,8 +481,6 @@ public class CursorImportSourceTests {
         // mtime — so on Linux started_at and ended_at collapse to the same
         // value. The test verifies the macOS/Windows contract; Linux gets
         // degraded-but-functional behavior in production.
-        if (OperatingSystem.IsLinux()) return;
-
         using var fx    = new ProjectsDirFixture();
         var       jsonl = fx.AddSession("Users-me-proj", "11111111-1111-1111-1111-111111111111", "{}\n");
 
@@ -2014,7 +2015,8 @@ public class CursorImportSourceTests {
                 "http://localhost",
                 MinLines: 1,
                 ExcludedRepos: new[] { "acme/secret" },
-                ExcludedPaths: null
+                ExcludedPaths: null,
+                Home: Home
             ),
             CancellationToken.None
         );
@@ -2082,7 +2084,8 @@ public class CursorImportSourceTests {
                 "http://localhost",
                 MinLines: 0,
                 ExcludedRepos: new[] { "o/r" },
-                ExcludedPaths: null
+                ExcludedPaths: null,
+                Home: Home
             ),
             CancellationToken.None
         );
@@ -2090,12 +2093,9 @@ public class CursorImportSourceTests {
         await Assert.That(detectorCalls).IsEqualTo(1);
     }
 
-    [Test]
+    [Test, RunOn(OS.MacOs | OS.Windows)]
     public async Task discover_cwd_filter_matches_case_insensitively_on_macos_and_windows() {
-        // Qodo bug #2 regression test: cwd comparison must be case-insensitive
-        // on case-insensitive filesystems. Skipped on Linux where Ordinal is correct.
-        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsWindows()) return;
-
+        // cwd comparison must be case-insensitive where the filesystem is; Linux keeps Ordinal.
         using var fx = new ProjectsDirFixture();
         fx.AddWorkspaceJson("hash-aaa", "file:///Users/me/dev/MyProj");
         fx.AddSession("Users-me-dev-MyProj", "11111111-1111-1111-1111-111111111111", "{}\n");
@@ -2107,20 +2107,17 @@ public class CursorImportSourceTests {
         await Assert.That(got.Count).IsEqualTo(1);
     }
 
-    [Test]
+    [Test, ExcludeOn(OS.Linux)]
     public async Task discover_since_filter_uses_file_creation_time_not_last_write() {
-        // Qodo P2 regression test: a session whose JSONL was created BEFORE
-        // the cutoff but appended to AFTER it must still be excluded by
-        // --since. Cursor JSONL has no in-band timestamps, so the file
-        // creation time is the closest proxy for session-start.
+        // A session whose JSONL was created BEFORE the cutoff but appended to AFTER it must still
+        // be excluded by --since. Cursor JSONL has no in-band timestamps, so the file creation
+        // time is the closest proxy for session-start.
         //
         // Linux ext4 doesn't expose btime through .NET's File APIs:
         // SetCreationTimeUtc is a silent no-op and GetCreationTimeUtc falls
         // back to mtime. This test exercises a macOS/Windows-only filesystem
         // contract; on Linux the production code degrades to gating on mtime,
         // which is documented but not asserted here.
-        if (OperatingSystem.IsLinux()) return;
-
         using var fx    = new ProjectsDirFixture();
         var       jsonl = fx.AddSession("Users-me-proj", "11111111-1111-1111-1111-111111111111", "{}\n");
 
@@ -2156,8 +2153,8 @@ public class CursorImportSourceTests {
     static DiscoveryFilters Filters(string? filterCwd = null, string? filterSession = null, DateOnly? since = null, int minLines = 0) =>
         new(FilterCwd: filterCwd, FilterSession: filterSession, Since: since, MinLines: minLines);
 
-    static ClassifyContext Ctx(HttpClient http, int minLines = 0) =>
-        new(http, "http://localhost", minLines, ExcludedRepos: null, ExcludedPaths: null);
+    ClassifyContext Ctx(HttpClient http, int minLines = 0) =>
+        new(http, "http://localhost", minLines, ExcludedRepos: null, ExcludedPaths: null, Home: Home);
 
     sealed class ProjectsDirFixture : IDisposable {
         public string Root                { get; }

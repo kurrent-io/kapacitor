@@ -24,6 +24,8 @@ namespace Capacitor.Cli.Tests.Unit.Harness.Gemini;
 /// very tests disprove.</para>
 /// </summary>
 public class GeminiHookOutputContractTests {
+    [TempHome] public required TempHome Home { get; init; }
+
     [TempConfigRoot] public required TempConfigRoot Config { get; init; }
 
     const string SessionId = "3f2504e0-4f89-11d3-9a0c-0305e82c3301";
@@ -183,7 +185,7 @@ public class GeminiHookOutputContractTests {
 
         // A URL no POST can reach: these paths must all return before any network call, and a test
         // that quietly started talking to a live server would be measuring something else.
-        await new GeminiHookCommand(Config.Root, Resolutions.At("http://127.0.0.1:1", Config.Root), new HookClock(TimeProvider.System)).Handle(new StringReader(payload));
+        await new GeminiHookCommand(Config.Root, Resolutions.At("http://127.0.0.1:1", Config.Root), new HookClock(TimeProvider.System), Home).Handle(new StringReader(payload));
 
         return capture.GetCapturedOutput();
     }

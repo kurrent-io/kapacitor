@@ -39,6 +39,7 @@ internal static class AgentOrchestratorHarness {
         ) {
         var daemonStore    = new TempDaemonStore();
         var configRoot   = new TempConfigRoot();
+        var home         = new TempHome();
         var config = new DaemonConfig {
             Name                = "test",
             ServerUrl           = "http://127.0.0.1:1",
@@ -80,6 +81,7 @@ internal static class AgentOrchestratorHarness {
         return new HarnessOrchestrator(
             daemonStore,
             configRoot,
+            home,
             config,
             server,
             worktreeManager,
@@ -96,17 +98,19 @@ internal static class AgentOrchestratorHarness {
         );
     }
 
-    /// <summary>Owns the scratch directories its config points at — the daemon store and the config
-    /// root — so disposing the orchestrator, which every call site already does, reaps them at test
+    /// <summary>Owns the scratch directories its config points at — the daemon store, the config
+    /// root and the home — so disposing the orchestrator, which every call site already does, reaps them at test
     /// end. BuildOrchestrator is called from many sites, so no per-test fixture could own them
     /// instead.</summary>
     sealed class HarnessOrchestrator : AgentOrchestrator {
         readonly TempDaemonStore _tmp;
         readonly TempConfigRoot  _config;
+        readonly TempHome        _home;
 
         internal HarnessOrchestrator(
                 TempDaemonStore                                         tmp,
                 TempConfigRoot                                          configRoot,
+                TempHome                                                home,
                 DaemonConfig                                            config,
                 ServerConnection                                        server,
                 WorktreeManager                                         worktreeManager,
@@ -123,6 +127,7 @@ internal static class AgentOrchestratorHarness {
             ) : base(
             config,
             configRoot.Root,
+            home,
             server,
             worktreeManager,
             repoMatcher,
@@ -138,6 +143,7 @@ internal static class AgentOrchestratorHarness {
         ) {
             _tmp    = tmp;
             _config = configRoot;
+            _home   = home;
         }
 
         public override async ValueTask DisposeAsync() {
@@ -146,6 +152,7 @@ internal static class AgentOrchestratorHarness {
             } finally {
                 _tmp.Dispose();
                 _config.Dispose();
+                _home.Dispose();
             }
         }
     }

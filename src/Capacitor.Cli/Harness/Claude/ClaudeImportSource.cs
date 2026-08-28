@@ -1,6 +1,5 @@
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
-using Capacitor.Cli.Core.Harness.Claude;
 
 namespace Capacitor.Cli.Harness.Claude;
 
@@ -9,11 +8,11 @@ namespace Capacitor.Cli.Harness.Claude;
 /// Discovery wraps <see cref="ImportCommand.DiscoverTranscripts(string)"/> and
 /// applies the <c>--cwd</c> / <c>--session</c> filters via the existing helpers.
 /// Classification delegates to <see cref="TranscriptFileClassification.ClassifyAsync"/>
-/// with <c>vendor = "claude"</c>. <see cref="ImportSessionAsync"/> is a stub —
-/// the orchestrator will wire chain workers in E2.
+/// with <c>vendor = "claude"</c>. Claude sessions are imported per chain, so
+/// <see cref="ImportSessionAsync"/> is never the entry point — <c>ImportChainsAsync</c> is.
 /// </summary>
-internal sealed class ClaudeImportSource(ConfigRoot config, string? rootOverride = null) : IImportSource {
-    readonly string _projectsDir = rootOverride ?? ClaudePaths.Projects;
+internal sealed class ClaudeImportSource(ConfigRoot config, string projectsDir) : IImportSource {
+    readonly string _projectsDir = projectsDir;
 
     public string Vendor => "claude";
 
@@ -88,6 +87,7 @@ internal sealed class ClaudeImportSource(ConfigRoot config, string? rootOverride
 
         return await TranscriptFileClassification.ClassifyAsync(
             config,
+            ctx.Home,
             ctx.HttpClient,
             ctx.BaseUrl,
             transcripts,
@@ -104,5 +104,5 @@ internal sealed class ClaudeImportSource(ConfigRoot config, string? rootOverride
             ImportContext                       ctx,
             CancellationToken                   ct
         ) =>
-        throw new NotImplementedException("Wired up via ImportChainsAsync in E2.");
+        throw new NotImplementedException("Claude imports go through ImportChainsAsync.");
 }

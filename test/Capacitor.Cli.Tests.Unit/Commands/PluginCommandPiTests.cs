@@ -176,10 +176,12 @@ public class PluginCommandPiTests {
     }
 
     static PluginEnvironment TestEnv(string fakeHome) => new(
-        HomeDirectory:     fakeHome,
+        Home:     new(fakeHome),
         Profiles:          new ProfileConfig(),
         ResolvePluginPath: () => null,
         Stdout:            TextWriter.Null,
         Stderr:            TextWriter.Null
-    );
+    ) {
+        Paths = TestHarnessPaths.NoOverrides(new(fakeHome)),
+    };
 }

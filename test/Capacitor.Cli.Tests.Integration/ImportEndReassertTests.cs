@@ -18,11 +18,13 @@ namespace Capacitor.Cli.Tests.Integration;
 /// <c>ImportChainsTests</c> (Tests.Unit) drives for the New branch.
 /// </summary>
 public class ImportEndReassertTests : IDisposable {
+    [TempHome] public required TempHome Home { get; init; }
+
     [TempConfigRoot] public required TempConfigRoot Config { get; init; }
 
     // These tests exercise chaining and repo resolution, not profile selection.
     ImportCommand Import() =>
-        new(Config.Root, Resolutions.None(Config.Root));
+        new(Config.Root, Resolutions.None(Config.Root), Home);
     readonly WireMockServer _server = WireMockServer.Start();
     readonly TempDir        _tmp    = new();
     readonly string         _tempDir;
@@ -74,6 +76,7 @@ public class ImportEndReassertTests : IDisposable {
 
         var classified = await TranscriptFileClassification.ClassifyAsync(
             Config.Root,
+            Home,
             client,
             _server.Url!,
             transcripts,

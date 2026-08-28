@@ -8,33 +8,31 @@ using Capacitor.Cli.Core.Mcp;
 namespace Capacitor.Cli.Tests.Unit.Commands;
 
 // `plugin install/remove --gemini` (un)registers kcap's MCP servers in the SHARED ~/.gemini/settings.json
-// and installs the steering block in the separate ~/.gemini/GEMINI.md. FakeUserHome + a cleared
+// and installs the steering block in the separate ~/.gemini/GEMINI.md. TempHome + a cleared
 // GEMINI_CLI_HOME isolate GeminiPaths under a temp home.
-[NotInParallel("HomeEnvVarMutation")]
 public class PluginCommandGeminiTests {
     [Test]
     public async Task install_gemini_registers_mcp_servers_into_shared_settings_preserving_user_config() {
-        using var _    = new EnvScope("GEMINI_CLI_HOME", null);
-        using var home = new FakeUserHome();
+        using var home = new TempHome();
         var env = TestEnv(home.Path);
 
         // Installed-but-stale hooks so `--if-installed` refreshes (and registers MCP).
-        PluginCommand.InstallGeminiHooks(env.GeminiSettingsJson);   // writes `hooks` block + marker
-        GeminiHooksInstaller.DeleteMarker(env.GeminiSettingsJson);  // stale → refresh rewrites + registers
+        PluginCommand.InstallGeminiHooks(env.Paths.Gemini.SettingsJson);   // writes `hooks` block + marker
+        GeminiHooksInstaller.DeleteMarker(env.Paths.Gemini.SettingsJson);  // stale → refresh rewrites + registers
 
         // Splice a user-authored MCP server and an unrelated top-level setting into the shared file;
         // both must survive registration (non-destructive merge into settings.json).
-        var seeded = JsonNode.Parse(await File.ReadAllTextAsync(env.GeminiSettingsJson))!.AsObject();
+        var seeded = JsonNode.Parse(await File.ReadAllTextAsync(env.Paths.Gemini.SettingsJson))!.AsObject();
         seeded["theme"] = "dark";
         seeded["mcpServers"] = new JsonObject {
             ["my-tool"] = JsonNode.Parse("""{"command":"my-tool","args":["serve"]}""")
         };
-        await File.WriteAllTextAsync(env.GeminiSettingsJson, seeded.ToJsonString());
+        await File.WriteAllTextAsync(env.Paths.Gemini.SettingsJson, seeded.ToJsonString());
 
         var exit = await new PluginCommand(env).HandleAsync(["plugin", "install", "--gemini", "--if-installed"]);
         await Assert.That(exit).IsEqualTo(0);
 
-        var root    = JsonNode.Parse(await File.ReadAllTextAsync(env.GeminiSettingsJson))!.AsObject();
+        var root    = JsonNode.Parse(await File.ReadAllTextAsync(env.Paths.Gemini.SettingsJson))!.AsObject();
         var servers = root["mcpServers"]!.AsObject();
         // Registered command is the resolved native binary (injected seam), not the wrapper-resolved "kcap".
         await Assert.That(servers["kcap-review"]!["command"]!.GetValue<string>()).IsEqualTo(TestBinaryPath);
@@ -58,115 +56,109 @@ public class PluginCommandGeminiTests {
 
     [Test]
     public async Task install_gemini_skip_mcp_flag_leaves_settings_without_mcp_servers() {
-        using var _    = new EnvScope("GEMINI_CLI_HOME", null);
-        using var home = new FakeUserHome();
+        using var home = new TempHome();
         var env = TestEnv(home.Path);
 
-        PluginCommand.InstallGeminiHooks(env.GeminiSettingsJson);
-        GeminiHooksInstaller.DeleteMarker(env.GeminiSettingsJson);
+        PluginCommand.InstallGeminiHooks(env.Paths.Gemini.SettingsJson);
+        GeminiHooksInstaller.DeleteMarker(env.Paths.Gemini.SettingsJson);
 
         var exit = await new PluginCommand(env).HandleAsync(
             ["plugin", "install", "--gemini", "--if-installed", "--skip-gemini-mcp"]);
         await Assert.That(exit).IsEqualTo(0);
 
         // settings.json exists (hooks) but no MCP servers were written.
-        var root = JsonNode.Parse(await File.ReadAllTextAsync(env.GeminiSettingsJson))!.AsObject();
+        var root = JsonNode.Parse(await File.ReadAllTextAsync(env.Paths.Gemini.SettingsJson))!.AsObject();
         await Assert.That(root["mcpServers"]).IsNull();
     }
 
     [Test]
     public async Task install_gemini_if_installed_does_not_write_anything_when_never_opted_in() {
-        using var _    = new EnvScope("GEMINI_CLI_HOME", null);
-        using var home = new FakeUserHome();
+        using var home = new TempHome();
         var env = TestEnv(home.Path);
 
         // No hooks/marker seeded → --if-installed no-ops before touching settings.json OR GEMINI.md.
         var exit = await new PluginCommand(env).HandleAsync(["plugin", "install", "--gemini", "--if-installed"]);
         await Assert.That(exit).IsEqualTo(0);
 
-        await Assert.That(File.Exists(env.GeminiSettingsJson)).IsFalse();
-        await Assert.That(File.Exists(env.GeminiInstructionsMd)).IsFalse();
+        await Assert.That(File.Exists(env.Paths.Gemini.SettingsJson)).IsFalse();
+        await Assert.That(File.Exists(env.Paths.Gemini.GeminiMd)).IsFalse();
     }
 
     [Test]
     public async Task install_gemini_if_installed_heals_mcp_and_instructions_when_hooks_current() {
-        using var _    = new EnvScope("GEMINI_CLI_HOME", null);
-        using var home = new FakeUserHome();
+        using var home = new TempHome();
         var env = TestEnv(home.Path);
 
         // Hooks installed AND marker already current → the refresh must NOT rewrite hooks, but must
         // still register the MCP servers (into settings.json) + install the instructions (GEMINI.md).
-        PluginCommand.InstallGeminiHooks(env.GeminiSettingsJson);  // writes hooks + current marker
+        PluginCommand.InstallGeminiHooks(env.Paths.Gemini.SettingsJson);  // writes hooks + current marker
 
         var exit = await new PluginCommand(env).HandleAsync(["plugin", "install", "--gemini", "--if-installed"]);
         await Assert.That(exit).IsEqualTo(0);
 
-        var servers = JsonNode.Parse(await File.ReadAllTextAsync(env.GeminiSettingsJson))!.AsObject()["mcpServers"]!.AsObject();
+        var servers = JsonNode.Parse(await File.ReadAllTextAsync(env.Paths.Gemini.SettingsJson))!.AsObject()["mcpServers"]!.AsObject();
         await Assert.That(servers.Select(kv => kv.Key)).Contains("kcap-review");
-        await Assert.That(File.Exists(env.GeminiInstructionsMd)).IsTrue();
+        await Assert.That(File.Exists(env.Paths.Gemini.GeminiMd)).IsTrue();
     }
 
     [Test]
     public async Task install_gemini_if_installed_heals_instructions_when_settings_unparseable() {
-        using var _    = new EnvScope("GEMINI_CLI_HOME", null);
-        using var home = new FakeUserHome();
+        using var home = new TempHome();
         var env = TestEnv(home.Path);
 
         // Marker present (→ IsInstalled true) but stale (→ hooksCurrent false), and settings.json is
         // malformed so BOTH the hooks rewrite AND MCP registration fail-closed (they share the file and
         // must leave it untouched). Instructions live in a SEPARATE GEMINI.md, so they still heal.
-        Directory.CreateDirectory(GeminiPaths.Root(env.HomeDirectory));
+        Directory.CreateDirectory(env.Paths.Gemini.Root);
         await File.WriteAllTextAsync(
-            Path.Combine(GeminiPaths.Root(env.HomeDirectory), GeminiHooksInstaller.MarkerFileName), "0.0.0-stale");
-        await File.WriteAllTextAsync(env.GeminiSettingsJson, "{ not valid json");
+            Path.Combine(env.Paths.Gemini.Root, GeminiHooksInstaller.MarkerFileName), "0.0.0-stale");
+        await File.WriteAllTextAsync(env.Paths.Gemini.SettingsJson, "{ not valid json");
 
         var exit = await new PluginCommand(env).HandleAsync(["plugin", "install", "--gemini", "--if-installed"]);
         await Assert.That(exit).IsEqualTo(0);  // refresh swallows the hook/MCP failures on the shared file
 
-        await Assert.That(await File.ReadAllTextAsync(env.GeminiSettingsJson)).IsEqualTo("{ not valid json"); // untouched
-        await Assert.That(File.Exists(env.GeminiInstructionsMd)).IsTrue();                                     // instructions healed
-        await Assert.That(await File.ReadAllTextAsync(env.GeminiInstructionsMd)).Contains("Prefer kcap tools");
+        await Assert.That(await File.ReadAllTextAsync(env.Paths.Gemini.SettingsJson)).IsEqualTo("{ not valid json"); // untouched
+        await Assert.That(File.Exists(env.Paths.Gemini.GeminiMd)).IsTrue();                                     // instructions healed
+        await Assert.That(await File.ReadAllTextAsync(env.Paths.Gemini.GeminiMd)).Contains("Prefer kcap tools");
     }
 
     [Test]
     public async Task install_gemini_if_installed_reinstalls_hooks_when_settings_deleted() {
-        using var _    = new EnvScope("GEMINI_CLI_HOME", null);
-        using var home = new FakeUserHome();
+        using var home = new TempHome();
         var env = TestEnv(home.Path);
 
         // Hooks installed (marker current), then the user deletes settings.json by hand — the marker
         // sidecar survives. A "marker is current" check alone would skip the hook write and let MCP
         // registration recreate settings.json with ONLY mcpServers. hooksCurrent must also require the
         // file to exist, so hooks are rewritten before MCP touches the recreated file.
-        PluginCommand.InstallGeminiHooks(env.GeminiSettingsJson);  // hooks + current marker
-        File.Delete(env.GeminiSettingsJson);
+        PluginCommand.InstallGeminiHooks(env.Paths.Gemini.SettingsJson);  // hooks + current marker
+        File.Delete(env.Paths.Gemini.SettingsJson);
 
         var exit = await new PluginCommand(env).HandleAsync(["plugin", "install", "--gemini", "--if-installed"]);
         await Assert.That(exit).IsEqualTo(0);
 
-        var root = JsonNode.Parse(await File.ReadAllTextAsync(env.GeminiSettingsJson))!.AsObject();
+        var root = JsonNode.Parse(await File.ReadAllTextAsync(env.Paths.Gemini.SettingsJson))!.AsObject();
         await Assert.That(root["hooks"]).IsNotNull();       // hooks restored — not just mcpServers
         await Assert.That(root["mcpServers"]).IsNotNull();  // MCP also registered
     }
 
     [Test]
     public async Task remove_gemini_unregisters_mcp_servers_preserving_user_entries() {
-        using var _    = new EnvScope("GEMINI_CLI_HOME", null);
-        using var home = new FakeUserHome();
+        using var home = new TempHome();
         var env = TestEnv(home.Path);
 
         // Seed settings.json as a prior install would (kcap servers + ownership marker), then splice in
         // a user-authored server + an unrelated top-level setting that must survive removal.
-        JsonMcpConfigWriter.Register(env.GeminiSettingsJson, KcapMcpServers.All, McpConfigShape.Standard, cwd: null, new McpMarker("gemini"));
-        var seeded = JsonNode.Parse(await File.ReadAllTextAsync(env.GeminiSettingsJson))!.AsObject();
+        JsonMcpConfigWriter.Register(env.Paths.Gemini.SettingsJson, KcapMcpServers.All, McpConfigShape.Standard, cwd: null, new McpMarker("gemini", env.Home));
+        var seeded = JsonNode.Parse(await File.ReadAllTextAsync(env.Paths.Gemini.SettingsJson))!.AsObject();
         seeded["theme"] = "dark";
         seeded["mcpServers"]!["my-tool"] = JsonNode.Parse("""{"command":"my-tool","args":["serve"]}""");
-        await File.WriteAllTextAsync(env.GeminiSettingsJson, seeded.ToJsonString());
+        await File.WriteAllTextAsync(env.Paths.Gemini.SettingsJson, seeded.ToJsonString());
 
         var exit = await new PluginCommand(env).HandleAsync(["plugin", "remove", "--gemini"]);
         await Assert.That(exit).IsEqualTo(0);
 
-        var root    = JsonNode.Parse(await File.ReadAllTextAsync(env.GeminiSettingsJson))!.AsObject();
+        var root    = JsonNode.Parse(await File.ReadAllTextAsync(env.Paths.Gemini.SettingsJson))!.AsObject();
         var servers = root["mcpServers"]!.AsObject();
         var keys    = servers.Select(kv => kv.Key).ToArray();
         await Assert.That(keys).DoesNotContain("kcap-review");
@@ -179,50 +171,48 @@ public class PluginCommandGeminiTests {
 
     [Test]
     public async Task remove_gemini_retains_marker_on_failed_unregister_then_retry_removes_entries() {
-        using var _    = new EnvScope("GEMINI_CLI_HOME", null);
-        using var home = new FakeUserHome();
+        using var home = new TempHome();
         var env = TestEnv(home.Path);
 
-        JsonMcpConfigWriter.Register(env.GeminiSettingsJson, KcapMcpServers.All, McpConfigShape.Standard, cwd: null, new McpMarker("gemini"));
-        var installed = await File.ReadAllTextAsync(env.GeminiSettingsJson); // valid content to restore after the "fix"
-        await Assert.That(new McpMarker("gemini").Owned(env.GeminiSettingsJson).ToArray()).IsNotEmpty();
+        JsonMcpConfigWriter.Register(env.Paths.Gemini.SettingsJson, KcapMcpServers.All, McpConfigShape.Standard, cwd: null, new McpMarker("gemini", env.Home));
+        var installed = await File.ReadAllTextAsync(env.Paths.Gemini.SettingsJson); // valid content to restore after the "fix"
+        await Assert.That(new McpMarker("gemini", env.Home).Owned(env.Paths.Gemini.SettingsJson).ToArray()).IsNotEmpty();
 
         // settings.json is temporarily malformed → Unregister fails-closed.
-        await File.WriteAllTextAsync(env.GeminiSettingsJson, "{ not valid json");
+        await File.WriteAllTextAsync(env.Paths.Gemini.SettingsJson, "{ not valid json");
 
         var failExit = await new PluginCommand(env).HandleAsync(["plugin", "remove", "--gemini"]);
         await Assert.That(failExit).IsEqualTo(1);                                                        // failed unregister propagates
-        await Assert.That(new McpMarker("gemini").Owned(env.GeminiSettingsJson).ToArray()).IsNotEmpty(); // marker RETAINED for retry
+        await Assert.That(new McpMarker("gemini", env.Home).Owned(env.Paths.Gemini.SettingsJson).ToArray()).IsNotEmpty(); // marker RETAINED for retry
 
         // User fixes the file (kcap entries intact); the retry now succeeds and cleans up.
-        await File.WriteAllTextAsync(env.GeminiSettingsJson, installed);
+        await File.WriteAllTextAsync(env.Paths.Gemini.SettingsJson, installed);
         var retryExit = await new PluginCommand(env).HandleAsync(["plugin", "remove", "--gemini"]);
         await Assert.That(retryExit).IsEqualTo(0);
 
-        var root    = JsonNode.Parse(await File.ReadAllTextAsync(env.GeminiSettingsJson))!.AsObject();
+        var root    = JsonNode.Parse(await File.ReadAllTextAsync(env.Paths.Gemini.SettingsJson))!.AsObject();
         var servers = root["mcpServers"] as JsonObject;
         var keys    = servers?.Select(kv => kv.Key).ToArray() ?? [];
         await Assert.That(keys).DoesNotContain("kcap-review");
-        await Assert.That(new McpMarker("gemini").Owned(env.GeminiSettingsJson).ToArray()).IsEmpty();  // marker cleared after clean removal
+        await Assert.That(new McpMarker("gemini", env.Home).Owned(env.Paths.Gemini.SettingsJson).ToArray()).IsEmpty();  // marker cleared after clean removal
     }
 
     [Test]
     public async Task install_gemini_installs_instructions_preserving_user_content() {
-        using var _    = new EnvScope("GEMINI_CLI_HOME", null);
-        using var home = new FakeUserHome();
+        using var home = new TempHome();
         var env = TestEnv(home.Path);
 
-        PluginCommand.InstallGeminiHooks(env.GeminiSettingsJson);
-        GeminiHooksInstaller.DeleteMarker(env.GeminiSettingsJson);
+        PluginCommand.InstallGeminiHooks(env.Paths.Gemini.SettingsJson);
+        GeminiHooksInstaller.DeleteMarker(env.Paths.Gemini.SettingsJson);
 
         // A pre-existing user GEMINI.md that must survive.
-        Directory.CreateDirectory(Path.GetDirectoryName(env.GeminiInstructionsMd)!);
-        await File.WriteAllTextAsync(env.GeminiInstructionsMd, "# My rules\n\nAlways use tabs.\n");
+        Directory.CreateDirectory(Path.GetDirectoryName(env.Paths.Gemini.GeminiMd)!);
+        await File.WriteAllTextAsync(env.Paths.Gemini.GeminiMd, "# My rules\n\nAlways use tabs.\n");
 
         var exit = await new PluginCommand(env).HandleAsync(["plugin", "install", "--gemini", "--if-installed"]);
         await Assert.That(exit).IsEqualTo(0);
 
-        var content = await File.ReadAllTextAsync(env.GeminiInstructionsMd);
+        var content = await File.ReadAllTextAsync(env.Paths.Gemini.GeminiMd);
         await Assert.That(content).Contains("Always use tabs.");                       // user content preserved
         await Assert.That(content).Contains(AgentInstructionsWriter.BeginMarker);
         await Assert.That(content).Contains("Prefer kcap tools");
@@ -230,34 +220,32 @@ public class PluginCommandGeminiTests {
 
     [Test]
     public async Task install_gemini_skip_instructions_flag_leaves_gemini_md_untouched() {
-        using var _    = new EnvScope("GEMINI_CLI_HOME", null);
-        using var home = new FakeUserHome();
+        using var home = new TempHome();
         var env = TestEnv(home.Path);
 
-        PluginCommand.InstallGeminiHooks(env.GeminiSettingsJson);
-        GeminiHooksInstaller.DeleteMarker(env.GeminiSettingsJson);
+        PluginCommand.InstallGeminiHooks(env.Paths.Gemini.SettingsJson);
+        GeminiHooksInstaller.DeleteMarker(env.Paths.Gemini.SettingsJson);
 
         var exit = await new PluginCommand(env).HandleAsync(
             ["plugin", "install", "--gemini", "--if-installed", "--skip-gemini-instructions"]);
         await Assert.That(exit).IsEqualTo(0);
 
-        await Assert.That(File.Exists(env.GeminiInstructionsMd)).IsFalse();
+        await Assert.That(File.Exists(env.Paths.Gemini.GeminiMd)).IsFalse();
     }
 
     [Test]
     public async Task remove_gemini_strips_instructions_block_keeping_user_content() {
-        using var _    = new EnvScope("GEMINI_CLI_HOME", null);
-        using var home = new FakeUserHome();
+        using var home = new TempHome();
         var env = TestEnv(home.Path);
 
-        Directory.CreateDirectory(Path.GetDirectoryName(env.GeminiInstructionsMd)!);
-        await File.WriteAllTextAsync(env.GeminiInstructionsMd, "# My rules\n\nAlways use tabs.\n");
-        AgentInstructionsWriter.Write(env.GeminiInstructionsMd, KcapAgentInstructions.Body);
+        Directory.CreateDirectory(Path.GetDirectoryName(env.Paths.Gemini.GeminiMd)!);
+        await File.WriteAllTextAsync(env.Paths.Gemini.GeminiMd, "# My rules\n\nAlways use tabs.\n");
+        AgentInstructionsWriter.Write(env.Paths.Gemini.GeminiMd, KcapAgentInstructions.Body);
 
         var exit = await new PluginCommand(env).HandleAsync(["plugin", "remove", "--gemini"]);
         await Assert.That(exit).IsEqualTo(0);
 
-        var content = await File.ReadAllTextAsync(env.GeminiInstructionsMd);
+        var content = await File.ReadAllTextAsync(env.Paths.Gemini.GeminiMd);
         await Assert.That(content).Contains("Always use tabs.");
         await Assert.That(content).DoesNotContain(AgentInstructionsWriter.BeginMarker);
         await Assert.That(content).DoesNotContain("Prefer kcap tools");
@@ -265,23 +253,22 @@ public class PluginCommandGeminiTests {
 
     [Test]
     public async Task remove_gemini_clears_mcp_marker_even_when_settings_file_absent() {
-        using var _    = new EnvScope("GEMINI_CLI_HOME", null);
-        using var home = new FakeUserHome();
+        using var home = new TempHome();
         var env = TestEnv(home.Path);
 
         // A prior install registered the servers (ownership marker recorded); then the user deleted
         // settings.json by hand before running remove.
-        JsonMcpConfigWriter.Register(env.GeminiSettingsJson, KcapMcpServers.All, McpConfigShape.Standard, cwd: null, new McpMarker("gemini"));
-        await Assert.That(new McpMarker("gemini").Owned(env.GeminiSettingsJson).ToArray()).IsNotEmpty();
-        File.Delete(env.GeminiSettingsJson);
+        JsonMcpConfigWriter.Register(env.Paths.Gemini.SettingsJson, KcapMcpServers.All, McpConfigShape.Standard, cwd: null, new McpMarker("gemini", env.Home));
+        await Assert.That(new McpMarker("gemini", env.Home).Owned(env.Paths.Gemini.SettingsJson).ToArray()).IsNotEmpty();
+        File.Delete(env.Paths.Gemini.SettingsJson);
 
         var exit = await new PluginCommand(env).HandleAsync(["plugin", "remove", "--gemini"]);
         await Assert.That(exit).IsEqualTo(0);
 
         // The marker is cleared despite the absent file → a future user-authored mcpServers.kcap-*
         // entry won't be misclassified as kcap-owned. And no config file is created.
-        await Assert.That(new McpMarker("gemini").Owned(env.GeminiSettingsJson).ToArray()).IsEmpty();
-        await Assert.That(File.Exists(env.GeminiSettingsJson)).IsFalse();
+        await Assert.That(new McpMarker("gemini", env.Home).Owned(env.Paths.Gemini.SettingsJson).ToArray()).IsEmpty();
+        await Assert.That(File.Exists(env.Paths.Gemini.SettingsJson)).IsFalse();
     }
 
     // Deterministic native-binary path: registration writes the resolved binary as the command
@@ -290,11 +277,14 @@ public class PluginCommandGeminiTests {
     internal const string TestBinaryPath = "/opt/kcap-test/bin/kcap";
 
     static PluginEnvironment TestEnv(string fakeHome) => new(
-        HomeDirectory:     fakeHome,
+        Home:     new(fakeHome),
         Profiles:          new ProfileConfig(),
         ResolvePluginPath: () => null,
         Stdout:            TextWriter.Null,
         Stderr:            TextWriter.Null
-    ) { ResolveMcpBinaryPath = () => TestBinaryPath };
+    ) {
+        Paths = TestHarnessPaths.NoOverrides(new(fakeHome)),
+        ResolveMcpBinaryPath = () => TestBinaryPath
+    };
 
 }

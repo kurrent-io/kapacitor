@@ -7,16 +7,9 @@ using Capacitor.Cli.Commands.Harness;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.Config;
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Core.Telemetry;
-using Capacitor.Cli.Harness.Antigravity;
 using Capacitor.Cli.Harness.Claude;
-using Capacitor.Cli.Harness.Codex;
-using Capacitor.Cli.Harness.Copilot;
-using Capacitor.Cli.Harness.Cursor;
-using Capacitor.Cli.Harness.Gemini;
-using Capacitor.Cli.Harness.Kiro;
-using Capacitor.Cli.Harness.OpenCode;
-using Capacitor.Cli.Harness.Pi;
 using ReviewCommand = Capacitor.Cli.Commands.ReviewCommand;
 using WatchCommand = Capacitor.Cli.Commands.WatchCommand;
 
@@ -82,6 +75,7 @@ var isHook = command == "hook";
 
 // Resolved once here and passed onward; nothing downstream resolves a root for itself.
 var config = ConfigRoot.FromEnvironment();
+var home   = UserHome.FromEnvironment();
 
 // Claude kills a SessionEnd hook after 1.5 s (ClaudeSessionEndHandoff), so the hand-off sits
 // ahead of ResolveServerUrl's git probes and the global spool drain, each of which can spend it.
@@ -287,7 +281,7 @@ switch (command) {
     case "eval": {
         // --list-questions is a standalone sub-action; short-circuit.
         if (args.Contains("--list-questions")) {
-            return await new EvalCommand(config, profiles).HandleListQuestions();
+            return await new EvalCommand(config, profiles, home).HandleListQuestions();
         }
 
         var evalSessionId = ResolveSessionId(args, valueFlags: ["--model", "--threshold", "--questions", "--skip"]);
@@ -319,7 +313,7 @@ switch (command) {
             }
         }
 
-        return await new EvalCommand(config, profiles).HandleEval(
+        return await new EvalCommand(config, profiles, home).HandleEval(
             evalSessionId, evalModel, evalChain, evalThreshold,
             evalQuestions, evalSkip
         );
@@ -332,7 +326,7 @@ switch (command) {
         var wdSessionId = args[1].Replace("-", "");
         var wdVendor    = args.Contains("--codex") ? "codex" : "claude";
 
-        return await new WhatsDoneCommand(config, profiles).HandleGenerateWhatsDone(baseUrl!, wdSessionId, wdVendor);
+        return await new WhatsDoneCommand(config, profiles, home).HandleGenerateWhatsDone(baseUrl!, wdSessionId, wdVendor);
     }
     case "login":
         return await new LoginCommand(config, profiles, SystemBrowser.Instance).HandleAsync(args, baseUrl);
@@ -345,13 +339,13 @@ switch (command) {
     case "whoami":
         return await new WhoamiCommand(config, profiles).HandleAsync();
     case "daemon":
-        return await new DaemonCommands(daemonPaths, config, profiles).HandleAsync(args);
+        return await new DaemonCommands(daemonPaths, config, profiles, home).HandleAsync(args);
     case "agent":
-        return await new AgentCommand(daemonPaths, config, profiles).HandleAsync(args, baseUrl);
+        return await new AgentCommand(daemonPaths, config, profiles, home).HandleAsync(args, baseUrl);
     case "setup":
-        return await new SetupCommand(config, profiles, SystemBrowser.Instance).HandleAsync(args);
+        return await new SetupCommand(config, profiles, SystemBrowser.Instance, home).HandleAsync(args);
     case "plugin":
-        return await new PluginCommand(PluginEnvironment.FromProcess(profiles.Snapshot)).HandleAsync(args);
+        return await new PluginCommand(PluginEnvironment.FromProcess(profiles.Snapshot, home)).HandleAsync(args);
     case "profile":
         return await new ProfileCommand(config).HandleAsync(args);
     case "machine":
@@ -359,13 +353,13 @@ switch (command) {
     case "use":
         return await new UseCommand(config).HandleAsync(args);
     case "status":
-        return await new StatusCommand(daemonPaths, profiles, config).HandleAsync(args);
+        return await new StatusCommand(daemonPaths, profiles, config, home).HandleAsync(args);
     case "harness":
-        return await new HarnessCommand(config).HandleAsync(args);
+        return await new HarnessCommand(config, home).HandleAsync(args);
     case "config":
         return await new ConfigCommand(config).HandleAsync(args);
     case "ignore":
-        return await new IgnoreCommand(config, profiles).HandleAsync(args);
+        return await new IgnoreCommand(config, profiles, home).HandleAsync(args);
     case "remap":
         return await new RemapCommand(config).HandleAsync(args);
     case "repos":
@@ -465,7 +459,7 @@ switch (command) {
             Console.SetOut(TextWriter.Null);
             Console.SetError(TextWriter.Null);
         }
-        return await new SkillsCommand(config, profiles).HandleSync(args.Contains("--dry-run"), skillsAuto);
+        return await new SkillsCommand(config, profiles, home).HandleSync(args.Contains("--dry-run"), skillsAuto);
     }
     case "curate": {
         if (args.Length < 2) {
@@ -487,7 +481,7 @@ switch (command) {
     case "cleanup":
         return await new CleanupCommand(config, profiles).HandleCleanup();
     case "uninstall":
-        return await new UninstallCommand(daemonPaths, config, profiles).HandleAsync(args);
+        return await new UninstallCommand(daemonPaths, config, profiles, home).HandleAsync(args);
     case "disable": {
         // The sessionId is consumed as a filesystem path component
         // (watcher PID files, disabled marker file). Validate strictly as a
@@ -647,20 +641,8 @@ switch (command) {
 
         // Build sources
         var explicitVendorSelection = vsel.Vendors.Count > 0;
-        var allSources = new IImportSource[] {
-            new ClaudeImportSource(config),
-            new CodexImportSource(config),
-            new CursorImportSource(config),
-            new CopilotImportSource(config),
-            new GeminiImportSource(),
-            new KiroImportSource(config),
-            new PiImportSource(config),
-            new OpenCodeImportSource(),
-            new AntigravityImportSource(),
-        };
-        IReadOnlyList<IImportSource> sources = explicitVendorSelection
-            ? allSources.Where(s => vsel.Vendors.Contains(s.Vendor)).ToList()
-            : allSources;
+        var sources = SetupCommand.BuildImportSources(
+            config, HarnessPaths.FromEnvironment(home), explicitVendorSelection ? vsel.Vendors : null);
 
         // --- Scope resolution ---
         var profileConfig = profiles.Snapshot;
@@ -689,7 +671,7 @@ switch (command) {
             return 1;
         }
 
-        return await new ImportCommand(config, profiles).HandleImport(
+        return await new ImportCommand(config, profiles, home).HandleImport(
             filterCwd,
             filterSession,
             minLines,
@@ -740,7 +722,7 @@ switch (command) {
 
         var watchVendor = GetArg(args, "--vendor") ?? "claude";
 
-        return await new WatchCommand(config, profiles).RunWatch(
+        return await new WatchCommand(config, profiles, home).RunWatch(
             watchSessionId, watchPath, watchAgentId, watchCwd,
             watchSkipTitle, parentPid, watchVendor
         );
@@ -832,31 +814,31 @@ switch (command) {
                 sessionId: null); // current session unknown here — reading stdin now would consume it
         }
         if (args.Contains("--claude")) {
-            return await new ClaudeHookCommand(config, profiles, clock).Handle(new StringReader(claudeHookBody!));
+            return await new ClaudeHookCommand(config, profiles, clock, home).Handle(new StringReader(claudeHookBody!));
         }
         if (args.Contains("--codex")) {
-            return await new CodexHookCommand(config, profiles, clock).Handle(Console.In);
+            return await new CodexHookCommand(config, profiles, clock, home).Handle(Console.In);
         }
         if (args.Contains("--cursor")) {
-            return await new CursorHookCommand(config, profiles, clock).Handle(Console.In);
+            return await new CursorHookCommand(config, profiles, clock, home).Handle(Console.In);
         }
         if (args.Contains("--copilot")) {
-            return await new CopilotHookCommand(config, profiles, clock).Handle(Console.In, args);
+            return await new CopilotHookCommand(config, profiles, clock, home).Handle(Console.In, args);
         }
         if (args.Contains("--gemini")) {
-            return await new GeminiHookCommand(config, profiles, clock).Handle(Console.In);
+            return await new GeminiHookCommand(config, profiles, clock, home).Handle(Console.In);
         }
         if (args.Contains("--kiro")) {
-            return await new KiroHookCommand(config, profiles, clock).Handle(Console.In, args);
+            return await new KiroHookCommand(config, profiles, clock, home).Handle(Console.In, args);
         }
         if (args.Contains("--pi")) {
-            return await new PiHookCommand(config, profiles, clock).Handle(args, Console.Out);
+            return await new PiHookCommand(config, profiles, clock, home).Handle(args, Console.Out);
         }
         if (args.Contains("--opencode")) {
-            return await new OpenCodeHookCommand(config, profiles, clock).Handle(args);
+            return await new OpenCodeHookCommand(config, profiles, clock, home).Handle(args);
         }
         if (args.Contains("--antigravity")) {
-            return await new AntigravityHookCommand(config, profiles, clock).Handle(args);
+            return await new AntigravityHookCommand(config, profiles, clock, home).Handle(args);
         }
         Console.Error.WriteLine("kcap hook requires a vendor flag (for example --claude)");
         Console.Error.WriteLine("Supported vendors: --claude, --codex, --cursor, --copilot, --gemini, --kiro, --pi, --opencode, --antigravity");
@@ -884,7 +866,7 @@ return 1;
 
 } finally {
     await UpdateNotice.FlushAsync(command, args, profiles, config);
-    await HarnessSetupNotice.FlushAsync(command, config, profiles);
+    await HarnessSetupNotice.FlushAsync(command, config, profiles, home);
 }
 
 static string? GetArg(string[] arguments, string flag) {

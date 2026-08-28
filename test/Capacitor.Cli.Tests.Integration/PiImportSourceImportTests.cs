@@ -18,6 +18,7 @@ namespace Capacitor.Cli.Tests.Integration;
 /// </summary>
 public class PiImportSourceImportTests : IDisposable {
     [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+    [TempHome] public required TempHome Home { get; init; }
 
     readonly WireMockServer _server = WireMockServer.Start();
     readonly TempDir        _tmp    = new();
@@ -81,7 +82,7 @@ public class PiImportSourceImportTests : IDisposable {
 
         var classified = await source.ClassifyAsync(
             discovered,
-            new ClassifyContext(client, _server.Url!, MinLines: 0, ExcludedRepos: null, ExcludedPaths: null),
+            new ClassifyContext(client, _server.Url!, MinLines: 0, ExcludedRepos: null, ExcludedPaths: null, Home: Home),
             CancellationToken.None);
         await Assert.That(classified.Count).IsEqualTo(1);
         await Assert.That(classified[0].Status).IsEqualTo(ImportCommand.ClassificationStatus.New);
@@ -146,7 +147,7 @@ public class PiImportSourceImportTests : IDisposable {
         var discovered = await source.DiscoverAsync(new DiscoveryFilters(null, null, null, 0), CancellationToken.None);
         var classified = await source.ClassifyAsync(
             discovered,
-            new ClassifyContext(client, _server.Url!, MinLines: 0, ExcludedRepos: null, ExcludedPaths: null),
+            new ClassifyContext(client, _server.Url!, MinLines: 0, ExcludedRepos: null, ExcludedPaths: null, Home: Home),
             CancellationToken.None);
 
         await Assert.That(classified[0].Status).IsEqualTo(ImportCommand.ClassificationStatus.Partial);
@@ -179,7 +180,7 @@ public class PiImportSourceImportTests : IDisposable {
         var discovered = await source.DiscoverAsync(new DiscoveryFilters(null, null, null, 0), CancellationToken.None);
         var classified = await source.ClassifyAsync(
             discovered,
-            new ClassifyContext(client, _server.Url!, MinLines: 0, ExcludedRepos: null, ExcludedPaths: null),
+            new ClassifyContext(client, _server.Url!, MinLines: 0, ExcludedRepos: null, ExcludedPaths: null, Home: Home),
             CancellationToken.None);
 
         await Assert.That(classified.Count).IsEqualTo(1);
@@ -211,7 +212,7 @@ public class PiImportSourceImportTests : IDisposable {
         var discovered = await source.DiscoverAsync(new DiscoveryFilters(null, null, null, 0), CancellationToken.None);
         var classified = await source.ClassifyAsync(
             discovered,
-            new ClassifyContext(client, _server.Url!, MinLines: 0, ExcludedRepos: null, ExcludedPaths: null),
+            new ClassifyContext(client, _server.Url!, MinLines: 0, ExcludedRepos: null, ExcludedPaths: null, Home: Home),
             CancellationToken.None);
         await Assert.That(classified[0].Status).IsEqualTo(ImportCommand.ClassificationStatus.AlreadyLoaded);
 

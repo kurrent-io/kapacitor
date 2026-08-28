@@ -14,6 +14,8 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 /// deleted; six review rounds found exactly that, repeatedly.</para>
 /// </summary>
 public class UnusableUrlGuardTests : IDisposable {
+    [TempHome] public required TempHome Home { get; init; }
+
     // Deliberately the wrong-scheme class: an implementation validating only UriKind.Absolute
     // accepts this while still violating the invariant.
     const string BadUrl = "ftp://host";
@@ -199,7 +201,7 @@ public class UnusableUrlGuardTests : IDisposable {
         // normalization, so passing the raw payload id straight through would miss it entirely.
         var body = $$"""{"session_id":"{{dashed}}","hook_event_name":"SessionStart"}""";
 
-        await Assert.That(await new ClaudeHookCommand(Config.Root, Resolutions.None(Config.Root), _clock).ShouldSuppressCaptureAsync(
+        await Assert.That(await new ClaudeHookCommand(Config.Root, Resolutions.None(Config.Root), _clock, Home).ShouldSuppressCaptureAsync(
             dashless, body, "session-start", activeProfile: null, _clock.Budget(Ceiling))).IsTrue();
     }
 
@@ -210,7 +212,7 @@ public class UnusableUrlGuardTests : IDisposable {
 
         var body = $$"""{"session_id":"{{sid}}","hook_event_name":"SessionEnd"}""";
 
-        await Assert.That(await new ClaudeHookCommand(Config.Root, Resolutions.None(Config.Root), _clock).ShouldSuppressCaptureAsync(
+        await Assert.That(await new ClaudeHookCommand(Config.Root, Resolutions.None(Config.Root), _clock, Home).ShouldSuppressCaptureAsync(
             sid, body, "session-end", activeProfile: null, _clock.Budget(Ceiling))).IsTrue();
 
         // Collapsing the gate into a plain boolean would have dropped this cleanup.
@@ -223,7 +225,7 @@ public class UnusableUrlGuardTests : IDisposable {
         var sid  = Guid.NewGuid().ToString("N");
         var body = $$"""{"session_id":"{{sid}}","hook_event_name":"SessionStart"}""";
 
-        await Assert.That(await new ClaudeHookCommand(Config.Root, Resolutions.None(Config.Root), _clock).ShouldSuppressCaptureAsync(
+        await Assert.That(await new ClaudeHookCommand(Config.Root, Resolutions.None(Config.Root), _clock, Home).ShouldSuppressCaptureAsync(
             sid, body, "session-start", activeProfile: null, _clock.Budget(Ceiling))).IsFalse();
     }
 
@@ -232,7 +234,7 @@ public class UnusableUrlGuardTests : IDisposable {
     public async Task Cursor_never_builds_a_client_for_an_unusable_url() {
         var entered = false;
 
-        var exit = await new CursorHookCommand(Config.Root, Bad, new HookClock(TimeProvider.System)).HandleWithDeps(
+        var exit = await new CursorHookCommand(Config.Root, Bad, new HookClock(TimeProvider.System), Home).HandleWithDeps(
             new StringReader("""{"hook_event_name":"sessionStart","session_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"""),
             _ => {
                 entered = true;
@@ -252,7 +254,7 @@ public class UnusableUrlGuardTests : IDisposable {
     public async Task Claude_never_builds_a_client_for_an_unusable_url() {
         var entered = false;
 
-        var exit = await new ClaudeHookCommand(Config.Root, Bad, new HookClock(TimeProvider.System)).HandleWithDeps(
+        var exit = await new ClaudeHookCommand(Config.Root, Bad, new HookClock(TimeProvider.System), Home).HandleWithDeps(
             new HookSpool(_dir),
             stdin: new StringReader($$"""{"hook_event_name":"SessionStart","session_id":"{{Sid}}"}"""),
             clientFactory: () => {
