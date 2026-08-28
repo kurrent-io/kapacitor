@@ -124,46 +124,50 @@ public sealed class BrowserFirstRunFlow(
         progress.Opening(setupUrl);
         launcher.TryOpen(setupUrl);
 
-        FirstRunFlowResult result;
+        // ONE write decides the reason, and it is the poll's own assignment — so an interrupt either sees
+        // a leg still waiting (the machine is dying: `stopped`) or the reason its result names, never a
+        // half-decided state. Computing the reason into a second variable would reopen exactly that gap.
+        FirstRunFlowResult? settled = null;
 
-        // Scoped to the POLL, and that is load-bearing rather than tidiness. An interrupt runs no finally
-        // — Ctrl+C, SIGTERM, SIGHUP and the parent watchdog all reach Environment.Exit from a handler — so
-        // something has to be armed while the leg waits. But this callback can only ever say `stopped`, so
-        // leaving it armed past the poll would let it race the reason the result actually names: a
-        // dismissed leg would gamble `handover` against `stopped`, and a FINISHED one — which must never
-        // relinquish — could do so at all.
-        using (_interrupts.Arm(
-                   token => RelinquishAsync(serverUrl, flowId, FirstRunRelinquishReasons.Stopped, token))) {
-            try {
-                result = await PollAsync(serverUrl, flowId, report, ct);
-            } finally {
-                progress.WaitEnded();
-            }
+        using var notice = _interrupts.Arm(token =>
+            ReasonToSend(Volatile.Read(ref settled)) is { } reason
+                ? RelinquishAsync(serverUrl, flowId, reason, token)
+                : Task.CompletedTask);
+
+        try {
+            Volatile.Write(ref settled, await PollAsync(serverUrl, flowId, report, ct));
+        } finally {
+            progress.WaitEnded();
         }
 
-        // ONE call, keyed off the result type, so the closed tab and the failed leg are covered without a
-        // special case for the keypress.
-        //
-        // Finished must not relinquish, and that guard is the load-bearing one: the flow is over on its own
-        // terms and the browser is rendering the payoff. Expired needs nothing either — the server already
-        // refuses a flow past its lifetime, and the page says so.
-        if (ReasonFor(result) is { } reason) await RelinquishAsync(serverUrl, flowId, reason, ct);
+        // The same notice the interrupt handler would have sent, claimed once: whichever path gets there
+        // first is the only one that sends, so the browser cannot be told two opposite things.
+        await notice.SendAsync(ct);
 
-        return result;
+        return settled!;
     }
 
     /// <summary>
-    /// What to tell the browser about this ending, or null when there is nothing to tell it.
+    /// What to tell the browser, or null when there is nothing to tell it.
+    ///
+    /// <para><b>A leg still waiting reads as <c>stopped</c></b>, because the only way to observe that is
+    /// from an interrupt handler: the process is being killed, so nothing is carrying on whatever the
+    /// screen currently offers.</para>
     ///
     /// <para><b>A dismissal is a handover and nothing else is.</b> It is the one exit where the terminal
     /// carries on with everything the browser settled, so it is the one where the page must not send anyone
     /// back to <c>kcap setup</c>. A backstop that elapsed and a leg that failed both leave nothing
     /// running.</para>
+    ///
+    /// <para><b>Finished sends nothing, and that guard is the load-bearing one:</b> the flow is over on its
+    /// own terms and the browser is rendering the payoff. Expired needs nothing either — the server already
+    /// refuses a flow past its lifetime, and the page says so.</para>
     /// </summary>
-    static string? ReasonFor(FirstRunFlowResult result) => result switch {
-        FirstRunFlowResult.Dismissed => FirstRunRelinquishReasons.Handover,
+    static string? ReasonToSend(FirstRunFlowResult? settled) => settled switch {
+        null                                                     => FirstRunRelinquishReasons.Stopped,
+        FirstRunFlowResult.Dismissed                             => FirstRunRelinquishReasons.Handover,
         FirstRunFlowResult.Abandoned or FirstRunFlowResult.Failed => FirstRunRelinquishReasons.Stopped,
-        _ => null
+        _                                                        => null
     };
 
     /// <summary>Says the machine has gone. Swallows everything: this runs as the leg ends, and a setup that

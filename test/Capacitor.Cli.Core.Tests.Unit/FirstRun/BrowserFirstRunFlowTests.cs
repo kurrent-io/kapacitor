@@ -142,34 +142,33 @@ public class BrowserFirstRunFlowTests {
         }
     }
 
-    /// <summary>Holds the leg's interrupt callback where a test can fire it, instead of the process-global
-    /// sink — which is what keeps this class out of assembly-wide exclusion.</summary>
+    /// <summary>
+    /// Stands in for the process-global sink, which is what keeps this class out of assembly-wide
+    /// exclusion. It hands out the REAL <see cref="FirstRunNotice"/>, so the claim arbitration under test
+    /// is the production one rather than a second implementation of it.
+    /// </summary>
     sealed class FakeInterrupts(Log log) : IFirstRunInterrupts {
         readonly Log _log = log;
 
-        Func<CancellationToken, Task>? _armed;
+        // The notice itself is the LEG's to dispose, so only its interrupt entry point is held here.
+        Action<TimeSpan>? _interrupt;
 
-        public int Arms    { get; private set; }
-        public int Disarms { get; private set; }
+        public int Arms { get; private set; }
 
-        public IDisposable Arm(Func<CancellationToken, Task> relinquish) {
+        public IFirstRunNotice Arm(Func<CancellationToken, Task> send) {
             Arms++;
-            _armed = relinquish;
             _log.Add("arm");
 
-            return new Handle(this);
+            var notice = new FirstRunNotice(send, onDispose: _ => _log.Add("disarm"));
+
+            _interrupt = notice.RunBeforeExit;
+
+            return notice;
         }
 
-        /// <summary>Fires whatever is armed, as a signal handler would. A no-op when nothing is.</summary>
-        public Task FireAsync() => _armed?.Invoke(CancellationToken.None) ?? Task.CompletedTask;
-
-        sealed class Handle(FakeInterrupts owner) : IDisposable {
-            public void Dispose() {
-                owner.Disarms++;
-                owner._armed = null;
-                owner._log.Add("disarm");
-            }
-        }
+        /// <summary>Fires the interrupt path, as a signal handler would.</summary>
+        public void Interrupt(TimeSpan? budget = null) =>
+            _interrupt?.Invoke(budget ?? TimeSpan.FromSeconds(5));
     }
 
     sealed class RecordingProgress(Log log) : IFirstRunFlowProgress {
@@ -1659,8 +1658,8 @@ public class BrowserFirstRunFlowTests {
         await Assert.That(h.Channel.Relinquished).IsEmpty();
     }
 
-    /// <summary>It is the last thing the leg does, so a failure has nowhere to go: what it costs is the
-    /// browser falling back to the behaviour it had before the route existed.</summary>
+    /// <summary>A refused best-effort relinquish leaves the leg's result unchanged, and the browser then
+    /// waits until the flow's own lifetime ends it.</summary>
     [Test]
     public async Task A_relinquish_the_server_refuses_does_not_change_how_the_leg_ended() {
         var h = Build();
@@ -1694,7 +1693,7 @@ public class BrowserFirstRunFlowTests {
         var h = Build();
 
         // Fired from inside a poll, because that is when a real signal would arrive.
-        h.Channel.OnPoll = () => h.Interrupts.FireAsync().GetAwaiter().GetResult();
+        h.Channel.OnPoll = () => h.Interrupts.Interrupt();
         h.Channel.Polls.Enqueue(new(200, Running()));
         h.Channel.Polls.Enqueue(new(404, null));
 
@@ -1704,25 +1703,21 @@ public class BrowserFirstRunFlowTests {
     }
 
     /// <summary>
-    /// Disarmed before anything the result decides, and this is the guard that matters: the callback can
-    /// only ever say <c>stopped</c>, so left armed it would race the reason the result names — gambling
-    /// <c>handover</c> against <c>stopped</c> on a dismissal, and relinquishing at all on a finish.
+    /// The claim is what stops the two paths contradicting each other. Ending a scope before the leg's own
+    /// send does NOT close it: an interrupt handler that read the callback first still runs it afterwards,
+    /// and the browser then shows whichever of two opposite remedies landed last.
     ///
-    /// <para><b>Asserted as ORDERING, because nothing observable after the leg can tell the two shapes
-    /// apart:</b> an arm scoped to the whole method has also been disposed by then, so a test that only
-    /// looked afterwards would pass either way and prove nothing.</para>
+    /// <para><b>The interrupt wins, and that is the honest outcome:</b> the process is being killed, so
+    /// nothing is carrying on however the poll happened to end.</para>
     /// </summary>
     [Test]
     [Arguments(true)]
     [Arguments(false)]
-    public async Task The_arm_is_gone_before_the_result_is_acted_on(bool dismissed) {
+    public async Task An_interrupt_racing_the_legs_own_send_produces_exactly_one(bool dismissed) {
         var h = Build(dismissed ? new FakeKeys(canWatch: true, pressAfter: 2) : null);
 
-        // Fires whatever is still armed at the moment the result's own reason is being sent. Left armed,
-        // that is a second POST saying the opposite thing.
-        //
-        // ONCE, or the second POST re-enters this hook and recurses until the stack goes — which aborts the
-        // run instead of failing an assertion, and an unreadable red is nearly as bad as a green.
+        // Fires at the moment the leg's own reason is being sent, which is the window a scope-based fix
+        // leaves open. ONCE, or the second send re-enters this hook and recurses until the stack goes.
         var fired = false;
 
         h.Channel.OnRelinquish = () => {
@@ -1730,21 +1725,35 @@ public class BrowserFirstRunFlowTests {
 
             fired = true;
 
-            h.Interrupts.FireAsync().GetAwaiter().GetResult();
+            h.Interrupts.Interrupt();
         };
 
         if (!dismissed) h.Channel.Polls.Enqueue(new(200, Done()));
 
         await Run(h);
 
-        await Assert.That(h.Interrupts.Arms).IsEqualTo(1);
-        await Assert.That(h.Interrupts.Disarms).IsEqualTo(1);
-        await Assert.That(h.Log.Precedes("arm", "disarm")).IsTrue();
-
-        // Exactly the reason the result named, and nothing behind it.
+        // Exactly one, and it is the reason the result named — never that reason plus its opposite.
         string[] expected = dismissed ? [FirstRunRelinquishReasons.Handover] : [];
 
         await Assert.That(h.Channel.Relinquished).IsEquivalentTo(expected);
+    }
+
+    /// <summary>
+    /// The other ordering: an interrupt gets there FIRST, so its reason is the one that stands and the
+    /// leg's own send is suppressed rather than appended.
+    /// </summary>
+    [Test]
+    public async Task An_interrupt_that_wins_the_claim_is_the_only_send() {
+        var h = Build(new FakeKeys(canWatch: true, pressAfter: 2));
+
+        // On the last poll, before the leg has a result — so the interrupt sends `stopped` and the
+        // dismissal's own `handover` must not follow it.
+        h.Channel.OnPoll = () => h.Interrupts.Interrupt();
+
+        var result = await Run(h);
+
+        await Assert.That(result).IsTypeOf<FirstRunFlowResult.Dismissed>();
+        await Assert.That(h.Channel.Relinquished).IsEquivalentTo([FirstRunRelinquishReasons.Stopped]);
     }
 
     /// <summary>A leg that never reached a flow arms nothing: there is no id to name.</summary>
