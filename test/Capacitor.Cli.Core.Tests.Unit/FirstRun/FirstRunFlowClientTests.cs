@@ -148,6 +148,48 @@ public class FirstRunFlowClientTests {
         await Assert.That(body.AsObject().ContainsKey("detail")).IsFalse();
     }
 
+    [Test]
+    public async Task RelinquishAsync_posts_the_reason_to_the_flow_s_relinquish_route() {
+        using var server = WireMockServer.Start();
+        server.Given(Request.Create().WithPath($"{PollPath}/relinquish").UsingPost())
+            .RespondWith(Response.Create().WithStatusCode(200)
+                .WithBody(StateBody("Pending")).WithHeader("Content-Type", "application/json"));
+
+        using var http = new HttpClient();
+
+        var outcome = await new FirstRunFlowClient(http).RelinquishAsync(
+            server.Urls[0], FlowId, FirstRunRelinquishReasons.Handover, CancellationToken.None);
+
+        await Assert.That(outcome.Recorded).IsTrue();
+
+        var body = JsonNode.Parse(
+            server.FindLogEntries(Request.Create().WithPath($"{PollPath}/relinquish").UsingPost())[0]
+                  .RequestMessage.Body!)!;
+
+        await Assert.That(body["reason"]!.GetValue<string>()).IsEqualTo("handover");
+
+        // The whole payload. There is nothing for a detail field to improve on a page whose only
+        // remaining job is to take affordances away.
+        await Assert.That(body.AsObject().Count).IsEqualTo(1);
+    }
+
+    // Never retried — it is the last thing the leg does — so the caller has to be able to tell that it
+    // did not land rather than assume it did.
+    [Test]
+    public async Task RelinquishAsync_reports_a_refusal_as_not_recorded() {
+        using var server = WireMockServer.Start();
+        server.Given(Request.Create().WithPath($"{PollPath}/relinquish").UsingPost())
+            .RespondWith(Response.Create().WithStatusCode(410));
+
+        using var http = new HttpClient();
+
+        var outcome = await new FirstRunFlowClient(http).RelinquishAsync(
+            server.Urls[0], FlowId, FirstRunRelinquishReasons.Stopped, CancellationToken.None);
+
+        await Assert.That(outcome.StatusCode).IsEqualTo(410);
+        await Assert.That(outcome.Recorded).IsFalse();
+    }
+
     // A report the server did not accept leaves the request outstanding, which is what makes the
     // loop's retry self-terminating.
     [Test]

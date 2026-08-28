@@ -118,10 +118,57 @@ public sealed class BrowserFirstRunFlow(
         progress.Opening(setupUrl);
         launcher.TryOpen(setupUrl);
 
+        // Armed for the leg's whole duration, because an interrupt runs no finally: Ctrl+C, SIGTERM and
+        // SIGHUP all reach Environment.Exit from a handler, and this is the only thing between that and a
+        // browser left offering decisions nobody will act on.
+        using var armed = FirstRunInterruptRelinquish.Arm(
+            token => RelinquishAsync(serverUrl, flowId, FirstRunRelinquishReasons.Stopped, token));
+
+        FirstRunFlowResult result;
+
         try {
-            return await PollAsync(serverUrl, flowId, report, ct);
+            result = await PollAsync(serverUrl, flowId, report, ct);
         } finally {
             progress.WaitEnded();
+        }
+
+        // ONE call, keyed off the result type, so the closed tab and the failed leg are covered without a
+        // special case for the keypress.
+        //
+        // Finished must not relinquish, and that guard is the load-bearing one: the flow is over on its own
+        // terms and the browser is rendering the payoff. Expired needs nothing either — the server already
+        // refuses a flow past its lifetime, and the page says so.
+        if (ReasonFor(result) is { } reason) await RelinquishAsync(serverUrl, flowId, reason, ct);
+
+        return result;
+    }
+
+    /// <summary>
+    /// What to tell the browser about this ending, or null when there is nothing to tell it.
+    ///
+    /// <para><b>A dismissal is a handover and nothing else is.</b> It is the one exit where the terminal
+    /// carries on with everything the browser settled, so it is the one where the page must not send anyone
+    /// back to <c>kcap setup</c>. A backstop that elapsed and a leg that failed both leave nothing
+    /// running.</para>
+    /// </summary>
+    static string? ReasonFor(FirstRunFlowResult result) => result switch {
+        FirstRunFlowResult.Dismissed => FirstRunRelinquishReasons.Handover,
+        FirstRunFlowResult.Abandoned or FirstRunFlowResult.Failed => FirstRunRelinquishReasons.Stopped,
+        _ => null
+    };
+
+    /// <summary>Says the machine has gone. Swallows everything: this runs as the leg ends, and a setup that
+    /// otherwise worked must not report a failure because one best-effort POST did not land.</summary>
+    async Task RelinquishAsync(string serverUrl, string flowId, string reason, CancellationToken ct) {
+        try {
+            await channel.RelinquishAsync(serverUrl, flowId, reason, ct);
+        } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
+            // Propagated, as every other await in this class does: a caller's cancel is not this method's
+            // to swallow, and the poll would already have thrown on one.
+            throw;
+        } catch (Exception) {
+            // The channel already degrades a transport failure to a status code, so reaching here means
+            // something unexpected — and there is still nothing useful to do about it.
         }
     }
 

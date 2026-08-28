@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using Capacitor.Cli.Core.FirstRun;
 
 namespace Capacitor.Cli;
 
@@ -33,6 +34,11 @@ static class InteractiveLifetime {
     // How often the parent-liveness watchdog polls. Short enough to reap a
     // stray promptly, long enough to be negligible overhead.
     static readonly TimeSpan ParentPollInterval = TimeSpan.FromSeconds(3);
+
+    // What an interrupt may spend telling a server the machine has gone. A whole second of an exit
+    // the user has already asked for is as much as this is worth: one small POST to a host we are
+    // mid-conversation with either lands well inside it or is not going to.
+    static readonly TimeSpan ExitNoticeBudget = TimeSpan.FromSeconds(1);
 
     // PosixSignalRegistration.Create returns an IDisposable that owns the
     // underlying handler slot; if it isn't rooted for the process lifetime the
@@ -70,7 +76,7 @@ static class InteractiveLifetime {
         try {
             Console.CancelKeyPress += static (_, e) => {
                 e.Cancel = true; // we own termination below
-                Environment.Exit(InterruptExitCode);
+                Interrupt();
             };
         } catch {
             // Some hosts don't support CancelKeyPress; the watchdog still covers us.
@@ -81,7 +87,7 @@ static class InteractiveLifetime {
         try {
             _sigterm = PosixSignalRegistration.Create(PosixSignal.SIGTERM, static ctx => {
                 ctx.Cancel = true;
-                Environment.Exit(InterruptExitCode);
+                Interrupt();
             });
         } catch {
             // best effort
@@ -90,7 +96,7 @@ static class InteractiveLifetime {
         try {
             _sighup = PosixSignalRegistration.Create(PosixSignal.SIGHUP, static ctx => {
                 ctx.Cancel = true;
-                Environment.Exit(InterruptExitCode);
+                Interrupt();
             });
         } catch {
             // best effort
@@ -108,6 +114,18 @@ static class InteractiveLifetime {
         }
     }
 
+    /// <summary>
+    /// The exit every interrupt path takes. <c>Environment.Exit</c> runs no <c>finally</c>, so anything a
+    /// command needs to say on its way out has to be said here — today that is the browser setup flow
+    /// telling the server this machine has stopped listening, which is what stops the page going on to
+    /// offer decisions nobody will act on.
+    /// </summary>
+    static void Interrupt() {
+        FirstRunInterruptRelinquish.RunBeforeExit(ExitNoticeBudget);
+
+        Environment.Exit(InterruptExitCode);
+    }
+
     static void StartParentWatchdog(int? parentPid) {
         // pid <= 1 means no real parent (init / detached) — nothing sane to
         // monitor, so skip rather than risk self-terminating immediately.
@@ -120,7 +138,7 @@ static class InteractiveLifetime {
                 Thread.Sleep(ParentPollInterval);
 
                 if (!ProcessHelpers.IsProcessAlive(ppid)) {
-                    Environment.Exit(InterruptExitCode);
+                    Interrupt();
                 }
             }
         }) {
