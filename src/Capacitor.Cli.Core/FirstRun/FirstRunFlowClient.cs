@@ -29,8 +29,8 @@ public sealed record FirstRunImportReportOutcome(int StatusCode) {
 }
 
 /// <summary>One attempt at saying this machine has gone. Never retried: it is sent as the leg ends, so
-/// there is no later tick, and what a failure costs is the browser falling back to the behaviour it had
-/// before the route existed.</summary>
+/// there is no later tick, and what a failure costs is a browser left waiting until the flow's own
+/// lifetime ends it.</summary>
 public sealed record FirstRunRelinquishOutcome(int StatusCode) {
     public bool Recorded => StatusCode is >= 200 and < 300;
 }

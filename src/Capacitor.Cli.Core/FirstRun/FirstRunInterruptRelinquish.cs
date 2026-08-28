@@ -1,24 +1,43 @@
 namespace Capacitor.Cli.Core.FirstRun;
 
 /// <summary>
+/// Where a leg leaves its "this machine has gone" callback for an interrupt handler to find.
+///
+/// <para><b>A seam because the real one is process-global.</b> Without it every ordinary run writes
+/// process state, which forces assembly-wide test exclusion on tests that have nothing to do with
+/// interrupts.</para>
+/// </summary>
+public interface IFirstRunInterrupts {
+    /// <summary>Registers what to send if the process is interrupted. Dispose to take it back.</summary>
+    IDisposable Arm(Func<CancellationToken, Task> relinquish);
+}
+
+/// <summary>
 /// The one exit the browser leg cannot see: an interrupt handler calling <c>Environment.Exit</c>, which
 /// runs no <c>finally</c> anywhere. This lets the handler spend a moment saying the machine has gone
 /// before the process does.
 ///
 /// <para><b>A static because the handlers are installed process-wide and take no arguments.</b> There is
 /// nothing command-scoped for them to reach through, so the leg leaves a callback here for its own
-/// duration and takes it back. A test touching this needs bare <c>[NotInParallel]</c> — it is
-/// process-global state.</para>
+/// duration and takes it back. A test touching THIS needs bare <c>[NotInParallel]</c>; a test of a leg
+/// passes its own <see cref="IFirstRunInterrupts"/> and needs none.</para>
 ///
 /// <para><b>Best effort, and bounded.</b> It usually lands. A SIGKILL, a lost network or a machine going
-/// to sleep sends nothing, and the browser then falls back to what it did before this existed: a screen
-/// that keeps waiting, bounded by the flow's own lifetime.</para>
+/// to sleep sends nothing, and the browser is then left waiting until the flow's own lifetime ends
+/// it.</para>
 /// </summary>
 public static class FirstRunInterruptRelinquish {
     static Func<CancellationToken, Task>? _pending;
 
-    /// <summary>Registers what to send if the process is interrupted. Dispose to take it back — a leg that
-    /// ended normally has already said its piece.</summary>
+    /// <summary>The process-global sink, which is what the CLI's signal handlers read.</summary>
+    public static IFirstRunInterrupts Process { get; } = new ProcessSink();
+
+    sealed class ProcessSink : IFirstRunInterrupts {
+        public IDisposable Arm(Func<CancellationToken, Task> relinquish) =>
+            FirstRunInterruptRelinquish.Arm(relinquish);
+    }
+
+    /// <inheritdoc cref="IFirstRunInterrupts.Arm"/>
     public static IDisposable Arm(Func<CancellationToken, Task> relinquish) {
         Volatile.Write(ref _pending, relinquish);
 

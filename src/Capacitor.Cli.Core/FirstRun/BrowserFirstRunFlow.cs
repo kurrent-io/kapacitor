@@ -11,6 +11,9 @@ namespace Capacitor.Cli.Core.FirstRun;
 /// and the screen goes on saying it is waiting.</param>
 /// <param name="importing">The Import step's scan and run. Null leaves the screen waiting on a report
 /// that never comes, so a host that renders the flow at all should supply one.</param>
+/// <param name="interrupts">Where to leave the "this machine has gone" callback for an interrupt handler
+/// to find. Defaults to the process-global one the CLI's signal handlers read; passing another keeps an
+/// ordinary run out of process state.</param>
 public sealed class BrowserFirstRunFlow(
         IFirstRunFlowChannel     channel,
         IFirstRunFlowProgress    progress,
@@ -18,9 +21,12 @@ public sealed class BrowserFirstRunFlow(
         TimeProvider?            clock     = null,
         IKeyWatcher?             keys      = null,
         IFirstRunMachineActions? actions   = null,
-        IFirstRunImportLane?     importing = null) {
+        IFirstRunImportLane?     importing = null,
+        IFirstRunInterrupts?     interrupts = null) {
     readonly TimeProvider _clock = clock ?? TimeProvider.System;
     readonly IKeyWatcher  _keys  = keys ?? ConsoleKeyWatcher.Instance;
+
+    readonly IFirstRunInterrupts _interrupts = interrupts ?? FirstRunInterruptRelinquish.Process;
 
     /// <summary>
     /// The backstop, not the way out. Nothing like the flow's own 12-hour TTL, which is sized for a
@@ -118,18 +124,21 @@ public sealed class BrowserFirstRunFlow(
         progress.Opening(setupUrl);
         launcher.TryOpen(setupUrl);
 
-        // Armed for the leg's whole duration, because an interrupt runs no finally: Ctrl+C, SIGTERM and
-        // SIGHUP all reach Environment.Exit from a handler, and this is the only thing between that and a
-        // browser left offering decisions nobody will act on.
-        using var armed = FirstRunInterruptRelinquish.Arm(
-            token => RelinquishAsync(serverUrl, flowId, FirstRunRelinquishReasons.Stopped, token));
-
         FirstRunFlowResult result;
 
-        try {
-            result = await PollAsync(serverUrl, flowId, report, ct);
-        } finally {
-            progress.WaitEnded();
+        // Scoped to the POLL, and that is load-bearing rather than tidiness. An interrupt runs no finally
+        // — Ctrl+C, SIGTERM, SIGHUP and the parent watchdog all reach Environment.Exit from a handler — so
+        // something has to be armed while the leg waits. But this callback can only ever say `stopped`, so
+        // leaving it armed past the poll would let it race the reason the result actually names: a
+        // dismissed leg would gamble `handover` against `stopped`, and a FINISHED one — which must never
+        // relinquish — could do so at all.
+        using (_interrupts.Arm(
+                   token => RelinquishAsync(serverUrl, flowId, FirstRunRelinquishReasons.Stopped, token))) {
+            try {
+                result = await PollAsync(serverUrl, flowId, report, ct);
+            } finally {
+                progress.WaitEnded();
+            }
         }
 
         // ONE call, keyed off the result type, so the closed tab and the failed leg are covered without a

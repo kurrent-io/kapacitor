@@ -133,6 +133,36 @@ public class BrowserFirstRunFlowTests {
         }
     }
 
+    /// <summary>Holds the leg's interrupt callback where a test can fire it, instead of the process-global
+    /// sink — which is what keeps this class out of assembly-wide exclusion.</summary>
+    sealed class FakeInterrupts : IFirstRunInterrupts {
+        Func<CancellationToken, Task>? _armed;
+
+        public int Arms    { get; private set; }
+        public int Disarms { get; private set; }
+
+        /// <summary>Whether something is armed right now. The whole point of the seam is that this is
+        /// false the moment the leg has a result.</summary>
+        public bool IsArmed => _armed is not null;
+
+        public IDisposable Arm(Func<CancellationToken, Task> relinquish) {
+            Arms++;
+            _armed = relinquish;
+
+            return new Handle(this);
+        }
+
+        /// <summary>Fires whatever is armed, as a signal handler would. A no-op when nothing is.</summary>
+        public Task FireAsync() => _armed?.Invoke(CancellationToken.None) ?? Task.CompletedTask;
+
+        sealed class Handle(FakeInterrupts owner) : IDisposable {
+            public void Dispose() {
+                owner.Disarms++;
+                owner._armed = null;
+            }
+        }
+    }
+
     sealed class RecordingProgress(Log log) : IFirstRunFlowProgress {
         public string? Url { get; private set; }
         public int Ticks    { get; private set; }
@@ -321,7 +351,8 @@ public class BrowserFirstRunFlowTests {
         List<string>        Opened,
         FakeKeys            Keys,
         FakeActions?        Actions,
-        FakeImportLane?     Importing);
+        FakeImportLane?     Importing,
+        FakeInterrupts      Interrupts);
 
     // No keyboard by default: the escape hatch is one test's subject, and left live it would read the
     // host's own console, where a stray keypress during a CI run would end an unrelated test's wait.
@@ -335,12 +366,13 @@ public class BrowserFirstRunFlowTests {
         var browser  = new RecordingBrowser();
         var actions  = capabilities is null ? null : new FakeActions(log, capabilities);
         var lane     = importing ? new FakeImportLane(log) : null;
+        var signals  = new FakeInterrupts();
 
         keys ??= new FakeKeys(canWatch: false);
 
         return new(
-            new BrowserFirstRunFlow(channel, progress, browser, clock, keys, actions, lane),
-            channel, progress, clock, log, browser.Urls, keys, actions, lane);
+            new BrowserFirstRunFlow(channel, progress, browser, clock, keys, actions, lane, signals),
+            channel, progress, clock, log, browser.Urls, keys, actions, lane, signals);
     }
 
     static readonly string[] PathShimOnly = [FirstRunMachineCapabilities.PathShim];
@@ -1646,18 +1678,14 @@ public class BrowserFirstRunFlowTests {
 
     /// <summary>
     /// Ctrl+C reaches <c>Environment.Exit</c> from a signal handler, which runs no <c>finally</c> — so the
-    /// leg leaves a callback where the handler can find it, and takes it back when it ends.
+    /// leg leaves a callback where the handler can find it.
     /// </summary>
-    // Process-global state, so exclusive against the whole assembly rather than keyed: a concurrent test
-    // arming this would be indistinguishable from this one's own registration.
     [Test]
-    [NotInParallel]
     public async Task An_interrupt_during_the_leg_says_the_machine_stopped() {
         var h = Build();
 
-        // Fired from inside a poll, which is the only way to observe the armed callback: the real trigger
-        // is a signal, and there is none to send a test host.
-        h.Channel.OnPoll = () => FirstRunInterruptRelinquish.RunBeforeExit(TimeSpan.FromSeconds(1));
+        // Fired from inside a poll, because that is when a real signal would arrive.
+        h.Channel.OnPoll = () => h.Interrupts.FireAsync().GetAwaiter().GetResult();
         h.Channel.Polls.Enqueue(new(200, Running()));
         h.Channel.Polls.Enqueue(new(404, null));
 
@@ -1666,18 +1694,41 @@ public class BrowserFirstRunFlowTests {
         await Assert.That(h.Channel.Relinquished[0]).IsEqualTo(FirstRunRelinquishReasons.Stopped);
     }
 
-    /// <summary>And it is taken back afterwards, or a later interrupt would POST against a leg that has
-    /// already ended — on a handover, restating a reason the browser has rendered.</summary>
+    /// <summary>
+    /// Disarmed the moment the leg has a result, and this is the guard that matters: the callback can only
+    /// ever say <c>stopped</c>, so left armed it would race the reason the result names — gambling
+    /// <c>handover</c> against <c>stopped</c> on a dismissal, and relinquishing at all on a finish.
+    /// </summary>
     [Test]
-    [NotInParallel]
-    public async Task Nothing_is_left_armed_once_the_leg_has_ended() {
-        var h = Build();
-        h.Channel.Polls.Enqueue(new(200, Done()));
+    [Arguments(true)]
+    [Arguments(false)]
+    public async Task Nothing_is_left_armed_once_the_leg_has_a_result(bool dismissed) {
+        var h = Build(dismissed ? new FakeKeys(canWatch: true, pressAfter: 2) : null);
+
+        if (!dismissed) h.Channel.Polls.Enqueue(new(200, Done()));
 
         await Run(h);
 
-        FirstRunInterruptRelinquish.RunBeforeExit(TimeSpan.FromMilliseconds(50));
+        await Assert.That(h.Interrupts.IsArmed).IsFalse();
+        await Assert.That(h.Interrupts.Arms).IsEqualTo(1);
+        await Assert.That(h.Interrupts.Disarms).IsEqualTo(1);
 
-        await Assert.That(h.Channel.Relinquished).IsEmpty();
+        // Firing now sends nothing, so the reason on the wire is only ever the one the result named.
+        await h.Interrupts.FireAsync();
+
+        string[] expected = dismissed ? [FirstRunRelinquishReasons.Handover] : [];
+
+        await Assert.That(h.Channel.Relinquished).IsEquivalentTo(expected);
+    }
+
+    /// <summary>A leg that never reached a flow arms nothing: there is no id to name.</summary>
+    [Test]
+    public async Task A_leg_that_never_reached_a_flow_arms_nothing() {
+        var h = Build();
+        h.Channel.Creates.Enqueue(new(404, null));
+
+        await Run(h);
+
+        await Assert.That(h.Interrupts.Arms).IsEqualTo(0);
     }
 }

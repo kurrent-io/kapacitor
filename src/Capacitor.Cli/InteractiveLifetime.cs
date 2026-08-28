@@ -116,9 +116,9 @@ static class InteractiveLifetime {
 
     /// <summary>
     /// The exit every interrupt path takes. <c>Environment.Exit</c> runs no <c>finally</c>, so anything a
-    /// command needs to say on its way out has to be said here — today that is the browser setup flow
-    /// telling the server this machine has stopped listening, which is what stops the page going on to
-    /// offer decisions nobody will act on.
+    /// command needs to say on its way out has to be said here. The browser setup flow uses it to tell the
+    /// server this machine has stopped listening, which is what stops the page going on to offer decisions
+    /// nobody will act on.
     /// </summary>
     static void Interrupt() {
         FirstRunInterruptRelinquish.RunBeforeExit(ExitNoticeBudget);
