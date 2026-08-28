@@ -178,7 +178,13 @@ public sealed class BrowserFirstRunFlow(
                     // at the speed the human works at.
                     interval = PollInterval;
 
-                    // Before the lanes below, so "chose your agents" precedes the scan it starts.
+                    // Before the lanes below, and before anything they print: a scan and an import can
+                    // each run for minutes, and a wait still describing the last poll would spend all of
+                    // it naming the wrong screen — or repeating an unreachable-server warning that this
+                    // poll has just disproved.
+                    progress.Waiting(FirstRunFlowOutcomes.Step(last!.Step), healthy: true);
+
+                    // Then the ticks, so "chose your agents" precedes the scan it starts.
                     Announce(last!, announced);
 
                     // Before the finished test, so a request made on the last screen is not abandoned by a
@@ -198,8 +204,6 @@ public sealed class BrowserFirstRunFlow(
 
                         return new FirstRunFlowResult.Finished(last!);
                     }
-
-                    progress.Waiting(FirstRunFlowOutcomes.Step(last!.Step), healthy: true);
 
                     break;
 

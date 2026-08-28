@@ -67,11 +67,9 @@ public class SetupCommandTests {
             new DateTimeOffset(2026, 8, 25, 9, 30, 0, TimeSpan.Zero),
             unrecognised);
 
-    // The choice moved to the live line the leg prints as the step settles, so Step 4 restating it
-    // would be the same fact landing twice. Asserted from both sides: the summary must not name it,
-    // and the live line must.
+    // Step 4 must omit a choice the live progress line already named, or the same fact lands twice.
     [Test]
-    public async Task BrowserAgentsSummary_no_longer_restates_a_choice_the_leg_said_live() {
+    public async Task BrowserAgentsSummary_omits_a_choice_the_live_line_already_named() {
         var lines = SetupCommand.BrowserAgentsSummary(Answer(0, "cursor", "claude"));
 
         await Assert.That(string.Join("\n", lines)).DoesNotContain("Claude Code");

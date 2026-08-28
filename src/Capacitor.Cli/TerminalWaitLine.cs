@@ -139,7 +139,12 @@ sealed class TerminalWaitLine(bool tty, TextWriter? control = null) : IDisposabl
     /// one — but nothing here should be the cause of it.</summary>
     static int Width() {
         try {
-            return Math.Max(20, Console.WindowWidth);
+            var measured = Console.WindowWidth;
+
+            // Not raised to a comfortable minimum: a genuinely narrow terminal would then be clipped
+            // against columns it does not have, wrap, and cost the erase a row. Zero means a console
+            // that could not be measured, not one with no columns.
+            return measured > 0 ? measured : 80;
         } catch (Exception ex) when (ex is IOException or PlatformNotSupportedException) {
             return 80;
         }

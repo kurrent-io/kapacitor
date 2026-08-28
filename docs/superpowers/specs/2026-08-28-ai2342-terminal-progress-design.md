@@ -50,7 +50,11 @@ at state the loop already holds. A resumed link that comes back with three steps
 first poll prints all three ticks, which is the honest history and is what tells the user it is the same
 link.
 
-It runs before the import and machine-action lanes, so "chose your agents" precedes the scan it starts.
+It runs before the import and machine-action lanes, so "chose your agents" precedes the scan it starts —
+and the wait itself is set before *that*, not at the foot of the arm. Either lane can run for minutes, so
+a wait still describing the previous poll spends all of it naming the wrong screen, or repeating an
+unreachable-server warning the same poll has just disproved. `ImportEnded` reasserts whatever state is
+held, which is what made the stale value survive the import too.
 
 **Keyed on what the terminal was told, not on which steps it has heard of.** A `HashSet<FirstRunFlowStep>`
 was the first shape and it is wrong: going Back in the browser, changing the harnesses and re-confirming
@@ -126,7 +130,10 @@ Lines are **truncated rather than wrapped**: a wrapped line costs a row the curs
 know about, and the block would then erase the wrong rows. `Drawn` is exposed for the same reason — an
 erase that gets the count wrong takes a line the caller already committed to the scrollback with it.
 
-Two ways that arithmetic can be lost, both fixed rather than accepted. The width is read from
+Three ways that arithmetic can be lost, all fixed rather than accepted. The measured width is used as
+measured: raising it to a comfortable floor renders a genuinely narrow terminal as though it had columns it
+does not have, which is the same wrap by another route — zero means a console that could not be measured,
+not one with no columns. The width is read from
 `Console.WindowWidth` on every draw, not from `AnsiConsole.Profile.Width` which Spectre fixes when the
 console is created — a terminal narrowed mid-wait would otherwise be clipped against the old width and
 wrap. And the move between the two rows writes CR as well as LF: a lone LF does not return to column 0 on

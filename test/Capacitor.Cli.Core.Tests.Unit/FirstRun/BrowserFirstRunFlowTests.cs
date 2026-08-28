@@ -135,6 +135,7 @@ public class BrowserFirstRunFlowTests {
         public void Waiting(FirstRunFlowStep? flowStep, bool healthy) {
             Ticks++;
             Waits.Add((flowStep, healthy));
+            log.Add(healthy ? "waiting" : "unreachable");
         }
 
         public void Settled(FirstRunFlowStep flowStep, FirstRunStepOutcome outcome, string? detail) {
@@ -607,7 +608,11 @@ public class BrowserFirstRunFlowTests {
         var result = await Run(h);
 
         await Assert.That(result).IsTypeOf<FirstRunFlowResult.Finished>();
-        await Assert.That(h.Progress.Ticks).IsEqualTo(2);
+
+        // Two unhappy polls and the good one that ended it: the wait is set from every poll that
+        // produced a state, including the finishing one, so the line cannot outlive what it describes.
+        await Assert.That(h.Progress.Waits.Count(w => !w.Healthy)).IsEqualTo(2);
+        await Assert.That(h.Progress.Ticks).IsEqualTo(3);
     }
 
     [Test]
@@ -800,6 +805,24 @@ public class BrowserFirstRunFlowTests {
 
         await Assert.That(h.Progress.Settles.Single(x => x.Step == FirstRunFlowStep.Agents).Detail)
                     .IsEqualTo("Claude Code");
+    }
+
+    [Test]
+    public async Task The_wait_is_updated_before_the_scan_it_starts__not_after_it() {
+        // A scan runs for as long as the disk takes, and the poll that triggers it is also the poll
+        // that disproved the unreachable warning. Setting the wait afterwards spends the whole scan
+        // repeating a warning about a server that has just answered.
+        var h = Build(importing: true);
+        h.Channel.Polls.Enqueue(new(503, null));
+        h.Channel.Polls.Enqueue(new(200, AgentsAnswered("claude")));
+        h.Channel.Polls.Enqueue(new(200, Done()));
+
+        await Run(h);
+
+        var order = h.Log.Entries.ToList();
+
+        await Assert.That(order.IndexOf("waiting")).IsGreaterThanOrEqualTo(0);
+        await Assert.That(order.IndexOf("waiting")).IsLessThan(order.IndexOf("scan"));
     }
 
     [Test]
