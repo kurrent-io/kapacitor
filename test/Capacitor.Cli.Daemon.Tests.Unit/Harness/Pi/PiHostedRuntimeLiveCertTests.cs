@@ -53,10 +53,7 @@ public class PiHostedRuntimeLiveCertTests {
             !OperatingSystem.IsWindows(),
             "The gated probe git-inits a throwaway worktree with plain POSIX `git`; not exercised on Windows.");
 
-        using var tmp = new TempDir();
-        RunGit(tmp.Path, "init", "-q");
-        RunGit(tmp.Path, "config", "user.email", "test@example.com");
-        RunGit(tmp.Path, "config", "user.name", "Test");
+        using var repo = GitRepo.Create();
 
         // A real (console) logger factory rather than NullLoggerFactory — PiRpcHostedAgentRuntime logs
         // at Warning/Debug on handshake and translation faults, so a real logger is the only way this
@@ -88,8 +85,8 @@ public class PiHostedRuntimeLiveCertTests {
         var ctx = new RuntimeStartContext(
             AgentId: "ai-894-pi-hosted-live",
             Vendor: "pi",
-            SourceRepoPath: tmp.Path,
-            Worktree: new WorktreeInfo(Path: tmp.Path, Branch: "", SourceRepo: tmp.Path),
+            SourceRepoPath: repo.Path,
+            Worktree: new WorktreeInfo(Path: repo.Path, Branch: "", SourceRepo: repo.Path),
             Prompt: prompt,
             Model: null,
             Effort: null,
@@ -198,14 +195,4 @@ public class PiHostedRuntimeLiveCertTests {
         }
     }
 
-    static void RunGit(string cwd, params string[] args) {
-        using var process = Process.Start(new ProcessStartInfo("git", args) {
-            WorkingDirectory = cwd,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true
-        })!;
-        process.WaitForExit();
-        if (process.ExitCode != 0)
-            throw new InvalidOperationException(process.StandardError.ReadToEnd());
-    }
 }

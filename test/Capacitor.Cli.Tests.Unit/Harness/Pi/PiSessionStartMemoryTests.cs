@@ -53,7 +53,8 @@ public class PiSessionStartMemoryTests {
     // new one (new file ⇒ new identity ⇒ fresh eligibility, exactly the design's fork semantics).
     [Test]
     public async Task Lifecycle_keys_on_the_rooted_session_file_path() {
-        var file = Path.Combine(Path.GetTempPath(), "sessions", "20260807T101010_0a1b2c3d-1111-2222-3333-444455556666.jsonl");
+        using var tmp = new TempDir();
+        var file = tmp.PathTo("sessions", "20260807T101010_0a1b2c3d-1111-2222-3333-444455556666.jsonl");
         var lifecycle = PiHookCommand.LifecycleFor(file, "startup");
 
         await Assert.That(lifecycle.Harness).IsEqualTo(HarnessId.Pi);
@@ -89,7 +90,8 @@ public class PiSessionStartMemoryTests {
     [Arguments(null, SessionLifecycleReason.RepeatedTurnCallback)]
     [Arguments("someday-a-new-reason", SessionLifecycleReason.RepeatedTurnCallback)]
     internal async Task Pi_reasons_map_onto_the_shared_vocabulary(string? reason, SessionLifecycleReason expected) {
-        var file = Path.Combine(Path.GetTempPath(), "s", "20260807T101010_0a1b2c3d-1111-2222-3333-444455556666.jsonl");
+        using var tmp = new TempDir();
+        var file = tmp.PathTo("s", "20260807T101010_0a1b2c3d-1111-2222-3333-444455556666.jsonl");
         await Assert.That(PiHookCommand.LifecycleFor(file, reason).Reason).IsEqualTo(expected);
     }
 

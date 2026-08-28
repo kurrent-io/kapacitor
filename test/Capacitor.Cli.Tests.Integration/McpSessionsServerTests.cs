@@ -10,12 +10,9 @@ using WireMock.Server;
 namespace Capacitor.Cli.Tests.Integration;
 
 /// <summary>
-/// End-to-end stdio JSON-RPC tests for <c>kcap mcp sessions</c>.
-/// Spawns the freshly-built CLI binary, points it at a WireMock-stubbed
-/// Capacitor server (via <c>KCAP_URL</c>), seeds an isolated config
-/// directory (via <c>KCAP_CONFIG_DIR</c>) so token/profile state never
-/// leaks between tests, and asserts on the wire-level JSON-RPC envelopes
-/// the server emits plus the HTTP calls WireMock observed.
+/// End-to-end stdio JSON-RPC tests for <c>kcap mcp sessions</c>: spawns the freshly-built CLI
+/// binary against a WireMock-stubbed server, in an isolated config dir so token/profile state
+/// never leaks between tests.
 /// </summary>
 public class McpSessionsServerTests : IDisposable {
     [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
@@ -46,13 +43,13 @@ public class McpSessionsServerTests : IDisposable {
     /// resolution entirely; "GitHub" forces token-store consultation so the unauthenticated
     /// path can be exercised.
     /// </summary>
-    Process SpawnMcpServer(string provider = "None", string? urlOverride = null) {
+    Process SpawnMcpServer(string provider = "None", string? urlOverride = null, string? workingDirectory = null) {
         // Auth discovery stub — primed before spawn so the child sees a response when it asks.
         _server.Given(Request.Create().WithPath("/auth/config").UsingGet())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody($$"""{"provider":"{{provider}}"}"""));
 
         var psi = KcapProcess.StartInfo(Daemons.Store, Config.Root, "mcp", "sessions");
-        psi.WorkingDirectory = Tmp.Path;
+        psi.WorkingDirectory = workingDirectory ?? Tmp.Path;
         psi.Environment["KCAP_URL"] = urlOverride ?? _server.Url!;
 
         var process = Process.Start(psi) ?? throw new InvalidOperationException("Failed to start kcap process");
@@ -62,36 +59,17 @@ public class McpSessionsServerTests : IDisposable {
     }
 
     /// <summary>
-    /// Initializes <paramref name="dir"/> as a git repo with an <c>origin</c> remote pointing at
-    /// <c>https://github.com/{owner}/{repoName}.git</c>, so the MCP server's implicit cwd-repo pin
-    /// resolves — unlike the bare temp dirs every other test in this file uses. No commit is
-    /// needed: <c>git branch --show-current</c> reads the symbolic HEAD ref and works at zero commits.
+    /// A repository whose <c>origin</c> points at <c>https://github.com/{owner}/{repoName}.git</c>, to be
+    /// handed to the server as its working directory so the implicit cwd-repo pin resolves — unlike the
+    /// bare temp dir every other test in this file runs in. No commit is needed:
+    /// <c>git branch --show-current</c> reads the symbolic HEAD ref and works at zero commits.
     /// </summary>
-    static void InitCwdAsGitRepo(string dir, string owner, string repoName) {
-        RunGit(dir, "init -q -b main");
-        RunGit(dir, $"remote add origin https://github.com/{owner}/{repoName}.git");
-    }
+    static GitRepo CwdRepo(string owner, string repoName) {
+        var repo = GitRepo.Create();
 
-    static void RunGit(string dir, string arguments) {
-        // Stdout isn't read anywhere below, so it's left inherited rather than redirected —
-        // redirecting without reading risks a full-pipe deadlock if git ever writes enough to
-        // stdout to fill the OS pipe buffer before this process reads stderr and waits.
-        var psi = new ProcessStartInfo("git", arguments) {
-            WorkingDirectory       = dir,
-            RedirectStandardOutput = false,
-            RedirectStandardError  = true,
-            UseShellExecute        = false,
-            CreateNoWindow         = true
-        };
+        repo.AddRemote($"https://github.com/{owner}/{repoName}.git");
 
-        using var process = Process.Start(psi) ?? throw new InvalidOperationException("Failed to start git");
-
-        var stderr = process.StandardError.ReadToEnd();
-        process.WaitForExit(5000);
-
-        if (process.ExitCode != 0) {
-            throw new InvalidOperationException($"'git {arguments}' failed with exit code {process.ExitCode}: {stderr}");
-        }
+        return repo;
     }
 
     /// <summary>
@@ -180,7 +158,6 @@ public class McpSessionsServerTests : IDisposable {
             await Assert.That(result).IsNotNull();
             await Assert.That(result!["serverInfo"]?["name"]?.GetValue<string>()).IsEqualTo("kcap-sessions");
             await Assert.That(result["protocolVersion"]?.GetValue<string>()).IsEqualTo("2024-11-05");
-            // server-level instructions preamble.
             await Assert.That(result["instructions"]?.GetValue<string>()).IsNotNull();
             await Assert.That(result["instructions"]!.GetValue<string>()).IsNotEmpty();
         } finally {
@@ -343,18 +320,10 @@ public class McpSessionsServerTests : IDisposable {
     }
 
     /// <summary>
-    /// Regression for the "token refresh is never picked up after startup" bug.
-    /// The MCP server caches a single <c>HttpClient</c> for the whole agent session;
-    /// if the auth header expires mid-session, every tool call returned the friendly
-    /// 401 message until the server was restarted. The fix retries once on 401 after
-    /// calling <c>TokenStore.GetValidTokensAsync</c>.
-    ///
-    /// We seed a non-expired token in the per-test config dir and stub WireMock so
-    /// the first call returns 401 and the second returns 200. The retry re-reads
-    /// the token (which hasn't actually expired, so it's returned as-is) and resends —
-    /// proving the retry path runs at all. (Exercising the real refresh-token flow
-    /// would require stubbing the GitHub refresh endpoint as well, which is out of
-    /// scope for this regression.)
+    /// The MCP server caches a single <c>HttpClient</c> for the whole agent session, so a 401
+    /// must retry once via <c>TokenStore.GetValidTokensAsync</c> rather than surface the friendly
+    /// 401 message until the process is restarted. WireMock returns 401 then 200 for the same
+    /// seeded token, proving the retry path runs — the real refresh-token flow is out of scope.
     /// </summary>
     [Test]
     public async Task Refreshed_token_succeeds_after_401() {
@@ -398,16 +367,11 @@ public class McpSessionsServerTests : IDisposable {
     }
 
     /// <summary>
-    /// Spec compliance: when the server returns 401, <see cref="Capacitor.Cli.Commands.McpSessionsServer"/>
-    /// must surface the exact friendly message "Not logged in. Run 'kcap login' on the host shell."
-    /// inside the MCP tool result (with <c>isError: true</c>) — not the raw HTTP body.
-    ///
-    /// MCP clients (Claude Code, Codex) don't forward CLI stderr to the model, so the
-    /// stderr hint emitted by <c>HttpClientExtensions.CreateAuthenticatedClientAsync</c>
-    /// is invisible to the agent; the friendly message has to live in the tool result.
-    ///
-    /// The WireMock 401 stub returns an EMPTY body so the assertion proves the message
-    /// comes from <c>McpSessionsServer</c>, not from server-body bleed-through.
+    /// On a 401, <see cref="Capacitor.Cli.Commands.McpSessionsServer"/> must surface the friendly
+    /// message "Not logged in. Run 'kcap login' on the host shell." inside the tool result itself
+    /// — MCP clients don't forward CLI stderr to the model, so the stderr hint from
+    /// <c>HttpClientExtensions.CreateAuthenticatedClientAsync</c> would otherwise be invisible.
+    /// The stub's 401 body is empty, so a non-empty message here can only come from this fallback.
     /// </summary>
     [Test]
     public async Task Unauthenticated_returns_friendly_error() {
@@ -437,16 +401,14 @@ public class McpSessionsServerTests : IDisposable {
     }
 
     /// <summary>
-    /// Auto-widen, happy path: an implicit cwd pin (no explicit `repo` arg, a real
-    /// git repo under the spawned process's cwd) that comes back thinner than the default
-    /// limit (10) triggers a second widen request, and the two bodies merge cwd-first with
-    /// `session_id` dedup, capped at the limit, and `widened_to_all_repos: true`.
+    /// Auto-widen, happy path: an implicit cwd pin (no explicit `repo` arg, a real git repo under
+    /// the spawned process's cwd) that comes back thinner than the default limit (10) triggers a
+    /// second widen request; the two bodies merge cwd-first with `session_id` dedup, capped at
+    /// the limit, and `widened_to_all_repos: true`.
     ///
-    /// The widened request carries NO `repo` query param at all — `BuildSearchUrl` treats the
-    /// `"all"` sentinel as "omit the repo filter entirely" (see
-    /// <see cref="Search_sessions_calls_server_and_passes_through_response"/>'s own
-    /// `rawUrl.Contains("repo=")` assertion), so the widen stub below matches on the PARAM'S
-    /// ABSENCE via <see cref="MatchBehaviour.RejectOnMatch"/>, not a literal `repo=all` value.
+    /// The widened request carries no `repo` query param at all — `BuildSearchUrl` treats `"all"`
+    /// as "omit the repo filter entirely", so the widen stub below matches on the param's absence
+    /// via <see cref="MatchBehaviour.RejectOnMatch"/>, not a literal `repo=all` value.
     /// </summary>
     [Test]
     public async Task Search_sessions_thin_result_auto_widens_to_all_repos() {
@@ -454,7 +416,7 @@ public class McpSessionsServerTests : IDisposable {
         const string repoName = "widget";
         var          repoHash = RepoHashHelper.ComputeRepoHash(owner, repoName);
 
-        InitCwdAsGitRepo(Tmp.Path, owner, repoName);
+        using var repo = CwdRepo(owner, repoName);
 
         const string firstBody   = """{"hits":[{"session_id":"s1","title":"A"},{"session_id":"s2","title":"B"}]}""";
         const string widenedBody = """{"hits":[{"session_id":"s1","title":"A"},{"session_id":"s3","title":"C"}]}""";
@@ -475,7 +437,7 @@ public class McpSessionsServerTests : IDisposable {
                     .WithBody(widenedBody)
             );
 
-        using var proc = SpawnMcpServer();
+        using var proc = SpawnMcpServer(workingDirectory: repo.Path);
         try {
             var args     = new JsonObject { ["query"] = "batch" }; // no `repo` — implicit cwd pin
             var response = await SendRequest(proc, ToolsCallRequest(10, "search_sessions", args), TimeSpan.FromSeconds(30));
@@ -508,11 +470,10 @@ public class McpSessionsServerTests : IDisposable {
     }
 
     /// <summary>
-    /// Regression guard: a failed widen must never cost the caller the successful first result.
-    /// Coverage limitation: this WireMock-based harness cannot force HttpClient to THROW on the
-    /// widen call (WireMock.Net 1.7.0 fault injection still completes a 200), so this test
-    /// exercises the HTTP-500 shape of the same contract; the thrown-exception shape is covered
-    /// by the catch-all by inspection.
+    /// A failed widen must never cost the caller the successful first result. This WireMock-based
+    /// harness cannot force HttpClient to throw on the widen call, so this test exercises the
+    /// HTTP-500 shape of the same contract; the thrown-exception shape is covered by the
+    /// catch-all by inspection, not a test.
     /// </summary>
     [Test]
     public async Task Search_sessions_widen_failure_returns_first_body_untouched() {
@@ -520,7 +481,7 @@ public class McpSessionsServerTests : IDisposable {
         const string repoName = "widget-fail";
         var          repoHash = RepoHashHelper.ComputeRepoHash(owner, repoName);
 
-        InitCwdAsGitRepo(Tmp.Path, owner, repoName);
+        using var repo = CwdRepo(owner, repoName);
 
         const string firstBody = """{"hits":[{"session_id":"s1","title":"A"}]}""";
 
@@ -536,7 +497,7 @@ public class McpSessionsServerTests : IDisposable {
         _server.Given(Request.Create().WithPath("/api/sessions/search").WithParam("repo", MatchBehaviour.RejectOnMatch).UsingGet())
             .RespondWith(Response.Create().WithStatusCode(500).WithBody("boom"));
 
-        using var proc = SpawnMcpServer();
+        using var proc = SpawnMcpServer(workingDirectory: repo.Path);
         try {
             var args     = new JsonObject { ["query"] = "batch" }; // no `repo` — implicit cwd pin
             var response = await SendRequest(proc, ToolsCallRequest(11, "search_sessions", args), TimeSpan.FromSeconds(30));

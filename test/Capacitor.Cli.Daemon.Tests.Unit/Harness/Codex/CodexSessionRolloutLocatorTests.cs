@@ -157,7 +157,7 @@ public class CodexSessionRolloutLocatorTests {
 
     [Test]
     public async Task TryLocate_missing_sessions_root_returns_null() {
-        var missing = Path.Combine(Path.GetTempPath(), "kcap-codexrollout-missing-" + Guid.NewGuid().ToString("N"));
+        using var missingDir = TempDir.WithPathTo("kcap-codexrollout", out var missing);
 
         await Assert.That(CodexSessionRolloutLocator.TryLocate(missing, "/wt", DateTime.UtcNow)).IsNull();
     }

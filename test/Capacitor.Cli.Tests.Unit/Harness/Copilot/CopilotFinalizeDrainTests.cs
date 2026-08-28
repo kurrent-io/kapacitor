@@ -48,7 +48,7 @@ public class CopilotFinalizeDrainLastLineTests {
 
     [Test]
     public async Task False_ForMissingFile() {
-        var path = Path.Combine(Path.GetTempPath(), $"kcap_missing_{Guid.NewGuid():N}.jsonl");
+        using var pathDir = TempDir.WithPathTo("kcap_missing.jsonl", out var path);
 
         await Assert.That(CopilotFinalizeDrainCommand.LastLineIsShutdown(path)).IsFalse();
     }

@@ -18,8 +18,9 @@ public class GitConfigTransportTests {
 
     /// <summary>`--list -z` records are `key\nvalue\0`; an empty value is `key\n`.</summary>
     static async Task<string[]> EffectiveConfigAsync(bool sourceReadOnly, params GitConfigOverride[] config) {
+        using var cwd = new TempDir();
         var result = await WorktreeManager.RunGitCaptureResult(
-            Path.GetTempPath(), Timeout, sourceReadOnly, config, "config", "--list", "-z");
+            cwd.Path, Timeout, sourceReadOnly, config, "config", "--list", "-z");
 
         await Assert.That(result.ExitCode).IsEqualTo(0).Because(result.Stderr);
 
@@ -151,7 +152,9 @@ public class GitConfigTransportTests {
     /// </summary>
     [Test]
     public async Task The_transport_is_proved_against_the_git_on_this_machine() {
-        await WorktreeManager.ProbeConfigTransportAsync(Path.GetTempPath());
+        using var cwd = new TempDir();
+
+        await WorktreeManager.ProbeConfigTransportAsync(cwd.Path);
     }
 
     /// <summary>The proof's own predicate, against listings git could return. Without this the proof would be

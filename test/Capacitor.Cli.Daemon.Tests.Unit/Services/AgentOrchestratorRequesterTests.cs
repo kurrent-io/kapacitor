@@ -14,72 +14,66 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 public class AgentOrchestratorRequesterTests {
     [Test]
     public async Task Launch_stamps_RequesterUserId_from_the_command() {
-        var (repoPath, cleanup) = GitRepoHarness.CreateGitRepo();
+        using var repoPath = GitRepo.CreateWithCommit();
 
-        try {
-            var server     = new CaptureServerConnection();
-            var ptyFactory = new SpyPtyProcessFactory();
-            var claudeSpy  = new SpyHostedAgentLauncher("claude", cliPath: "spy-claude");
+        var server     = new CaptureServerConnection();
+        var ptyFactory = new SpyPtyProcessFactory();
+        var claudeSpy  = new SpyHostedAgentLauncher("claude", cliPath: "spy-claude");
 
-            var launchers = new Dictionary<string, IHostedAgentLauncher> { ["claude"] = claudeSpy };
+        var launchers = new Dictionary<string, IHostedAgentLauncher> { ["claude"] = claudeSpy };
 
-            await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, ptyFactory, launchers, allowedRepoPath: repoPath);
+        await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, ptyFactory, launchers, allowedRepoPath: repoPath);
 
-            var cmd = new LaunchAgentCommand(
-                AgentId: "req-1",
-                Prompt: "p",
-                Model: "default",
-                Effort: null,
-                RepoPath: repoPath,
-                Tools: null,
-                AttachmentIds: null,
-                Vendor: "claude",
-                RequesterUserId: "github:12345",
-                RequesterDisplay: "Ada Lovelace"
-            );
+        var cmd = new LaunchAgentCommand(
+            AgentId: "req-1",
+            Prompt: "p",
+            Model: "default",
+            Effort: null,
+            RepoPath: repoPath,
+            Tools: null,
+            AttachmentIds: null,
+            Vendor: "claude",
+            RequesterUserId: "github:12345",
+            RequesterDisplay: "Ada Lovelace"
+        );
 
-            await orch.HandleLaunchAgentForTest(cmd);
+        await orch.HandleLaunchAgentForTest(cmd);
 
-            var agent = orch.GetAgentForTest("req-1")!;
-            await Assert.That(agent.RequesterUserId).IsEqualTo("github:12345");
-            await Assert.That(agent.RequesterDisplay).IsEqualTo("Ada Lovelace");
-        } finally {
-            cleanup();
-        }
+        var agent = orch.GetAgentForTest("req-1")!;
+        await Assert.That(agent.RequesterUserId).IsEqualTo("github:12345");
+        await Assert.That(agent.RequesterDisplay).IsEqualTo("Ada Lovelace");
+
     }
 
     [Test]
     public async Task Launch_without_a_requester_leaves_RequesterUserId_null() {
-        var (repoPath, cleanup) = GitRepoHarness.CreateGitRepo();
+        using var repoPath = GitRepo.CreateWithCommit();
 
-        try {
-            var server     = new CaptureServerConnection();
-            var ptyFactory = new SpyPtyProcessFactory();
-            var claudeSpy  = new SpyHostedAgentLauncher("claude", cliPath: "spy-claude");
+        var server     = new CaptureServerConnection();
+        var ptyFactory = new SpyPtyProcessFactory();
+        var claudeSpy  = new SpyHostedAgentLauncher("claude", cliPath: "spy-claude");
 
-            var launchers = new Dictionary<string, IHostedAgentLauncher> { ["claude"] = claudeSpy };
+        var launchers = new Dictionary<string, IHostedAgentLauncher> { ["claude"] = claudeSpy };
 
-            await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, ptyFactory, launchers, allowedRepoPath: repoPath);
+        await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, ptyFactory, launchers, allowedRepoPath: repoPath);
 
-            var cmd = new LaunchAgentCommand(
-                AgentId: "req-2",
-                Prompt: "p",
-                Model: "default",
-                Effort: null,
-                RepoPath: repoPath,
-                Tools: null,
-                AttachmentIds: null,
-                Vendor: "claude"
-            );
+        var cmd = new LaunchAgentCommand(
+            AgentId: "req-2",
+            Prompt: "p",
+            Model: "default",
+            Effort: null,
+            RepoPath: repoPath,
+            Tools: null,
+            AttachmentIds: null,
+            Vendor: "claude"
+        );
 
-            await orch.HandleLaunchAgentForTest(cmd);
+        await orch.HandleLaunchAgentForTest(cmd);
 
-            var agent = orch.GetAgentForTest("req-2")!;
-            await Assert.That(agent.RequesterUserId).IsNull();
-            await Assert.That(agent.RequesterDisplay).IsNull();
-        } finally {
-            cleanup();
-        }
+        var agent = orch.GetAgentForTest("req-2")!;
+        await Assert.That(agent.RequesterUserId).IsNull();
+        await Assert.That(agent.RequesterDisplay).IsNull();
+
     }
 
     [Test]

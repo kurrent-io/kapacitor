@@ -247,32 +247,29 @@ public class ReviewerReapingTests {
     /// rest of this file's <c>activityClock</c>/<c>inactivityBoundSeconds</c> seam bypasses.</summary>
     [Test, NotInParallel("LocalPermissionBridgeTests")]
     public async Task Launch_command_inactivity_bound_lands_on_the_agent_instance() {
-        var (repoPath, cleanup) = GitRepoHarness.CreateGitRepo();
+        using var repoPath = GitRepo.CreateWithCommit();
+
+        var server     = new CaptureServerConnection();
+        var ptyFactory = new FixedPtyProcessFactory(new OneChunkThenBlockPtyProcess());
+
+        await using var orch   = AgentOrchestratorHarness.BuildOrchestrator(server, ptyFactory, AgentOrchestratorHarness.Launcher("codex"), allowedRepoPath: repoPath);
+        var             bridge = orch.PermissionBridgeForTest;
+        await bridge.StartAsync(CancellationToken.None);
 
         try {
-            var server     = new CaptureServerConnection();
-            var ptyFactory = new FixedPtyProcessFactory(new OneChunkThenBlockPtyProcess());
+            await orch.HandleLaunchAgentForTest(new LaunchAgentCommand(
+                AgentId: "bound-launch", Prompt: "review", Model: "default", Effort: null,
+                RepoPath: repoPath, Tools: null, AttachmentIds: null, Vendor: "codex",
+                Kind: LaunchKind.ReviewFlow, McpAllowlist: ["kcap-review"],
+                InactivityBoundSeconds: 180));
 
-            await using var orch   = AgentOrchestratorHarness.BuildOrchestrator(server, ptyFactory, AgentOrchestratorHarness.Launcher("codex"), allowedRepoPath: repoPath);
-            var             bridge = orch.PermissionBridgeForTest;
-            await bridge.StartAsync(CancellationToken.None);
-
-            try {
-                await orch.HandleLaunchAgentForTest(new LaunchAgentCommand(
-                    AgentId: "bound-launch", Prompt: "review", Model: "default", Effort: null,
-                    RepoPath: repoPath, Tools: null, AttachmentIds: null, Vendor: "codex",
-                    Kind: LaunchKind.ReviewFlow, McpAllowlist: ["kcap-review"],
-                    InactivityBoundSeconds: 180));
-
-                var agent = orch.GetAgentForTest("bound-launch");
-                await Assert.That(agent).IsNotNull();
-                await Assert.That(agent!.InactivityBoundSeconds).IsEqualTo(180);
-            } finally {
-                await bridge.DisposeAsync();
-            }
+            var agent = orch.GetAgentForTest("bound-launch");
+            await Assert.That(agent).IsNotNull();
+            await Assert.That(agent!.InactivityBoundSeconds).IsEqualTo(180);
         } finally {
-            cleanup();
+            await bridge.DisposeAsync();
         }
+
     }
 
     /// <summary>A wall-clock jump (NTP correction, DST, a debugger-paused process resuming) must never

@@ -14,7 +14,7 @@ public class CliProcessTests {
         // Unique absolute path that cannot exist — deterministic ENOENT on every
         // OS, independent of the test host's PATH and free of collisions with any
         // pre-existing temp file.
-        var missing = Path.Combine(Path.GetTempPath(), $"kcap-nonexistent-binary-{Guid.NewGuid():N}");
+        using var tmp = TempDir.WithPathTo("kcap-nonexistent-binary", out var missing);
         await Assert.That(File.Exists(missing)).IsFalse();
 
         var psi = new ProcessStartInfo {

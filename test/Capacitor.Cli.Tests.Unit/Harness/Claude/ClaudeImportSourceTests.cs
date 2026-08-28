@@ -32,7 +32,7 @@ public class ClaudeImportSourceTests {
 
     [Test]
     public async Task is_unavailable_when_projects_dir_missing() {
-        var missing = Path.Combine(Path.GetTempPath(), "kcap-claude-source-missing-" + Guid.NewGuid().ToString("N"));
+        using var missingDir = TempDir.WithPathTo("kcap-claude-source-missing", out var missing);
         var src     = new ClaudeImportSource(Config.Root, missing);
         await Assert.That(src.IsAvailable).IsFalse();
     }

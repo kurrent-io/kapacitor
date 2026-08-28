@@ -36,7 +36,7 @@ public class DaemonConsentCommandTests {
 
     [Test]
     public async Task TryReadLines_on_a_nonexistent_path_returns_empty_instead_of_throwing() {
-        var missing = Path.Combine(Path.GetTempPath(), "kcap-consent-log-missing-" + Guid.NewGuid().ToString("N")[..8] + ".jsonl");
+        using var missingDir = TempDir.WithPathTo("consent-decisions.jsonl", out var missing);
         await Assert.That(File.Exists(missing)).IsFalse();
 
         var lines = DaemonConsentCommand.TryReadLines(missing);
@@ -45,7 +45,8 @@ public class DaemonConsentCommandTests {
 
     [Test]
     public async Task TryReadLines_on_a_nonexistent_directory_returns_empty_instead_of_throwing() {
-        var missing = Path.Combine(Path.GetTempPath(), "kcap-consent-log-nodir-" + Guid.NewGuid().ToString("N")[..8], "consent-decisions.jsonl");
+        using var tmp = new TempDir();
+        var missing = tmp.PathTo("no-such-dir", "consent-decisions.jsonl");
 
         var lines = DaemonConsentCommand.TryReadLines(missing);
         await Assert.That(lines).IsEmpty();

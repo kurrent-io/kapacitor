@@ -93,7 +93,7 @@ public class ClaudeLauncherWriteMcpConfigTests {
     public async Task No_matching_project_entry_writes_nothing() {
         var (paths, configDir, sourceRepo, worktree) = Seed();
 
-        WriteClaudeJson(configDir, Path.Combine(Path.GetTempPath(), "some-other-repo"));
+        WriteClaudeJson(configDir, Tmp.PathTo("some-other-repo"));
 
         ClaudeLauncher.WriteMcpConfig(sourceRepo, worktree, paths);
 

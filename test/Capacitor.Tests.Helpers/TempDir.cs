@@ -19,7 +19,7 @@ public sealed class TempDir : IDisposable {
     }
 
     // All path/file work lives on TempDirHandle; TempDir adds only ownership.
-    TempDirHandle Root => new(Path);
+    internal TempDirHandle Root => new(Path);
 
     /// <summary>Path of an entry under this directory, from its path segments. Nothing is created —
     /// for a file the code under test is expected to create itself, or must find absent.</summary>

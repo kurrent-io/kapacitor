@@ -5,11 +5,11 @@ using AppUnderTest = Capacitor.App.App;
 
 namespace Capacitor.App.Tests.Unit;
 
-/// Task 10: the composition-root helpers wiring the mutation lane into App.axaml.cs — the
-/// outcome-channel presentation routing, the cliOverride absolute-pin resolution, and the
-/// shutdown quiesce composition. Plain TUnit, no Avalonia session needed (these are pure/async
-/// functions over interfaces and fakes — FakeLifecycleSurface/FakeKcapCli/FakeLoginShellProbe are
-/// shared from DaemonLifecycleControllerTests.cs, same namespace).
+/// Composition-root helpers wiring the mutation lane into App.axaml.cs: outcome-channel
+/// presentation routing, cliOverride absolute-pin resolution, and shutdown quiesce composition.
+/// Plain TUnit, no Avalonia session needed — pure/async functions over interfaces and fakes
+/// (FakeLifecycleSurface/FakeKcapCli/FakeLoginShellProbe are shared from
+/// DaemonLifecycleControllerTests.cs, same namespace).
 public class AppMutationLaneWiringTests {
     [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
 
@@ -27,14 +27,14 @@ public class AppMutationLaneWiringTests {
     static OutcomeEnvelope Envelope(MutationOutcome outcome, MutationVerb verb = MutationVerb.StartVerified) =>
         new(Req(verb), outcome);
 
-    // A tripwire for "must not be called" assertions — round-1 review C-1's Decline case, and
-    // every non-Takeover branch, must never re-mutate.
+    // A tripwire for "must not be called" assertions: Decline, and every non-Takeover branch,
+    // must never re-mutate.
     static Task<MutationOutcome> NeverRunMutation(MutationRequest request, CancellationToken ct) =>
         throw new InvalidOperationException("runMutation must not be called");
 
     static Func<CancellationToken, Task<string?>> FixedTerminalPath(string? path) => _ => Task.FromResult(path);
 
-    // ---- ResolveCliOverrideCore (round-1 review M-4) ----
+    // ---- ResolveCliOverrideCore ----
 
     [Test]
     public async Task ResolveCliOverrideCore_no_override_is_null() {
@@ -48,10 +48,10 @@ public class AppMutationLaneWiringTests {
 
     [Test]
     public async Task ResolveCliOverrideCore_existing_override_is_absolute_pinned() {
-        // Path.GetTempPath() is a real absolute root on every platform (a Windows leg exercises
-        // this with its own drive/backslash form) — Path.Combine, not a hardcoded Unix literal,
-        // builds both the fake getFullPath's answer and the expectation.
-        var absRoot = Path.Combine(Path.GetTempPath(), "abs-root");
+        // Absolute on every platform (a Windows leg exercises this with its own drive/backslash
+        // form), rather than a hardcoded Unix literal. Nothing reads it.
+        using var tmp = new TempDir();
+        var absRoot = tmp.PathTo("abs-root");
         var overrideEnv = Path.Combine(".", "bin", "kcap");
         var result = AppUnderTest.ResolveCliOverrideCore(overrideEnv, _ => true, p => Path.Combine(absRoot, p));
         await Assert.That(result).IsEqualTo(Path.Combine(absRoot, overrideEnv));
@@ -62,17 +62,18 @@ public class AppMutationLaneWiringTests {
         await Assert.That(AppUnderTest.ResolveCliOverrideCore("/opt/kcap/kcap", _ => false, p => p)).IsNull();
     }
 
-    // The whole point of M-4: a real override whose value happens to equal the OLD no-override
-    // sentinel string ("kcap") must still resolve as a real, absolute-pinned override — not be
-    // silently treated as "no override set" via a string-compare ambiguity.
+    // A real override whose value happens to equal the no-override sentinel string ("kcap") must
+    // still resolve as a real, absolute-pinned override — not be silently treated as "no override
+    // set" via a string-compare ambiguity.
     [Test]
     public async Task ResolveCliOverrideCore_override_literally_named_kcap_is_not_confused_with_the_old_sentinel() {
-        var absRoot = Path.Combine(Path.GetTempPath(), "abs-root");
+        using var tmp = new TempDir();
+        var absRoot = tmp.PathTo("abs-root");
         var result = AppUnderTest.ResolveCliOverrideCore("kcap", _ => true, p => Path.Combine(absRoot, p));
         await Assert.That(result).IsEqualTo(Path.Combine(absRoot, "kcap"));
     }
 
-    // ---- PresentOutcomeAsync: Takeover (round-1 review C-1 / C-2) ----
+    // ---- PresentOutcomeAsync: Takeover ----
 
     [Test]
     public async Task Takeover_accept_issues_exactly_one_Replace_request_at_the_envelopes_own_identity() {
@@ -126,7 +127,7 @@ public class AppMutationLaneWiringTests {
         await Assert.That(surface.AttentionMessages).IsEmpty();
     }
 
-    // ---- PresentOutcomeAsync: Reinstall/Attention/Storage (round-1 review C-2b) ----
+    // ---- PresentOutcomeAsync: Reinstall/Attention/Storage ----
 
     [Test]
     public async Task Reinstall_surface_is_an_attention_line_naming_the_token_no_dialog_no_status() {
@@ -137,7 +138,7 @@ public class AppMutationLaneWiringTests {
             surface, envelope, NeverRunMutation, FixedTerminalPath("/usr/bin"), () => null, CancellationToken.None);
 
         await Assert.That(surface.Prompts).IsEmpty();
-        await Assert.That(surface.StatusMessages).IsEmpty(); // moved OFF the status slot per C-2
+        await Assert.That(surface.StatusMessages).IsEmpty(); // Reinstall never writes Status
         await Assert.That(surface.AttentionMessages.Count).IsEqualTo(1);
         await Assert.That(surface.AttentionMessages[0]).Contains("package_inconsistent");
     }
@@ -192,9 +193,9 @@ public class AppMutationLaneWiringTests {
         await Assert.That(surface.AttentionMessages[0]).Contains("stale_txn_marker");
     }
 
-    // round-1 review I-3: UnconfirmedNoAttach IS actionable — one attention presentation naming
-    // the verb (Succeeded/SucceededAfterTimeout still never reach the channel at all). round-2
-    // review R2-3: the verb is rendered through a small display map, not MutationVerb.ToString().
+    // UnconfirmedNoAttach is actionable: one attention presentation naming the verb
+    // (Succeeded/SucceededAfterTimeout never reach the channel at all). The verb is rendered
+    // through a display map, not MutationVerb.ToString().
     [Test]
     public async Task UnconfirmedNoAttach_is_presented_once_naming_the_verb() {
         var surface = new FakeLifecycleSurface();
@@ -235,7 +236,7 @@ public class AppMutationLaneWiringTests {
         await Assert.That(surface.AttentionMessages[0]).Contains("verify_readiness_timeout");
     }
 
-    // M2: DigestGate (43) is DaemonCommands' own gate, not a ServiceVerify exit code, but it still
+    // DigestGate (43) is DaemonCommands' own gate, not a ServiceVerify exit code, but it still
     // needs a real presentable token when the CLI emits no reason line — falling back to
     // "verify_unknown_43" would surface a meaningless code to the user.
     [Test]
@@ -271,9 +272,9 @@ public class AppMutationLaneWiringTests {
         await Assert.That(surface2).IsEqualTo(RecoverySurface.None);
     }
 
-    // P2-5 / spec §10: the closed set of AttentionSkew tokens meaning "connected but below the
-    // floor this app requires" — read verbatim off DaemonMutationLane.EvidenceFailureLeg — routes
-    // to Takeover; every other AttentionSkew detail stays non-destructive Attention.
+    // The closed set of AttentionSkew tokens meaning "connected but below the floor this app
+    // requires" — read verbatim off DaemonMutationLane.EvidenceFailureLeg — routes to Takeover;
+    // every other AttentionSkew detail stays non-destructive Attention.
     [Test]
     [Arguments("missing_capability_consent_3")]
     [Arguments("daemon_below_floor")]
@@ -298,7 +299,7 @@ public class AppMutationLaneWiringTests {
         await Assert.That(detail).IsEqualTo(token);
     }
 
-    // ---- PresentOutcomeAsync: AttentionSkew routed to Takeover (P2-5) ----
+    // ---- PresentOutcomeAsync: AttentionSkew routed to Takeover ----
 
     [Test]
     [Arguments("missing_capability_consent_3")]
@@ -342,7 +343,7 @@ public class AppMutationLaneWiringTests {
         await Assert.That(surface.AttentionMessages[0]).Contains(token);
     }
 
-    // ---- ConsumeMutationOutcomesAsync (round-1 review I-1) ----
+    // ---- ConsumeMutationOutcomesAsync ----
 
     /// Throws on its FIRST Attention call only, then behaves normally — simulates a presentation
     /// failure for exactly one envelope.
@@ -357,9 +358,9 @@ public class AppMutationLaneWiringTests {
         public Task<bool?> TryConfirmAsync(LifecyclePrompt prompt, CancellationToken ct) => inner.TryConfirmAsync(prompt, ct);
     }
 
-    // P1-2: a presentation failure BEFORE the UI boundary (surface.Attention throwing) must requeue
-    // the envelope for a re-presentation, never Ack-and-drop it — the loop itself survives either
-    // way (never faulted/canceled), but the outcome itself is no longer silently skipped.
+    // A presentation failure BEFORE the UI boundary (surface.Attention throwing) must requeue the
+    // envelope for a re-presentation, never Ack-and-drop it — the loop itself survives either way
+    // (never faulted/canceled), but the outcome itself is no longer silently skipped.
     [Test]
     public async Task ConsumeMutationOutcomesAsync_a_presentation_failure_requeues_and_re_presents_then_acks() {
         var inner = new FakeLifecycleSurface();
@@ -390,9 +391,9 @@ public class AppMutationLaneWiringTests {
         await consumerTask.WaitAsync(TimeSpan.FromSeconds(5));
     }
 
-    // P1-2: a ct already cancelled BEFORE the takeover dialog is ever shown (TryConfirmAsync
-    // returns null) must requeue the envelope — never Ack it, never record decline memory for a
-    // dialog the user never saw. A fresh consumer over the same channel still gets to present it.
+    // A ct already cancelled BEFORE the takeover dialog is ever shown (TryConfirmAsync returns
+    // null) must requeue the envelope — never Ack it, never record decline memory for a dialog the
+    // user never saw. A fresh consumer over the same channel still gets to present it.
     [Test]
     public async Task ConsumeMutationOutcomesAsync_cancellation_before_the_takeover_dialog_requeues_and_records_no_decline() {
         var surface = new FakeLifecycleSurface();
@@ -421,8 +422,8 @@ public class AppMutationLaneWiringTests {
         await secondConsumer.WaitAsync(TimeSpan.FromSeconds(5));
     }
 
-    // P1-2: the takeover dialog IS the presentation boundary — once ConfirmAsync returns (shown
-    // and answered), a fault in the accept's OWN re-mutation must still Ack, never requeue the
+    // The takeover dialog IS the presentation boundary — once ConfirmAsync returns (shown and
+    // answered), a fault in the accept's OWN re-mutation must still Ack, never requeue the
     // envelope for a second dialog.
     [Test]
     public async Task ConsumeMutationOutcomesAsync_a_fault_after_the_takeover_dialog_still_acks_not_requeues() {
@@ -449,7 +450,7 @@ public class AppMutationLaneWiringTests {
         await consumerTask.WaitAsync(TimeSpan.FromSeconds(5));
     }
 
-    // ---- ConsumeMutationOutcomesAsync: per-run Takeover decline memory (round-2 review R2-2) ----
+    // ---- ConsumeMutationOutcomesAsync: per-run Takeover decline memory ----
 
     [Test]
     public async Task Decline_then_same_pair_rearrival_is_downgraded_to_one_attention_line_not_a_second_prompt() {
@@ -554,7 +555,7 @@ public class AppMutationLaneWiringTests {
 
     // Proves the shutdown composition actually covers the lane's OWN in-flight work — not just
     // the controller's gate — since DaemonClientService.StartDaemonAsync calls the lane directly,
-    // never through the controller at all (the reason this composition exists, ruling 6).
+    // never through the controller at all.
     [Test]
     public async Task QuiesceLifecycleAndLaneAsync_waits_for_an_in_flight_lane_mutation() {
         var gate = new TaskCompletionSource<string?>();
@@ -579,14 +580,13 @@ public class AppMutationLaneWiringTests {
         await runTask.WaitAsync(TimeSpan.FromSeconds(5));
     }
 
-    // ---- round-1 review I-2: composed real-lane + real-consumer wiring ----
+    // ---- composed real-lane + real-consumer wiring ----
 
-    // This is the test that would have caught C-2's double presentation: a REAL DaemonMutationLane
-    // and a REAL ConsumeMutationOutcomesAsync loop, driving a REAL DaemonLifecycleController's
-    // startup matrix through a fake executor whose install exits with a Takeover-routed coded
-    // failure. Asserts exactly ONE presentation (the takeover dialog, declined -> its one status
-    // line) and that the controller itself made zero direct Attention calls and wrote no OTHER
-    // status line.
+    // A REAL DaemonMutationLane and a REAL ConsumeMutationOutcomesAsync loop drive a REAL
+    // DaemonLifecycleController's startup matrix through a fake executor whose install exits with
+    // a Takeover-routed coded failure. Asserts exactly ONE presentation (the takeover dialog,
+    // declined -> its one status line) and that the controller itself made zero direct surface
+    // calls.
     [Test]
     public async Task Composed_real_lane_and_consumer_present_exactly_once_and_controller_makes_no_surface_call() {
         var channel = new OutcomeChannel();
@@ -629,14 +629,13 @@ public class AppMutationLaneWiringTests {
         }
     }
 
-    // round-2 review R2-4: the accept-variant composed test — a REAL DaemonMutationLane, a REAL
-    // OutcomeChannel, and a REAL ConsumeMutationOutcomesAsync loop; no controller needed (the test
-    // drives the FIRST lane.RunAsync call itself, exactly as DaemonLifecycleController or
-    // DaemonClientService would). The executor's install exits 28/foreign_binary; the surface
-    // fake accepts the takeover dialog; the executor's SUBSEQUENT replace call exits 0 ("returns
-    // success" at the process level). Asserts the second lane request is genuinely Replace at the
-    // SAME identity and that accepting never shows a second dialog (covers accept-through-the-
-    // real-lane, including its own re-entry into RunAsync).
+    // The accept-variant composed test — a REAL DaemonMutationLane, a REAL OutcomeChannel, and a
+    // REAL ConsumeMutationOutcomesAsync loop; no controller needed (the test drives the FIRST
+    // lane.RunAsync call itself, exactly as DaemonLifecycleController or DaemonClientService
+    // would). The executor's install exits 28/foreign_binary; the surface fake accepts the
+    // takeover dialog; the executor's SUBSEQUENT replace call exits 0. Asserts the second lane
+    // request is genuinely Replace at the SAME identity and that accepting never shows a second
+    // dialog.
     [Test]
     public async Task Composed_accept_re_enters_the_real_lane_as_replace_with_no_second_prompt() {
         var channel = new OutcomeChannel();

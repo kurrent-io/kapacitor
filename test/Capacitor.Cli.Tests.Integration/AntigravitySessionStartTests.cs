@@ -10,12 +10,11 @@ using WireMock.Server;
 namespace Capacitor.Cli.Tests.Integration;
 
 /// <summary>
-/// CLI→server integration for the Antigravity hook dispatcher:
-/// a PreInvocation drives a POST to /hooks/session-start/antigravity carrying the
-/// enriched payload (session id, version, profile default visibility), and an
-/// excluded-repo PreInvocation is skipped and marks the session disabled.
-/// The watcher spawn that normally follows the POST is neutralized by pre-seeding a
-/// live watcher pid file for the conversation so <c>EnsureWatcherRunning</c> no-ops.
+/// CLI→server integration for the Antigravity hook dispatcher: a PreInvocation drives a POST
+/// to /hooks/session-start/antigravity carrying the enriched payload (session id, version,
+/// profile default visibility), while an excluded-path PreInvocation is skipped entirely.
+/// The watcher spawn that normally follows the POST is neutralized by pre-seeding a live
+/// watcher pid file so <c>EnsureWatcherRunning</c> no-ops.
 /// </summary>
 public class AntigravitySessionStartTests : IDisposable {
     [TempConfigRoot] public required TempConfigRoot Config { get; init; }
@@ -58,7 +57,8 @@ public class AntigravitySessionStartTests : IDisposable {
         _server.Given(Request.Create().WithPath("/hooks/session-start/antigravity").UsingPost())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody("{}"));
 
-        var transcript = Path.Combine(Path.GetTempPath(), $"{convId}.jsonl");
+        using var tmp = new TempDir();
+        var transcript = tmp.PathTo($"{convId}.jsonl");
         var payload =
             $$"""
             {
@@ -89,7 +89,9 @@ public class AntigravitySessionStartTests : IDisposable {
     [Test]
     public async Task PreInvocation_for_excluded_path_is_skipped_without_posting() {
         const string convId = "agexcludedsess1";
-        var excludedDir = Path.Combine(Path.GetTempPath(), "kcap-ag-excluded");
+        using var tmp = new TempDir();
+        var excludedDir = tmp.PathTo("excluded");
+
         NeutralizeWatcherSpawn(convId);
 
         await ConfigMutator.MutateAsync(Config.Root, _ => new ProfileConfig {
@@ -103,8 +105,8 @@ public class AntigravitySessionStartTests : IDisposable {
             .RespondWith(Response.Create().WithStatusCode(200).WithBody("{}"));
 
         // Antigravity attributes the working dir from workspacePaths[0]; an excluded
-        // path short-circuits before any POST.
-        var transcript = Path.Combine(Path.GetTempPath(), $"{convId}.jsonl");
+        // path short-circuits before any POST, so the transcript is never opened.
+        var transcript = tmp.PathTo($"{convId}.jsonl");
         var payload =
             $$"""
             {

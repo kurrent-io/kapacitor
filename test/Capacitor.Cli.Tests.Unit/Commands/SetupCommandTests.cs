@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
@@ -1174,20 +1173,19 @@ public class SetupCommandTests {
     /// preceding them for what each piece of isolation guards against.
     /// </summary>
     sealed class HandleAsyncE2EFixture : IAsyncDisposable {
-        readonly TempDir _repoDir;
+        readonly GitRepo _repo;
         readonly string  _originalCwd;
 
-        public string RepoDir => _repoDir.Path;
+        public string RepoDir => _repo.Path;
 
-        HandleAsyncE2EFixture(TempDir repoDir, string originalCwd) {
-            _repoDir     = repoDir;
+        HandleAsyncE2EFixture(GitRepo repo, string originalCwd) {
+            _repo        = repo;
             _originalCwd = originalCwd;
         }
 
         public static async Task<HandleAsyncE2EFixture> CreateAsync(string owner, string repo, ConfigRoot configRoot) {
-            var repoDir = new TempDir();
-            await RunGitAsync("init", repoDir.Path);
-            await RunGitAsync($"remote add origin https://github.com/{owner}/{repo}.git", repoDir.Path);
+            var repoDir = GitRepo.Create();
+            repoDir.AddRemote($"https://github.com/{owner}/{repo}.git");
 
             var originalCwd = Environment.CurrentDirectory;
 
@@ -1213,29 +1211,11 @@ public class SetupCommandTests {
             Environment.CurrentDirectory = _originalCwd;
             HttpClientExtensions.ResetProviderCacheForTesting();
 
-            _repoDir.Dispose();
+            _repo.Dispose();
 
             return ValueTask.CompletedTask;
         }
 
-        static async Task RunGitAsync(string arguments, string workingDir) {
-            var psi = new ProcessStartInfo("git", arguments) {
-                WorkingDirectory       = workingDir,
-                RedirectStandardOutput = true,
-                RedirectStandardError  = true,
-                UseShellExecute        = false,
-                CreateNoWindow         = true,
-            };
-
-            using var process = Process.Start(psi) ?? throw new InvalidOperationException("Failed to start git");
-            await process.WaitForExitAsync();
-
-            if (process.ExitCode != 0) {
-                var err = await process.StandardError.ReadToEndAsync();
-
-                throw new InvalidOperationException($"git {arguments} failed: {err}");
-            }
-        }
     }
 
     // --- --org / --slug, the create-a-workspace prompts answered up front ---

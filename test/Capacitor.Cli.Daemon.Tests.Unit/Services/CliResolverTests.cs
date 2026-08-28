@@ -45,7 +45,7 @@ public class CliResolverTests {
 
     [Test]
     public async Task ReturnsFalse_WhenAbsolutePathMissing() {
-        var missing = Path.Combine(Path.GetTempPath(), $"cli-resolver-missing-{Guid.NewGuid():N}");
+        using var missingDir = TempDir.WithPathTo("cli-resolver-missing", out var missing);
 
         await Assert.That(CliResolver.Exists(missing)).IsFalse();
     }

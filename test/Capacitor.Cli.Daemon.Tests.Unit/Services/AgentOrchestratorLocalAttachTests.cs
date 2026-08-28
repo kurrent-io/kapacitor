@@ -87,30 +87,27 @@ public class AgentOrchestratorLocalAttachTests {
 
     [Test]
     public async Task Borrowed_cwd_cleanup_does_not_delete_user_dir_or_branch() {
-        var (repoPath, cleanup) = GitRepoHarness.CreateGitRepo();
+        using var repoPath = GitRepo.CreateWithCommit();
 
-        try {
-            var server = new CaptureServerConnection();
-            await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+        var server = new CaptureServerConnection();
+        await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
 
-            // IsStandalone:true means RemoveAsync WOULD Directory.Delete this path —
-            // the Work=BorrowedCwd guard must prevent that.
-            var agent = new AgentInstance(
-                "local-1", null, "", null, repoPath, "claude",
-                new PtyHostedAgentRuntime("claude", new StubPtyProcess()), new WorktreeInfo(repoPath, "", repoPath, IsStandalone: true), new CancellationTokenSource()
-            ) {
-                IsPrivate = true,
-                Work      = WorkLocation.BorrowedCwd
-            };
+        // IsStandalone:true means RemoveAsync WOULD Directory.Delete this path —
+        // the Work=BorrowedCwd guard must prevent that.
+        var agent = new AgentInstance(
+            "local-1", null, "", null, repoPath, "claude",
+            new PtyHostedAgentRuntime("claude", new StubPtyProcess()), new WorktreeInfo(repoPath, "", repoPath, IsStandalone: true), new CancellationTokenSource()
+        ) {
+            IsPrivate = true,
+            Work      = WorkLocation.BorrowedCwd
+        };
 
-            orch.RegisterAgentForTest(agent);
-            await orch.CleanupAgentForTest("local-1");
+        orch.RegisterAgentForTest(agent);
+        await orch.CleanupAgentForTest("local-1");
 
-            await Assert.That(Directory.Exists(repoPath)).IsTrue();
-            await Assert.That(File.Exists(Path.Combine(repoPath, "README.md"))).IsTrue();
-        } finally {
-            cleanup();
-        }
+        await Assert.That(Directory.Exists(repoPath)).IsTrue();
+        await Assert.That(File.Exists(Path.Combine(repoPath, "README.md"))).IsTrue();
+
     }
 
     [Test]

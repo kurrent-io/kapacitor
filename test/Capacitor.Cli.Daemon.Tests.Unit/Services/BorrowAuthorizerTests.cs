@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using Capacitor.Cli.Daemon.Services;
 
 namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
@@ -12,7 +11,7 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 public class BorrowAuthorizerTests {
     [Test]
     public async Task Absent_path_is_not_allowed_with_path_absent_reason() {
-        var missing = Path.Combine(Path.GetTempPath(), "kcap-borrow-missing-" + Guid.NewGuid().ToString("N")[..8]);
+        using var missingDir = TempDir.WithPathTo("kcap-borrow-missing", out var missing);
 
         var result = await new BorrowAuthorizer(new DaemonConfig()).AuthorizeBorrowAsync(missing);
 
@@ -139,22 +138,9 @@ public class BorrowAuthorizerTests {
 
     static TempDir MakeTempRepo() {
         var repo = new TempDir();
-        Run(repo.Path, "init", "-q");
+        GitRepo.At(repo.Path).Do("init", "-q");
 
         return repo;
     }
 
-    static void Run(string cwd, params string[] args) {
-        var psi = new ProcessStartInfo("git", args) {
-            WorkingDirectory       = cwd,
-            RedirectStandardOutput = true,
-            RedirectStandardError  = true
-        };
-        using var proc = Process.Start(psi)!;
-        proc.WaitForExit();
-
-        if (proc.ExitCode != 0) {
-            throw new InvalidOperationException($"git {string.Join(' ', args)} failed: {proc.StandardError.ReadToEnd()}");
-        }
-    }
 }

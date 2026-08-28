@@ -15,13 +15,13 @@ namespace Capacitor.Cli.Tests.Integration;
 public class McpReviewServerTests : IDisposable {
     [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
     [TempConfigRoot]  public required TempConfigRoot  Config  { get; init; }
-    [TempDir]         public required TempDir         Tmp     { get; init; }
+    [GitRepo]         public required GitRepo         Repo    { get; init; }
 
     readonly WireMockServer _server           = WireMockServer.Start();
     readonly List<Process>  _spawnedProcesses = [];
 
     [Before(Test)]
-    public void InitWorkspaceRepo() => InitGitRepo(Tmp.Path);
+    public void InitWorkspaceRepo() => Repo.AddRemote("https://github.com/test-owner/test-repo.git");
 
     public void Dispose() {
         foreach (var p in _spawnedProcesses) {
@@ -36,20 +36,6 @@ public class McpReviewServerTests : IDisposable {
         _server.Stop();
     }
 
-    static void InitGitRepo(string dir) {
-        RunGit(dir, "init");
-        RunGit(dir, "remote add origin https://github.com/test-owner/test-repo.git");
-    }
-
-    static void RunGit(string cwd, string args) {
-        using var p = Process.Start(new ProcessStartInfo("git", args) {
-            WorkingDirectory       = cwd,
-            RedirectStandardOutput = true,
-            RedirectStandardError  = true,
-            UseShellExecute        = false
-        })!;
-        p.WaitForExit(5000);
-    }
 
     /// <summary>
     /// Spawns <c>kcap mcp review</c> (argless / auto PR-detection) against WireMock.
@@ -61,7 +47,7 @@ public class McpReviewServerTests : IDisposable {
             .RespondWith(Response.Create().WithStatusCode(200).WithBody($$"""{"provider":"{{provider}}"}"""));
 
         var psi = KcapProcess.StartInfo(Daemons.Store, Config.Root, "mcp", "review");
-        psi.WorkingDirectory = Tmp.Path;
+        psi.WorkingDirectory = Repo.Path;
         psi.Environment["KCAP_URL"] = urlOverride ?? _server.Url!;
 
         var process = Process.Start(psi) ?? throw new InvalidOperationException("Failed to start kcap process");

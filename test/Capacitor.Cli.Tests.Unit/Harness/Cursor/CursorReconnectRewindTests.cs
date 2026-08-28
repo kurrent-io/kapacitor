@@ -53,7 +53,7 @@ public class CursorReconnectRewindTests {
     // resume baseline.
     [Test]
     public async Task ResolveByteOffsetForLineAsync_returns_null_when_the_file_is_missing_and_a_line_is_requested() {
-        var missing = Path.Combine(Path.GetTempPath(), $"kcap-reconnect-missing-{Guid.NewGuid():N}.jsonl");
+        using var missingDir = TempDir.WithPathTo("kcap-reconnect-missing.jsonl", out var missing);
         await Assert.That(await WatchCommand.ResolveByteOffsetForLineAsync(missing, 2, CancellationToken.None)).IsNull();
     }
 

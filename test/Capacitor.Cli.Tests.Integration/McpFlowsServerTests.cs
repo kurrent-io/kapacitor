@@ -17,13 +17,13 @@ namespace Capacitor.Cli.Tests.Integration;
 public class McpFlowsServerTests : IDisposable {
     [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
     [TempConfigRoot]  public required TempConfigRoot  Config  { get; init; }
-    [TempDir]         public required TempDir         Tmp     { get; init; }
+    [GitRepo]         public required GitRepo         Repo    { get; init; }
 
     readonly WireMockServer _server           = WireMockServer.Start();
     readonly List<Process>  _spawnedProcesses = [];
 
     [Before(Test)]
-    public void InitWorkspaceRepo() => InitGitRepo(Tmp.Path);
+    public void InitWorkspaceRepo() => Repo.AddRemote("https://github.com/test-owner/test-repo.git");
 
     public void Dispose() {
         foreach (var p in _spawnedProcesses) {
@@ -38,25 +38,6 @@ public class McpFlowsServerTests : IDisposable {
         _server.Stop();
     }
 
-    /// <summary>
-    /// Initialises a minimal git repo (git init + git remote add origin) so
-    /// <c>GitRepository.FindRoot</c> finds a root and <c>RepositoryDetection</c>
-    /// can parse an owner/name from the remote URL.
-    /// </summary>
-    static void InitGitRepo(string dir) {
-        RunGit(dir, "init");
-        RunGit(dir, "remote add origin https://github.com/test-owner/test-repo.git");
-    }
-
-    static void RunGit(string cwd, string args) {
-        using var p = Process.Start(new ProcessStartInfo("git", args) {
-            WorkingDirectory      = cwd,
-            RedirectStandardOutput = true,
-            RedirectStandardError  = true,
-            UseShellExecute        = false
-        })!;
-        p.WaitForExit(5000);
-    }
 
     /// <summary>
     /// Spawns <c>kcap mcp flows</c> as a child process with WireMock as the backend.
@@ -68,7 +49,7 @@ public class McpFlowsServerTests : IDisposable {
             .RespondWith(Response.Create().WithStatusCode(200).WithBody($$"""{"provider":"{{provider}}"}"""));
 
         var psi = KcapProcess.StartInfo(Daemons.Store, Config.Root, "mcp", "flows");
-        psi.WorkingDirectory = workingDirectory ?? Tmp.Path;
+        psi.WorkingDirectory = workingDirectory ?? Repo.Path;
         psi.Environment["KCAP_URL"] = urlOverride ?? _server.Url!;
 
         ApplyHarnessSignals(psi, harnessSessionId: null, harnessProjectDir: null);
@@ -94,7 +75,7 @@ public class McpFlowsServerTests : IDisposable {
             .RespondWith(Response.Create().WithStatusCode(200).WithBody($$"""{"provider":"{{provider}}"}"""));
 
         var psi = KcapProcess.StartInfo(Daemons.Store, Config.Root, "mcp", "flows");
-        psi.WorkingDirectory = workingDirectory ?? Tmp.Path;
+        psi.WorkingDirectory = workingDirectory ?? Repo.Path;
         psi.Environment["KCAP_URL"] = _server.Url!;
         psi.Environment["KCAP_SESSION_ID"] = sessionId;
 
@@ -106,17 +87,15 @@ public class McpFlowsServerTests : IDisposable {
     }
 
     /// <summary>
-    /// Sets (or REMOVES) the running-harness environment signals on a spawn. ProcessStartInfo starts
-    /// from this process's own environment, so a suite executed inside a real harness session would
-    /// otherwise leak that session's CLAUDE_CODE_SESSION_ID / CLAUDE_PROJECT_DIR into every spawned
-    /// server and make requester-context assertions depend on who ran the tests. Every spawn helper
+    /// Sets (or clears) the running-harness env signals on a spawn. ProcessStartInfo inherits this
+    /// process's own environment, so a suite run inside a real harness session would otherwise leak
+    /// its CLAUDE_CODE_SESSION_ID / CLAUDE_PROJECT_DIR into every spawned server. Every spawn helper
     /// goes through here so the child's harness identity is exactly what the test asked for.
     ///
-    /// <para>CODEX_THREAD_ID is removed unconditionally: the resolver reads a co-present value as
-    /// "another harness is nested around us, so the Claude signals are unprovable" and deliberately
-    /// falls back to the ambient resolution. Leaving an inherited one in place would silently route
-    /// every requester-context test down the fallback branch whenever the suite is run from a Codex
-    /// session — a real hermeticity hole, not a theoretical one.</para>
+    /// <para>CODEX_THREAD_ID is removed unconditionally: the resolver treats a co-present value as
+    /// "nested inside another harness, so the Claude signals are unprovable" and falls back to
+    /// ambient resolution — an inherited one would silently route requester-context tests down that
+    /// fallback branch whenever the suite runs from a Codex session.</para>
     /// </summary>
     static void ApplyHarnessSignals(ProcessStartInfo psi, string? harnessSessionId, string? harnessProjectDir) {
         if (harnessSessionId is null) psi.Environment.Remove("CLAUDE_CODE_SESSION_ID");
@@ -189,8 +168,8 @@ public class McpFlowsServerTests : IDisposable {
             await Assert.That(result).IsNotNull();
             await Assert.That(result!["serverInfo"]?["name"]?.GetValue<string>()).IsEqualTo("kcap-flows");
             await Assert.That(result["protocolVersion"]?.GetValue<string>()).IsEqualTo("2024-11-05");
-            // flows deliberately gets NO server-level instructions (we don't want more
-            // routing to a paid hosted reviewer) — the field must be omitted.
+            // flows deliberately omits server-level instructions — no routing to a paid
+            // hosted reviewer — so the field must be omitted, not empty.
             await Assert.That(result["instructions"]).IsNull();
         } finally {
             await ShutdownAsync(proc);
@@ -299,10 +278,10 @@ public class McpFlowsServerTests : IDisposable {
     /// <summary>
     /// Pins the four review-tool schemas byte-stably: definition_id/participant/message must
     /// NEVER leak into these schemas — old clients (and old skills) depend on the exact
-    /// property/required sets that shipped before the generic tools were added (D-b). The one
-    /// deliberate exception is `get_review_flow_status`'s additive, optional `wait` (the
-    /// liveness-supervision status-wait argument) — pinned explicitly below rather than silently
-    /// allowed, so a future accidental property change still fails loudly.
+    /// property/required sets that shipped before the generic tools were added. The one deliberate
+    /// exception is `get_review_flow_status`'s additive, optional `wait` (the liveness-supervision
+    /// status-wait argument) — pinned explicitly below rather than silently allowed, so a future
+    /// accidental property change still fails loudly.
     /// </summary>
     [Test]
     public async Task Review_tool_schemas_are_unchanged() {
@@ -358,9 +337,9 @@ public class McpFlowsServerTests : IDisposable {
     }
 
     /// <summary>
-    /// Generic alias for start_review_flow: definition_id maps onto the wire "kind" field so the
-    /// server (which treats kind == definition id, phase C) doesn't need to know about
-    /// the generic tool name at all.
+    /// Generic alias for start_review_flow: definition_id maps onto the wire "kind" field, so the
+    /// server (which treats kind as the definition id) doesn't need to know about the generic tool
+    /// name at all.
     /// </summary>
     [Test]
     public async Task Start_flow_posts_kind_from_definition_id() {
@@ -417,7 +396,7 @@ public class McpFlowsServerTests : IDisposable {
     /// <summary>
     /// send_to_participant is the generic alias for submit_review_round: "message" maps onto the
     /// wire "context" field and "participant" is a new field the server validates against the
-    /// flow definition (Phase D flows have a single participant: "reviewer").
+    /// flow definition — today's definitions have a single participant, "reviewer".
     /// </summary>
     [Test]
     public async Task Send_to_participant_posts_participant_and_message_as_context() {
@@ -526,9 +505,9 @@ public class McpFlowsServerTests : IDisposable {
     /// <summary>
     /// A non-boolean JSON "async" (e.g. an LLM caller passing the string "yes") must NOT crash
     /// the request with an uncaught GetValue&lt;bool&gt;() exception — it must surface as a clean
-    /// isError:true tool result, and the stdio loop must stay alive for the next request (Qodo
-    /// finding, D-b). No WireMock stub is needed: the bad arg is rejected before any HTTP
-    /// call is made, mirroring Submit_review_round_without_flow_run_id_returns_error above.
+    /// isError:true tool result, and the stdio loop must stay alive for the next request. No
+    /// WireMock stub is needed: the bad arg is rejected before any HTTP call is made, mirroring
+    /// Submit_review_round_without_flow_run_id_returns_error above.
     /// </summary>
     [Test]
     public async Task Send_to_participant_non_boolean_async_returns_clean_error() {
@@ -618,7 +597,7 @@ public class McpFlowsServerTests : IDisposable {
     /// <summary>
     /// Guardrail errors (max_rounds, wrong participant, etc.) come back from the server as a
     /// ProblemDetails 400 body — it must surface verbatim in the tool's error text, same as the
-    /// review tools do (McpFlowsServer.cs:146-147/165-166/345-347).
+    /// review tools do.
     /// </summary>
     [Test]
     public async Task Guardrail_400_body_surfaces_in_tool_error() {
@@ -655,7 +634,7 @@ public class McpFlowsServerTests : IDisposable {
 
     /// <summary>
     /// get_flow_status / close_flow are pure aliases: they must hit the exact same endpoints as
-    /// get_review_flow_status / close_review_flow (McpFlowsServer.cs dispatch switch).
+    /// get_review_flow_status / close_review_flow.
     /// </summary>
     [Test]
     public async Task Get_flow_status_and_close_flow_hit_same_endpoints_as_review_tools() {
@@ -718,7 +697,7 @@ public class McpFlowsServerTests : IDisposable {
     }
 
     /// <summary>
-    /// Regression: kcap-flows auto-registers via the Claude plugin, so Claude Code
+    /// kcap-flows auto-registers via the Claude plugin, so Claude Code
     /// spawns `kcap mcp flows` for every session. initialize / tools/list must stay local-only —
     /// the authenticated client (and its GET /auth/config round-trip + re-auth stderr hint) is
     /// created lazily on the first tools/call, so sessions that never use a flows tool pay
@@ -763,10 +742,10 @@ public class McpFlowsServerTests : IDisposable {
     }
 
     /// <summary>
-    /// Core scenario: verifies that start_review_flow posts to /api/flows/review/start/v2,
-    /// that the POST body includes the resolved requester context (requesting_repo_root = git root,
-    /// requesting_session_id from KCAP_SESSION_ID), and that the MCP tool response surfaces
-    /// both the flow_run_id/status envelope and the FINDINGS result text from the server.
+    /// Verifies that start_review_flow posts to /api/flows/review/start/v2, that the POST body
+    /// includes the resolved requester context (requesting_repo_root = git root, requesting_session_id
+    /// from KCAP_SESSION_ID), and that the MCP tool response surfaces both the flow_run_id/status
+    /// envelope and the FINDINGS result text from the server.
     /// </summary>
     [Test]
     public async Task Start_review_flow_posts_requester_context_and_returns_plain_text_result() {
@@ -798,10 +777,10 @@ public class McpFlowsServerTests : IDisposable {
                 .WithBody(stubbedResponse)
         );
 
-        // Create a subdirectory inside Tmp.Path so the server starts there — we can then
-        // verify requesting_repo_root points to Tmp.Path (the git root) while requesting_cwd
+        // Create a subdirectory inside Repo.Path so the server starts there — we can then
+        // verify requesting_repo_root points to Repo.Path (the git root) while requesting_cwd
         // points to the subdirectory.
-        var subdir = Path.Combine(Tmp.Path, "src", "feature");
+        var subdir = Path.Combine(Repo.Path, "src", "feature");
         Directory.CreateDirectory(subdir);
 
         using var proc = SpawnMcpServerWithSession(sessionId, workingDirectory: subdir);
@@ -816,61 +795,48 @@ public class McpFlowsServerTests : IDisposable {
 
             var response = await SendRequest(proc, ToolsCallRequest(3, "start_review_flow", args));
 
-            // Assert the MCP response is a success
             var result = response["result"]?.AsObject();
             await Assert.That(result).IsNotNull();
             await Assert.That(result!["isError"]?.GetValue<bool>()).IsNotEqualTo(true);
 
-            // Assert the response text contains the envelope fields
             var text = result["content"]?[0]?["text"]?.GetValue<string>();
             await Assert.That(text).IsNotNull();
             await Assert.That(text!.Contains($"flow_run_id: {flowRunId}")).IsTrue();
             await Assert.That(text.Contains("status: completed")).IsTrue();
             await Assert.That(text.Contains("result_kind: FINDINGS")).IsTrue();
-
-            // Assert the response text contains the result text from the server
             await Assert.That(text.Contains("## Review findings")).IsTrue();
             await Assert.That(text.Contains("The spec looks good.")).IsTrue();
 
-            // Assert the POST was made to the correct endpoint
             var hits = _server.FindLogEntries(
                 Request.Create().WithPath("/api/flows/review/start/v2").UsingPost()
             );
             await Assert.That(hits.Count).IsEqualTo(1);
 
-            // Verify the POST body includes the requester context fields
             var body = hits[0].RequestMessage.Body ?? "";
             var bodyNode = JsonNode.Parse(body)?.AsObject();
             await Assert.That(bodyNode).IsNotNull();
 
-            // requesting_session_id: from KCAP_SESSION_ID (stripped of dashes)
+            // Stripped of dashes.
             var reqSessionId = bodyNode!["requesting_session_id"]?.GetValue<string>();
             await Assert.That(reqSessionId).IsNotNull();
             await Assert.That(reqSessionId!.Contains("claudesessionaabbccdd") || reqSessionId.Contains("claude-session-aabbccdd")).IsTrue();
 
-            // requesting_cwd: the subdirectory the server was started in
             var reqCwd = bodyNode["requesting_cwd"]?.GetValue<string>();
             await Assert.That(reqCwd).IsNotNull();
-            // cwd should be either subdir or contain "src/feature"
             await Assert.That(
                 reqCwd!.Contains(Path.Combine("src", "feature")) ||
                 reqCwd.Equals(subdir, StringComparison.OrdinalIgnoreCase)
             ).IsTrue();
 
-            // requesting_repo_root: the git root (= Tmp.Path, where git init was run).
-            // On macOS directory paths can differ between what the test creates
-            // (Path.GetTempPath() / Guid) and what the spawned process sees via
-            // Directory.GetCurrentDirectory() (which resolves symlinks on some platforms).
-            // We verify the invariant: the repo root is a parent of the subdir, and it
-            // contains the unique test-directory name so it can't be an arbitrary system dir.
+            // requesting_repo_root should be Repo.Path (the git root), but compared by containment
+            // rather than equality: Directory.GetCurrentDirectory() in the spawned process can
+            // resolve symlinks that the test's own path does not, so the two strings can differ on
+            // macOS even though they name the same directory.
             var reqRepoRoot = bodyNode["requesting_repo_root"]?.GetValue<string>();
             await Assert.That(reqRepoRoot).IsNotNull();
-            // The unique GUID portion of Tmp.Path must appear somewhere in the repo root path
-            // (both paths point to the same directory, just possibly via different symlink chains).
-            var cwdDirName = Path.GetFileName(Tmp.Path.TrimEnd(Path.DirectorySeparatorChar));
+            var cwdDirName = Path.GetFileName(Repo.Path.TrimEnd(Path.DirectorySeparatorChar));
             await Assert.That(reqRepoRoot!.Contains(cwdDirName, StringComparison.OrdinalIgnoreCase)).IsTrue();
 
-            // kind: matches what we passed
             await Assert.That(bodyNode["kind"]?.GetValue<string>()).IsEqualTo("spec-review");
             await Assert.That(bodyNode["target_kind"]?.GetValue<string>()).IsEqualTo("spec");
             await Assert.That(bodyNode["context"]?.GetValue<string>()).IsEqualTo("Please review this spec for completeness.");
@@ -904,13 +870,12 @@ public class McpFlowsServerTests : IDisposable {
 
         // Two separate git checkouts: the one the process is launched in (the parent's, inherited)
         // and the one the running harness reports as its project (the driver's own worktree).
-        using var driverTmp = new TempDir();
-        var driverRepo = driverTmp.CreateDir("driver");
-        InitGitRepo(driverRepo);
+        using var driverRepo = GitRepo.Create("driver");
+        driverRepo.AddRemote("https://github.com/test-owner/test-repo.git");
 
         using var proc = SpawnMcpServerWithSession(
             inheritedParentSession,
-            workingDirectory:  Tmp.Path,      // the launching (parent) checkout — inherited, wrong
+            workingDirectory:  Repo.Path,      // the launching (parent) checkout — inherited, wrong
             harnessSessionId:  runningDriverSession,
             harnessProjectDir: driverRepo);  // the driver's own checkout — correct
 
@@ -939,9 +904,9 @@ public class McpFlowsServerTests : IDisposable {
                 .IsNotEqualTo(inheritedParentSession);
 
             // The driver's checkout, not the directory the process was launched in. Compared by
-            // the unique directory name because macOS resolves the temp path through a symlink.
-            var driverRepoName = Path.GetFileName(driverRepo);
-            var parentRepoName = Path.GetFileName(Tmp.Path);
+            // directory name because macOS can resolve the path through a symlink.
+            var driverRepoName = Path.GetFileName(driverRepo.Path);
+            var parentRepoName = Path.GetFileName(Repo.Path);
             foreach (var field in (string[])["requesting_cwd", "requesting_repo_root", "repo_path"]) {
                 var value = body[field]?.GetValue<string>();
                 await Assert.That(value).IsNotNull();
@@ -1108,10 +1073,9 @@ public class McpFlowsServerTests : IDisposable {
     }
 
     /// <summary>
-    /// Transient-retry (a): if the GET for a running round returns HTTP 500 once
-    /// and then 200 with a terminal result, the poll should survive the transient
-    /// error and return the terminal result. Guards PollUntilTerminalAsync's
-    /// !IsSuccessStatusCode → continue branch.
+    /// If the GET for a running round returns HTTP 500 once and then 200 with a terminal result,
+    /// the poll should survive the transient error and return the terminal result. Guards
+    /// PollUntilTerminalAsync's !IsSuccessStatusCode → continue branch.
     /// </summary>
     [Test]
     public async Task Start_review_flow_async_survives_transient_500_on_poll() {
@@ -1153,11 +1117,10 @@ public class McpFlowsServerTests : IDisposable {
     }
 
     /// <summary>
-    /// Run-terminal stop (c): if the GET returns a run-level <c>status: "failed"</c>
-    /// while <c>round_status</c> is still "running" (round didn't produce a result),
-    /// the poll must stop immediately (not hang until the 8-min cap) and return an
-    /// explicit isError:true result — NOT "Review still running" and NOT a partial envelope.
-    /// Guards the run-terminal early-exit + Finding #1 (no stale data) in PollUntilTerminalAsync.
+    /// If the GET returns a run-level <c>status: "failed"</c> while <c>round_status</c> is still
+    /// "running" (round didn't produce a result), the poll must stop immediately (not hang until
+    /// the 8-min cap) and return an explicit isError:true result — NOT "Review still running" and
+    /// NOT a partial envelope. Guards the run-terminal early-exit in PollUntilTerminalAsync.
     /// </summary>
     [Test]
     public async Task Start_review_flow_async_stops_when_run_level_fails() {
@@ -1186,7 +1149,7 @@ public class McpFlowsServerTests : IDisposable {
             await Assert.That(result).IsNotNull();
             var text = result!["content"]?[0]?["text"]?.GetValue<string>();
             await Assert.That(text).IsNotNull();
-            // Fix #1: run failed without producing a terminal round — must be isError:true,
+            // Run failed without producing a terminal round — must be isError:true,
             // must NOT be the graceful-cap message, must mention "failed".
             await Assert.That(result["isError"]?.GetValue<bool>()).IsTrue();
             await Assert.That(text!.Contains("Review still running")).IsFalse();
@@ -1194,18 +1157,16 @@ public class McpFlowsServerTests : IDisposable {
         } finally { await ShutdownAsync(proc); }
     }
 
-    // NOTE: graceful-cap behaviour (poll exceeds 8-min PollCap → returns
-    // "Review still running … call get_review_flow_status" message) is exercised
-    // manually only. The 8-min cap has no injectable test seam in the current
-    // McpFlowsServer implementation, so a CI test would either run for 8 minutes
-    // (unacceptable) or require source changes out of scope for this task.
-    // Manual e2e: start a flow against a server that never completes the round,
-    // wait 8 min, assert the graceful-cap message appears in the MCP tool output.
+    // Graceful-cap behaviour (poll exceeds the 8-min PollCap → returns "Review still running …
+    // call get_review_flow_status") is exercised manually only: the cap has no injectable test
+    // seam, so a CI test would have to either run for 8 minutes or add a source-level seam.
+    // Manual e2e: start a flow against a server that never completes the round, wait 8 min,
+    // assert the graceful-cap message appears in the MCP tool output.
 
     /// <summary>
-    /// Finding #1: when run-level status is "failed" but the projected round_number doesn't match
-    /// the round we submitted (e.g. projection still shows prior round 1 when we submitted round 2),
-    /// the result MUST be an explicit run-failed error (isError:true), NOT the prior round's findings.
+    /// When run-level status is "failed" but the projected round_number doesn't match the round we
+    /// submitted (e.g. projection still shows prior round 1 when we submitted round 2), the result
+    /// MUST be an explicit run-failed error (isError:true), NOT the prior round's findings.
     /// </summary>
     [Test]
     public async Task Run_failed_before_requested_round_returns_explicit_error_not_stale_findings() {
@@ -1240,16 +1201,16 @@ public class McpFlowsServerTests : IDisposable {
             await Assert.That(text!.Contains("Round 1 stale data")).IsFalse();
             // Must contain an explicit failure message for round 2.
             await Assert.That(text.Contains("failed")).IsTrue();
-            await Assert.That(text.Contains('2')).IsTrue(); // round number mentioned
+            await Assert.That(text.Contains('2')).IsTrue();
         } finally {
             await ShutdownAsync(proc);
         }
     }
 
     /// <summary>
-    /// Finding #2 + #4: persistent 500 on every GET exhausts the transient-retry budget and
-    /// returns isError:true well before the 8-min cap. The result must NOT be "Review still running"
-    /// (which is only for genuine running-at-cap). Budget is 5 consecutive transient failures.
+    /// Persistent 500 on every GET exhausts the transient-retry budget and returns isError:true
+    /// well before the 8-min cap. The result must NOT be "Review still running" (which is only
+    /// for genuine running-at-cap). Budget is 5 consecutive transient failures.
     /// </summary>
     [Test]
     public async Task Persistent_500_exhausts_retry_budget_and_returns_isError() {
@@ -1295,8 +1256,8 @@ public class McpFlowsServerTests : IDisposable {
     }
 
     /// <summary>
-    /// Finding #2 + #4: non-transient 403 on GET returns immediate isError:true with no retry.
-    /// Similarly for 400. These are non-transient 4xx errors that must fail immediately.
+    /// Non-transient 403 on GET returns immediate isError:true with no retry — same for 400.
+    /// These 4xx errors must fail immediately, not be treated as transient.
     /// </summary>
     [Test]
     public async Task Non_transient_403_on_poll_returns_immediate_isError() {
@@ -1339,13 +1300,10 @@ public class McpFlowsServerTests : IDisposable {
     }
 
     /// <summary>
-    /// Finding #3: 404 that occurs after the grace deadline (anchored to poll start)
-    /// must return isError:true. The key invariant is that grace is relative to when
-    /// polling began, not when the first 404 was observed.
-    ///
-    /// Since NotFoundGrace = 10s and PollInterval = 3s, we stub every GET as 404
-    /// and wait long enough for the grace deadline to pass (> 10s). The poll must
-    /// give up before the 8-min cap.
+    /// A 404 that occurs after the grace deadline (anchored to poll start) must return
+    /// isError:true — grace is relative to when polling began, not when the first 404 was
+    /// observed. NotFoundGrace = 10s and PollInterval = 3s, so stubbing every GET as 404 and
+    /// waiting past 10s must make the poll give up before the 8-min cap.
     /// </summary>
     [Test]
     public async Task NotFound_past_grace_deadline_returns_isError() {
@@ -1483,18 +1441,15 @@ public class McpFlowsServerTests : IDisposable {
     }
 
     /// <summary>
-    /// Regression for the "token refresh is never picked up after startup" bug.
-    /// The MCP server caches a single <c>HttpClient</c> for the whole agent session;
-    /// if the auth header expires mid-session, every tool call returned the friendly
-    /// 401 message until the server was restarted. The fix retries once on 401 after
-    /// calling <c>TokenStore.GetValidTokensAsync</c>.
+    /// The MCP server caches a single <c>HttpClient</c> for the whole agent session, so if the auth
+    /// header expires mid-session every tool call must not be stuck returning the friendly 401
+    /// message until the server is restarted: it must retry once on 401 after calling
+    /// <c>TokenStore.GetValidTokensAsync</c>.
     ///
-    /// We seed a non-expired token in the per-test config dir and stub WireMock so
-    /// the first call returns 401 and the second returns 200. The retry re-reads
-    /// the token (which hasn't actually expired, so it's returned as-is) and resends —
-    /// proving the retry path runs at all. (Exercising the real refresh-token flow
-    /// would require stubbing the GitHub refresh endpoint as well, which is out of
-    /// scope for this regression.)
+    /// We seed a non-expired token in the per-test config dir and stub WireMock so the first call
+    /// returns 401 and the second returns 200, proving the retry path runs at all. This does not
+    /// exercise the real refresh-token flow — that would also require stubbing the GitHub refresh
+    /// endpoint.
     /// </summary>
     [Test]
     public async Task Refreshed_token_succeeds_after_401() {
@@ -1730,9 +1685,9 @@ public class McpFlowsServerTests : IDisposable {
 
     /// <summary>
     /// A non-2xx body that IS valid JSON but not an object (e.g. a proxy's quoted scalar string)
-    /// must not throw past the coded-rejection check — <c>JsonNode.Parse(...).AsObject()</c> would
-    /// throw <see cref="InvalidOperationException"/> on a scalar/array node, which used to escape to
-    /// the dispatcher catch-all and replace the useful status/body/hint with a generic internal
+    /// must not throw past the coded-rejection check — <c>JsonNode.Parse(...).AsObject()</c> throws
+    /// <see cref="InvalidOperationException"/> on a scalar/array node, which would otherwise escape
+    /// to the dispatcher catch-all and replace the useful status/body/hint with a generic internal
     /// error. It must fall through to the uncoded path exactly like non-JSON bodies do.
     /// </summary>
     [Test]

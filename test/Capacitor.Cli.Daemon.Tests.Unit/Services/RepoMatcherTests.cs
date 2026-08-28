@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using Capacitor.Cli.Daemon.Services;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -13,8 +12,8 @@ public class RepoMatcherTests {
     static string MakeTempRepo(TempDir tmp, string dirName, string originUrl, string? subdir = null) {
         var root = tmp.CreateDir(dirName);
 
-        Run(root, "init", "-q");
-        Run(root, "remote", "add", "origin", originUrl);
+        GitRepo.At(root).Do("init", "-q");
+        GitRepo.At(root).Do("remote", "add", "origin", originUrl);
 
         if (subdir is not null) {
             var sub = root.PathTo(subdir);
@@ -24,19 +23,6 @@ public class RepoMatcherTests {
         }
 
         return root;
-    }
-
-    static void Run(string cwd, params string[] args) {
-        var psi = new ProcessStartInfo("git", args) {
-            WorkingDirectory       = cwd,
-            RedirectStandardOutput = true,
-            RedirectStandardError  = true
-        };
-        using var proc = Process.Start(psi)!;
-        proc.WaitForExit();
-        if (proc.ExitCode != 0) {
-            throw new InvalidOperationException($"git {string.Join(' ', args)} failed: {proc.StandardError.ReadToEnd()}");
-        }
     }
 
     static RepoMatcher NewMatcher() => new(new(), NullLogger<RepoMatcher>.Instance);
@@ -82,7 +68,7 @@ public class RepoMatcherTests {
 
     [Test]
     public async Task FindAsync_MissingDirectory_Skipped() {
-        var ghost = Path.Combine(Path.GetTempPath(), "definitely-not-here-" + Guid.NewGuid().ToString("N")[..8]);
+        using var ghostDir = TempDir.WithPathTo("definitely-not-here", out var ghost);
 
         var result = await NewMatcher().FindAsync("contoso", "widgets", [ghost], CancellationToken.None);
 

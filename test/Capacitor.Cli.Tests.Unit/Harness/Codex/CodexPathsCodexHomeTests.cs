@@ -5,22 +5,22 @@ namespace Capacitor.Cli.Tests.Unit.Harness.Codex;
 public class CodexPathsCodexHomeTests {
     [Test]
     public async Task Codex_home_override_replaces_the_whole_root() {
-        var paths = new CodexPaths(new("/fake/home"), "/relocated/codex");
+        var paths = new CodexPaths(new("/fake/home"), "/relocated.Path/codex");
 
-        await Assert.That(paths.Home).IsEqualTo("/relocated/codex");
-        await Assert.That(paths.Sessions).IsEqualTo(Path.Combine("/relocated/codex", "sessions"));
-        await Assert.That(paths.UserHooksJson).IsEqualTo(Path.Combine("/relocated/codex", "hooks.json"));
+        await Assert.That(paths.Home).IsEqualTo("/relocated.Path/codex");
+        await Assert.That(paths.Sessions).IsEqualTo(Path.Combine("/relocated.Path/codex", "sessions"));
+        await Assert.That(paths.UserHooksJson).IsEqualTo(Path.Combine("/relocated.Path/codex", "hooks.json"));
     }
 
     // Bare: CODEX_HOME is inherited by any child a concurrent test spawns.
     [Test]
     [NotInParallel]
     public async Task FromEnvironment_reads_CODEX_HOME() {
-        var relocated = Path.Combine(Path.GetTempPath(), "kcap-codex-cfg");
+        using var relocated = new TempDir();
 
-        using var env = EnvScope.Exclusive("CODEX_HOME", relocated);
+        using var env = EnvScope.Exclusive("CODEX_HOME", relocated.Path);
 
-        await Assert.That(CodexHarness.FromEnvironment(new("/fake/home")).Paths.Home).IsEqualTo(relocated);
+        await Assert.That(CodexHarness.FromEnvironment(new("/fake/home")).Paths.Home).IsEqualTo(relocated.Path);
     }
 
     [Test]

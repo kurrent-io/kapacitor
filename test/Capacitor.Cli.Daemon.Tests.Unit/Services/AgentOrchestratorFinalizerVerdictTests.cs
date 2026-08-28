@@ -139,37 +139,34 @@ public class AgentOrchestratorFinalizerVerdictTests {
         // attempt. This is what "the guard flag must be shared" is defending against — expressed
         // here as: the factory path is independently exactly-once too, and produces no
         // AgentInstance for the finalizer to duplicate against.
-        var (repoPath, cleanup) = GitRepoHarness.CreateGitRepo();
+        using var repoPath = GitRepo.CreateWithCommit();
 
-        try {
-            var factoryServer  = new CaptureServerConnection();
-            var reapingFactory = new SpyHostedAgentRuntimeFactory("cursor") {
-                StartThrow = new InvalidOperationException(
-                    "kiro_reviewer_mcp_surface_unexpected: violation (transport: read loop ended)")
-            };
+        var factoryServer  = new CaptureServerConnection();
+        var reapingFactory = new SpyHostedAgentRuntimeFactory("cursor") {
+            StartThrow = new InvalidOperationException(
+                "kiro_reviewer_mcp_surface_unexpected: violation (transport: read loop ended)")
+        };
 
-            await using var factoryOrch = AgentOrchestratorHarness.BuildOrchestrator(
-                factoryServer, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>(),
-                allowedRepoPath: repoPath, extraRuntimeFactories: [reapingFactory]);
+        await using var factoryOrch = AgentOrchestratorHarness.BuildOrchestrator(
+            factoryServer, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>(),
+            allowedRepoPath: repoPath, extraRuntimeFactories: [reapingFactory]);
 
-            await factoryOrch.HandleLaunchAgentForTest(new LaunchAgentCommand(
-                AgentId: "factory-reap-1",
-                Prompt: "go",
-                Model: "",
-                Effort: null,
-                RepoPath: repoPath,
-                Tools: null,
-                AttachmentIds: null,
-                Vendor: "cursor"
-            ));
+        await factoryOrch.HandleLaunchAgentForTest(new LaunchAgentCommand(
+            AgentId: "factory-reap-1",
+            Prompt: "go",
+            Model: "",
+            Effort: null,
+            RepoPath: repoPath,
+            Tools: null,
+            AttachmentIds: null,
+            Vendor: "cursor"
+        ));
 
-            await Assert.That(factoryServer.LaunchFailedCalls.Count(c => c.AgentId == "factory-reap-1")).IsEqualTo(1);
-            await Assert.That(factoryServer.LaunchFailedCalls.Single(c => c.AgentId == "factory-reap-1").Reason)
-                .Contains("kiro_reviewer_mcp_surface_unexpected");
-            await Assert.That(factoryOrch.GetAgentForTest("factory-reap-1")).IsNull();
-        } finally {
-            cleanup();
-        }
+        await Assert.That(factoryServer.LaunchFailedCalls.Count(c => c.AgentId == "factory-reap-1")).IsEqualTo(1);
+        await Assert.That(factoryServer.LaunchFailedCalls.Single(c => c.AgentId == "factory-reap-1").Reason)
+            .Contains("kiro_reviewer_mcp_surface_unexpected");
+        await Assert.That(factoryOrch.GetAgentForTest("factory-reap-1")).IsNull();
+
 
         // ── Part B: the finalizer path, invoked TWICE for the SAME agent — simulating a
         // hypothetical re-entrant/racing call to prove the per-agent guard is structural, not
@@ -414,66 +411,60 @@ public class AgentOrchestratorFinalizerVerdictTests {
 
     [Test]
     public async Task Factory_prespawn_failure_with_blank_message_reports_the_typed_fallback() {
-        var (repoPath, cleanup) = GitRepoHarness.CreateGitRepo();
+        using var repoPath = GitRepo.CreateWithCommit();
 
-        try {
-            var server = new CaptureServerConnection();
-            var blankMessageFactory = new SpyHostedAgentRuntimeFactory("cursor") {
-                StartThrow = new InvalidOperationException("   ")
-            };
+        var server = new CaptureServerConnection();
+        var blankMessageFactory = new SpyHostedAgentRuntimeFactory("cursor") {
+            StartThrow = new InvalidOperationException("   ")
+        };
 
-            await using var orch = AgentOrchestratorHarness.BuildOrchestrator(
-                server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>(),
-                allowedRepoPath: repoPath, extraRuntimeFactories: [blankMessageFactory]);
+        await using var orch = AgentOrchestratorHarness.BuildOrchestrator(
+            server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>(),
+            allowedRepoPath: repoPath, extraRuntimeFactories: [blankMessageFactory]);
 
-            await orch.HandleLaunchAgentForTest(new LaunchAgentCommand(
-                AgentId: "blank-msg-1",
-                Prompt: "go",
-                Model: "",
-                Effort: null,
-                RepoPath: repoPath,
-                Tools: null,
-                AttachmentIds: null,
-                Vendor: "cursor"
-            ));
+        await orch.HandleLaunchAgentForTest(new LaunchAgentCommand(
+            AgentId: "blank-msg-1",
+            Prompt: "go",
+            Model: "",
+            Effort: null,
+            RepoPath: repoPath,
+            Tools: null,
+            AttachmentIds: null,
+            Vendor: "cursor"
+        ));
 
-            var reported = server.LaunchFailedCalls.Single(c => c.AgentId == "blank-msg-1").Reason;
-            await Assert.That(reported).IsEqualTo($"launch_failed:{nameof(InvalidOperationException)} — see daemon log");
-        } finally {
-            cleanup();
-        }
+        var reported = server.LaunchFailedCalls.Single(c => c.AgentId == "blank-msg-1").Reason;
+        await Assert.That(reported).IsEqualTo($"launch_failed:{nameof(InvalidOperationException)} — see daemon log");
+
     }
 
     [Test]
     public async Task Factory_prespawn_failure_with_a_real_message_passes_it_through_verbatim() {
-        var (repoPath, cleanup) = GitRepoHarness.CreateGitRepo();
+        using var repoPath = GitRepo.CreateWithCommit();
 
-        try {
-            var server = new CaptureServerConnection();
-            var realMessageFactory = new SpyHostedAgentRuntimeFactory("cursor") {
-                StartThrow = new InvalidOperationException("cursor-agent binary not found on PATH")
-            };
+        var server = new CaptureServerConnection();
+        var realMessageFactory = new SpyHostedAgentRuntimeFactory("cursor") {
+            StartThrow = new InvalidOperationException("cursor-agent binary not found on PATH")
+        };
 
-            await using var orch = AgentOrchestratorHarness.BuildOrchestrator(
-                server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>(),
-                allowedRepoPath: repoPath, extraRuntimeFactories: [realMessageFactory]);
+        await using var orch = AgentOrchestratorHarness.BuildOrchestrator(
+            server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>(),
+            allowedRepoPath: repoPath, extraRuntimeFactories: [realMessageFactory]);
 
-            await orch.HandleLaunchAgentForTest(new LaunchAgentCommand(
-                AgentId: "real-msg-1",
-                Prompt: "go",
-                Model: "",
-                Effort: null,
-                RepoPath: repoPath,
-                Tools: null,
-                AttachmentIds: null,
-                Vendor: "cursor"
-            ));
+        await orch.HandleLaunchAgentForTest(new LaunchAgentCommand(
+            AgentId: "real-msg-1",
+            Prompt: "go",
+            Model: "",
+            Effort: null,
+            RepoPath: repoPath,
+            Tools: null,
+            AttachmentIds: null,
+            Vendor: "cursor"
+        ));
 
-            var reported = server.LaunchFailedCalls.Single(c => c.AgentId == "real-msg-1").Reason;
-            await Assert.That(reported).IsEqualTo("cursor-agent binary not found on PATH");
-        } finally {
-            cleanup();
-        }
+        var reported = server.LaunchFailedCalls.Single(c => c.AgentId == "real-msg-1").Reason;
+        await Assert.That(reported).IsEqualTo("cursor-agent binary not found on PATH");
+
     }
 
     // ── Finding 1: the finalizer's verdict observation must synchronise with the claim ──────────

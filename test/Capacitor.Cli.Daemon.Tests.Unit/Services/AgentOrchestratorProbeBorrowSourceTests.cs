@@ -14,25 +14,22 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 public class AgentOrchestratorProbeBorrowSourceTests {
     [Test]
     public async Task ProbeBorrowSource_allows_a_git_rooted_temp_dir() {
-        var (repoPath, cleanup) = GitRepoHarness.CreateGitRepo();
+        using var repoPath = GitRepo.CreateWithCommit();
 
-        try {
-            var server = new CaptureServerConnection();
-            await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+        var server = new CaptureServerConnection();
+        await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
 
-            var result = await orch.HandleProbeBorrowSourceForTest(repoPath);
+        var result = await orch.HandleProbeBorrowSourceForTest(repoPath);
 
-            await Assert.That(result.CanBorrow).IsTrue();
-            await Assert.That(result.CanonicalCwd).IsNotNull();
-            await Assert.That(result.CanonicalGitRoot).IsNotNull();
-        } finally {
-            cleanup();
-        }
+        await Assert.That(result.CanBorrow).IsTrue();
+        await Assert.That(result.CanonicalCwd).IsNotNull();
+        await Assert.That(result.CanonicalGitRoot).IsNotNull();
+
     }
 
     [Test]
     public async Task ProbeBorrowSource_rejects_a_missing_path_with_path_absent_reason() {
-        var missing = Path.Combine(Path.GetTempPath(), "kcap-probe-missing-" + Guid.NewGuid().ToString("N")[..8]);
+        using var missingDir = TempDir.WithPathTo("kcap-probe-missing", out var missing);
 
         var server = new CaptureServerConnection();
         await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());

@@ -1,0 +1,1 @@
+M:System.IO.Path.GetTempPath;Use a TempDir: a shared temp root leaks between runs and lets one test see another's files.

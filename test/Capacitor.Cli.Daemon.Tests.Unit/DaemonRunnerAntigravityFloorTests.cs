@@ -14,6 +14,8 @@ namespace Capacitor.Cli.Daemon.Tests.Unit;
 /// derives from that ladder rather than from a second, separately-maintained narrowing pass.
 /// </summary>
 public class DaemonRunnerAntigravityFloorTests {
+    [TempDir] public required TempDir Tmp { get; init; }
+
     [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
 
     sealed class FakeFactory(string vendor, bool advertised) : IHostedAgentRuntimeFactory {
@@ -256,9 +258,9 @@ public class DaemonRunnerAntigravityFloorTests {
             .IsEqualTo("3.0.0");
     }
 
-    static RuntimeStartContext HostedCtx() => new(
+    RuntimeStartContext HostedCtx() => new(
         AgentId: "agent-1", Vendor: "antigravity", SourceRepoPath: "/repo",
-        Worktree: new WorktreeInfo(Path: Path.GetTempPath(), Branch: "b", SourceRepo: "/repo"),
+        Worktree: new WorktreeInfo(Path: Tmp.PathTo("hosted-worktree"), Branch: "b", SourceRepo: "/repo"),
         Prompt: "do the thing",
         Model: null, Effort: null, Tools: null,
         IsReview: false, IsReviewFlow: false, Review: null,

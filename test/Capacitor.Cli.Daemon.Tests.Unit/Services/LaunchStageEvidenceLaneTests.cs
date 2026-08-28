@@ -89,39 +89,36 @@ public class LaunchStageEvidenceLaneTests {
     /// all), so the first assertion fails outright rather than merely differing.</summary>
     [Test]
     public async Task Handshake_stage_stamps_reach_the_server_carrying_the_agent_then_clear_once_running() {
-        var (repoPath, cleanup) = GitRepoHarness.CreateGitRepo();
+        using var repoPath = GitRepo.CreateWithCommit();
 
-        try {
-            var server  = new CaptureServerConnection();
-            var factory = new FourStageAcpRuntimeFactory(server);
+        var server  = new CaptureServerConnection();
+        var factory = new FourStageAcpRuntimeFactory(server);
 
-            await using var orch = AgentOrchestratorHarness.BuildOrchestrator(
-                server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>(),
-                allowedRepoPath: repoPath, extraRuntimeFactories: [factory]);
+        await using var orch = AgentOrchestratorHarness.BuildOrchestrator(
+            server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>(),
+            allowedRepoPath: repoPath, extraRuntimeFactories: [factory]);
 
-            await orch.HandleLaunchAgentForTest(AgentOrchestratorHarness.NewCursorLaunch("stage-lane", repoPath));
+        await orch.HandleLaunchAgentForTest(AgentOrchestratorHarness.NewCursorLaunch("stage-lane", repoPath));
 
-            var duringHandshake = ObservedStages(server.StatusReports, "stage-lane");
+        var duringHandshake = ObservedStages(server.StatusReports, "stage-lane");
 
-            await Assert.That(duringHandshake)
-                .IsEquivalentTo(FourStageAcpRuntimeFactory.Stages.Cast<string?>().ToList());
+        await Assert.That(duringHandshake)
+            .IsEquivalentTo(FourStageAcpRuntimeFactory.Stages.Cast<string?>().ToList());
 
-            // Now Running: a fresh report must still carry the agent (presence is the non-vacuity
-            // half — "absent" would also read as a null stage) and its stage must be null.
-            var agent = orch.GetAgentForTest("stage-lane");
-            await Assert.That(agent).IsNotNull();
-            await Assert.That(agent!.Status).IsEqualTo("Running");
+        // Now Running: a fresh report must still carry the agent (presence is the non-vacuity
+        // half — "absent" would also read as a null stage) and its stage must be null.
+        var agent = orch.GetAgentForTest("stage-lane");
+        await Assert.That(agent).IsNotNull();
+        await Assert.That(agent!.Status).IsEqualTo("Running");
 
-            await orch.SendStatusReportNowAsync();
+        await orch.SendStatusReportNowAsync();
 
-            var final = server.StatusReports[^1].LiveAgents.Where(a => a.Id == "stage-lane").ToList();
-            await Assert.That(final.Count).IsEqualTo(1);
-            await Assert.That(final[0].LaunchStage).IsNull();
+        var final = server.StatusReports[^1].LiveAgents.Where(a => a.Id == "stage-lane").ToList();
+        await Assert.That(final.Count).IsEqualTo(1);
+        await Assert.That(final[0].LaunchStage).IsNull();
 
-            await orch.HandleStopAgentForTest("stage-lane");
-        } finally {
-            cleanup();
-        }
+        await orch.HandleStopAgentForTest("stage-lane");
+
     }
 
     /// <summary>Leak proof for the failure path: a handshake that stamps a stage and then throws must
@@ -131,28 +128,25 @@ public class LaunchStageEvidenceLaneTests {
     /// place.</summary>
     [Test]
     public async Task Failed_handshake_reports_its_stage_then_leaves_nothing_behind() {
-        var (repoPath, cleanup) = GitRepoHarness.CreateGitRepo();
+        using var repoPath = GitRepo.CreateWithCommit();
 
-        try {
-            var server  = new CaptureServerConnection();
-            var factory = new FourStageAcpRuntimeFactory(server, throwAfterFirstStage: true);
+        var server  = new CaptureServerConnection();
+        var factory = new FourStageAcpRuntimeFactory(server, throwAfterFirstStage: true);
 
-            await using var orch = AgentOrchestratorHarness.BuildOrchestrator(
-                server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>(),
-                allowedRepoPath: repoPath, extraRuntimeFactories: [factory]);
+        await using var orch = AgentOrchestratorHarness.BuildOrchestrator(
+            server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>(),
+            allowedRepoPath: repoPath, extraRuntimeFactories: [factory]);
 
-            await orch.HandleLaunchAgentForTest(AgentOrchestratorHarness.NewCursorLaunch("stage-fail", repoPath));
+        await orch.HandleLaunchAgentForTest(AgentOrchestratorHarness.NewCursorLaunch("stage-fail", repoPath));
 
-            await Assert.That(ObservedStages(server.StatusReports, "stage-fail")).IsEquivalentTo(new List<string?> { "spawned" });
+        await Assert.That(ObservedStages(server.StatusReports, "stage-fail")).IsEquivalentTo(new List<string?> { "spawned" });
 
-            // The launch failed, so no AgentInstance exists — and the pending entry must be gone too,
-            // or the daemon would report a phantom live agent forever (occupying a server-side slot
-            // and drawing the untracked-reviewer sweep).
-            await Assert.That(orch.GetAgentForTest("stage-fail")).IsNull();
-            await Assert.That(orch.BuildLiveAgents().Any(a => a.Id == "stage-fail")).IsFalse();
-        } finally {
-            cleanup();
-        }
+        // The launch failed, so no AgentInstance exists — and the pending entry must be gone too,
+        // or the daemon would report a phantom live agent forever (occupying a server-side slot
+        // and drawing the untracked-reviewer sweep).
+        await Assert.That(orch.GetAgentForTest("stage-fail")).IsNull();
+        await Assert.That(orch.BuildLiveAgents().Any(a => a.Id == "stage-fail")).IsFalse();
+
     }
 
     /// <summary>The double-publish guard, driven at the exact overlap it protects: the pending entry is

@@ -5,21 +5,21 @@ namespace Capacitor.Cli.Tests.Unit.Harness.Claude;
 public class ClaudePathsOverrideTests {
     [Test]
     public async Task Config_dir_override_replaces_the_whole_root() {
-        var paths = new ClaudePaths(new("/fake/home"), "/relocated/claude");
+        var paths = new ClaudePaths(new("/fake/home"), "/relocated.Path/claude");
 
-        await Assert.That(paths.Home).IsEqualTo("/relocated/claude");
-        await Assert.That(paths.Projects).IsEqualTo(Path.Combine("/relocated/claude", "projects"));
-        await Assert.That(paths.Plans).IsEqualTo(Path.Combine("/relocated/claude", "plans"));
-        await Assert.That(paths.UserSettings).IsEqualTo(Path.Combine("/relocated/claude", "settings.json"));
+        await Assert.That(paths.Home).IsEqualTo("/relocated.Path/claude");
+        await Assert.That(paths.Projects).IsEqualTo(Path.Combine("/relocated.Path/claude", "projects"));
+        await Assert.That(paths.Plans).IsEqualTo(Path.Combine("/relocated.Path/claude", "plans"));
+        await Assert.That(paths.UserSettings).IsEqualTo(Path.Combine("/relocated.Path/claude", "settings.json"));
     }
 
     // The config file follows the override INTO the config dir, unlike its default placement.
     [Test]
     public async Task Config_dir_override_moves_the_user_config_json_inside_it() {
-        var paths = new ClaudePaths(new("/fake/home"), "/relocated/claude");
+        var paths = new ClaudePaths(new("/fake/home"), "/relocated.Path/claude");
 
         await Assert.That(paths.UserConfigJson)
-            .IsEqualTo(Path.Combine("/relocated/claude", ".claude.json"));
+            .IsEqualTo(Path.Combine("/relocated.Path/claude", ".claude.json"));
     }
 
     /// <summary>
@@ -38,17 +38,17 @@ public class ClaudePathsOverrideTests {
     [Test]
     [NotInParallel]
     public async Task FromEnvironment_reads_CLAUDE_CONFIG_DIR() {
-        var relocated = Path.Combine(Path.GetTempPath(), "kcap-claude-cfg");
+        using var relocated = new TempDir();
 
-        using var env = EnvScope.Exclusive("CLAUDE_CONFIG_DIR", relocated);
+        using var env = EnvScope.Exclusive("CLAUDE_CONFIG_DIR", relocated.Path);
 
         var paths = ClaudeHarness.FromEnvironment(new("/fake/home")).Paths;
 
-        await Assert.That(paths.Home).IsEqualTo(relocated);
-        await Assert.That(paths.Projects).IsEqualTo(Path.Combine(relocated, "projects"));
-        await Assert.That(paths.Plans).IsEqualTo(Path.Combine(relocated, "plans"));
-        await Assert.That(paths.UserSettings).IsEqualTo(Path.Combine(relocated, "settings.json"));
-        await Assert.That(paths.UserConfigJson).IsEqualTo(Path.Combine(relocated, ".claude.json"));
+        await Assert.That(paths.Home).IsEqualTo(relocated.Path);
+        await Assert.That(paths.Projects).IsEqualTo(relocated.PathTo("projects"));
+        await Assert.That(paths.Plans).IsEqualTo(relocated.PathTo("plans"));
+        await Assert.That(paths.UserSettings).IsEqualTo(relocated.PathTo("settings.json"));
+        await Assert.That(paths.UserConfigJson).IsEqualTo(relocated.PathTo(".claude.json"));
     }
 
     [Test]
