@@ -65,6 +65,18 @@ static class InteractiveLifetime {
             return;
         }
 
+        // The four exits below all go through Environment.Exit, which runs this — Ctrl+C, both
+        // signals and the watchdog — as does a normal return. A live region hides the cursor for the
+        // duration of a render and restores it on dispose, and none of those exits unwinds far enough
+        // to dispose one, which leaves the shell with no cursor after an interrupted import or browser
+        // wait. Not a guarantee for every way a process can die: a SIGKILL or a closed Windows console
+        // window delivers nothing to run this on, and there the terminal is going with it anyway.
+        try {
+            AppDomain.CurrentDomain.ProcessExit += static (_, _) => ShowCursor();
+        } catch {
+            // best effort, like every other guard here
+        }
+
         // Ctrl+C: exit deterministically instead of relying on the default
         // terminate action, which a blocking prompt read can swallow.
         try {
@@ -105,6 +117,16 @@ static class InteractiveLifetime {
             StartParentWatchdog(ProcessHelpers.GetParentPid());
         } catch {
             // best effort
+        }
+    }
+
+    /// <summary>Written raw rather than through Spectre: this runs on the way out of a signal handler,
+    /// where taking a renderer's locks is the last thing worth doing.</summary>
+    static void ShowCursor() {
+        try {
+            if (!Console.IsOutputRedirected) Console.Out.Write("\u001b[?25h");
+        } catch {
+            // A closed or detached stdout is exactly the case with no cursor to restore.
         }
     }
 

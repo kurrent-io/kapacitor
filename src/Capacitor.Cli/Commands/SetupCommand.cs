@@ -56,60 +56,78 @@ sealed class SetupAuthProgress(IAuthProgress inner) : IAuthProgress {
         string.IsNullOrWhiteSpace(message) || message.StartsWith(' ') ? message : $"  {message}";
 }
 
-/// <summary>The browser leg's rendering, at setup's two-space indent. The URL is printed whether
-/// or not a browser opened: a machine with no browser of its own has a human at a different one.</summary>
-sealed class SpectreFirstRunFlowProgress : IFirstRunFlowProgress {
-    bool   _waiting;
-    string? _url;
-    int    _ticks;
+/// <summary>The browser leg's rendering, at setup's two-space indent. The URL is printed whether or not
+/// a browser opened — a machine with no browser of its own has a human at a different one.</summary>
+/// <param name="keys">Only to tell whether there is a keyboard at all: advertising a key that cannot be
+/// pressed is worse than not offering the way out.</param>
+sealed class SpectreFirstRunFlowProgress(IKeyWatcher? keys = null) : IFirstRunFlowProgress, IDisposable {
+    internal static readonly string Offer =
+        $"{BrowserFirstRunFlow.HandoverKey} to carry on here  ·  ctrl+c to stop";
+
+    internal const string Unreachable = "Can't reach the server. Still trying…";
+
+    readonly IKeyWatcher      _keys = keys ?? ConsoleKeyWatcher.Instance;
+    readonly TerminalWaitLine _wait = new(tty: !Console.IsOutputRedirected);
+
+    FirstRunFlowStep? _step;
+    bool              _healthy = true;
+    bool              _pickedUp;
+    bool              _saidUnreachable;
 
     public void Opening(string setupUrl) {
-        _waiting = true;
-        _url     = setupUrl;
-
         AnsiConsole.MarkupLine(SetupAuthProgress.Indent("Opening your browser to finish setup."));
         AnsiConsole.MarkupLine(SetupAuthProgress.Indent($"[dim]If it didn't open:[/]  {Markup.Escape(setupUrl)}"));
         AnsiConsole.WriteLine();
-        AnsiConsole.MarkupLine(SetupAuthProgress.Indent("[dim]Press any key to carry on here instead.[/]"));
-        AnsiConsole.WriteLine();
-        AnsiConsole.Markup(SetupAuthProgress.Indent("Waiting…"));
+
+        // The offer rides the spinner line where there is one to ride. Without it there is nowhere to
+        // withdraw it from later, so it is said plainly and once.
+        if (!_wait.Enabled && _keys.CanWatch)
+            AnsiConsole.MarkupLine(SetupAuthProgress.Indent($"[dim]{Markup.Escape(Offer)}[/]"));
+
+        Refresh();
     }
 
-    public void PollTick() {
-        // Every thirty ticks (~a minute) the URL is reprinted: the dots would otherwise scroll the
-        // one line a machine with no browser of its own needs to read off a standard terminal.
-        if (++_ticks % 30 == 0 && _url is { } url) {
-            AnsiConsole.WriteLine();
-            AnsiConsole.MarkupLine(SetupAuthProgress.Indent($"[dim]If it didn't open:[/]  {Markup.Escape(url)}"));
-            AnsiConsole.Markup(SetupAuthProgress.Indent("Waiting…"));
-        }
+    public void Waiting(FirstRunFlowStep? flowStep, bool healthy) {
+        // Said once per episode rather than per tick, and only where there is no spinner to say it:
+        // with one, the line itself changes and repeating it would be a log of the same fact.
+        if (!_wait.Enabled && !healthy && !_saidUnreachable)
+            AnsiConsole.MarkupLine(SetupAuthProgress.Indent($"[yellow]![/] {Unreachable}"));
 
-        AnsiConsole.Write(".");
+        _saidUnreachable = !healthy;
+
+        _step    = flowStep;
+        _healthy = healthy;
+
+        Refresh();
     }
 
-    public void PerformingAction(string capability) {
-        // Breaks the dots first: the line the user is about to read must not arrive appended to them.
-        AnsiConsole.WriteLine();
-        AnsiConsole.MarkupLine(SetupAuthProgress.Indent(capability switch {
+    public void Settled(FirstRunFlowStep flowStep, FirstRunStepOutcome outcome, string? detail) {
+        // Handover is one-directional: press the key and the terminal spends every step that had
+        // settled, but nothing reads the flow again, so later browser clicks go unseen. Once any screen
+        // past the gate has an outcome the browser is where the answers are coming from, so we stop
+        // advertising a way out that would silently drop the ones still to come. Not sign-in — the CLI
+        // held a token before this leg ran, so that step settling is not the user investing anything.
+        if (flowStep is not FirstRunFlowStep.SignIn) _pickedUp = true;
+
+        if (StepLine(flowStep, outcome, detail) is { } line) Say(SetupAuthProgress.Indent(line));
+
+        Refresh();
+    }
+
+    public void PerformingAction(string capability) =>
+        Say(SetupAuthProgress.Indent(capability switch {
             FirstRunMachineCapabilities.PathShim =>
                 "The browser asked to put kcap on your terminal PATH. "
               + "[dim]Your Mac will ask for your password.[/]",
             _ => "The browser asked this machine to do something this version of kcap does not know."
         }));
-        AnsiConsole.Markup(SetupAuthProgress.Indent("Waiting…"));
-    }
 
-    public void Discovering() {
-        AnsiConsole.WriteLine();
-        AnsiConsole.MarkupLine(SetupAuthProgress.Indent("Looking for past sessions on this machine…"));
-        AnsiConsole.Markup(SetupAuthProgress.Indent("Waiting…"));
-    }
+    public void Discovering() => Say(SetupAuthProgress.Indent("Looking for past sessions on this machine…"));
 
     public void Importing(int repos, int? sessions) {
-        // Closes the wait outright: the import prints its own phases, and a dotted line left open
-        // above them would be appended to by the next tick after they finish.
-        _waiting = false;
-        AnsiConsole.WriteLine();
+        // Takes the spinner down outright: the import renders its own bars, and two live renderables
+        // cannot share a console.
+        _wait.Stop();
 
         var what = sessions is { } n
             ? $"{n} session{(n == 1 ? "" : "s")} from {repos} repositor{(repos == 1 ? "y" : "ies")}"
@@ -118,18 +136,63 @@ sealed class SpectreFirstRunFlowProgress : IFirstRunFlowProgress {
         AnsiConsole.MarkupLine(SetupAuthProgress.Indent($"Importing {what}, as chosen in the browser."));
     }
 
-    public void ImportEnded() {
-        _waiting = true;
-        AnsiConsole.WriteLine();
-        AnsiConsole.Markup(SetupAuthProgress.Indent("Waiting…"));
+    public void ImportEnded() => Refresh();
+
+    public void WaitEnded() => _wait.Stop();
+
+    /// <summary>A second net under the leg's own <c>finally</c>: nothing may leave a terminal without a
+    /// cursor, whatever path the wait ended down.</summary>
+    public void Dispose() => _wait.Dispose();
+
+    /// <summary>What one settled step reads as, or null for a step that needs no line: the leg's own
+    /// outcome line lands a moment after Done and says the same thing.</summary>
+    internal static string? StepLine(FirstRunFlowStep step, FirstRunStepOutcome outcome, string? detail) =>
+        step switch {
+            FirstRunFlowStep.SignIn => Glyph(outcome, "Signed in"),
+
+            // No detail has two causes and only one is a decline: an answer naming only vendors this
+            // build cannot map asks for agents and gets none. Worded to be true of both, since step 4's
+            // warning is where the second one's reason and remedy live.
+            FirstRunFlowStep.Agents => Glyph(
+                outcome,
+                detail is null ? "No agents to set up" : $"Agents: {detail}"),
+
+            // Neutral, because a decline settles this step exactly as a selection does and nothing
+            // here can tell them apart. What was chosen is the import's own line, or step 6's.
+            FirstRunFlowStep.Import => Glyph(outcome, "Chose what to import"),
+
+            _ => null
+        };
+
+    static string Glyph(FirstRunStepOutcome outcome, string text) => outcome switch {
+        FirstRunStepOutcome.Failed  => $"[yellow]![/] {Markup.Escape(text)}",
+        FirstRunStepOutcome.Skipped => $"[dim]·[/] [dim]{Markup.Escape(text)}[/]",
+        _                           => $"[green]✓[/] {Markup.Escape(text)}"
+    };
+
+    /// <summary>What the spinner says. An unhealthy poll replaces the step's wording outright rather
+    /// than decorating it: naming the screen the user is supposedly looking at, while nothing has come
+    /// back from the server for minutes, states a fact the CLI does not have.</summary>
+    internal static string WaitText(FirstRunFlowStep? step, bool healthy) =>
+        !healthy
+            ? Unreachable
+            : step switch {
+                FirstRunFlowStep.SignIn => "Waiting for you to sign in",
+                FirstRunFlowStep.Agents => "Choose your coding agents in the browser",
+                FirstRunFlowStep.Import => "Choose what to import in the browser",
+                FirstRunFlowStep.Done   => "Finishing up in the browser",
+                _                       => "Waiting on the browser"
+            };
+
+    void Say(string markup) {
+        if (_wait.Enabled) _wait.WriteAbove(markup);
+        else AnsiConsole.MarkupLine(markup);
     }
 
-    public void WaitEnded() {
-        if (!_waiting) return;
-
-        _waiting = false;
-        AnsiConsole.WriteLine();
-    }
+    /// <summary>The mechanism stays live once the offer is withdrawn — it is also the only way out of a
+    /// thirty-minute wait, and a closed tab still needs it. Only the advertisement goes.</summary>
+    void Refresh() =>
+        _wait.Show(WaitText(_step, _healthy), _keys.CanWatch && !_pickedUp ? Offer : null);
 }
 
 /// <summary>
@@ -1338,8 +1401,10 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
 
                 importing = new SetupImportLane(config, profiles);
 
+                using var progress = new SpectreFirstRunFlowProgress();
+
                 result = await new BrowserFirstRunFlow(
-                        new FirstRunFlowClient(http), new SpectreFirstRunFlowProgress(), browser,
+                        new FirstRunFlowClient(http), progress, browser,
                         actions:   new SetupMachineActions(),
                         importing: importing)
                     .RunAsync(serverUrl, report, CancellationToken.None);
@@ -1429,15 +1494,16 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
         return lines;
     }
 
-    /// <summary>What Step 4 says instead of prompting, when the browser already answered it. Split
-    /// from the write so the copy is testable.</summary>
+    /// <summary>
+    /// What Step 4 says instead of prompting, when the browser already answered it. Split from the
+    /// write so the copy is testable.
+    ///
+    /// <para><b>The choice itself is not restated here.</b> The leg says it live, as the step settles,
+    /// and naming the same harnesses again a screen later is the same fact landing twice. What is left
+    /// is the warning, which is not a restatement and whose remedy is a command to run here.</para>
+    /// </summary>
     internal static IReadOnlyList<string> BrowserAgentsSummary(FirstRunAgentsAnswer answer) {
         var lines = new List<string>();
-
-        if (answer.IsDecline)
-            lines.Add("  [dim]· You chose not to set any up in the browser — nothing to install.[/]");
-        else if (answer.Labels.ToList() is { Count: > 0 } labels)
-            lines.Add($"  [dim]Chosen in the browser: {Markup.Escape(string.Join(", ", labels))}[/]");
 
         if (answer.Unrecognised > 0)
             lines.Add(

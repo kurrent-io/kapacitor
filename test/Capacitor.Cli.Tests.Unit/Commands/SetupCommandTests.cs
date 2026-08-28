@@ -67,18 +67,76 @@ public class SetupCommandTests {
             new DateTimeOffset(2026, 8, 25, 9, 30, 0, TimeSpan.Zero),
             unrecognised);
 
+    // The choice moved to the live line the leg prints as the step settles, so Step 4 restating it
+    // would be the same fact landing twice. Asserted from both sides: the summary must not name it,
+    // and the live line must.
     [Test]
-    public async Task BrowserAgentsSummary_names_what_was_chosen_rather_than_re_asking() {
+    public async Task BrowserAgentsSummary_no_longer_restates_a_choice_the_leg_said_live() {
         var lines = SetupCommand.BrowserAgentsSummary(Answer(0, "cursor", "claude"));
 
-        await Assert.That(string.Join("\n", lines)).Contains("Claude Code, Cursor");
+        await Assert.That(string.Join("\n", lines)).DoesNotContain("Claude Code");
     }
 
     [Test]
-    public async Task BrowserAgentsSummary_says_a_decline_installs_nothing() {
-        var lines = SetupCommand.BrowserAgentsSummary(Answer(0));
+    public async Task The_live_step_line_names_the_harnesses_that_were_chosen() {
+        var line = SpectreFirstRunFlowProgress.StepLine(
+            FirstRunFlowStep.Agents, FirstRunStepOutcome.Completed, "Claude Code, Cursor");
 
-        await Assert.That(string.Join("\n", lines)).Contains("nothing to install");
+        await Assert.That(line).Contains("Claude Code, Cursor");
+        await Assert.That(line).Contains("[green]");
+    }
+
+    // No detail reaches this line for two different answers — a real decline, and one naming only
+    // vendors this build cannot map — and the renderer cannot tell them apart. So it must not claim
+    // either: "chose not to" is false of the second, which asked for agents and got none.
+    [Test]
+    public async Task The_live_step_line_does_not_claim_a_decline_it_cannot_tell_apart() {
+        var line = SpectreFirstRunFlowProgress.StepLine(
+            FirstRunFlowStep.Agents, FirstRunStepOutcome.Completed, null);
+
+        await Assert.That(line).Contains("No agents to set up");
+        await Assert.That(line).DoesNotContain("Chose");
+    }
+
+    // Done needs none: the leg's own outcome line lands a moment later and says the same thing.
+    [Test]
+    public async Task The_live_step_line_leaves_the_last_step_to_the_legs_outcome_line() {
+        await Assert.That(SpectreFirstRunFlowProgress.StepLine(
+            FirstRunFlowStep.Done, FirstRunStepOutcome.Completed, null)).IsNull();
+    }
+
+    [Test]
+    public async Task The_live_step_line_marks_a_failed_step_as_a_warning_not_a_tick() {
+        var line = SpectreFirstRunFlowProgress.StepLine(
+            FirstRunFlowStep.Import, FirstRunStepOutcome.Failed, null);
+
+        await Assert.That(line).Contains("[yellow]");
+        await Assert.That(line).DoesNotContain("[green]");
+    }
+
+    // A spinner naming the screen the user is supposedly looking at, while the server has answered
+    // nothing for minutes, states a fact nothing in the CLI has.
+    [Test]
+    public async Task The_spinner_says_the_server_is_unreachable_rather_than_naming_a_screen() {
+        await Assert.That(SpectreFirstRunFlowProgress.WaitText(FirstRunFlowStep.Import, healthy: true))
+                    .Contains("Choose what to import");
+        await Assert.That(SpectreFirstRunFlowProgress.WaitText(FirstRunFlowStep.Import, healthy: false))
+                    .IsEqualTo(SpectreFirstRunFlowProgress.Unreachable);
+    }
+
+    // A step a newer server invented reaches the renderer as null, and the wait still has to read as
+    // a wait rather than throwing or going blank.
+    [Test]
+    public async Task The_spinner_has_wording_for_a_step_this_build_does_not_know() {
+        await Assert.That(SpectreFirstRunFlowProgress.WaitText(null, healthy: true))
+                    .IsEqualTo("Waiting on the browser");
+    }
+
+    // Naming the key in one place is what stops the offer and the loop disagreeing about it.
+    [Test]
+    public async Task The_offer_names_the_key_the_loop_actually_acts_on() {
+        await Assert.That(SpectreFirstRunFlowProgress.Offer)
+                    .StartsWith(BrowserFirstRunFlow.HandoverKey.ToString());
     }
 
     // Without this the user turns a harness on, nothing happens, and there is no reason anywhere for
@@ -91,10 +149,10 @@ public class SetupCommandTests {
     }
 
     [Test]
-    public async Task BrowserAgentsSummary_says_nothing_extra_when_it_read_the_whole_answer() {
+    public async Task BrowserAgentsSummary_says_nothing_at_all_when_it_read_the_whole_answer() {
         var lines = SetupCommand.BrowserAgentsSummary(Answer(0, "claude"));
 
-        await Assert.That(lines.Count).IsEqualTo(1);
+        await Assert.That(lines.Count).IsEqualTo(0);
     }
 
     static FirstRunImportAnswer ImportAnswer(

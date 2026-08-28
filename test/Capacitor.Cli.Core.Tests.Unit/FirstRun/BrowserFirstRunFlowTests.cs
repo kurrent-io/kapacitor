@@ -114,6 +114,12 @@ public class BrowserFirstRunFlowTests {
         public int Ticks    { get; private set; }
         public int WaitEnds { get; private set; }
 
+        /// <summary>Every wait, in order, so "the unhealthy poll looked unhealthy" is assertable.</summary>
+        public List<(FirstRunFlowStep? Step, bool Healthy)> Waits { get; } = [];
+
+        /// <summary>Every step announced, in order. One entry per step is the whole point.</summary>
+        public List<(FirstRunFlowStep Step, FirstRunStepOutcome Outcome, string? Detail)> Settles { get; } = [];
+
         public List<string> Performing { get; } = [];
 
         public void Opening(string setupUrl) {
@@ -126,7 +132,16 @@ public class BrowserFirstRunFlowTests {
 
         public List<(int Repos, int? Sessions)> Imports { get; } = [];
 
-        public void PollTick()  => Ticks++;
+        public void Waiting(FirstRunFlowStep? flowStep, bool healthy) {
+            Ticks++;
+            Waits.Add((flowStep, healthy));
+        }
+
+        public void Settled(FirstRunFlowStep flowStep, FirstRunStepOutcome outcome, string? detail) {
+            log.Add("settled");
+            Settles.Add((flowStep, outcome, detail));
+        }
+
         public void WaitEnded() => WaitEnds++;
 
         public void PerformingAction(string capability) {
@@ -258,7 +273,7 @@ public class BrowserFirstRunFlowTests {
     /// <summary>A keyboard with ONE keypress: it appears when first looked for at or after
     /// <paramref name="pressAfter"/> (zero means it is already down when the wait starts), and is
     /// gone once drained — a real press, not a flag that re-presses at every look.</summary>
-    sealed class FakeKeys(bool canWatch, int pressAfter = int.MaxValue) : IKeyWatcher {
+    sealed class FakeKeys(bool canWatch, int pressAfter = int.MaxValue, char key = BrowserFirstRunFlow.HandoverKey) : IKeyWatcher {
         int  _looks;
         bool _armed;   // the single press has been consumed
         bool _pressed; // the press is waiting to be drained
@@ -280,7 +295,13 @@ public class BrowserFirstRunFlowTests {
             }
         }
 
-        public char ReadKey() => ' ';
+        /// <summary>Consumes the press, as the real one does — a fake that left it buffered would spin
+        /// the loop that reads past keys it does not act on.</summary>
+        public char ReadKey() {
+            _pressed = false;
+
+            return key;
+        }
 
         public void Drain() {
             Drains++;
@@ -657,6 +678,154 @@ public class BrowserFirstRunFlowTests {
 
         await Assert.That(result).IsTypeOf<FirstRunFlowResult.Dismissed>();
         await Assert.That(h.Keys.Drains).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task A_key_that_is_not_the_handover_key_is_consumed_and_the_wait_carries_on() {
+        // Enter and Space get pressed by accident, and a stray byte must not hand a half-finished
+        // browser flow back to the terminal. Consumed rather than left buffered, or the same byte
+        // would be re-examined on every slice for the rest of the wait.
+        var h = Build(new FakeKeys(canWatch: true, pressAfter: 1, key: '\r'));
+
+        var result = await Run(h);
+
+        await Assert.That(result).IsTypeOf<FirstRunFlowResult.Abandoned>();
+        await Assert.That(h.Keys.Drains).IsEqualTo(0);
+    }
+
+    // --- What the terminal is told ---
+
+    [Test]
+    public async Task Each_settled_step_is_announced_once__however_many_polls_repeat_it() {
+        // Edge-triggered off the loop's own record, not off what the renderer last printed: a poll
+        // blip that returns the same state would otherwise tick the same step twice.
+        var h = Build();
+        h.Channel.Polls.Enqueue(new(200, Running()));
+        h.Channel.Polls.Enqueue(new(200, Running()));
+        h.Channel.Polls.Enqueue(new(200, Done()));
+
+        await Run(h);
+
+        await Assert.That(h.Progress.Settles.Select(x => x.Step))
+                    .IsEquivalentTo([
+                        FirstRunFlowStep.SignIn, FirstRunFlowStep.Agents,
+                        FirstRunFlowStep.Import, FirstRunFlowStep.Done
+                    ]);
+    }
+
+    [Test]
+    public async Task A_resumed_link_announces_everything_that_had_already_settled() {
+        // The honest history, and what tells the user it is the same link rather than a fresh one.
+        var h = Build();
+        h.Channel.Polls.Enqueue(new(200, Done()));
+
+        await Run(h);
+
+        await Assert.That(h.Progress.Settles.Count).IsEqualTo(4);
+        await Assert.That(h.Progress.Settles[0].Step).IsEqualTo(FirstRunFlowStep.SignIn);
+    }
+
+    [Test]
+    public async Task The_step_outcome_crosses_as_the_server_reported_it() {
+        // Import is Skipped on the Done fixture, and a skip is not a tick — the renderer draws the
+        // glyph off this, so collapsing every settled step to "completed" would show four ticks for a
+        // flow that skipped one.
+        var h = Build();
+        h.Channel.Polls.Enqueue(new(200, Done()));
+
+        await Run(h);
+
+        await Assert.That(h.Progress.Settles.Single(x => x.Step == FirstRunFlowStep.Import).Outcome)
+                    .IsEqualTo(FirstRunStepOutcome.Skipped);
+    }
+
+    [Test]
+    public async Task The_agents_detail_names_the_harnesses_and_nothing_else_carries_one() {
+        var h = Build();
+        h.Channel.Polls.Enqueue(new(200, AgentsAnswered("claude")));
+        h.Channel.Polls.Enqueue(new(200, Done()));
+
+        await Run(h);
+
+        await Assert.That(h.Progress.Settles.Single(x => x.Step == FirstRunFlowStep.Agents).Detail)
+                    .IsEqualTo("Claude Code");
+        await Assert.That(h.Progress.Settles.Single(x => x.Step == FirstRunFlowStep.SignIn).Detail)
+                    .IsNull();
+    }
+
+    [Test]
+    public async Task An_answer_changed_in_the_browser_is_announced_again() {
+        // Back, change the harnesses, re-confirm. The step stays settled, so presence alone would
+        // suppress the second tick and leave the terminal's only statement about what step 4 installs
+        // naming the answer that was abandoned.
+        var h = Build();
+        h.Channel.Polls.Enqueue(new(200, AgentsAnswered("claude")));
+        h.Channel.Polls.Enqueue(new(200, AgentsAnswered("cursor") with {
+            AgentsDecidedAt = ClockBase.AddMinutes(1)
+        }));
+        h.Channel.Polls.Enqueue(new(200, Done()));
+
+        await Run(h);
+
+        await Assert.That(string.Join(" | ", h.Progress.Settles
+                                                .Where(x => x.Step == FirstRunFlowStep.Agents)
+                                                .Select(x => x.Detail)))
+                    .IsEqualTo("Claude Code | Cursor");
+    }
+
+    [Test]
+    public async Task Re_confirming_the_same_answer_is_not_announced_again() {
+        // The server advances the stamp only when the answer CHANGES, which is what makes it the
+        // trigger — re-confirming is not a new fact and must not print a second identical tick.
+        var h = Build();
+        h.Channel.Polls.Enqueue(new(200, AgentsAnswered("claude")));
+        h.Channel.Polls.Enqueue(new(200, AgentsAnswered("claude")));
+        h.Channel.Polls.Enqueue(new(200, Done()));
+
+        await Run(h);
+
+        await Assert.That(h.Progress.Settles.Count(x => x.Step == FirstRunFlowStep.Agents)).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task A_view_that_carries_no_answer_does_not_un_say_the_one_it_had() {
+        // The stamp is absent exactly when the decision is, so a later view without either tells us
+        // nothing new. Re-announcing off its absence would say "no agents to set up" about a user who
+        // chose some — the Done fixture is that view.
+        var h = Build();
+        h.Channel.Polls.Enqueue(new(200, AgentsAnswered("claude")));
+        h.Channel.Polls.Enqueue(new(200, Done()));
+
+        await Run(h);
+
+        await Assert.That(h.Progress.Settles.Single(x => x.Step == FirstRunFlowStep.Agents).Detail)
+                    .IsEqualTo("Claude Code");
+    }
+
+    [Test]
+    public async Task An_unhappy_poll_says_so_and_keeps_the_last_step_it_knew() {
+        // A spinner naming the screen the user is supposedly on, off a poll that answered nothing, is
+        // a confident lie — the flag is what lets the renderer say the server has gone quiet instead.
+        var h = Build();
+        h.Channel.Polls.Enqueue(new(200, Running()));
+        h.Channel.Polls.Enqueue(new(503, null));
+        h.Channel.Polls.Enqueue(new(200, Done()));
+
+        await Run(h);
+
+        await Assert.That(h.Progress.Waits[0]).IsEqualTo((FirstRunFlowStep.Agents, true));
+        await Assert.That(h.Progress.Waits[1]).IsEqualTo((FirstRunFlowStep.Agents, false));
+    }
+
+    [Test]
+    public async Task An_unhappy_first_poll_has_no_step_to_name_at_all() {
+        var h = Build();
+        h.Channel.Polls.Enqueue(new(503, null));
+        h.Channel.Polls.Enqueue(new(200, Done()));
+
+        await Run(h);
+
+        await Assert.That(h.Progress.Waits[0]).IsEqualTo(((FirstRunFlowStep?)null, false));
     }
 
     [Test]
