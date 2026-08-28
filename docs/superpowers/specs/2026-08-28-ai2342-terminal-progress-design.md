@@ -142,13 +142,21 @@ for it (wider wraps, narrower is the same lie). So the block is drawn only when 
 least `MinWidth`. A later widening resumes.
 
 **Whether a block is drawn is the caller's business, so it is exposed rather than inferred.** `Pinned`
-answers for the terminal as it is now, and the renderer reads it to decide whether a line has somewhere to
-change in place or has to be said outright. A property meaning "output is not redirected" cannot answer
-that: on a terminal too narrow to host a block it suppresses the plain-line fallback on exactly the
-terminals that need it, so the wait shows neither a spinner nor the lines standing in for one. The
-handover offer is latched and said outright when nothing is carrying it — which covers a terminal narrow
-from the start and one that narrows mid-wait, where the offer would otherwise have been in a block that
-has since gone.
+reports the draw that happened, and the renderer reads it to decide whether a line has somewhere to change
+in place or has to be said outright. Two ways to get that wrong, both of which leave the wait showing
+neither a spinner nor the lines standing in for one: answer it from "output is not redirected", which is
+true of terminals that cannot host a block; or answer it from a fresh width sample, which can disagree with
+what is on screen in either direction, since the terminal can resize between the draw and the question. So
+it is the row count under the same lock, and the next draw — never more than a frame away — is what
+recovers a terminal that has widened.
+
+The handover offer is latched and said outright when nothing is carrying it, which covers a terminal narrow
+from the start and one that narrows mid-wait, where the offer would otherwise have been in a block that has
+since gone.
+
+**One width sample serves a whole draw.** Validating one read and then using a second is not the same
+thing: between them the terminal can narrow below what was just checked, or become unreadable — and taking
+a value off *that* throws out of a frame-timer callback, where nothing is left to catch it.
 
 The width is injected for the same reason the control writer is: the wrap happens inside Spectre's writer,
 so the row count is its only observable consequence and a test host's real console is not the subject. The width is read from

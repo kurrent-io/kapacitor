@@ -104,8 +104,8 @@ public class TerminalWaitLineTests {
     }
 
     // A four-cell prefix sits before a character of the wait, so below its own width the prefix wraps
-    // however hard the text is clipped, and the row count is a lie from then on. Nothing is drawn rather
-    // than drawn wrong - the permanent lines still print, as they do with output redirected.
+    // however hard the text is clipped, and the row count is wrong from then on. Nothing is drawn rather
+    // than drawn wrong; the caller says its lines outright instead.
     [Test]
     public async Task A_terminal_too_narrow_for_the_prefix_is_not_drawn_on() {
         var (line, control) = Build(width: 3);
@@ -162,30 +162,56 @@ public class TerminalWaitLineTests {
         await Assert.That(control.ToString().Split(Show).Length - 1).IsEqualTo(1);
     }
 
-    // What the caller reads to decide whether a line has somewhere to change in place. It has to answer
-    // for the terminal as it is now, not for the process: a version meaning "is a TTY" suppressed the
-    // caller's plain-line fallback on exactly the terminals that could not host a block.
+    // What the caller reads to decide whether a line has somewhere to change in place. It reports the
+    // draw that happened, so it cannot disagree with what is on screen.
     [Test]
     [Arguments(true, 80, true)]
     [Arguments(true, 3, false)]
     [Arguments(true, null, false)]
     [Arguments(false, 80, false)]
-    public async Task Pinned_answers_for_the_terminal_as_it_is_now(bool tty, int? width, bool expected) {
+    public async Task Pinned_reports_whether_a_block_is_on_screen(bool tty, int? width, bool expected) {
         var (line, _) = Build(tty, width);
+
+        line.Show("waiting", null);
 
         await Assert.That(line.Pinned).IsEqualTo(expected);
     }
 
     [Test]
-    public async Task Pinned_goes_false_when_the_terminal_narrows_under_it() {
+    public async Task Pinned_is_false_before_anything_has_been_drawn() {
+        var (line, _) = Build();
+
+        await Assert.That(line.Pinned).IsFalse();
+    }
+
+    [Test]
+    public async Task Pinned_follows_the_next_draw_after_the_terminal_narrows() {
         int? width = 80;
         var line   = new TerminalWaitLine(tty: true, new StringWriter(), () => width);
 
+        line.Show("waiting", null);
         await Assert.That(line.Pinned).IsTrue();
 
+        // The block is still on screen until something redraws, which is what Pinned must say - the
+        // frame timer or the next Show is what takes it down.
         width = 3;
+        await Assert.That(line.Pinned).IsTrue();
 
+        line.Show("waiting", null);
         await Assert.That(line.Pinned).IsFalse();
+    }
+
+    // A width that changes between two reads inside one draw: the second read must not be taken as
+    // validated by the first, and an unreadable second read must not be dereferenced.
+    [Test]
+    public async Task A_width_that_changes_mid_draw_does_not_throw_or_draw_at_the_wrong_width() {
+        var samples = new Queue<int?>([80, null, 3, 80]);
+        var line    = new TerminalWaitLine(
+            tty: true, new StringWriter(), () => samples.Count > 0 ? samples.Dequeue() : 80);
+
+        line.Show("waiting", "t to carry on here");
+
+        await Assert.That(line.Drawn).IsEqualTo(2).Because("one sample serves the whole draw");
     }
 
     [Test]

@@ -47,20 +47,17 @@ sealed class TerminalWaitLine(bool tty, TextWriter? control = null, Func<int?>? 
     internal int Drawn => _drawn;
 
     /// <summary>
-    /// Whether a pinned block is being drawn <b>right now</b>: false with output redirected, and false
-    /// too on a terminal too narrow to host one or whose width cannot be read.
+    /// Whether a block is on screen for a line to change in place, which the caller reads to decide
+    /// whether a line has somewhere to go or has to be said outright.
     ///
-    /// <para>The caller reads this to decide whether a line has somewhere to change in place or has to
-    /// be said outright, so it has to answer for the current terminal rather than for the process — a
-    /// property meaning "is a TTY" cannot answer it, and one that only looked like it did suppressed
-    /// the caller's plain-line fallback on exactly the terminals that needed it.</para>
+    /// <para><b>The draw that happened, not a fresh guess at whether one would.</b> Re-measuring here
+    /// can disagree with what is actually drawn in either direction: suppressing the caller's plain line
+    /// while no block exists, or printing one beside a block that does. The next draw is what recovers a
+    /// terminal that has widened, and the frame timer means that is never more than a frame away.</para>
     /// </summary>
-    public bool Pinned => tty && Hostable();
-
-    /// <summary>Whether the terminal can hold the block without wrapping. Four cells of prefix sit
-    /// before a character of the wait, so below that the prefix wraps however hard the text is clipped,
-    /// and an unreadable width has no safe number to stand in for it.</summary>
-    bool Hostable() => _measure() is { } width && width >= MinWidth;
+    public bool Pinned {
+        get { lock (_gate) return _drawn > 0; }
+    }
 
     /// <summary>Sets what the block says, starting it if it is not already running.</summary>
     /// <param name="offer">A dim second line, or null for none.</param>
@@ -126,11 +123,11 @@ sealed class TerminalWaitLine(bool tty, TextWriter? control = null, Func<int?>? 
 
         if (!_running || _text is null) { ShowCursor(); return; }
 
-        // Nothing is drawn rather than drawn wrong. The caller then says its lines outright instead,
-        // which it decides from `Pinned`. A later widening resumes.
-        if (!Hostable()) { ShowCursor(); return; }
-
-        var width = _measure()!.Value;
+        // One sample, used for the whole draw: the terminal can resize between two reads, so a second
+        // one can be narrower than the width just validated - or unreadable, where taking `.Value` off
+        // it would throw out of a timer callback. Below MinWidth, or unreadable, nothing is drawn rather
+        // than drawn wrong; the caller says its lines outright instead, which it reads off `Pinned`.
+        if (_measure() is not { } width || width < MinWidth) { ShowCursor(); return; }
 
         HideCursor();
 

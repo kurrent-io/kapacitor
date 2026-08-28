@@ -197,7 +197,7 @@ sealed class SpectreFirstRunFlowProgress(IKeyWatcher? keys = null) : IFirstRunFl
 
         // Once, and only where no pinned line is carrying it: a terminal too narrow to host one, or a
         // wide one that has since narrowed. Latched because a line already scrolled past cannot be
-        // taken back, so repeating it every poll would be the dots this change removed.
+        // taken back, and repeating it every poll would bury the ticks it sits under.
         if (!SaysOfferOutright(_wait.Pinned, _keys.CanWatch, _pickedUp, _saidOffer)) return;
 
         _saidOffer = true;

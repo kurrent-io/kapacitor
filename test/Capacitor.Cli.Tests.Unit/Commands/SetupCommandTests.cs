@@ -131,8 +131,7 @@ public class SetupCommandTests {
     }
 
     // With no pinned line to carry it the offer has to be said outright, or a terminal too narrow to
-    // host a block gets neither the spinner nor the offer - which is what a `Pinned` that only meant
-    // "is a TTY" produced.
+    // host a block gets neither the spinner nor the offer.
     [Test]
     public async Task The_offer_is_said_outright_when_no_pinned_line_carries_it() {
         await Assert.That(SpectreFirstRunFlowProgress.SaysOfferOutright(
