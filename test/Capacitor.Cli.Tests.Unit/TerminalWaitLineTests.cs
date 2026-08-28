@@ -162,6 +162,32 @@ public class TerminalWaitLineTests {
         await Assert.That(control.ToString().Split(Show).Length - 1).IsEqualTo(1);
     }
 
+    // What the caller reads to decide whether a line has somewhere to change in place. It has to answer
+    // for the terminal as it is now, not for the process: a version meaning "is a TTY" suppressed the
+    // caller's plain-line fallback on exactly the terminals that could not host a block.
+    [Test]
+    [Arguments(true, 80, true)]
+    [Arguments(true, 3, false)]
+    [Arguments(true, null, false)]
+    [Arguments(false, 80, false)]
+    public async Task Pinned_answers_for_the_terminal_as_it_is_now(bool tty, int? width, bool expected) {
+        var (line, _) = Build(tty, width);
+
+        await Assert.That(line.Pinned).IsEqualTo(expected);
+    }
+
+    [Test]
+    public async Task Pinned_goes_false_when_the_terminal_narrows_under_it() {
+        int? width = 80;
+        var line   = new TerminalWaitLine(tty: true, new StringWriter(), () => width);
+
+        await Assert.That(line.Pinned).IsTrue();
+
+        width = 3;
+
+        await Assert.That(line.Pinned).IsFalse();
+    }
+
     [Test]
     public async Task Disposing_gives_the_cursor_back() {
         var (line, control) = Build();

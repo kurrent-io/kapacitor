@@ -46,9 +46,21 @@ sealed class TerminalWaitLine(bool tty, TextWriter? control = null, Func<int?>? 
     /// corrupt, so it is readable rather than inferred.</summary>
     internal int Drawn => _drawn;
 
-    /// <summary>Whether anything is drawn in place. False makes every member here a no-op, which is
-    /// what the caller reads to decide whether a transition needs saying as a plain line instead.</summary>
-    public bool Enabled => tty;
+    /// <summary>
+    /// Whether a pinned block is being drawn <b>right now</b>: false with output redirected, and false
+    /// too on a terminal too narrow to host one or whose width cannot be read.
+    ///
+    /// <para>The caller reads this to decide whether a line has somewhere to change in place or has to
+    /// be said outright, so it has to answer for the current terminal rather than for the process — a
+    /// property meaning "is a TTY" cannot answer it, and one that only looked like it did suppressed
+    /// the caller's plain-line fallback on exactly the terminals that needed it.</para>
+    /// </summary>
+    public bool Pinned => tty && Hostable();
+
+    /// <summary>Whether the terminal can hold the block without wrapping. Four cells of prefix sit
+    /// before a character of the wait, so below that the prefix wraps however hard the text is clipped,
+    /// and an unreadable width has no safe number to stand in for it.</summary>
+    bool Hostable() => _measure() is { } width && width >= MinWidth;
 
     /// <summary>Sets what the block says, starting it if it is not already running.</summary>
     /// <param name="offer">A dim second line, or null for none.</param>
@@ -114,11 +126,11 @@ sealed class TerminalWaitLine(bool tty, TextWriter? control = null, Func<int?>? 
 
         if (!_running || _text is null) { ShowCursor(); return; }
 
-        // A terminal too narrow for the prefix, or one whose width cannot be read, cannot host a pinned
-        // block: the prefix alone wraps and costs the erase above a row it does not know about. Nothing
-        // is drawn rather than drawn wrong, which leaves the permanent lines standing on their own -
-        // the redirected-output behaviour, reached by a second route. A later widening resumes.
-        if (_measure() is not { } width || width < MinWidth) { ShowCursor(); return; }
+        // Nothing is drawn rather than drawn wrong. The caller then says its lines outright instead,
+        // which it decides from `Pinned`. A later widening resumes.
+        if (!Hostable()) { ShowCursor(); return; }
+
+        var width = _measure()!.Value;
 
         HideCursor();
 

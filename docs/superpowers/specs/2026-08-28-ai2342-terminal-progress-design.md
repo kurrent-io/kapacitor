@@ -130,18 +130,25 @@ Lines are **truncated rather than wrapped**: a wrapped line costs a row the curs
 know about, and the block would then erase the wrong rows. `Drawn` is exposed for the same reason — an
 erase that gets the count wrong takes a line the caller already committed to the scrollback with it.
 
-Four ways that arithmetic can be lost, all fixed rather than accepted, and the width took three passes to
-get right — worth recording, because each pass fixed half of it.
+Four ways that arithmetic can be lost, all fixed rather than accepted, and three of them are about width.
 
 The width is read live, not from `AnsiConsole.Profile.Width`, which Spectre fixes when the console is
-created: a terminal narrowed mid-wait would be clipped against the old width and wrap. It is then used as
+created: a terminal narrowed mid-wait would be clipped against the old width and wrap. It is used as
 measured, with no floor — raising a narrow terminal to a comfortable minimum renders it as though it had
-columns it does not have, which is the same wrap by another route. And **clipping the text was never
-enough**: four cells of prefix sit before a character of it, so below the prefix's own width the prefix
-wraps however hard the text is clipped, and an unreadable width has no safe number to stand in for it
-(wider wraps, narrower is the same lie). So the block is drawn only when the width is known and at least
-`MinWidth`; otherwise nothing is drawn and the permanent lines stand on their own, which is the
-redirected-output behaviour reached by a second route. A later widening resumes.
+columns it does not have, which is the same wrap by another route. And **clipping the text is not
+sufficient on its own**: four cells of prefix sit before a character of it, so below the prefix's own width
+the prefix wraps however hard the text is clipped, and an unreadable width has no safe number to stand in
+for it (wider wraps, narrower is the same lie). So the block is drawn only when the width is known and at
+least `MinWidth`. A later widening resumes.
+
+**Whether a block is drawn is the caller's business, so it is exposed rather than inferred.** `Pinned`
+answers for the terminal as it is now, and the renderer reads it to decide whether a line has somewhere to
+change in place or has to be said outright. A property meaning "output is not redirected" cannot answer
+that: on a terminal too narrow to host a block it suppresses the plain-line fallback on exactly the
+terminals that need it, so the wait shows neither a spinner nor the lines standing in for one. The
+handover offer is latched and said outright when nothing is carrying it — which covers a terminal narrow
+from the start and one that narrows mid-wait, where the offer would otherwise have been in a block that
+has since gone.
 
 The width is injected for the same reason the control writer is: the wrap happens inside Spectre's writer,
 so the row count is its only observable consequence and a test host's real console is not the subject. The width is read from

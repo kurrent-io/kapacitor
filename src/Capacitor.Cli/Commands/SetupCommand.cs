@@ -73,16 +73,12 @@ sealed class SpectreFirstRunFlowProgress(IKeyWatcher? keys = null) : IFirstRunFl
     bool              _healthy = true;
     bool              _pickedUp;
     bool              _saidUnreachable;
+    bool              _saidOffer;
 
     public void Opening(string setupUrl) {
         AnsiConsole.MarkupLine(SetupAuthProgress.Indent("Opening your browser to finish setup."));
         AnsiConsole.MarkupLine(SetupAuthProgress.Indent($"[dim]If it didn't open:[/]  {Markup.Escape(setupUrl)}"));
         AnsiConsole.WriteLine();
-
-        // The offer rides the spinner line where there is one to ride. Without it there is nowhere to
-        // withdraw it from later, so it is said plainly and once.
-        if (!_wait.Enabled && _keys.CanWatch)
-            AnsiConsole.MarkupLine(SetupAuthProgress.Indent($"[dim]{Markup.Escape(Offer)}[/]"));
 
         Refresh();
     }
@@ -90,7 +86,7 @@ sealed class SpectreFirstRunFlowProgress(IKeyWatcher? keys = null) : IFirstRunFl
     public void Waiting(FirstRunFlowStep? flowStep, bool healthy) {
         // Said once per episode rather than per tick, and only where there is no spinner to say it:
         // with one, the line itself changes and repeating it would be a log of the same fact.
-        if (!_wait.Enabled && !healthy && !_saidUnreachable)
+        if (!_wait.Pinned && !healthy && !_saidUnreachable)
             AnsiConsole.MarkupLine(SetupAuthProgress.Indent($"[yellow]![/] {Unreachable}"));
 
         _saidUnreachable = !healthy;
@@ -184,15 +180,30 @@ sealed class SpectreFirstRunFlowProgress(IKeyWatcher? keys = null) : IFirstRunFl
                 _                       => "Waiting on the browser"
             };
 
-    void Say(string markup) {
-        if (_wait.Enabled) _wait.WriteAbove(markup);
-        else AnsiConsole.MarkupLine(markup);
-    }
+    /// <summary>A line that stays. Goes through the block either way: with one drawn it is written
+    /// above it, and with none it is just a line.</summary>
+    void Say(string markup) => _wait.WriteAbove(markup);
+
+    /// <summary>Whether the handover offer has to be said as its own line, because there is no pinned
+    /// one carrying it. Split out because it is the whole of the decision and nothing else here can be
+    /// reached by a test.</summary>
+    internal static bool SaysOfferOutright(bool pinned, bool canWatch, bool pickedUp, bool alreadySaid) =>
+        !alreadySaid && !pinned && canWatch && !pickedUp;
 
     /// <summary>The mechanism stays live once the offer is withdrawn — it is also the only way out of a
     /// thirty-minute wait, and a closed tab still needs it. Only the advertisement goes.</summary>
-    void Refresh() =>
+    void Refresh() {
         _wait.Show(WaitText(_step, _healthy), _keys.CanWatch && !_pickedUp ? Offer : null);
+
+        // Once, and only where no pinned line is carrying it: a terminal too narrow to host one, or a
+        // wide one that has since narrowed. Latched because a line already scrolled past cannot be
+        // taken back, so repeating it every poll would be the dots this change removed.
+        if (!SaysOfferOutright(_wait.Pinned, _keys.CanWatch, _pickedUp, _saidOffer)) return;
+
+        _saidOffer = true;
+
+        Say(SetupAuthProgress.Indent($"[dim]{Markup.Escape(Offer)}[/]"));
+    }
 }
 
 /// <summary>

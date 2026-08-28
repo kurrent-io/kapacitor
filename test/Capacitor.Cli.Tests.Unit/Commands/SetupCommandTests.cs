@@ -130,6 +130,26 @@ public class SetupCommandTests {
                     .IsEqualTo("Waiting on the browser");
     }
 
+    // With no pinned line to carry it the offer has to be said outright, or a terminal too narrow to
+    // host a block gets neither the spinner nor the offer - which is what a `Pinned` that only meant
+    // "is a TTY" produced.
+    [Test]
+    public async Task The_offer_is_said_outright_when_no_pinned_line_carries_it() {
+        await Assert.That(SpectreFirstRunFlowProgress.SaysOfferOutright(
+            pinned: false, canWatch: true, pickedUp: false, alreadySaid: false)).IsTrue();
+    }
+
+    [Test]
+    [Arguments(true, true, false, false)]    // a pinned line is already carrying it
+    [Arguments(false, false, false, false)]  // no keyboard, so nothing to offer
+    [Arguments(false, true, true, false)]    // withdrawn: a decision has been made in the browser
+    [Arguments(false, true, false, true)]    // said once already, and a line cannot be taken back
+    public async Task The_offer_is_not_said_outright_otherwise(
+            bool pinned, bool canWatch, bool pickedUp, bool alreadySaid) {
+        await Assert.That(SpectreFirstRunFlowProgress.SaysOfferOutright(
+            pinned, canWatch, pickedUp, alreadySaid)).IsFalse();
+    }
+
     // Naming the key in one place is what stops the offer and the loop disagreeing about it.
     [Test]
     public async Task The_offer_names_the_key_the_loop_actually_acts_on() {
