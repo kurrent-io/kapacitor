@@ -119,6 +119,19 @@ public sealed record ReportFirstRunImportOutcomeRequest {
     [JsonPropertyName("reason")] public string? Reason { get; init; }
 }
 
+/// <summary>
+/// POST /api/first-run/flows/{id}/relinquish — this machine has stopped listening.
+///
+/// <para>One token and nothing else. What the browser does with it is take affordances away, so there is
+/// nothing for a detail field to improve: a page that cannot be written to has no use for an error
+/// string, and the terminal is where anything worth reading is already being printed.</para>
+/// </summary>
+public sealed record RelinquishFirstRunFlowRequest {
+    /// <summary>A <see cref="FirstRunRelinquishReasons"/> token. Required by the route — the two members
+    /// give opposite instructions, so there is no safe default for the server to pick.</summary>
+    [JsonPropertyName("reason")] public required string Reason { get; init; }
+}
+
 /// <summary>One repository discovery found, as the report carries it.</summary>
 /// <remarks><c>sessions</c> is keyed by window rather than positional: an array aligned by index goes
 /// wrong silently. An absent key reads as "not counted", never as zero.</remarks>

@@ -11,6 +11,9 @@ namespace Capacitor.Cli.Core.FirstRun;
 /// and the screen goes on saying it is waiting.</param>
 /// <param name="importing">The Import step's scan and run. Null leaves the screen waiting on a report
 /// that never comes, so a host that renders the flow at all should supply one.</param>
+/// <param name="interrupts">Where to leave the "this machine has gone" callback for an interrupt handler
+/// to find. Defaults to the process-global one the CLI's signal handlers read; passing another keeps an
+/// ordinary run out of process state.</param>
 public sealed class BrowserFirstRunFlow(
         IFirstRunFlowChannel     channel,
         IFirstRunFlowProgress    progress,
@@ -18,9 +21,12 @@ public sealed class BrowserFirstRunFlow(
         TimeProvider?            clock     = null,
         IKeyWatcher?             keys      = null,
         IFirstRunMachineActions? actions   = null,
-        IFirstRunImportLane?     importing = null) {
+        IFirstRunImportLane?     importing = null,
+        IFirstRunInterrupts?     interrupts = null) {
     readonly TimeProvider _clock = clock ?? TimeProvider.System;
     readonly IKeyWatcher  _keys  = keys ?? ConsoleKeyWatcher.Instance;
+
+    readonly IFirstRunInterrupts _interrupts = interrupts ?? FirstRunInterruptRelinquish.Process;
 
     /// <summary>
     /// The backstop, not the way out. Nothing like the flow's own 12-hour TTL, which is sized for a
@@ -118,10 +124,71 @@ public sealed class BrowserFirstRunFlow(
         progress.Opening(setupUrl);
         launcher.TryOpen(setupUrl);
 
+        // The poll's own assignment is the single write that publishes the result, so an interrupt sees
+        // either a leg still waiting or a settled one, never a half-decided state.
+        FirstRunFlowResult? settled = null;
+
+        using var notice = _interrupts.Arm(
+            (reason, token) => RelinquishAsync(serverUrl, flowId, reason, token),
+            interruptReason: () => InterruptReason(Volatile.Read(ref settled)));
+
         try {
-            return await PollAsync(serverUrl, flowId, report, ct);
+            Volatile.Write(ref settled, await PollAsync(serverUrl, flowId, report, ct));
         } finally {
             progress.WaitEnded();
+        }
+
+        // Claimed once, so whichever path gets there first is the only one that sends and the browser
+        // cannot be told two opposite things.
+        await notice.SendAsync(ReasonFor(settled!), ct);
+
+        return settled!;
+    }
+
+    /// <summary>
+    /// What the LEG tells the browser about its own ending, or null when there is nothing to tell it.
+    ///
+    /// <para><b>A dismissal is a handover and nothing else is.</b> It is the one exit where the terminal
+    /// carries on with everything the browser settled, so it is the one where the page must not send anyone
+    /// back to <c>kcap setup</c>. A backstop that elapsed and a leg that failed both leave nothing
+    /// running.</para>
+    ///
+    /// <para><b>Finished sends nothing, and that guard is the load-bearing one:</b> the flow is over on its
+    /// own terms and the browser is rendering the payoff. Expired needs nothing either — the server already
+    /// refuses a flow past its lifetime, and the page says so.</para>
+    /// </summary>
+    static string? ReasonFor(FirstRunFlowResult settled) => settled switch {
+        FirstRunFlowResult.Dismissed                              => FirstRunRelinquishReasons.Handover,
+        FirstRunFlowResult.Abandoned or FirstRunFlowResult.Failed  => FirstRunRelinquishReasons.Stopped,
+        _                                                         => null
+    };
+
+    /// <summary>
+    /// What an INTERRUPT tells the browser, given whatever the leg has published so far.
+    ///
+    /// <para><b>Never the leg's own reason.</b> An interrupt is the process being killed, so nothing is
+    /// carrying on however the poll ended — borrowing <see cref="ReasonFor"/> here would tell someone who
+    /// had chosen their terminal that it had taken over, as it died, leaving the one tail that states no
+    /// remedy at all.</para>
+    ///
+    /// <para><b>The published result decides only WHETHER there is anything to say.</b> A leg that would
+    /// send nothing stays silent under an interrupt too, so a flow that reached its payoff keeps it.</para>
+    /// </summary>
+    static string? InterruptReason(FirstRunFlowResult? settled) =>
+        settled is null || ReasonFor(settled) is not null ? FirstRunRelinquishReasons.Stopped : null;
+
+    /// <summary>Says the machine has gone. Swallows everything: this runs as the leg ends, and a setup that
+    /// otherwise worked must not report a failure because one best-effort POST did not land.</summary>
+    async Task RelinquishAsync(string serverUrl, string flowId, string reason, CancellationToken ct) {
+        try {
+            await channel.RelinquishAsync(serverUrl, flowId, reason, ct);
+        } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
+            // Propagated, as every other await in this class does: a caller's cancel is not this method's
+            // to swallow, and the poll would already have thrown on one.
+            throw;
+        } catch (Exception) {
+            // The channel already degrades a transport failure to a status code, so reaching here means
+            // something unexpected — and there is still nothing useful to do about it.
         }
     }
 

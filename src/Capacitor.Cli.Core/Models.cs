@@ -976,6 +976,7 @@ public sealed record CurationApplyResponse {
 [JsonSerializable(typeof(FirstRun.FirstRunFlowResponse))]
 [JsonSerializable(typeof(FirstRun.ReportFirstRunMachineActionRequest))]
 [JsonSerializable(typeof(FirstRun.ReportFirstRunImportRequest))]
+[JsonSerializable(typeof(FirstRun.RelinquishFirstRunFlowRequest))]
 [JsonSerializable(typeof(FirstRun.ReportFirstRunImportOutcomeRequest))]
 [JsonSerializable(typeof(LaunchAgentCommand))]
 [JsonSerializable(typeof(ExplicitReviewerModelLaunch))]
