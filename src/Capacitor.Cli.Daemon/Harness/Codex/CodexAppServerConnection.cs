@@ -58,6 +58,7 @@ internal sealed partial class CodexAppServerConnection : IAsyncDisposable {
 
     long _nextId;
     int  _disposed;
+    bool IsDisposed => Volatile.Read(ref _disposed) != 0;
 
     /// <param name="debugFrames">
     /// <see cref="DaemonConfig.DebugFrames"/> (<c>KCAP_ACP_DEBUG_FRAMES</c>) — off by default. When
@@ -379,10 +380,16 @@ internal sealed partial class CodexAppServerConnection : IAsyncDisposable {
     }
 
     async Task WriteLineAsync(string json, CancellationToken ct) {
+        // IsDisposed checks (before AND after acquiring the gate) turn away a writer that raced
+        // DisposeAsync / CloseInputAsync — the second catches a writer that only won the gate once the
+        // write stream was already disposed. Cleaner than letting it write into a disposed stream, and
+        // it lets DisposeAsync leave _writeGate undisposed (see there) without a queued writer hanging.
+        ObjectDisposedException.ThrowIf(IsDisposed, this);
         var bytes = Encoding.UTF8.GetBytes(json + "\n");
 
         await _writeGate.WaitAsync(ct).ConfigureAwait(false);
         try {
+            ObjectDisposedException.ThrowIf(IsDisposed, this);
             await _writeStream.WriteAsync(bytes, ct).ConfigureAwait(false);
             await _writeStream.FlushAsync(ct).ConfigureAwait(false);
 
@@ -402,14 +409,40 @@ internal sealed partial class CodexAppServerConnection : IAsyncDisposable {
         }
     }
 
+    /// <summary>Signal a clean shutdown to the peer by closing the WRITE side (its stdin) —
+    /// <c>codex app-server</c> exits 0 on stdin EOF. Serializes with an in-flight write via the write
+    /// gate (bounded, so a stuck write never delays the EOF that shuts the peer down), then disposes
+    /// ONLY the write stream — the read loop still observes the peer's own exit via stdout EOF. Idempotent
+    /// and best-effort: a prior/concurrent <see cref="DisposeAsync"/> or an already-broken stream is
+    /// swallowed, so the caller can fall through to a hard terminate. Does NOT dispose the connection.</summary>
+    public async Task CloseInputAsync() {
+        if (IsDisposed) return; // fully disposed → the write stream is already closed.
+
+        // Serialize with an in-flight write when possible, but never let a stuck write (a peer that
+        // stopped reading) delay the EOF that shuts it down — after a bounded wait, close regardless.
+        // _writeGate is left undisposed by DisposeAsync, so this timed wait always honors its timeout
+        // even if disposal races (a disposed SemaphoreSlim abandons a queued WaitAsync — it neither
+        // completes nor times out).
+        var gated = await _writeGate.WaitAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false);
+        try {
+            await _writeStream.DisposeAsync().ConfigureAwait(false);
+        } finally {
+            if (gated) _writeGate.Release();
+        }
+    }
+
     public async ValueTask DisposeAsync() {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
 
         FaultAllPending(new ObjectDisposedException(nameof(CodexAppServerConnection)));
 
-        _writeGate.Dispose();
-
+        // _writeGate is deliberately left UNDISPOSED. Disposing a SemaphoreSlim does not release an
+        // outstanding async waiter — a WriteLineAsync (or CloseInputAsync's bounded wait) already queued
+        // in WaitAsync when this ran would then hang forever, neither completing nor honoring its
+        // timeout. It holds no unmanaged state unless AvailableWaitHandle is touched (never here), so
+        // leaving it undisposed is accepted .NET practice; the IsDisposed checks in WriteLineAsync turn
+        // post-dispose writers away cleanly instead.
         await _writeStream.DisposeAsync().ConfigureAwait(false);
         await _readStream.DisposeAsync().ConfigureAwait(false);
     }
