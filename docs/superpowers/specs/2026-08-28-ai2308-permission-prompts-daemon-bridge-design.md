@@ -116,7 +116,7 @@ PermissionResolveDto(
 PermissionResolvedDto(
     string RequestId,
     string Outcome,   // "allow" | "deny" | "withdrawn"
-    string Source)    // "app" | "server" | "agent_gone" | "no_ui"
+    string Source)    // "app" | "server" | "agent_gone" | "no_ui" | "daemon_shutdown"
 
 PermissionAckDto(bool Ok, string? Error)
 ```
@@ -127,10 +127,14 @@ entry — a resubscribe would replay it and die again, forever. So every
 caller-controlled value that reaches the local wire is bounded before
 `Register`, and the hook body itself is read exactly as today:
 
-- `agent_id` and `session_id` must be 32 lowercase hex characters (a `Guid`
-  in `"N"` form — what `KCAP_AGENT_ID` carries and what both hooks normalize
-  the session id to). A payload whose `session_id` is not that shape is
-  unattributed; an `agent_id` that is not that shape skips its rung.
+- `session_id` is canonicalized by the daemon: it must parse as a `Guid` (any
+  case, dashes or not — the hooks only strip dashes, they never lower-case)
+  and is emitted as `ToString("N")`. A payload whose `session_id` does not
+  parse is unattributed. The payload's `agent_id` is canonicalized the same
+  way for comparison only; one that does not parse skips its rung. The
+  session rung compares canonical forms on both sides.
+- The DTO's `agent_id` is the attributed agent's registry key — daemon-held,
+  never the payload's string — so it is not caller-controlled.
 - `tool_name` over `MaxToolNameBytes = 512` bytes of UTF-8 makes the request
   unattributed — no real tool has such a name, and the server path still
   answers the hook.
@@ -140,8 +144,12 @@ caller-controlled value that reaches the local wire is bounded before
 - `vendor` comes from the URL path (`claude` | `codex`), `request_id` and
   `requested_at` are daemon-minted.
 
-A maximal pending therefore serializes under 130 KiB; a test pins that against
-`FrameCodec.MaxPayload` so the bound survives a DTO change.
+A maximal pending is therefore a few hundred KiB at the very worst (every byte
+of a 512-byte name JSON-escaped), far under the 8 MiB cap. `FrameCodec.
+MaxPayload` becomes `internal` — Core already exposes internals to its test
+assembly — and a test writes a worst-case pending through
+`FrameCodec.WriteAsync` and reads it back through `ReadAsync`, so the bound is
+checked by the codec's own public behaviour and survives a DTO change.
 
 Structural validity of a pending (the consent rule: STJ source-gen leaves a
 missing member null, `{}` decodes fine): `request_id`, `agent_id`, `session_id`,
@@ -178,10 +186,14 @@ PermissionSettlement(PermissionDecision Decision, string Outcome, string Source)
   won. The TCS is created with `RunContinuationsAsynchronously`: it is completed
   while the gate is held, and a continuation running inline would re-enter the
   gate.
+- `TrySettleIfNoSubscriber(requestId, PermissionDecision, outcome, source) →
+  bool`: `TrySettle` guarded, inside the same gate, by "no subscriber is
+  registered right now". Decision 7's no-UI deny goes through this and only
+  this, so a subscriber that registered — and received the replay — between a
+  fault and the claim keeps the request.
 - `Subscribe() → (id, ChannelReader<PermissionStreamItem>)`: under the delivery
   gate, replay every pending entry into a fresh unbounded channel, then register
-  it. `Unsubscribe(id)` completes the channel. `HasSubscriber` is read by the
-  server leg (decision 7).
+  it. `Unsubscribe(id)` completes the channel.
 - `WithdrawForAgent(agentId)`: under the delivery gate, add the id to the
   withdrawn set, then `TrySettle(…, deny, "withdrawn", "agent_gone")` for every
   pending entry of that agent.
@@ -214,14 +226,20 @@ the composition of two new virtual members, so a fake can script each leg:
   settled by another source, so a decision lost there had already lost the
   claim.
 
-Plus `RespondToPermissionAsync(sessionId, serverRequestId, PermissionDecision)`:
-one `InvokeAsync("RespondToPermission", sessionId, requestId, decision.Behavior,
-decision.ApplyPermissions, decision.UpdatedInput)` on the daemon-lifetime token
-— never a per-request token, which the caller has just cancelled. The hub
-method's two trailing ACP parameters are optional and are not sent. Failures — a
-`HubException` (already answered, the ownership gate, a server without the
-method) or a disconnected hub — are logged at Information with the request id
-and swallowed: the local settlement has already applied.
+Plus `RespondToPermissionAsync(sessionId, serverRequestId, PermissionDecision)
+→ RespondOutcome`: one `InvokeAsync("RespondToPermission", sessionId,
+requestId, decision.Behavior, decision.ApplyPermissions, decision.UpdatedInput)`
+on the daemon-lifetime token — never a per-request token, which the caller has
+just cancelled. The hub method's two trailing ACP parameters are optional and
+are not sent. It never throws: `Applied`; `AlreadyAnswered` for the
+`HubException` whose message says the request is no longer pending (matched
+the way `IsOwnershipNotReady` matches its message today); `Failed(reason)` for
+any other `HubException` (the ownership gate, a server without the method) or
+a disconnected hub. The caller logs the outcome; the local settlement has
+already applied whatever it is. The server's rejection carries no decision,
+and the daemon has no other source for the web's answer once its registry
+await is cancelled, so the remote decision is not observable — the diagnostic
+says two authorities answered, not what the other one said.
 
 ### 2.3 `LocalPermissionBridge`, interactive branch
 
@@ -235,62 +253,68 @@ untouched. Per request:
    the prompt before the server leg has even dialled, so a disconnected daemon
    still gets its prompt answered.
 3. **Start the server leg**, detached (§2.3.1).
-4. **Await `settlement`** with `WaitAsync(daemonToken)`. A completed
-   settlement always wins over the token: if the wait throws but
-   `settlement.IsCompletedSuccessfully`, the claim is final and is used — an
-   app that was acked `Ok=true` must never see its answer turn into a shutdown
-   deny. A genuine cancellation (shutdown before any claim) answers the hook
-   deny with no log record, today's behaviour for a shutdown mid-wait.
-   Otherwise: **append the log record first**, from `settlement.Outcome`/
-   `Source`, then write the hook response from `settlement.Decision` (the JSON
-   is built exactly as today). The response write is fallible — the hook may
-   already be gone — and the record must not depend on it.
+4. **Await `settlement`** with `WaitAsync(daemonToken)`. If the wait throws
+   (daemon shutdown), the bridge does not inspect the task — it **claims**:
+   `TrySettle(requestId, deny, "deny", "daemon_shutdown")`. Winning that claim
+   means no other party had settled; the hook gets deny and no log record is
+   written, today's behaviour for a shutdown mid-wait. Losing it means an app
+   claim (or any other) won first — the settlement task is complete, and it is
+   honoured exactly as if the token had never fired. The claim is the
+   linearization point, so an app that was acked `Ok=true` can never see its
+   answer turn into a shutdown deny, whichever side of the token its claim
+   landed on. Otherwise: **append the log record first**, from
+   `settlement.Outcome`/`Source`, then write the hook response from
+   `settlement.Decision` (the JSON is built exactly as today). The response
+   write is fallible — the hook may already be gone — and the record must not
+   depend on it.
 
 #### 2.3.1 The server leg
 
 One method, `RunServerLegAsync(request, settlement)`, owns everything that
-touches the server for a request. It runs on `legCt`, a per-request CTS
-linked to the daemon token, and it is **total**: every exit below returns
-normally, every exception is observed, and the bridge never awaits it.
+touches the server for a request. It is **total**: every exit below returns
+normally, every exception is observed inline, and the bridge never awaits it;
+its task is handed to a `ContinueWith` that logs any escaped fault at
+Warning. Its state machine:
 
-- **Cancellation, any phase.** An `OperationCanceledException` on `legCt`
-  ends the leg with no claim, no `RespondToPermission` and no record. It
-  fires for daemon shutdown and for a settlement that completed while `Begin`
-  was still waiting for readiness (below) — in that case no server request
-  ever existed, so there is nothing to settle.
-- `Begin(…, legCt)` → `serverRequestId`. A non-cancellation fault: with
-  `broker.HasSubscriber` false, `TrySettle(requestId, deny, "deny", "no_ui")`
-  — today's instant deny; with a subscriber, nothing — the request stays
-  answerable locally, and a later subscriber sees it in its replay. No server
-  request id exists either way.
-- If `settlement` is already complete when `Begin` returns (the app or a
-  withdrawal beat the server): `RespondToPermissionAsync(settlement.Decision)`
-  unless the source is `server`; return.
-- Otherwise `WhenAny(AwaitPermissionDecisionAsync(serverRequestId, legCt),
-  settlement)`:
-  - **`settlement` first** → cancel the per-request CTS, then
-    `RespondToPermissionAsync(settlement.Decision)` unless the source is
-    `server`. A `HubException` saying the request is no longer pending means
-    the web answered inside the same window: log at Information that the
-    server and the app both answered, with both decisions.
-  - **the await first**, holding a decision → `TrySettle(requestId, decision,
-    decision.Behavior, "server")`. If that claim loses, the app claimed in the
-    gap between the push arriving and this continuation running: log the same
-    Information line; nothing is sent back — the server's tracker is already
-    resolved. The await completing cancelled (shutdown) is the cancellation
-    exit above.
+1. Create `cts`, linked to the daemon token. Register **one continuation on
+   `settlement`** that cancels `cts` (guarded against the CTS being disposed,
+   the pattern `LaunchConsentIpc`'s EOF watcher uses). From here on, a
+   settlement by any party cancels whatever server call the leg is inside —
+   this continuation is the mechanism behind every "settlement first" arm
+   below; nothing else polls `settlement`.
+2. `serverRequestId = await Begin(…, cts.Token)`, awaited inline, so a lost
+   `Begin` is never an abandoned child task.
+   - `OperationCanceledException`: if the daemon token is cancelled, exit —
+     shutdown, no claim, no `RespondToPermission`, no record. Otherwise the
+     settlement fired the continuation while `Begin` was still in the
+     readiness wait, so no server request exists and there is nothing to
+     settle; exit.
+   - Any other fault: `TrySettleIfNoSubscriber(requestId, deny, "deny",
+     "no_ui")` — today's instant deny, but only if nobody holds the request
+     at the moment of the claim; with a subscriber the request stays
+     answerable locally and a later subscriber sees it in its replay. Exit.
+3. `Begin` returned an id. If `settlement` is already complete (a claim raced
+   the invoke's return): `RespondToPermissionAsync(settlement.Decision)`
+   unless the source is `server`; exit.
+4. `decision = await AwaitPermissionDecisionAsync(serverRequestId, cts.Token)`.
+   - `OperationCanceledException`: if the daemon token is cancelled, exit as
+     in step 2. Otherwise `settlement` completed (app, withdrawal, shutdown
+     claim): `RespondToPermissionAsync(settlement.Decision)` unless the
+     source is `server`; an `AlreadyAnswered` outcome means the web answered
+     inside the same window — log at Information that two authorities
+     answered this request and which decision the hook received; exit.
+   - A decision: `TrySettle(requestId, decision, decision.Behavior,
+     "server")`. If that claim loses, the app claimed in the gap between the
+     push arriving and this continuation running: log the same Information
+     line; nothing is sent back — the server's tracker is already resolved.
+     Exit.
 
-**Settlement cancels a `Begin` that has not reached the server.** The
-settlement-first arm exists at every phase: `settlement` completing while
-`Begin` is still inside the readiness wait cancels `legCt`, and
-`ConnectionRetry` throws before invoking. So a local answer during an outage
-leaves no server request behind, and neither does a teardown — the withdrawal
-settles the entry and the leg ends. Only an invoke already on the wire at the
-moment of cancellation can leave a request the daemon never learns of; it
-clears at session end like any unanswered web card, and there is at most one
-per request. The leg is observed by a `ContinueWith` that logs any fault at
-Warning; there is no other completion boundary because there is nothing to
-wait for.
+Only an invoke already on the wire at the instant the continuation cancels
+`cts` can leave a request the daemon never learns of; it clears at session end
+like any unanswered web card, and there is at most one per request. A local
+answer during an outage therefore leaves no server request behind (the
+readiness wait throws before invoking), and a teardown's withdrawal ends the
+leg the same way.
 
 ### 2.4 Withdrawal
 
@@ -321,7 +345,7 @@ Exactly one record per settled, attributed request, written by the bridge from
 the claimed settlement before the hook response is written (§2.3 step 4) —
 never from a branch that guessed the source, never after fallible I/O.
 `Source` is `app`, `server`, `agent_gone` or `no_ui`; `Outcome` is `allow`,
-`deny` or `withdrawn`. A request cancelled by daemon shutdown before any claim
+`deny` or `withdrawn`. A request the shutdown claim wins (`daemon_shutdown`)
 has no record.
 
 ### 2.6 `PermissionIpc`
@@ -529,13 +553,15 @@ exist on a newer daemon; the daemon-update nudge already covers that.
 
 - **Server and app answer within one push latency** — two real interleavings,
   both following the daemon's claim for the hook. (a) The app claims before the
-  server's push reaches the daemon: the settlement-first arm sends
-  `RespondToPermission`, the server rejects it as already answered, the leg
-  logs both decisions. (b) The push reaches the daemon first but the app claims
-  before the leg's continuation runs: the server's `TrySettle` loses, nothing
-  is sent back, the same line is logged. The reverse — the server's claim
-  wins — leaves the app's ack `Ok=false` and the card gone. Not closable
-  without a server-side claim protocol, which is out of scope.
+  server's push reaches the daemon: the leg's await is cancelled, it sends
+  `RespondToPermission`, the server reports it already answered, and the leg
+  logs that two authorities answered and what the hook received — the web's
+  decision itself is not observable from the daemon. (b) The push reaches the
+  daemon first but the app claims before the leg's continuation runs: the
+  server's `TrySettle` loses, nothing is sent back, the same line is logged.
+  The reverse — the server's claim wins — leaves the app's ack `Ok=false` and
+  the card gone. Not closable without a server-side claim protocol, which is
+  out of scope.
 - **Answered in the TUI while the card is up.** The vendor proceeds and ignores
   the hook's later answer. The daemon's pending entry lingers until the server
   cancels it at session end (`EndSessionForAgentAsync` → `PermissionResolved(deny)`
@@ -556,11 +582,15 @@ exist on a newer daemon; the daemon-update nudge already covers that.
   the buttons re-enable.
 - **Daemon restart.** Pending is never persisted; the app's `Subscribed` clear
   empties the cache; the hook's HTTP request died with the daemon.
-- **Daemon shutdown mid-request.** Before any claim: the bridge's wait is
-  cancelled, the hook gets deny, no log record, the leg exits through its
-  cancellation arm, and the broker and registry entries die with the process.
-  After a claim the bridge had not yet observed: the completed settlement wins
-  and is answered and recorded normally.
+- **Daemon shutdown mid-request.** The bridge's `daemon_shutdown` claim wins:
+  the hook gets deny, no log record, the leg exits through its cancellation
+  arm, and the broker and registry entries die with the process. The claim
+  loses — to an app claim that landed just before, or one that lands between
+  the token firing and the bridge's claim: that settlement is answered and
+  recorded normally, and the app's `Ok=true` ack holds.
+- **Subscriber arrives between a `Begin` fault and the no-UI claim.** The
+  claim is gated on the subscriber count inside the broker's gate, so the
+  request stays pending and the new subscriber's replay already carries it.
 - **App disconnected.** Entries retained; reconnect replays whatever the daemon
   still holds and the tombstones drop what it does not.
 - **Subscriber gone after a faulted `Begin`.** The request was kept because a
@@ -600,25 +630,30 @@ exist on a newer daemon; the daemon-update nudge already covers that.
   additions with the fake server scripting both legs and barriers between them —
   app claim first (hook JSON carries it, `RespondToPermission` invoked with it
   on the daemon token, server await cancelled, one `app` record; and the
-  variant where `RespondToPermission` reports already-answered logs both
-  decisions), server claim first (hook JSON carries it, `Resolved("server")`
-  pushed, an app resolve after it acks false, one `server` record), server
-  push delivered then app claim before the leg's continuation (hook keeps the
-  app decision, no `RespondToPermission`, the disagreement logged), `Begin`
-  faulted with and without a subscriber (`no_ui` deny only without), `Begin`
-  waiting for readiness when the app answers (leg cancelled, no server
-  request, no `RespondToPermission`), several local answers across a
-  prolonged disconnect then reconnect (no server requests created, no burst),
-  `Begin` waiting when the agent is torn down (withdrawn, leg cancelled),
-  withdrawal between attribution and `Register`, attribution by `agent_id`, by
-  session id, by `cwd`, two agents on one borrowed `cwd` and two agents with one
-  session id both fall through, non-canonical ids and an oversized `tool_name`
-  fall through, oversized elements omitted with flags at the exact boundary,
-  a maximal pending frame under `FrameCodec.MaxPayload`, unattributed falls
-  through unchanged, shutdown before any claim answers deny with no record and
-  the detached leg completes cleanly, shutdown after an unobserved claim
-  answers and records the claim, a hook response write that throws still
-  leaves the record, registry cleanup after every interleaving;
+  variant where `RespondToPermission` returns `AlreadyAnswered` logs the
+  two-authorities line with the hook's decision), server claim first (hook
+  JSON carries it, `Resolved("server")` pushed, an app resolve after it acks
+  false, one `server` record), server push delivered then app claim before the
+  leg's continuation (hook keeps the app decision, no `RespondToPermission`,
+  the disagreement logged), `Begin` faulted with and without a subscriber
+  (`no_ui` deny only without), `Begin` faulted with a subscriber registering
+  between the fault and the claim under a barrier (kept, replay carries it),
+  `Begin` held in the readiness wait when the app answers (the continuation
+  cancels it, no server request, no `RespondToPermission`, the leg completes),
+  several local answers across a prolonged disconnect then reconnect (no
+  server requests created, no burst), `Begin` held when the agent is torn down
+  (withdrawn, leg cancelled), withdrawal between attribution and `Register`,
+  attribution by `agent_id`, by session id, by `cwd`, upper-case and dashed
+  ids canonicalized and matched, a malformed session id unattributed, two
+  agents on one borrowed `cwd` and two agents with one session id both fall
+  through, an oversized `tool_name` falls through, oversized elements omitted
+  with flags at the exact boundary, a worst-case pending written and read back
+  through `FrameCodec`, unattributed falls through unchanged, shutdown with no
+  other claim answers deny with no record and the detached leg completes
+  cleanly, shutdown racing an app claim under a barrier on either side of the
+  token (the app's `Ok=true` always matches what the hook receives), a hook
+  response write that throws still leaves the record, registry cleanup after
+  every interleaving;
   `LocalControlHelloTests` — `permission/1` advertised;
   `OwnerOnlyJsonlLogTests` (0600 from first byte, rotation) with the consent log
   tests kept green on the wrapper; `PermissionDecisionLogTests` record shape;
@@ -652,8 +687,9 @@ exist on a newer daemon; the daemon-update nudge already covers that.
   session id (a 2 s poll). A prompt in that window from an older CLI is
   unattributed and takes the server-only path. The Codex hook forwards its
   whole input, so its `cwd` rung works from any version.
-- **Codex session-id shape.** The hook normalizes `session_id` to a dashless
-  GUID; the daemon's `CodexSessionRolloutLocator` yields the rollout file's
-  UUID. The ladder compares both dashless and lower-cased.
+- **Session-id shape.** Both hooks strip dashes and nothing more; the daemon's
+  locators yield the transcript file's UUID. The daemon canonicalizes every
+  side by GUID parse before comparing, so case and dashes never decide a
+  match — only a value that is not a GUID at all falls through.
 - **Frame value collisions with AI-2197.** That slice must take values after 21
   and 79; this spec is the reservation.
