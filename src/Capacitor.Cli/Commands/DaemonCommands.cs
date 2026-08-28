@@ -2,14 +2,13 @@ using System.Diagnostics;
 using System.Net.Sockets;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Config;
-using Capacitor.Cli.Core.Harness.Claude;
-using Capacitor.Cli.Core.Harness.Codex;
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Core.LocalIpc;
 using Capacitor.Cli.Services;
 
 namespace Capacitor.Cli.Commands;
 
-public sealed class DaemonCommands(DaemonStore store, ConfigRoot config, ProfileContext profiles) {
+public sealed class DaemonCommands(DaemonStore store, ConfigRoot config, ProfileContext profiles, UserHome home) {
     string LogPath { get; } = config.Path("daemon.log");
 
     public async Task<int> HandleAsync(string[] args) {
@@ -29,7 +28,7 @@ public sealed class DaemonCommands(DaemonStore store, ConfigRoot config, Profile
             "status"  => await Status(remaining),
             "logs"    => await Logs(),
             "doctor"  => await DoctorAsync(remaining),
-            "service" => await DaemonServiceCommands.DispatchAsync(store, config, profiles, remaining),
+            "service" => await DaemonServiceCommands.DispatchAsync(store, config, profiles, home, remaining),
             "shim"    => await DaemonShimCommands.DispatchAsync(remaining),
             "consent" => await DaemonConsentCommand.HandleAsync(store, profiles, remaining),
             "reviewer" => await DaemonReviewerCommand.HandleAsync(store, profiles, remaining),
@@ -353,7 +352,7 @@ public sealed class DaemonCommands(DaemonStore store, ConfigRoot config, Profile
     }
 
     int StopByName(string name) {
-        var manager = TryServiceManager(config);
+        var manager = TryServiceManager();
         if (manager is not null && manager.Status(DaemonStore.Sanitize(name)).State != ServiceState.NotInstalled) {
             Console.Out.WriteLine(
                 $"Daemon '{name}' is managed by {manager.Describe()}; a raw stop would be auto-restarted.");
@@ -592,7 +591,7 @@ public sealed class DaemonCommands(DaemonStore store, ConfigRoot config, Profile
             return 1;
         }
 
-        var manager    = TryServiceManager(config);
+        var manager    = TryServiceManager();
         var serviceIds = manager?.ListInstalled() ?? [];
 
         var names = explicitName is not null
@@ -652,14 +651,16 @@ public sealed class DaemonCommands(DaemonStore store, ConfigRoot config, Profile
     async Task<int> DoctorAsync(string[] args) {
         var clean = args.Contains("--clean");
 
+        var paths = HarnessPaths.FromEnvironment(home);
+
         // MCP-registrations audit runs BEFORE the daemon-file early return below — a machine
         // with no daemon state still has registrations worth checking (duplicate Claude-scope
         // entries cost one extra server process per session; a stale absolute binary path
         // breaks the servers outright after an npm re-layout).
         await McpDoctorSection.RunAsync(Console.Out, clean,
-            ClaudePaths.UserConfigJson(), ClaudePaths.UserSettings,
-            McpDoctorSection.DefaultJsonRegistrations(),
-            Path.Combine(CodexPaths.Home(), "config.toml"),
+            paths.Claude.UserConfigJson, paths.Claude.UserSettings,
+            McpDoctorSection.DefaultJsonRegistrations(paths),
+            paths.Codex.ConfigToml,
             Environment.ProcessPath);
         await Console.Out.WriteLineAsync();
 
@@ -869,8 +870,8 @@ public sealed class DaemonCommands(DaemonStore store, ConfigRoot config, Profile
     // ── service evidence for status/doctor (the verbs live in DaemonServiceCommands) ──
 
     /// <summary>Service manager for this OS, or null if the OS is unsupported.</summary>
-    static IServiceManager? TryServiceManager(ConfigRoot config) {
-        try { return ServiceManagerFactory.ForCurrentOs(config); }
+    IServiceManager? TryServiceManager() {
+        try { return ServiceManagerFactory.ForCurrentOs(config, home); }
         catch (PlatformNotSupportedException) { return null; }
     }
 
@@ -880,7 +881,7 @@ public sealed class DaemonCommands(DaemonStore store, ConfigRoot config, Profile
     /// <c>kcap daemon service install</c>). No-op on unsupported OSes / when none.
     /// </summary>
     async Task ReportInstalledServices() {
-        var manager = TryServiceManager(config);
+        var manager = TryServiceManager();
         if (manager is null) return;
 
         var installed = manager.ListInstalled();

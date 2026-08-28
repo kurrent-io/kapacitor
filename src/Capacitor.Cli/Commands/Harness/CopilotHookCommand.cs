@@ -39,7 +39,7 @@ namespace Capacitor.Cli.Commands.Harness;
 /// sessionStart, which writes a single {"additionalContext":"…"} document when — and only when —
 /// a team-memory fragment is available to inject.
 /// </remarks>
-sealed class CopilotHookCommand(ConfigRoot config, ProfileContext profiles, HookClock clock) {
+sealed class CopilotHookCommand(ConfigRoot config, ProfileContext profiles, HookClock clock, UserHome home) {
     readonly WatcherManager  _watchers = new(config, profiles);
     readonly AgentHookPoster _poster   = new(config, profiles);
 
@@ -197,7 +197,7 @@ sealed class CopilotHookCommand(ConfigRoot config, ProfileContext profiles, Hook
         // sessionStart after enrichment, then marks the session disabled so
         // later events take the fast path above (same split as Codex).
         if (activeProfile?.ExcludedPaths is { Length: > 0 } excludedPaths
-         && PathExclusion.IsExcluded(cwd, excludedPaths)) {
+         && PathExclusion.IsExcluded(cwd, excludedPaths, home)) {
             return 0;
         }
 
@@ -225,7 +225,7 @@ sealed class CopilotHookCommand(ConfigRoot config, ProfileContext profiles, Hook
             ["hook_event_name"] = "sessionStart",
             ["session_id"]      = sessionId,
             ["source"]          = source,
-            ["home_dir"]        = PathHelpers.HomeDirectory
+            ["home_dir"]        = home.Path
         };
 
         if (cwd is not null) {
@@ -256,7 +256,7 @@ sealed class CopilotHookCommand(ConfigRoot config, ProfileContext profiles, Hook
             forwarded["default_visibility"] = visibility;
         }
 
-        SessionStartInventory.Stamp(forwarded, config);
+        SessionStartInventory.Stamp(forwarded, config, home);
         var enriched = await RepositoryDetection.EnrichWithRepositoryInfo(config, forwarded.ToJsonString());
 
         // Repo exclusion after enrichment (fast in-payload path) — mark the
@@ -319,8 +319,8 @@ sealed class CopilotHookCommand(ConfigRoot config, ProfileContext profiles, Hook
         // Copilot parses this hook's stdout as its (optional) single JSON result document. Silent when
         // there is neither a fragment nor a nudge, which keeps all pre-existing paths byte-identical.
         var workItemsNudge = HarnessNudgeEmitter.Combine(
-            WorkItemsNudgeEmitter.Resolve(SessionStartHarness.Copilot, sessionId, activeProfile?.DisableWorkItemsNudge is true),
-            HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true, config));
+            WorkItemsNudgeEmitter.Resolve(SessionStartHarness.Copilot, sessionId, activeProfile?.DisableWorkItemsNudge is true, home),
+            HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true, config, home));
         WriteSessionStartOutput(Console.Out, fragment, workItemsNudge);
 
         if (!AgentHookPoster.ShouldSpawnAfter(outcome, Url)) return 0;
@@ -377,7 +377,7 @@ sealed class CopilotHookCommand(ConfigRoot config, ProfileContext profiles, Hook
             ["hook_event_name"] = "sessionEnd",
             ["session_id"]      = sessionId,
             ["reason"]          = TryGetString(node, "reason") ?? "complete",
-            ["home_dir"]        = PathHelpers.HomeDirectory
+            ["home_dir"]        = home.Path
         };
 
         if (cwd is not null) forwarded["cwd"] = cwd;
@@ -422,7 +422,7 @@ sealed class CopilotHookCommand(ConfigRoot config, ProfileContext profiles, Hook
             ["session_id"]        = sessionId,
             ["message"]           = message,
             ["notification_type"] = notificationType,
-            ["home_dir"]          = PathHelpers.HomeDirectory
+            ["home_dir"]          = home.Path
         };
 
         if (TryGetString(node, "title") is { } title) forwarded["title"] = title;
@@ -470,12 +470,13 @@ sealed class CopilotHookCommand(ConfigRoot config, ProfileContext profiles, Hook
     /// event write) returns the current-layout path — the watcher tolerates a
     /// not-yet-created file and picks it up on its next poll.
     /// </summary>
-    static string TranscriptPathFor(string dashedSessionId) {
-        var current = CopilotPaths.EventsJsonl(CopilotPaths.SessionStateDir(), dashedSessionId);
+    string TranscriptPathFor(string dashedSessionId) {
+        var paths   = CopilotPaths.FromEnvironment(home);
+        var current = CopilotPaths.EventsJsonl(paths.SessionStateDir, dashedSessionId);
 
         if (File.Exists(current)) return current;
 
-        var legacy = CopilotPaths.EventsJsonl(CopilotPaths.LegacySessionStateDir(), dashedSessionId);
+        var legacy = CopilotPaths.EventsJsonl(paths.LegacySessionStateDir, dashedSessionId);
 
         return File.Exists(legacy) ? legacy : current;
     }

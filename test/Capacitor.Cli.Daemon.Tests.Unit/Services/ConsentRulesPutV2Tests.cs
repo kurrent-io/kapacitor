@@ -5,6 +5,7 @@ using Capacitor.Cli.Daemon.Pty;
 using Capacitor.Cli.Daemon.Services;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
+using TUnit.Core.Enums;
 
 namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 
@@ -16,7 +17,10 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 /// since none of these tests exercise Spawn/Attach/List/Stop — the orchestrator only needs to
 /// exist to satisfy LocalControlServer's constructor.
 /// </summary>
+[ExcludeOn(OS.Windows)] // Unix-domain socket path
 public class ConsentRulesPutV2Tests {
+    [TempHome] public required TempHome Home { get; init; }
+
     [TempConfigRoot] public required TempConfigRoot Config { get; init; }
 
     sealed class NoopHostLifetime : IHostApplicationLifetime {
@@ -65,7 +69,7 @@ public class ConsentRulesPutV2Tests {
         var permissionBridge = new LocalPermissionBridge(connection, NullLogger<LocalPermissionBridge>.Instance);
 
         var orchestrator = new AgentOrchestrator(
-            config, Config.Root, connection, worktreeManager, repoMatcher,
+            config, Config.Root, Home, connection, worktreeManager, repoMatcher,
             new NoopPtyProcessFactory(), new NoopHttpClientFactory(),
             permissionBridge, new Dictionary<string, IHostedAgentLauncher>(),
             new Dictionary<string, IHostedAgentRuntimeFactory>(), new NoopHostLifetime(),
@@ -130,8 +134,6 @@ public class ConsentRulesPutV2Tests {
 
     [Test]
     public async Task V2_put_with_matching_identity_mutates_and_acks_ok() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         await RunAsync("putv2-a", async (h, ct) => {
             var dto = new ConsentPolicyPutV2Dto("putv2-a", h.Config.ServerUrl,
                 new ConsentPolicyDto("prompt", 45, []));
@@ -147,8 +149,6 @@ public class ConsentRulesPutV2Tests {
 
     [Test]
     public async Task V2_put_with_wrong_server_acks_identity_mismatch_and_mutates_nothing() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         await RunAsync("putv2-b", async (h, ct) => {
             var before = ReadConsentFile(h);
             var dto = new ConsentPolicyPutV2Dto("putv2-b", "https://other-server.example",
@@ -169,8 +169,6 @@ public class ConsentRulesPutV2Tests {
 
     [Test]
     public async Task V2_put_with_trailing_slash_and_host_case_difference_still_matches() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         await RunAsync("putv2-caseslash", async (h, ct) => {
             var dto = new ConsentPolicyPutV2Dto("putv2-caseslash", "HTTP://127.0.0.1:1/",
                 new ConsentPolicyDto("prompt", 45, []));
@@ -185,8 +183,6 @@ public class ConsentRulesPutV2Tests {
 
     [Test]
     public async Task V2_put_with_default_port_equivalence_matches() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         await RunAsync("putv2-defaultport", async (h, ct) => {
             var dto = new ConsentPolicyPutV2Dto("putv2-defaultport", "https://x.example:443",
                 new ConsentPolicyDto("prompt", 45, []));
@@ -201,8 +197,6 @@ public class ConsentRulesPutV2Tests {
 
     [Test]
     public async Task V2_put_with_path_case_difference_is_identity_mismatch() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         await RunAsync("putv2-pathcase", async (h, ct) => {
             var before = ReadConsentFile(h);
             var dto = new ConsentPolicyPutV2Dto("putv2-pathcase", "https://x.example/tenant",
@@ -220,8 +214,6 @@ public class ConsentRulesPutV2Tests {
 
     [Test]
     public async Task V2_put_with_wrong_name_acks_identity_mismatch_and_mutates_nothing() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         await RunAsync("putv2-name", async (h, ct) => {
             var before = ReadConsentFile(h);
             var dto = new ConsentPolicyPutV2Dto("some-other-daemon", h.Config.ServerUrl,
@@ -239,8 +231,6 @@ public class ConsentRulesPutV2Tests {
 
     [Test]
     public async Task V2_put_with_missing_expected_fields_acks_malformed() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         await RunAsync("putv2-malformed", async (h, ct) => {
             var before = ReadConsentFile(h);
             // Expected_name/expected_server_url omitted entirely — a syntactically valid JSON
@@ -259,8 +249,6 @@ public class ConsentRulesPutV2Tests {
 
     [Test]
     public async Task Capabilities_advertise_consent3() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         await RunAsync("putv2-c", async (h, ct) => {
             await using var s = await ConnectAsync(h.SockPath, ct);
             await FrameCodec.WriteAsync(s, new LocalFrame(FrameType.Hello), ct);

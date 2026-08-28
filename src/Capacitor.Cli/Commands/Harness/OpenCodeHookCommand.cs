@@ -26,7 +26,7 @@ namespace Capacitor.Cli.Commands.Harness;
 ///
 /// Fail-open throughout — a kcap/server problem must never disrupt the OpenCode session.
 /// </summary>
-sealed class OpenCodeHookCommand(ConfigRoot config, ProfileContext profiles, HookClock clock) {
+sealed class OpenCodeHookCommand(ConfigRoot config, ProfileContext profiles, HookClock clock, UserHome home) {
     readonly WatcherManager  _watchers = new(config, profiles);
     readonly AgentHookPoster _poster   = new(config, profiles);
 
@@ -74,7 +74,7 @@ sealed class OpenCodeHookCommand(ConfigRoot config, ProfileContext profiles, Hoo
         var activeProfile = profiles.Effective;
 
         if (activeProfile?.ExcludedPaths is { Length: > 0 } excludedPaths
-         && PathExclusion.IsExcluded(cwd, excludedPaths)) {
+         && PathExclusion.IsExcluded(cwd, excludedPaths, home)) {
             return 0;
         }
 
@@ -98,7 +98,7 @@ sealed class OpenCodeHookCommand(ConfigRoot config, ProfileContext profiles, Hoo
         var forwarded = new JsonObject {
             ["hook_event_name"] = "sessionStart",
             ["session_id"]      = sessionIdRaw,
-            ["home_dir"]        = PathHelpers.HomeDirectory,
+            ["home_dir"]        = home.Path,
             ["started_at"]      = DateTimeOffset.UtcNow.ToString("O")
         };
 
@@ -123,7 +123,7 @@ sealed class OpenCodeHookCommand(ConfigRoot config, ProfileContext profiles, Hoo
             forwarded["default_visibility"] = visibility;
         }
 
-        SessionStartInventory.Stamp(forwarded, config);
+        SessionStartInventory.Stamp(forwarded, config, home);
         var enriched = await RepositoryDetection.EnrichWithRepositoryInfo(config, forwarded.ToJsonString());
 
         if (activeProfile?.ExcludedRepos is { Length: > 0 } excludedRepos
@@ -169,12 +169,12 @@ sealed class OpenCodeHookCommand(ConfigRoot config, ProfileContext profiles, Hoo
         // stdout regardless of what the watcher did.
         var fragment = await SessionStartMemoryHookSupport.AwaitBounded(memoryTask, budget);
         var workItemsNudge = canConsumeFragment
-            ? WorkItemsNudgeEmitter.Resolve(SessionStartHarness.OpenCode, sessionId, activeProfile?.DisableWorkItemsNudge is true)
+            ? WorkItemsNudgeEmitter.Resolve(SessionStartHarness.OpenCode, sessionId, activeProfile?.DisableWorkItemsNudge is true, home)
             : null;
         // The harness nudge is independent of the once-per-session memory lease — it has its own
         // 6h evaluation throttle, so it can surface even on a re-fired session that can't reconsume.
         var combinedNudge = HarnessNudgeEmitter.Combine(
-            workItemsNudge, HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true, config));
+            workItemsNudge, HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true, config, home));
         await WriteMemoryFragment(stdout, fragment, combinedNudge);
 
         if (!AgentHookPoster.ShouldSpawnAfter(outcome, Url)) return 0;

@@ -35,8 +35,6 @@ public static class CodexConfigToml {
         Failed
     }
 
-    static string DefaultConfigPath => Path.Combine(CodexPaths.Home(), "config.toml");
-
     /// <summary>
     /// enable network access for Codex's <c>workspace-write</c> sandbox so
     /// kcap skills (which shell out to <c>kcap …</c>) can reach the Capacitor server.
@@ -60,10 +58,10 @@ public static class CodexConfigToml {
     ///   already works and pinning a proxy would only narrow their access.</item>
     /// </list>
     /// </summary>
-    public static Change EnableNetworkAccess(IReadOnlyCollection<string> allowDomains, string? configPath = null) =>
+    public static Change EnableNetworkAccess(IReadOnlyCollection<string> allowDomains, string configPath) =>
         allowDomains.Count == 0
             ? Change.Unchanged
-            : Update(configPath ?? DefaultConfigPath, root => MutateNetworkAccess(root, allowDomains), out _);
+            : Update(configPath, root => MutateNetworkAccess(root, allowDomains), out _);
 
     /// <summary>
     /// Writes the per-worktree pre-trust entry, keyed in Codex's own normalised form (see
@@ -73,7 +71,7 @@ public static class CodexConfigToml {
     /// trust_level = "trusted"
     /// </code>
     /// </summary>
-    public static Change TrustWorktree(string worktreePath, string? configPath = null) =>
+    public static Change TrustWorktree(string worktreePath, string configPath) =>
         TrustWorktree(worktreePath, out _, configPath);
 
     /// <summary>
@@ -83,8 +81,8 @@ public static class CodexConfigToml {
     /// <see cref="Update"/>. <paramref name="error"/> is null unless the result is
     /// <see cref="Change.Failed"/>.
     /// </summary>
-    internal static Change TrustWorktree(string worktreePath, out Exception? error, string? configPath = null) =>
-        Update(configPath ?? DefaultConfigPath, root => MutateTrust(root, worktreePath), out error);
+    internal static Change TrustWorktree(string worktreePath, out Exception? error, string configPath) =>
+        Update(configPath, root => MutateTrust(root, worktreePath), out error);
 
     /// <summary>
     /// Registers the kcap MCP servers (<see cref="KcapMcpServers.ForCodex"/>) under the
@@ -98,19 +96,19 @@ public static class CodexConfigToml {
     /// left untouched; only missing servers are added. User-defined <c>mcp_servers</c>
     /// entries are preserved.
     /// </summary>
-    public static Change RegisterKcapMcpServers(string? configPath = null,
+    public static Change RegisterKcapMcpServers(string configPath,
                                                 Func<string?>? resolveBinaryPath = null) =>
-        UpdateMcpRegistration(configPath ?? DefaultConfigPath, remove: false,
+        UpdateMcpRegistration(configPath, remove: false,
                               Mcp.KcapBinaryCommand.Resolve(resolveBinaryPath));
 
     /// <summary>
     /// Removes the kcap-owned MCP server entries (<see cref="KcapMcpServers.ForCodex"/>)
-    /// from <c>~/.codex/config.toml</c> (or <paramref name="configPath"/>). Only those names
+    /// from <c>~/.codex/config.toml</c> . Only those names
     /// are touched; user-defined servers are preserved. Drops the <c>[mcp_servers]</c> table
     /// entirely when removing them empties it, so uninstall leaves no bare table behind.
     /// </summary>
-    public static Change UnregisterKcapMcpServers(string? configPath = null) =>
-        UpdateMcpRegistration(configPath ?? DefaultConfigPath, remove: true, KcapMcpServers.Command);
+    public static Change UnregisterKcapMcpServers(string configPath) =>
+        UpdateMcpRegistration(configPath, remove: true, KcapMcpServers.Command);
 
     static Change UpdateMcpRegistration(string configPath, bool remove, string command) {
         lock (_writeLock) {
@@ -292,18 +290,16 @@ public static class CodexConfigToml {
 
     /// <summary>
     /// Reads the top-level <c>model = "…"</c> key from <c>~/.codex/config.toml</c>
-    /// (or <paramref name="configPath"/>), honouring <c>CODEX_HOME</c> via
+    /// , honouring <c>CODEX_HOME</c> via
     /// <see cref="CodexPaths.Home"/>. Returns null when the file is missing, unreadable,
     /// has no top-level <c>model</c> key, or the value isn't a string — so callers can
     /// fall back to the dispatched model. Read-only; never throws.
     /// </summary>
-    public static string? ReadTopLevelModel(string? configPath = null) {
-        var path = configPath ?? DefaultConfigPath;
-
-        if (!File.Exists(path)) return null;
+    public static string? ReadTopLevelModel(string configPath) {
+        if (!File.Exists(configPath)) return null;
 
         try {
-            var root = TomlSerializer.Deserialize(File.ReadAllText(path), _tomlTypeInfo.TableInfo);
+            var root = TomlSerializer.Deserialize(File.ReadAllText(configPath), _tomlTypeInfo.TableInfo);
 
             return root is not null && root.TryGetValue("model", out var v) && v is string s && !string.IsNullOrWhiteSpace(s)
                 ? s
@@ -315,7 +311,7 @@ public static class CodexConfigToml {
 
     /// <summary>
     /// Reads the top-level <c>[mcp_servers]</c> table keys from <c>~/.codex/config.toml</c>
-    /// (or <paramref name="configPath"/>), honouring <c>CODEX_HOME</c> via
+    /// , honouring <c>CODEX_HOME</c> via
     /// <see cref="CodexPaths.Home"/>. Returns an empty, ordinal-sorted list when the file is
     /// missing, unreadable, or has no <c>[mcp_servers]</c> table. Read-only; never throws.
     ///
@@ -331,13 +327,11 @@ public static class CodexConfigToml {
     /// stale-path scan input. Only string commands are returned (Codex has no argv-array shape).
     /// Read-only; never throws; empty when the file is missing/unreadable/has no table.
     /// </summary>
-    public static IReadOnlyList<(string Name, string Command)> ReadMcpServerCommands(string? configPath = null) {
-        var path = configPath ?? DefaultConfigPath;
-
-        if (!File.Exists(path)) return [];
+    public static IReadOnlyList<(string Name, string Command)> ReadMcpServerCommands(string configPath) {
+        if (!File.Exists(configPath)) return [];
 
         try {
-            var root = TomlSerializer.Deserialize(File.ReadAllText(path), _tomlTypeInfo.TableInfo);
+            var root = TomlSerializer.Deserialize(File.ReadAllText(configPath), _tomlTypeInfo.TableInfo);
 
             if (root is null || !root.TryGetValue("mcp_servers", out var v) || v is not TomlTable servers)
                 return [];
@@ -352,13 +346,11 @@ public static class CodexConfigToml {
         }
     }
 
-    public static IReadOnlyList<string> ReadMcpServerNames(string? configPath = null) {
-        var path = configPath ?? DefaultConfigPath;
-
-        if (!File.Exists(path)) return [];
+    public static IReadOnlyList<string> ReadMcpServerNames(string configPath) {
+        if (!File.Exists(configPath)) return [];
 
         try {
-            var root = TomlSerializer.Deserialize(File.ReadAllText(path), _tomlTypeInfo.TableInfo);
+            var root = TomlSerializer.Deserialize(File.ReadAllText(configPath), _tomlTypeInfo.TableInfo);
 
             if (root is null || !root.TryGetValue("mcp_servers", out var v) || v is not TomlTable servers)
                 return [];

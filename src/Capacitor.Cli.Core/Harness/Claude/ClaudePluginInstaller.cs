@@ -73,7 +73,7 @@ public static class ClaudePluginInstaller {
     public static bool IsPluginEnabled(string settingsPath) {
         try {
             if (!File.Exists(settingsPath)) return false;
-            if (JsonNode.Parse(SharedFileText.ReadAllText(settingsPath)) is not JsonObject root) return false;
+            if (JsonNode.Parse(File.ReadAllTextShared(settingsPath)) is not JsonObject root) return false;
             if (root["enabledPlugins"] is not JsonObject enabled) return false;
 
             return enabled["kcap@kcap"]?.GetValue<bool>() == true;

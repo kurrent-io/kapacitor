@@ -11,6 +11,8 @@ namespace Capacitor.Cli.Tests.Unit.Services;
 /// <see cref="BootRefusalMarker"/> the daemon writes through, so the read proves it can parse what
 /// the daemon actually writes.</summary>
 public class BootRefusalAttributionTests {
+    [TempHome] public required TempHome Home { get; init; }
+
     [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
 
     [TempConfigRoot] public required TempConfigRoot Config { get; init; }
@@ -83,7 +85,8 @@ public class BootRefusalAttributionTests {
 
     // ── FakeServiceManager-driven: end-to-end pre-clear + collection + attribution ──
 
-    sealed class FakeServiceManager : IVerifyServiceManager {
+    sealed class FakeServiceManager(UserHome home) : IVerifyServiceManager {
+        public string UnitPath(string serviceId) => LaunchdUnit.PlistPath(home, serviceId);
         public bool Started, Stopped;
         public int? RunningPid = 4242;
         public Action<string>? OnStart;
@@ -163,7 +166,7 @@ public class BootRefusalAttributionTests {
 
         // The observed job pid IS this test process's own pid, matching what BootRefusalMarker.TryWrite
         // stamps onto the marker — no need to fake a pid.
-        var manager = new FakeServiceManager { RunningPid = Environment.ProcessId };
+        var manager = new FakeServiceManager(Home) { RunningPid = Environment.ProcessId };
         manager.OnStart = id => {
             Directory.CreateDirectory(Daemons.Store.StateDirectory(id));
             BootRefusalMarker.TryWrite(
@@ -202,7 +205,7 @@ public class BootRefusalAttributionTests {
         // control socket never exists. IsReadyAsync's own Query call therefore never runs; the
         // job pid can only be observed via the direct per-iteration Query the readiness loop
         // now also issues when hello never resolves a pid.
-        var manager = new FakeServiceManager { RunningPid = Environment.ProcessId };
+        var manager = new FakeServiceManager(Home) { RunningPid = Environment.ProcessId };
         manager.OnStart = id => {
             Directory.CreateDirectory(Daemons.Store.StateDirectory(id));
             BootRefusalMarker.TryWrite(
@@ -240,7 +243,7 @@ public class BootRefusalAttributionTests {
         // blocking the transaction itself.
         Directory.CreateDirectory(Daemons.Store.BootRefusalPath(Id));
 
-        var manager = new FakeServiceManager { RunningPid = 4242 };
+        var manager = new FakeServiceManager(Home) { RunningPid = 4242 };
 
         static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
             Task.FromResult(new HelloProbeResult(true, 1, "1.2.3", "kcap-daemon"));

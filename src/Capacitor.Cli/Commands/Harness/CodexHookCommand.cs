@@ -33,7 +33,7 @@ namespace Capacitor.Cli.Commands.Harness;
 ///   PreToolUse        → swallowed
 ///   PostToolUse       → swallowed
 /// </remarks>
-sealed class CodexHookCommand(ConfigRoot config, ProfileContext profiles, HookClock clock) {
+sealed class CodexHookCommand(ConfigRoot config, ProfileContext profiles, HookClock clock, UserHome home) {
     readonly WatcherManager  _watchers = new(config, profiles);
     readonly AgentHookPoster _poster   = new(config, profiles);
 
@@ -258,7 +258,7 @@ sealed class CodexHookCommand(ConfigRoot config, ProfileContext profiles, HookCl
         // check below); the plan_content branch remains Claude-specific.
         NormalizeGuidField(node, "session_id");
 
-        node["home_dir"] = PathHelpers.HomeDirectory;
+        node["home_dir"] = home.Path;
 
         var agentHostId = Environment.GetEnvironmentVariable("KCAP_AGENT_ID");
         if (agentHostId is not null) {
@@ -294,7 +294,7 @@ sealed class CodexHookCommand(ConfigRoot config, ProfileContext profiles, HookCl
         var activeProfile = profiles.Effective;
 
         if (activeProfile?.ExcludedPaths is { Length: > 0 } excludedPaths
-         && PathExclusion.IsExcluded(TryGetString(node, "cwd"), excludedPaths)) {
+         && PathExclusion.IsExcluded(TryGetString(node, "cwd"), excludedPaths, home)) {
             EmitFallbackOutput(eventName);
             return 0;
         }
@@ -360,7 +360,7 @@ sealed class CodexHookCommand(ConfigRoot config, ProfileContext profiles, HookCl
             node["workspace_root"] = workspaceRoot;
         }
 
-        SessionStartInventory.Stamp(node.AsObject(), config);
+        SessionStartInventory.Stamp(node.AsObject(), config, home);
         var enriched = await RepositoryDetection.EnrichWithRepositoryInfo(config, node.ToJsonString());
 
         // Repo exclusion runs here (not above the event switch) so that the
@@ -425,8 +425,8 @@ sealed class CodexHookCommand(ConfigRoot config, ProfileContext profiles, HookCl
         // The static work-items nudge, resolved (availability-gated + opt-out) independently
         // of the lease-driven memory/guidelines fragment and merged only at the output layer.
         var workItemsNudge = HarnessNudgeEmitter.Combine(
-            WorkItemsNudgeEmitter.Resolve(SessionStartHarness.Codex, sessionId, activeProfile?.DisableWorkItemsNudge is true),
-            HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true, config));
+            WorkItemsNudgeEmitter.Resolve(SessionStartHarness.Codex, sessionId, activeProfile?.DisableWorkItemsNudge is true, home),
+            HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true, config, home));
 
         await RunSessionStartHandshakeForTest(
             writeStdout: () => WriteSessionStartOutput(Console.Out, fragment, workItemsNudge),

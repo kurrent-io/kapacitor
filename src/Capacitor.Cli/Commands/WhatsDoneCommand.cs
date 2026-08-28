@@ -7,7 +7,7 @@ using Capacitor.Cli.Core.Harness.Codex;
 
 namespace Capacitor.Cli.Commands;
 
-sealed class WhatsDoneCommand(ConfigRoot config, ProfileContext profiles) {
+sealed class WhatsDoneCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
     public async Task<int> HandleGenerateWhatsDone(string baseUrl, string sessionId, string vendor = "claude") {
         // Redirect output to log file (same pattern as WatchCommand)
         var logDir = config.Path("logs");
@@ -78,7 +78,7 @@ sealed class WhatsDoneCommand(ConfigRoot config, ProfileContext profiles) {
 
         var result = vendor == "codex"
             ? await CodexCliRunner.RunAsync(prompt, TimeSpan.FromSeconds(90), log, profiles.Resolution.Profile)
-            : await ClaudeCliRunner.RunAsync(prompt, TimeSpan.FromSeconds(90), log, profiles.Resolution.Profile,
+            : await ClaudeCliRunner.RunAsync(prompt, TimeSpan.FromSeconds(90), log, profiles.Resolution.Profile, home,
                 systemPrompt: TitleGenerator.HeadlessSummarizerSystemPrompt);
 
         if (result is null) {

@@ -18,7 +18,9 @@ public class ConfigDirIsolationTests {
         await Assert.That(pinned).IsNotNullOrEmpty();
 
         var realHomeConfig = Path.Combine(
+#pragma warning disable RS0030 // the real home is what the pin must not resolve to
             Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".config", "kcap");
+#pragma warning restore RS0030
 
         var root = ConfigRoot.FromEnvironment();
         await Assert.That(root.Directory.StartsWith(realHomeConfig, StringComparison.Ordinal)).IsFalse();

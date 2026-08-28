@@ -18,10 +18,10 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 /// isolated from the real ~/.config/opencode and any ambient XDG_CONFIG_HOME.
 ///
 /// The MCP + instructions cases also register the kcap servers in opencode.json and
-/// install the AGENTS.md block; they use a FakeUserHome + clear OPENCODE_CONFIG_DIR /
+/// install the AGENTS.md block; they use a TempHome + clear OPENCODE_CONFIG_DIR /
 /// XDG_CONFIG_HOME so OpenCodePaths resolves under it (env mutation → NotInParallel).
 /// </summary>
-[NotInParallel("HomeEnvVarMutation")]
+[NotInParallel("VendorEnvOverrides")]
 public class PluginCommandOpenCodeTests {
     [Test]
     public async Task Install_opencode_with_if_installed_is_noop_when_not_installed() {
@@ -102,26 +102,26 @@ public class PluginCommandOpenCodeTests {
 
     // Seed an installed OpenCode plugin so `--if-installed` proceeds to the MCP/instructions
     // steps (and the fresh "kcap on PATH" precheck is skipped).
-    static void SeedPlugin(PluginEnvironment env) => OpenCodeExtensionInstaller.Install(env.OpenCodeKcapPlugin);
+    static void SeedPlugin(PluginEnvironment env) => OpenCodeExtensionInstaller.Install(env.Paths.OpenCode.KcapPlugin);
 
     [Test]
     public async Task install_opencode_registers_mcp_into_opencode_json_preserving_user_config() {
         using var _   = new EnvScope("OPENCODE_CONFIG_DIR", null);
         using var __  = new EnvScope("XDG_CONFIG_HOME", null);
-        using var home = new FakeUserHome();
+        using var home = new TempHome();
         var env = TestEnv(home.Path);
         SeedPlugin(env);
 
         // A user opencode.json with $schema + a user mcp server — both must survive.
-        Directory.CreateDirectory(Path.GetDirectoryName(env.OpenCodeMcpConfigJson)!);
-        await File.WriteAllTextAsync(env.OpenCodeMcpConfigJson, """
+        Directory.CreateDirectory(Path.GetDirectoryName(env.Paths.OpenCode.McpConfigJson)!);
+        await File.WriteAllTextAsync(env.Paths.OpenCode.McpConfigJson, """
             {"$schema":"https://opencode.ai/config.json","mcp":{"my-tool":{"type":"local","command":["my-tool","serve"],"enabled":true}}}
             """);
 
         var exit = await new PluginCommand(env).HandleAsync(["plugin", "install", "--opencode", "--if-installed"]);
         await Assert.That(exit).IsEqualTo(0);
 
-        var root = JsonNode.Parse(await File.ReadAllTextAsync(env.OpenCodeMcpConfigJson))!.AsObject();
+        var root = JsonNode.Parse(await File.ReadAllTextAsync(env.Paths.OpenCode.McpConfigJson))!.AsObject();
         await Assert.That(root["$schema"]!.GetValue<string>()).IsEqualTo("https://opencode.ai/config.json"); // preserved
         var mcp = root["mcp"]!.AsObject();
         await Assert.That(mcp["my-tool"]).IsNotNull();                                     // user server preserved
@@ -142,7 +142,7 @@ public class PluginCommandOpenCodeTests {
     public async Task install_opencode_skip_mcp_flag_leaves_config_untouched() {
         using var _   = new EnvScope("OPENCODE_CONFIG_DIR", null);
         using var __  = new EnvScope("XDG_CONFIG_HOME", null);
-        using var home = new FakeUserHome();
+        using var home = new TempHome();
         var env = TestEnv(home.Path);
         SeedPlugin(env);
 
@@ -150,24 +150,24 @@ public class PluginCommandOpenCodeTests {
             ["plugin", "install", "--opencode", "--if-installed", "--skip-opencode-mcp"]);
         await Assert.That(exit).IsEqualTo(0);
 
-        await Assert.That(File.Exists(env.OpenCodeMcpConfigJson)).IsFalse();
+        await Assert.That(File.Exists(env.Paths.OpenCode.McpConfigJson)).IsFalse();
     }
 
     [Test]
     public async Task install_opencode_installs_instructions_into_agents_md() {
         using var _   = new EnvScope("OPENCODE_CONFIG_DIR", null);
         using var __  = new EnvScope("XDG_CONFIG_HOME", null);
-        using var home = new FakeUserHome();
+        using var home = new TempHome();
         var env = TestEnv(home.Path);
         SeedPlugin(env);
 
-        Directory.CreateDirectory(Path.GetDirectoryName(env.OpenCodeAgentsMd)!);
-        await File.WriteAllTextAsync(env.OpenCodeAgentsMd, "# My rules\n\nAlways use tabs.\n");
+        Directory.CreateDirectory(Path.GetDirectoryName(env.Paths.OpenCode.AgentsMd)!);
+        await File.WriteAllTextAsync(env.Paths.OpenCode.AgentsMd, "# My rules\n\nAlways use tabs.\n");
 
         var exit = await new PluginCommand(env).HandleAsync(["plugin", "install", "--opencode", "--if-installed"]);
         await Assert.That(exit).IsEqualTo(0);
 
-        var content = await File.ReadAllTextAsync(env.OpenCodeAgentsMd);
+        var content = await File.ReadAllTextAsync(env.Paths.OpenCode.AgentsMd);
         await Assert.That(content).Contains("Always use tabs.");                    // user content preserved
         await Assert.That(content).Contains(AgentInstructionsWriter.BeginMarker);
         await Assert.That(content).Contains("Prefer kcap tools");
@@ -177,7 +177,7 @@ public class PluginCommandOpenCodeTests {
     public async Task install_opencode_skip_instructions_flag_leaves_file_untouched() {
         using var _   = new EnvScope("OPENCODE_CONFIG_DIR", null);
         using var __  = new EnvScope("XDG_CONFIG_HOME", null);
-        using var home = new FakeUserHome();
+        using var home = new TempHome();
         var env = TestEnv(home.Path);
         SeedPlugin(env);
 
@@ -185,35 +185,35 @@ public class PluginCommandOpenCodeTests {
             ["plugin", "install", "--opencode", "--if-installed", "--skip-opencode-instructions"]);
         await Assert.That(exit).IsEqualTo(0);
 
-        await Assert.That(File.Exists(env.OpenCodeAgentsMd)).IsFalse();
+        await Assert.That(File.Exists(env.Paths.OpenCode.AgentsMd)).IsFalse();
     }
 
     [Test]
     public async Task remove_opencode_unregisters_mcp_and_strips_instructions() {
         using var _   = new EnvScope("OPENCODE_CONFIG_DIR", null);
         using var __  = new EnvScope("XDG_CONFIG_HOME", null);
-        using var home = new FakeUserHome();
+        using var home = new TempHome();
         var env = TestEnv(home.Path);
 
         // Seed MCP (kcap-owned marker + a user server) and an AGENTS.md with kcap's block + user content.
-        JsonMcpConfigWriter.Register(env.OpenCodeMcpConfigJson, KcapMcpServers.All, McpConfigShape.OpenCode, cwd: null, new McpMarker("opencode"));
-        var seeded = JsonNode.Parse(await File.ReadAllTextAsync(env.OpenCodeMcpConfigJson))!.AsObject();
+        JsonMcpConfigWriter.Register(env.Paths.OpenCode.McpConfigJson, KcapMcpServers.All, McpConfigShape.OpenCode, cwd: null, new McpMarker("opencode", env.Home));
+        var seeded = JsonNode.Parse(await File.ReadAllTextAsync(env.Paths.OpenCode.McpConfigJson))!.AsObject();
         seeded["mcp"]!["my-tool"] = JsonNode.Parse("""{"type":"local","command":["my-tool"],"enabled":true}""");
-        await File.WriteAllTextAsync(env.OpenCodeMcpConfigJson, seeded.ToJsonString());
+        await File.WriteAllTextAsync(env.Paths.OpenCode.McpConfigJson, seeded.ToJsonString());
 
-        Directory.CreateDirectory(Path.GetDirectoryName(env.OpenCodeAgentsMd)!);
-        await File.WriteAllTextAsync(env.OpenCodeAgentsMd, "# My rules\n\nAlways use tabs.\n");
-        AgentInstructionsWriter.Write(env.OpenCodeAgentsMd, KcapAgentInstructions.Body);
+        Directory.CreateDirectory(Path.GetDirectoryName(env.Paths.OpenCode.AgentsMd)!);
+        await File.WriteAllTextAsync(env.Paths.OpenCode.AgentsMd, "# My rules\n\nAlways use tabs.\n");
+        AgentInstructionsWriter.Write(env.Paths.OpenCode.AgentsMd, KcapAgentInstructions.Body);
 
         var exit = await new PluginCommand(env).HandleAsync(["plugin", "remove", "--opencode"]);
         await Assert.That(exit).IsEqualTo(0);
 
-        var mcp  = JsonNode.Parse(await File.ReadAllTextAsync(env.OpenCodeMcpConfigJson))!.AsObject()["mcp"]!.AsObject();
+        var mcp  = JsonNode.Parse(await File.ReadAllTextAsync(env.Paths.OpenCode.McpConfigJson))!.AsObject()["mcp"]!.AsObject();
         var keys = mcp.Select(kv => kv.Key).ToArray();
         await Assert.That(keys).DoesNotContain("kcap-review");
         await Assert.That(mcp["my-tool"]).IsNotNull();  // user server preserved
 
-        var content = await File.ReadAllTextAsync(env.OpenCodeAgentsMd);
+        var content = await File.ReadAllTextAsync(env.Paths.OpenCode.AgentsMd);
         await Assert.That(content).Contains("Always use tabs.");
         await Assert.That(content).DoesNotContain(AgentInstructionsWriter.BeginMarker);
     }
@@ -224,7 +224,7 @@ public class PluginCommandOpenCodeTests {
     internal const string TestBinaryPath = "/opt/kcap-test/bin/kcap";
 
     static PluginEnvironment TestEnv(string fakeHome) => new(
-        HomeDirectory:     fakeHome,
+        Home:     new(fakeHome),
         Profiles:          new ProfileConfig(),
         ResolvePluginPath: () => null,
         Stdout:            TextWriter.Null,

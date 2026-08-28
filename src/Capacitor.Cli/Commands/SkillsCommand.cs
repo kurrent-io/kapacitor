@@ -1,8 +1,7 @@
 using System.Net;
 using System.Text.Json;
 using Capacitor.Cli.Core;
-using Capacitor.Cli.Core.Harness.Antigravity;
-using Capacitor.Cli.Core.Harness.Kiro;
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.Setup;
 using Capacitor.Cli.Core.Skills;
@@ -16,7 +15,7 @@ namespace Capacitor.Cli.Commands;
 /// path kcap owns, and pruning walks the manifest — never a skills root — so user-authored skills
 /// are untouchable. Nothing is ever written into a repo.
 /// </summary>
-class SkillsCommand(ConfigRoot config, ProfileContext profiles) {
+class SkillsCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
     // The background refresh keys off each manifest's synced_at, so a burst of session starts
     // costs one network round-trip per interval per target, not one per session.
     static readonly TimeSpan AutoSyncInterval = TimeSpan.FromHours(6);
@@ -25,11 +24,11 @@ class SkillsCommand(ConfigRoot config, ProfileContext profiles) {
     /// installer serves. A null vendor is a SHARED tree (several harnesses read it): its snapshot
     /// is fetched vendor-less, so unknown-excludes keeps vendor-restricted docs out of it — those
     /// reach their harness through a vendored tree instead.</summary>
-    internal static IReadOnlyList<SkillsTarget> Targets() => [
-        new("claude", Path.Combine(PathHelpers.HomeDirectory, ".claude", "skills"), "claude"),
-        new("agents", AgentsPaths.UserSkillsDir, null),
-        new("kiro",   KiroPaths.SkillsDir(), "kiro"),
-        new("gemini", AntigravityPaths.SkillsDir(), null),   // shared: Gemini CLI + Antigravity
+    internal static IReadOnlyList<SkillsTarget> Targets(HarnessPaths paths) => [
+        new("claude", paths.Claude.UserSkillsDir, "claude"),
+        new("agents", paths.Agents.UserSkillsDir, null),
+        new("kiro",   paths.Kiro.SkillsDir, "kiro"),
+        new("gemini", paths.Antigravity.SkillsDir, null),   // shared: Gemini CLI + Antigravity
     ];
 
     public async Task<int> HandleSync(bool dryRun, bool auto = false) {
@@ -51,9 +50,10 @@ class SkillsCommand(ConfigRoot config, ProfileContext profiles) {
         // Real harness detection, not destination-parent existence: ~/.agents is created by
         // kcap's own installer, so a fresh machine with (say) Codex installed would otherwise
         // never adopt the shared tree.
-        var detection = AgentDetection.Detect(AgentDetection.FromEnvironment());
+        var paths     = HarnessPaths.FromEnvironment(home);
+        var detection = AgentDetection.Detect(paths, BinaryProbe.FromEnvironment());
         var exitCode = 0;
-        foreach (var target in Targets()) {
+        foreach (var target in Targets(paths)) {
             var manifestName = Path.Combine("skills", hash, target.Key, "manifest.json");
             // Adopt a target only while a consuming harness is present; a target we already own
             // keeps reconciling (revocation must reach it) even after the harness is removed.

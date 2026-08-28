@@ -12,6 +12,8 @@ using WireMock.Server;
 namespace Capacitor.Cli.Tests.Unit.Commands;
 
 public class SetupCommandTests {
+    [TempHome] public required TempHome Home { get; init; }
+
     [TempConfigRoot] public required TempConfigRoot Config { get; init; }
 
     // --- The browser leg's one outcome line ---
@@ -783,7 +785,7 @@ public class SetupCommandTests {
         var passed = Resolutions.At("https://example.test", Config.Root);
 
         try {
-            await new SetupCommand(Config.Root, Resolutions.None(Config.Root), new RecordingBrowser()).RunImportStepAsync(
+            await new SetupCommand(Config.Root, Resolutions.None(Config.Root), new RecordingBrowser(), Home).RunImportStepAsync(
                 currentRepo:       ("acme", "widgets"),
                 authSatisfied:     true,
                 skipImport:        false,
@@ -814,7 +816,7 @@ public class SetupCommandTests {
         };
 
         try {
-            await new SetupCommand(Config.Root, Resolutions.None(Config.Root), new RecordingBrowser()).RunImportStepAsync(
+            await new SetupCommand(Config.Root, Resolutions.None(Config.Root), new RecordingBrowser(), Home).RunImportStepAsync(
                 currentRepo:       ("acme", "widgets"),
                 authSatisfied:     true,
                 skipImport:        false,
@@ -837,7 +839,7 @@ public class SetupCommandTests {
         try {
             // Completing without an unhandled exception is the assertion: a non-zero exit
             // code must be swallowed (warned about, not propagated) so setup still finishes.
-            await new SetupCommand(Config.Root, Resolutions.None(Config.Root), new RecordingBrowser()).RunImportStepAsync(
+            await new SetupCommand(Config.Root, Resolutions.None(Config.Root), new RecordingBrowser(), Home).RunImportStepAsync(
                 currentRepo:       ("acme", "widgets"),
                 authSatisfied:     true,
                 skipImport:        false,
@@ -858,7 +860,7 @@ public class SetupCommandTests {
         try {
             // Completing without the InvalidOperationException escaping is the assertion —
             // import is best-effort and must never fail setup.
-            await new SetupCommand(Config.Root, Resolutions.None(Config.Root), new RecordingBrowser()).RunImportStepAsync(
+            await new SetupCommand(Config.Root, Resolutions.None(Config.Root), new RecordingBrowser(), Home).RunImportStepAsync(
                 currentRepo:       ("acme", "widgets"),
                 authSatisfied:     true,
                 skipImport:        false,
@@ -877,7 +879,7 @@ public class SetupCommandTests {
         SetupCommand.ImportRunnerOverride = _ => throw new InvalidOperationException("must not run import");
 
         try {
-            await new SetupCommand(Config.Root, Resolutions.None(Config.Root), new RecordingBrowser()).RunImportStepAsync(
+            await new SetupCommand(Config.Root, Resolutions.None(Config.Root), new RecordingBrowser(), Home).RunImportStepAsync(
                 currentRepo:       null,
                 authSatisfied:     true,
                 skipImport:        false,
@@ -896,7 +898,7 @@ public class SetupCommandTests {
         SetupCommand.ImportRunnerOverride = _ => throw new InvalidOperationException("must not run import");
 
         try {
-            await new SetupCommand(Config.Root, Resolutions.None(Config.Root), new RecordingBrowser()).RunImportStepAsync(
+            await new SetupCommand(Config.Root, Resolutions.None(Config.Root), new RecordingBrowser(), Home).RunImportStepAsync(
                 currentRepo:       ("acme", "widgets"),
                 authSatisfied:     true,
                 skipImport:        true,
@@ -909,38 +911,25 @@ public class SetupCommandTests {
         }
     }
 
-    // =====================================================================
-    // HandleAsync-level acceptance coverage for the Step 6 import wiring
-    // (review finding — see .superpowers/sdd/review-fix-report.md).
+    // HandleAsync-level acceptance coverage for the import wiring: the whole wizard — flag parsing,
+    // server normalization and probe, auth discovery, profile save, import — against a real WireMock
+    // server, with only the final import call intercepted through ImportRunnerOverride.
     //
-    // These drive the FULL wizard (flag parsing → server normalization/probe →
-    // auth discovery → profile save → authSatisfied computation → Step 6) against
-    // a real WireMock server, intercepting only the final import call via
-    // ImportRunnerOverride. Every test here:
-    //   • runs from a throwaway git repo (real `git init` + `remote add origin`)
-    //     so RepositoryDetection.DetectRepositoryAsync resolves an owner/repo —
-    //     HandleAsync reads Environment.CurrentDirectory directly (Step 6), so
-    //     there is no way to inject this without actually changing the process cwd.
-    //   • redirects HOME to a throwaway directory — every coding-agent path
-    //     (ClaudePaths/CodexPaths/CursorPaths/...) resolves from
-    //     PathHelpers.HomeDirectory, read live (not cached), so this contains any
-    //     install that isn't fully gated by a --skip-*-hooks flag.
-    //   • passes every --skip-*-hooks/-mcp/-instructions/-skills flag so Step 4
-    //     never attempts a real coding-agent install, belt-and-suspenders with
-    //     the HOME redirect above.
-    //   • uses auth provider "None" (a WireMock /auth/config stub) so Step 2 never
-    //     drives a real OAuth/device-code login flow — HandleAsync's --server-url
-    //     path has no way to no-prompt past that login when the provider isn't
-    //     None (Decision 9 / authSatisfied is a separate concern from Step 2).
-    //   • resets HttpClientExtensions' in-process auth-provider cache first — that
-    //     cache is keyed by nothing but process lifetime (first caller wins for
-    //     every baseUrl afterward), so a prior call elsewhere in the process could
-    //     otherwise make this test's own WireMock stub a no-op. See
-    //     HttpClientExtensions.ResetProviderCacheForTesting's doc.
+    // Every test here:
+    //   • runs from a throwaway git repo (real `git init` + `remote add origin`) so repository
+    //     detection resolves an owner/repo — HandleAsync reads Environment.CurrentDirectory itself,
+    //     so the process cwd has to move.
+    //   • passes every --skip-*-hooks/-mcp/-instructions/-skills flag, so no coding-agent install
+    //     runs against the injected home.
+    //   • uses auth provider "None" (a WireMock /auth/config stub): with any other provider the
+    //     --server-url path has no way to no-prompt past the login.
+    //   • resets HttpClientExtensions' in-process auth-provider cache first — that cache is keyed by
+    //     nothing but process lifetime, so a prior call elsewhere would make this test's own stub a
+    //     no-op. See HttpClientExtensions.ResetProviderCacheForTesting's doc.
     //
-    // All four mutate Environment.CurrentDirectory and HOME — so all four join every
-    // NotInParallel group any of those resources already uses elsewhere.
-    const string HandleAsyncNotInParallelGroups_HomeEnvVarMutation = "HomeEnvVarMutation"; // shared w/ UninstallCommandTests
+    // They move the working directory, and SetupCommand's own HarnessPaths reads every vendor
+    // override variable, so they join both cohorts.
+    const string HandleAsyncNotInParallelGroups_VendorEnvOverrides = "VendorEnvOverrides"; // shared w/ UninstallCommandTests
     const string HandleAsyncNotInParallelGroups_CwdMutation        = "CwdMutation";        // shared w/ UninstallCommandTests
     const string HandleAsyncNotInParallelGroups_ProviderCache      = "AuthProviderDiscoveryCache"; // shared w/ every /auth/config stubber
 
@@ -965,7 +954,7 @@ public class SetupCommandTests {
 
     [Test]
     [NotInParallel([
-        HandleAsyncNotInParallelGroups_HomeEnvVarMutation, HandleAsyncNotInParallelGroups_CwdMutation,
+        HandleAsyncNotInParallelGroups_VendorEnvOverrides, HandleAsyncNotInParallelGroups_CwdMutation,
         HandleAsyncNotInParallelGroups_ProviderCache,
         ImportRunnerOverrideMutation
     ])]
@@ -984,7 +973,7 @@ public class SetupCommandTests {
         try {
             var args = BuildArgs("--server-url", server.Url!, "--no-prompt", "--default-visibility", "org_public");
 
-            var exit = await new SetupCommand(Config.Root, Resolutions.None(Config.Root), new RecordingBrowser()).HandleAsync(args);
+            var exit = await new SetupCommand(Config.Root, Resolutions.None(Config.Root), new RecordingBrowser(), Home).HandleAsync(args);
 
             await Assert.That(exit).IsEqualTo(0);
             await Assert.That(captured).IsNotNull();
@@ -1007,7 +996,7 @@ public class SetupCommandTests {
 
     [Test]
     [NotInParallel([
-        HandleAsyncNotInParallelGroups_HomeEnvVarMutation, HandleAsyncNotInParallelGroups_CwdMutation,
+        HandleAsyncNotInParallelGroups_VendorEnvOverrides, HandleAsyncNotInParallelGroups_CwdMutation,
         HandleAsyncNotInParallelGroups_ProviderCache,
         ImportRunnerOverrideMutation
     ])]
@@ -1024,7 +1013,7 @@ public class SetupCommandTests {
 
             // Completing with exit 0 without the override's exception escaping is the
             // assertion — --skip-import must suppress the Step 6 call entirely.
-            var exit = await new SetupCommand(Config.Root, Resolutions.None(Config.Root), new RecordingBrowser()).HandleAsync(args);
+            var exit = await new SetupCommand(Config.Root, Resolutions.None(Config.Root), new RecordingBrowser(), Home).HandleAsync(args);
 
             await Assert.That(exit).IsEqualTo(0);
         } finally {
@@ -1034,7 +1023,7 @@ public class SetupCommandTests {
 
     [Test]
     [NotInParallel([
-        HandleAsyncNotInParallelGroups_HomeEnvVarMutation, HandleAsyncNotInParallelGroups_CwdMutation,
+        HandleAsyncNotInParallelGroups_VendorEnvOverrides, HandleAsyncNotInParallelGroups_CwdMutation,
         HandleAsyncNotInParallelGroups_ProviderCache,
         ImportRunnerOverrideMutation
     ])]
@@ -1056,7 +1045,7 @@ public class SetupCommandTests {
         try {
             var args = BuildArgs("--server-url", schemeLessServerUrl, "--no-prompt");
 
-            var exit = await new SetupCommand(Config.Root, Resolutions.None(Config.Root), new RecordingBrowser()).HandleAsync(args);
+            var exit = await new SetupCommand(Config.Root, Resolutions.None(Config.Root), new RecordingBrowser(), Home).HandleAsync(args);
 
             await Assert.That(exit).IsEqualTo(0);
             await Assert.That(captured).IsNotNull();
@@ -1091,7 +1080,7 @@ public class SetupCommandTests {
         try {
             var args = BuildArgs("--server-url", server.Url!, "--no-prompt");
 
-            var exit = await new SetupCommand(Config.Root, Resolutions.None(Config.Root), new RecordingBrowser()).HandleAsync(args);
+            var exit = await new SetupCommand(Config.Root, Resolutions.None(Config.Root), new RecordingBrowser(), Home).HandleAsync(args);
 
             await Assert.That(exit).IsEqualTo(0);
             await Assert.That(captured).IsNotNull();
@@ -1110,18 +1099,13 @@ public class SetupCommandTests {
     /// </summary>
     sealed class HandleAsyncE2EFixture : IAsyncDisposable {
         readonly TempDir _repoDir;
-        readonly TempDir _home;
         readonly string  _originalCwd;
-        readonly string? _originalHome;
 
         public string RepoDir => _repoDir.Path;
-        public string Home    => _home.Path;
 
-        HandleAsyncE2EFixture(TempDir repoDir, TempDir home, string originalCwd, string? originalHome) {
-            _repoDir      = repoDir;
-            _home         = home;
-            _originalCwd  = originalCwd;
-            _originalHome = originalHome;
+        HandleAsyncE2EFixture(TempDir repoDir, string originalCwd) {
+            _repoDir     = repoDir;
+            _originalCwd = originalCwd;
         }
 
         public static async Task<HandleAsyncE2EFixture> CreateAsync(string owner, string repo, ConfigRoot configRoot) {
@@ -1129,10 +1113,7 @@ public class SetupCommandTests {
             await RunGitAsync("init", repoDir.Path);
             await RunGitAsync($"remote add origin https://github.com/{owner}/{repo}.git", repoDir.Path);
 
-            var home = new TempDir();
-
-            var originalCwd  = Environment.CurrentDirectory;
-            var originalHome = Environment.GetEnvironmentVariable("HOME");
+            var originalCwd = Environment.CurrentDirectory;
 
             // Reset shared process/config state to a known baseline before this run —
             // mirrors TokenStoreProfileTests.Cleanup / the round-trip test above.
@@ -1148,18 +1129,15 @@ public class SetupCommandTests {
             if (File.Exists(legacyTokens)) File.Delete(legacyTokens);
 
             Environment.CurrentDirectory = repoDir.Path;
-            Environment.SetEnvironmentVariable("HOME", home.Path);
 
-            return new HandleAsyncE2EFixture(repoDir, home, originalCwd, originalHome);
+            return new HandleAsyncE2EFixture(repoDir, originalCwd);
         }
 
         public ValueTask DisposeAsync() {
             Environment.CurrentDirectory = _originalCwd;
-            Environment.SetEnvironmentVariable("HOME", _originalHome);
             HttpClientExtensions.ResetProviderCacheForTesting();
 
             _repoDir.Dispose();
-            _home.Dispose();
 
             return ValueTask.CompletedTask;
         }
@@ -1313,7 +1291,7 @@ public class SetupCommandTests {
     public async Task HandleAsync_rejects_half_a_pair_before_doing_anything() {
         using var capture = ConsoleOutput.StartErrorCapture();
 
-        var exit = await new SetupCommand(Config.Root, Resolutions.None(Config.Root), new RecordingBrowser()).HandleAsync(["setup", "--org", "Acme"]);
+        var exit = await new SetupCommand(Config.Root, Resolutions.None(Config.Root), new RecordingBrowser(), Home).HandleAsync(["setup", "--org", "Acme"]);
 
         await Assert.That(exit).IsEqualTo(1);
         await Assert.That(capture.GetCapturedError()).Contains("--slug");
@@ -1324,7 +1302,7 @@ public class SetupCommandTests {
     public async Task HandleAsync_rejects_creating_and_pointing_at_a_server_at_once() {
         using var capture = ConsoleOutput.StartErrorCapture();
 
-        var exit = await new SetupCommand(Config.Root, Resolutions.None(Config.Root), new RecordingBrowser()).HandleAsync(
+        var exit = await new SetupCommand(Config.Root, Resolutions.None(Config.Root), new RecordingBrowser(), Home).HandleAsync(
             ["setup", "--org", "Acme", "--slug", "acme", "--server-url", "https://other.kcap.ai"]);
 
         await Assert.That(exit).IsEqualTo(1);
@@ -1336,7 +1314,7 @@ public class SetupCommandTests {
     public async Task HandleAsync_rejects_a_provider_that_cannot_create() {
         using var capture = ConsoleOutput.StartErrorCapture();
 
-        var exit = await new SetupCommand(Config.Root, Resolutions.None(Config.Root), new RecordingBrowser()).HandleAsync(["setup", "--org", "Acme", "--slug", "acme", "--github"]);
+        var exit = await new SetupCommand(Config.Root, Resolutions.None(Config.Root), new RecordingBrowser(), Home).HandleAsync(["setup", "--org", "Acme", "--slug", "acme", "--github"]);
 
         await Assert.That(exit).IsEqualTo(1);
         await Assert.That(capture.GetCapturedError()).Contains("--github");
@@ -1347,7 +1325,7 @@ public class SetupCommandTests {
     public async Task HandleAsync_still_requires_a_server_url_with_no_prompt_and_no_answers() {
         using var capture = ConsoleOutput.StartErrorCapture();
 
-        var exit = await new SetupCommand(Config.Root, Resolutions.None(Config.Root), new RecordingBrowser()).HandleAsync(["setup", "--no-prompt"]);
+        var exit = await new SetupCommand(Config.Root, Resolutions.None(Config.Root), new RecordingBrowser(), Home).HandleAsync(["setup", "--no-prompt"]);
 
         await Assert.That(exit).IsEqualTo(1);
         await Assert.That(capture.GetCapturedError()).Contains("--server-url is required");

@@ -13,10 +13,12 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 /// The fake `claude` on PATH shadows a real, authenticated one — the positive control must prove a
 /// title is posted, without that costing a live model call.
 /// </remarks>
-// Mutates PATH, and shares the group the HOME-faking suites use because those are exactly the
-// ones a phantom `claude` on PATH would mislead.
-[NotInParallel("HomeEnvVarMutation")]
+// Mutates PATH, and joins the vendor-override cohort because those suites resolve `kcap` and the
+// vendor CLIs through PATH — a phantom `claude` is exactly what would mislead them.
+[NotInParallel("VendorEnvOverrides")]
 public class ImportSkipTitleTests : IDisposable {
+    [TempHome] public required TempHome Home { get; init; }
+
     [TempConfigRoot] public required TempConfigRoot Config { get; init; }
 
     readonly WireMockServer _server = WireMockServer.Start();
@@ -69,7 +71,7 @@ public class ImportSkipTitleTests : IDisposable {
             [.. Enumerable.Range(0, 20).Select(i =>
                 $$$"""{"type":"user","timestamp":"2026-03-15T10:00:00Z","cwd":"/tmp/skip-title-proj","message":{"content":"add a retry to the import loop {{{i}}}"}}""")]);
 
-        return new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root)).HandleImport(
+        return new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), Home).HandleImport(
             filterCwd:        null,
             minLines:         1,
             sources:          [new ClaudeImportSource(Config.Root, projectsDir.Path)],

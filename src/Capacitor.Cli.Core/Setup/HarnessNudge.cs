@@ -14,7 +14,7 @@ public static class HarnessNudge {
 
     /// <param name="detected">Result of <see cref="AgentDetection.Detect"/>.</param>
     /// <param name="isWired">Answers "is kcap's integration installed for this vendor id?"
-    /// (production: <see cref="HarnessIntegrationProbe.IsWired"/>).</param>
+    /// (production: <see cref="HarnessWiring.IsWired"/>).</param>
     /// <param name="ledger">The current offer ledger.</param>
     /// <param name="now">Clock (injected for tests).</param>
     public static IReadOnlyList<KnownHarness> Nudgeable(

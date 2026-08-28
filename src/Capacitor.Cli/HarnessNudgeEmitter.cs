@@ -1,4 +1,5 @@
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Core.Setup;
 
 namespace Capacitor.Cli;
@@ -23,24 +24,27 @@ static class HarnessNudgeEmitter {
     /// <summary>Surface 1: the SessionStart <c>additionalContext</c> fragment telling the agent to
     /// offer setup. Null when opted out, throttled, or nothing is nudgeable.</summary>
     public static string? ResolveFragment(
-            AgentDetectionInputs inputs, HarnessOfferStore store, bool optedOut, DateTimeOffset now,
-            Func<string, AgentDetectionInputs, bool>? isWired = null,
-            Func<AgentDetectionInputs, AgentDetectionResult>? detect = null) =>
-        FormatFragment(ClaimAndStamp(inputs, store, optedOut, now, isWired, detect));
+            HarnessPaths paths, BinaryProbe binaries, HarnessOfferStore store, bool optedOut,
+            DateTimeOffset now,
+            Func<HarnessPaths, string, bool>? isWired = null,
+            Func<HarnessPaths, BinaryProbe, AgentDetectionResult>? detect = null) =>
+        FormatFragment(ClaimAndStamp(paths, binaries, store, optedOut, now, isWired, detect));
 
     /// <summary>Surface 2: the interactive stderr notice, one line per nudgeable vendor. Null when
     /// opted out, throttled, or nothing is nudgeable.</summary>
     public static string? ResolveNotice(
-            AgentDetectionInputs inputs, HarnessOfferStore store, bool optedOut, DateTimeOffset now,
-            Func<string, AgentDetectionInputs, bool>? isWired = null,
-            Func<AgentDetectionInputs, AgentDetectionResult>? detect = null) =>
-        FormatNotice(ClaimAndStamp(inputs, store, optedOut, now, isWired, detect));
+            HarnessPaths paths, BinaryProbe binaries, HarnessOfferStore store, bool optedOut,
+            DateTimeOffset now,
+            Func<HarnessPaths, string, bool>? isWired = null,
+            Func<HarnessPaths, BinaryProbe, AgentDetectionResult>? detect = null) =>
+        FormatNotice(ClaimAndStamp(paths, binaries, store, optedOut, now, isWired, detect));
 
     /// <summary>Hook-site convenience: resolve the SessionStart fragment from the current process
     /// environment and the default on-disk ledger/throttle. <paramref name="optedOut"/> is the
     /// profile's <c>DisableHarnessNudge</c>.</summary>
-    public static string? ResolveFragmentForHook(bool optedOut, ConfigRoot config) =>
-        ResolveFragment(AgentDetection.FromEnvironment(), new HarnessOfferStore(config), optedOut, DateTimeOffset.UtcNow);
+    public static string? ResolveFragmentForHook(bool optedOut, ConfigRoot config, UserHome home) =>
+        ResolveFragment(HarnessPaths.FromEnvironment(home), BinaryProbe.FromEnvironment(),
+                        new HarnessOfferStore(config), optedOut, DateTimeOffset.UtcNow);
 
     /// <summary>Joins an existing SessionStart nudge with the harness nudge (either may be null)
     /// into one additional-context blob, blank-line separated — so a delivery helper that carries a
@@ -52,17 +56,18 @@ static class HarnessNudgeEmitter {
     }
 
     static IReadOnlyList<KnownHarness> ClaimAndStamp(
-            AgentDetectionInputs inputs, HarnessOfferStore store, bool optedOut, DateTimeOffset now,
-            Func<string, AgentDetectionInputs, bool>? isWired,
-            Func<AgentDetectionInputs, AgentDetectionResult>? detect) {
+            HarnessPaths paths, BinaryProbe binaries, HarnessOfferStore store, bool optedOut,
+            DateTimeOffset now,
+            Func<HarnessPaths, string, bool>? isWired,
+            Func<HarnessPaths, BinaryProbe, AgentDetectionResult>? detect) {
         try {
             if (optedOut) return [];
             if (!store.TryClaimCheck(CheckThrottle)) return [];
 
-            var detected  = (detect ?? AgentDetection.Detect)(inputs);
+            var detected  = (detect ?? AgentDetection.Detect)(paths, binaries);
             var ledger    = store.Load();
-            var wired     = isWired ?? HarnessIntegrationProbe.IsWired;
-            var nudgeable = HarnessNudge.Nudgeable(detected, id => wired(id, inputs), ledger, now);
+            var wired     = isWired ?? HarnessWiring.IsWired;
+            var nudgeable = HarnessNudge.Nudgeable(detected, id => wired(paths, id), ledger, now);
             if (nudgeable.Count == 0) return [];
 
             // Zero-wait lock on the hook path: never spend a SessionStart hook's exit budget waiting

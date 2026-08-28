@@ -5,16 +5,17 @@ namespace Capacitor.Cli.Core.Tests.Unit.Harness.Antigravity;
 /// <summary>
 /// Unit tests for <see cref="AntigravityPaths"/>. Antigravity data lives
 /// under the shared <c>~/.gemini</c> home in an <c>antigravity</c> subdir; paths are
-/// asserted against the captured on-disk layout (spike). Parallel-safe: the
-/// <c>geminiCliHome</c> override is non-null, so no env var is read.
+/// asserted against the captured on-disk layout (spike).
 /// </summary>
 public class AntigravityPathsTests {
     const string P = "/fake/parent";
     static string GeminiRoot => Path.Combine(P, ".gemini");
 
+    static AntigravityPaths Ags(string home, string? geminiCliHome) => new(new(home), geminiCliHome);
+
     [Test]
     public async Task Root_is_antigravity_under_gemini_home() {
-        await Assert.That(AntigravityPaths.Root(home: "/h", geminiCliHome: P))
+        await Assert.That(Ags("/h", P).Root)
             .IsEqualTo(Path.Combine(GeminiRoot, "antigravity"));
     }
 
@@ -24,13 +25,13 @@ public class AntigravityPathsTests {
     [Test]
     public async Task PluginDir_and_GlobalHooksJson_and_manifest_are_under_gui_config() {
         var pluginDir = Path.Combine(GeminiRoot, "config", "plugins", "kcap");
-        await Assert.That(AntigravityPaths.GuiConfigRoot(home: "/h", geminiCliHome: P))
+        await Assert.That(Ags("/h", P).GuiConfigRoot)
             .IsEqualTo(Path.Combine(GeminiRoot, "config"));
-        await Assert.That(AntigravityPaths.PluginDir(home: "/h", geminiCliHome: P))
+        await Assert.That(Ags("/h", P).PluginDir)
             .IsEqualTo(pluginDir);
-        await Assert.That(AntigravityPaths.GlobalHooksJson(home: "/h", geminiCliHome: P))
+        await Assert.That(Ags("/h", P).GlobalHooksJson)
             .IsEqualTo(Path.Combine(pluginDir, "hooks.json"));
-        await Assert.That(AntigravityPaths.GlobalPluginManifest(home: "/h", geminiCliHome: P))
+        await Assert.That(Ags("/h", P).GlobalPluginManifest)
             .IsEqualTo(Path.Combine(pluginDir, "plugin.json"));
     }
 
@@ -38,33 +39,33 @@ public class AntigravityPathsTests {
     // settings.json); the steering file + skills dir are SHARED with Gemini under ~/.gemini.
     [Test]
     public async Task McpConfigJson_is_under_gui_config() {
-        await Assert.That(AntigravityPaths.McpConfigJson(home: "/h", geminiCliHome: P))
+        await Assert.That(Ags("/h", P).McpConfigJson)
             .IsEqualTo(Path.Combine(GeminiRoot, "config", "mcp_config.json"));
     }
 
     [Test]
     public async Task InstructionsMd_is_the_shared_gemini_md() {
-        await Assert.That(AntigravityPaths.InstructionsMd(home: "/h", geminiCliHome: P))
+        await Assert.That(Ags("/h", P).InstructionsMd)
             .IsEqualTo(Path.Combine(GeminiRoot, "GEMINI.md"));
     }
 
     [Test]
     public async Task SkillsDir_is_gemini_skills_not_agents_skills() {
-        await Assert.That(AntigravityPaths.SkillsDir(home: "/h", geminiCliHome: P))
+        await Assert.That(Ags("/h", P).SkillsDir)
             .IsEqualTo(Path.Combine(GeminiRoot, "skills"));
     }
 
     [Test]
     public async Task TranscriptFullPath_matches_captured_layout() {
-        await Assert.That(AntigravityPaths.TranscriptFullPath("conv1", home: "/h", geminiCliHome: P))
+        await Assert.That(Ags("/h", P).TranscriptFullPath("conv1"))
             .IsEqualTo(Path.Combine(GeminiRoot, "antigravity", "brain", "conv1", ".system_generated", "logs", "transcript_full.jsonl"));
     }
 
     [Test]
     public async Task MessagesDir_and_ConversationDb() {
-        await Assert.That(AntigravityPaths.MessagesDir("conv1", home: "/h", geminiCliHome: P))
+        await Assert.That(Ags("/h", P).MessagesDir("conv1"))
             .IsEqualTo(Path.Combine(GeminiRoot, "antigravity", "brain", "conv1", ".system_generated", "messages"));
-        await Assert.That(AntigravityPaths.ConversationDb("conv1", home: "/h", geminiCliHome: P))
+        await Assert.That(Ags("/h", P).ConversationDb("conv1"))
             .IsEqualTo(Path.Combine(GeminiRoot, "antigravity", "conversations", "conv1.db"));
     }
 
@@ -90,12 +91,12 @@ public class AntigravityPathsTests {
         if (gui) tmp.CreateDir(".gemini", "antigravity");
         if (cli) tmp.CreateDir(".gemini", "antigravity-cli");
 
-        await Assert.That(AntigravityPaths.IsInstalled(home: tmp.Path, geminiCliHome: "")).IsEqualTo(expected);
+        await Assert.That(Ags(tmp.Path, "").IsInstalled).IsEqualTo(expected);
     }
 
     [Test]
     public async Task CliConfigRoot_is_antigravity_cli_under_gemini_home() {
-        await Assert.That(AntigravityPaths.CliConfigRoot(home: "/h", geminiCliHome: P))
+        await Assert.That(Ags("/h", P).CliConfigRoot)
             .IsEqualTo(Path.Combine(GeminiRoot, "antigravity-cli"));
     }
 
@@ -103,7 +104,7 @@ public class AntigravityPathsTests {
     // first-wins behaviour are deterministic.
     [Test]
     public async Task BrainProductRoots_are_gui_then_cli() {
-        var roots = AntigravityPaths.BrainProductRoots(home: "/h", geminiCliHome: P);
+        var roots = Ags("/h", P).BrainProductRoots;
         await Assert.That(roots.Count).IsEqualTo(2);
         await Assert.That(roots[0]).IsEqualTo(Path.Combine(GeminiRoot, "antigravity"));
         await Assert.That(roots[1]).IsEqualTo(Path.Combine(GeminiRoot, "antigravity-cli"));
@@ -127,11 +128,11 @@ public class AntigravityPathsTests {
     // so pre-existing callers (live capture-adjacent) are byte-identical after the refactor.
     [Test]
     public async Task GUI_overloads_equal_the_Under_form_at_the_GUI_root() {
-        var gui = AntigravityPaths.Root(home: "/h", geminiCliHome: P);
+        var gui = Ags("/h", P).Root;
         const string id = "abc-123";
-        await Assert.That(AntigravityPaths.TranscriptFullPath(id, home: "/h", geminiCliHome: P))
+        await Assert.That(Ags("/h", P).TranscriptFullPath(id))
             .IsEqualTo(AntigravityPaths.TranscriptFullPathUnder(gui, id));
-        await Assert.That(AntigravityPaths.MessagesDir(id, home: "/h", geminiCliHome: P))
+        await Assert.That(Ags("/h", P).MessagesDir(id))
             .IsEqualTo(AntigravityPaths.MessagesDirUnder(gui, id));
     }
 
@@ -139,13 +140,13 @@ public class AntigravityPathsTests {
     // real (dashed) conversation's sibling gen_metadata db from the transcript path.
     [Test]
     public async Task ConversationDbFromTranscript_resolves_the_sibling_db() {
-        var transcript = AntigravityPaths.TranscriptFullPath("abc-123-def", home: "/h", geminiCliHome: P);
+        var transcript = Ags("/h", P).TranscriptFullPath("abc-123-def");
         // GetFullPath normalizes separators so the assertion isn't brittle across OSes:
         // ConversationDbFromTranscript walks up with GetDirectoryName (which canonicalizes
         // separators on Windows) while ConversationDb builds via Path.Combine — same file,
         // possibly different separator style in the raw string.
         await Assert.That(Path.GetFullPath(AntigravityPaths.ConversationDbFromTranscript(transcript)!))
-            .IsEqualTo(Path.GetFullPath(AntigravityPaths.ConversationDb("abc-123-def", home: "/h", geminiCliHome: P)));
+            .IsEqualTo(Path.GetFullPath(Ags("/h", P).ConversationDb("abc-123-def")));
     }
 
     [Test]

@@ -51,7 +51,7 @@ public class WatchRepoEvidenceTests {
 
     // qodo #1: File.ReadLines opens FileShare.Read (Windows-mandatory), which can block the
     // agent's own flush of the transcript it's actively writing. ReadLinesShared is the
-    // FileShare.ReadWrite replacement (mirrors WatchCommand.ReadAllTextShared's rationale) —
+    // FileShare.ReadWrite replacement (mirrors File.ReadAllTextShared's rationale) —
     // this just guards it still reads lines correctly; the sharing behavior itself is
     // Windows-specific and not meaningfully observable from a cross-platform unit test.
     [Test]
@@ -59,7 +59,7 @@ public class WatchRepoEvidenceTests {
         using var tmp  = new TempDir();
         var       path = tmp.CreateFile("transcript.jsonl", ["line one", "line two"]);
 
-        var lines = WatchCommand.ReadLinesShared(path).ToList();
+        var lines = File.ReadLinesShared(path).ToList();
 
         await Assert.That(lines).IsEquivalentTo(["line one", "line two"]);
     }

@@ -474,7 +474,7 @@ public class PluginCommandCodexTests {
         TextWriter? stdout     = null,
         TextWriter? stderr     = null
     ) => new(
-        HomeDirectory:     fakeHome,
+        Home:     new(fakeHome),
         Profiles:          new ProfileConfig(),
         ResolvePluginPath: () => pluginPath,
         Stdout:            stdout ?? TextWriter.Null,
@@ -654,7 +654,7 @@ public class PluginCommandCodexInstallIntegrationTests {
         TextWriter? stdout     = null,
         TextWriter? stderr     = null
     ) => new(
-        HomeDirectory:     fakeHome,
+        Home:     new(fakeHome),
         Profiles:          new ProfileConfig(),
         ResolvePluginPath: () => pluginPath,
         Stdout:            stdout ?? TextWriter.Null,

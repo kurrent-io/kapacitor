@@ -1,3 +1,5 @@
+using TUnit.Core.Enums;
+
 namespace Capacitor.Cli.Core.Tests.Unit;
 
 /// <summary>
@@ -59,13 +61,16 @@ public class DaemonStoreTests {
 
     [Test, NotInParallel]
     public async Task Default_directory_lives_under_the_daemons_folder() {
-        using var env = EnvScope.Exclusive(DaemonStore.DaemonsDirEnvVar, null);
+        using var env  = EnvScope.Exclusive(DaemonStore.DaemonsDirEnvVar, null);
+        using var home = EnvScope.Exclusive("HOME", PinnedHome);
 
         await Assert.That(DaemonStore.FromEnvironment().Directory).IsEqualTo(DefaultDaemonsDir);
     }
 
     [Test, NotInParallel]
     public async Task Environment_value_wins_over_the_home_fallback() {
+        using var home = EnvScope.Exclusive("HOME", PinnedHome);
+
         using (var env = EnvScope.Exclusive(DaemonStore.DaemonsDirEnvVar, "/elsewhere"))
             await Assert.That(DaemonStore.FromEnvironment().Directory).IsEqualTo("/elsewhere");
 
@@ -80,14 +85,16 @@ public class DaemonStoreTests {
     public async Task Config_dir_override_does_not_move_the_daemons_directory() {
         using var daemons = EnvScope.Exclusive(DaemonStore.DaemonsDirEnvVar, null);
         using var config  = EnvScope.Exclusive(ConfigRoot.ConfigDirEnvVar, "/elsewhere/config");
+        using var home    = EnvScope.Exclusive("HOME", PinnedHome);
 
         await Assert.That(DaemonStore.FromEnvironment().Directory).IsEqualTo(DefaultDaemonsDir);
     }
 
-    static string DefaultDaemonsDir => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-        ".config", "kcap", "daemons"
-    );
+    // Any rooted path does: FromEnvironment only joins strings, so nothing has to exist. Pinned
+    // because a Windows runner can export a HOME that differs from the user profile.
+    const string PinnedHome = "/pinned-home";
+
+    static string DefaultDaemonsDir => Path.Combine(PinnedHome, ".config", "kcap", "daemons");
 
     /// <summary>
     /// Pins the socket-path budget. A control socket binds inside the daemons directory and macOS
@@ -98,10 +105,8 @@ public class DaemonStoreTests {
     /// Without this the overflow would be invisible on the Linux CI leg (short <c>/tmp</c>, 108-byte
     /// limit) and only surface on a developer's Mac.
     /// </summary>
-    [Test]
+    [Test, ExcludeOn(OS.Windows)] // no AF_UNIX path limit to blow, and temp roots differ
     public async Task Temp_socket_path_fits_the_platform_limit() {
-        if (OperatingSystem.IsWindows()) return; // no AF_UNIX path limit to blow, and temp roots differ
-
         using var daemons = new TempDaemonStore();
         var longestNameInUse = new string('x', 22); // "test-consent-subscribe"
 

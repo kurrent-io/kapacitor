@@ -10,7 +10,7 @@ namespace Capacitor.Cli.Commands;
 /// terminal report. The eval pipeline itself lives in the Eval library so
 /// the daemon (DEV-1440 milestone 2) can reuse it.
 /// </summary>
-class EvalCommand(ConfigRoot config, ProfileContext profiles) {
+class EvalCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
     public async Task<int> HandleEval(
             string  sessionId,
             string  model,
@@ -44,7 +44,7 @@ class EvalCommand(ConfigRoot config, ProfileContext profiles) {
         }
 
         var result = await EvalService.RunAsync(
-            baseUrl, httpClient, profiles.Resolution.Profile, sessionId, model, chain, thresholdBytes,
+            baseUrl, httpClient, profiles.Resolution.Profile, home, sessionId, model, chain, thresholdBytes,
             observer, questions: questions
         );
 

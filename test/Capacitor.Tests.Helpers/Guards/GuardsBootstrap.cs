@@ -10,7 +10,6 @@ public static class GuardsBootstrap {
     public static void LoadGuards() {
         RuntimeHelpers.RunClassConstructor(typeof(ConfigDirGlobalSetup).TypeHandle);
         RuntimeHelpers.RunClassConstructor(typeof(DaemonPathsGlobalSetup).TypeHandle);
-        RuntimeHelpers.RunClassConstructor(typeof(McpMarkerGlobalSetup).TypeHandle);
         RuntimeHelpers.RunClassConstructor(typeof(ProfileOverridesGlobalSetup).TypeHandle);
     }
 }

@@ -10,9 +10,11 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Harness.Codex;
 /// Sandbox / approval / model / effort are per-turn protocol params on this transport, so none of
 /// the PTY-only flags appear.</summary>
 public class CodexAppServerLaunchArgsTests {
-    static CodexLauncher NewLauncher() =>
+    [TempHome] public required TempHome Home { get; init; }
+
+    CodexLauncher NewLauncher() =>
         new(new DaemonConfig { CodexPath = "codex", CapacitorPath = "/opt/kcap", ServerUrl = "https://t.example" },
-            NullLogger<CodexLauncher>.Instance) {
+            Home, NullLogger<CodexLauncher>.Instance) {
             ReadInheritedMcpServers = static () => [new("kcap-flows"), new("node_repl")]
         };
 

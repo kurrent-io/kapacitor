@@ -8,18 +8,20 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 /// Query/WriteAndBootstrap actually implement the verify algorithm, so non-launchd managers get a
 /// clear, coded-nowhere rejection rather than falling into the transaction engine.</summary>
 public class DaemonCommandsServiceStartTests {
+    [TempHome] public required TempHome Home { get; init; }
+
     [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
     [TempConfigRoot] public required TempConfigRoot Config { get; init; }
 
     [Test]
     public async Task Verify_flag_is_rejected_on_a_non_launchd_manager() {
-        var exit = await new DaemonServiceCommands(Daemons.Store, Config.Root, Resolutions.None(Config.Root), new SystemdServiceManager(), "test-id").Start(["--verify"]);
+        var exit = await new DaemonServiceCommands(Daemons.Store, Config.Root, Resolutions.None(Config.Root), new SystemdServiceManager(Home), "test-id", Home).Start(["--verify"]);
         await Assert.That(exit).IsEqualTo(1);
     }
 
     [Test]
     public async Task Verify_flag_is_rejected_on_the_windows_manager_too() {
-        var exit = await new DaemonServiceCommands(Daemons.Store, Config.Root, Resolutions.None(Config.Root), new WindowsScheduledTaskServiceManager(Config.Root), "test-id").Start(["--verify"]);
+        var exit = await new DaemonServiceCommands(Daemons.Store, Config.Root, Resolutions.None(Config.Root), new WindowsScheduledTaskServiceManager(Config.Root), "test-id", Home).Start(["--verify"]);
         await Assert.That(exit).IsEqualTo(1);
     }
 }

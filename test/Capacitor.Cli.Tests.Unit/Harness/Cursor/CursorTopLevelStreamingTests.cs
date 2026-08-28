@@ -16,7 +16,9 @@ namespace Capacitor.Cli.Tests.Unit.Harness.Cursor;
 /// returns gracefully — still no live SignalR server needed.
 /// </summary>
 public class CursorTopLevelStreamingTests {
-    WatchCommand Watch => field ??= new(Config.Root, Resolutions.None(Config.Root));
+    [TempHome] public required TempHome Home { get; init; }
+
+    WatchCommand Watch => field ??= new(Config.Root, Resolutions.None(Config.Root), Home);
 
     [TempConfigRoot] public required TempConfigRoot Config { get; init; }
 

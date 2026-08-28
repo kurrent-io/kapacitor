@@ -878,7 +878,7 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
                   + "executable, so the sandbox cannot be drawn around it.");
 
             var profile = BorrowedReviewSandbox.BuildProfile(
-                snapshotRoot, stateRoot, BorrowedReviewRuntimeRoots.Resolve(vendorBinary));
+                snapshotRoot, stateRoot, BorrowedReviewRuntimeRoots.Resolve(vendorBinary, config.Home));
 
             argv       = [.. BorrowedReviewSandbox.WrapArgv(profile, vendorBinary, argv)];
             binaryPath = BorrowedReviewSandbox.SandboxExecPath;

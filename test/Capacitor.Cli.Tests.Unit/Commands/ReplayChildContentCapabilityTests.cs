@@ -1,4 +1,7 @@
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.Core.Harness.Copilot;
+using Capacitor.Cli.Core.Harness.Kiro;
+using Capacitor.Cli.Core.Harness.Pi;
 using Capacitor.Cli.Harness.Antigravity;
 using Capacitor.Cli.Harness.Claude;
 using Capacitor.Cli.Harness.Codex;
@@ -27,6 +30,8 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 /// </para>
 /// </summary>
 public class ReplayChildContentCapabilityTests {
+    [TempHome] public required TempHome Home { get; init; }
+
     [TempConfigRoot] public required TempConfigRoot Config { get; init; }
 
     /// <summary>
@@ -89,13 +94,13 @@ public class ReplayChildContentCapabilityTests {
         return vendor switch {
             "claude"      => new ClaudeImportSource(Config.Root, scratch),
             "codex"       => new CodexImportSource(Config.Root, scratch),
-            "copilot"     => new CopilotImportSource(Config.Root),
+            "copilot"     => new CopilotImportSource(Config.Root, CopilotPaths.FromEnvironment(Home)),
             "cursor"      => new CursorImportSource(Config.Root, scratch, scratch),
-            "gemini"      => new GeminiImportSource(tmpDirOverride: scratch),
-            "kiro"        => new KiroImportSource(Config.Root),
-            "pi"          => new PiImportSource(Config.Root),
+            "gemini"      => new GeminiImportSource(scratch),
+            "kiro"        => new KiroImportSource(Config.Root, KiroPaths.FromEnvironment(Home).SessionsDir),
+            "pi"          => new PiImportSource(Config.Root, PiPaths.FromEnvironment(Home).SessionsDir),
             "opencode"    => new OpenCodeImportSource(Path.Combine(scratch, "db"), Path.Combine(scratch, "ledger")),
-            "antigravity" => new AntigravityImportSource(home: scratch, geminiCliHome: ""),
+            "antigravity" => new AntigravityImportSource(new(new(scratch), "")),
             _             => throw new ArgumentOutOfRangeException(nameof(vendor), vendor, "unclassified import source"),
         };
     }

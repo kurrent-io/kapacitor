@@ -10,8 +10,11 @@ namespace Capacitor.Cli.Daemon.Harness.Codex;
 
 internal sealed partial class CodexLauncher(
         DaemonConfig           config,
+        UserHome               home,
         ILogger<CodexLauncher> logger
     ) : IHostedAgentLauncher {
+    readonly CodexPaths _paths = CodexPaths.FromEnvironment(home);
+
     public string Vendor  => "codex";
     public string CliPath => config.CodexPath;
     public bool   SupportsUnattended => true;
@@ -116,7 +119,7 @@ internal sealed partial class CodexLauncher(
         // user-scope is sufficient. Runs for borrowed cwd too — it only reads.
         var worktreeHooks = Path.Combine(ctx.Worktree.Path, ".codex", "hooks.json");
 
-        if (!HooksInstalledIn(worktreeHooks) && !HooksInstalledIn(CodexPaths.UserHooksJson)) {
+        if (!HooksInstalledIn(worktreeHooks) && !HooksInstalledIn(_paths.UserHooksJson)) {
             throw new CodexHooksNotInstalledException(
                 "Codex hooks not installed. Run `kcap plugin install --codex` " +
                 "(user scope) or `kcap plugin install --codex --project` "      +
@@ -127,7 +130,7 @@ internal sealed partial class CodexLauncher(
         if (owned) {
             // Step 3: pre-trust the worktree in ~/.codex/config.toml. Best-effort.
             try {
-                CodexConfigWriter.TrustWorktree(ctx.Worktree.Path, logger);
+                CodexConfigWriter.TrustWorktree(ctx.Worktree.Path, _paths, logger);
             } catch (Exception ex) {
                 LogTrustFailed(ex, ctx.AgentId);
             }

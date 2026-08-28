@@ -6,7 +6,9 @@ using Capacitor.Cli.Core.Harness.Claude;
 
 namespace Capacitor.Cli.Tests.Unit.Commands;
 
-[NotInParallel("HomeEnvVarMutation")]
+// PluginEnvironment resolves every vendor layout when it is built, so these read each
+// override variable a peer suite clears.
+[NotInParallel("VendorEnvOverrides")]
 public class PluginCommandClaudeTests {
     [Test]
     public async Task InstallPlugin_stamps_marker_on_success() {
@@ -168,7 +170,7 @@ public class PluginCommandClaudeTests {
         TextWriter? stdout     = null,
         TextWriter? stderr     = null
     ) => new(
-        HomeDirectory:     fakeHome,
+        Home:     new(fakeHome),
         Profiles:          new ProfileConfig(),
         ResolvePluginPath: () => pluginPath,
         Stdout:            stdout ?? TextWriter.Null,

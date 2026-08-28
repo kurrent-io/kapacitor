@@ -3,7 +3,7 @@ using Capacitor.Cli.Core;
 
 namespace Capacitor.Cli.Commands;
 
-public sealed class IgnoreCommand(ConfigRoot root, ProfileContext profiles) {
+public sealed class IgnoreCommand(ConfigRoot root, ProfileContext profiles, UserHome home) {
     public async Task<int> HandleAsync(string[] args) {
         // args[0] == "ignore"; --help / -h is handled by the dispatcher in Program.cs.
         if (args.Length < 2) return Usage();
@@ -23,7 +23,7 @@ public sealed class IgnoreCommand(ConfigRoot root, ProfileContext profiles) {
     }
 
     async Task<int> Add(string path) {
-        if (!TryNormalize(path, out var normalized, out var error)) {
+        if (!TryNormalize(path, home, out var normalized, out var error)) {
             await Console.Error.WriteLineAsync($"Invalid path '{path}': {error}");
 
             return 1;
@@ -32,10 +32,10 @@ public sealed class IgnoreCommand(ConfigRoot root, ProfileContext profiles) {
         var (_, profileName, profile) = LoadActive();
         var before = Current(profile).Length;
 
-        profile = ApplyAdd(profile, normalized);
+        profile = ApplyAdd(profile, normalized, home);
 
         await ConfigMutator.MutateAsync(root, c => {
-            var p = ApplyAdd(c.Profiles.GetValueOrDefault(profileName) ?? new Profile(), normalized);
+            var p = ApplyAdd(c.Profiles.GetValueOrDefault(profileName) ?? new Profile(), normalized, home);
 
             return c with { Profiles = new Dictionary<string, Profile>(c.Profiles) { [profileName] = p } };
         });
@@ -50,7 +50,7 @@ public sealed class IgnoreCommand(ConfigRoot root, ProfileContext profiles) {
     }
 
     async Task<int> Remove(string path) {
-        if (!TryNormalize(path, out var normalized, out var error)) {
+        if (!TryNormalize(path, home, out var normalized, out var error)) {
             await Console.Error.WriteLineAsync($"Invalid path '{path}': {error}");
 
             return 1;
@@ -59,10 +59,10 @@ public sealed class IgnoreCommand(ConfigRoot root, ProfileContext profiles) {
         var (_, profileName, profile) = LoadActive();
         var before = Current(profile).Length;
 
-        profile = ApplyRemove(profile, normalized);
+        profile = ApplyRemove(profile, normalized, home);
 
         await ConfigMutator.MutateAsync(root, c => {
-            var p = ApplyRemove(c.Profiles.GetValueOrDefault(profileName) ?? new Profile(), normalized);
+            var p = ApplyRemove(c.Profiles.GetValueOrDefault(profileName) ?? new Profile(), normalized, home);
 
             return c with { Profiles = new Dictionary<string, Profile>(c.Profiles) { [profileName] = p } };
         });
@@ -76,9 +76,9 @@ public sealed class IgnoreCommand(ConfigRoot root, ProfileContext profiles) {
         return 0;
     }
 
-    static bool TryNormalize(string path, out string normalized, out string error) {
+    static bool TryNormalize(string path, UserHome home, out string normalized, out string error) {
         try {
-            var n = PathExclusion.Normalize(path);
+            var n = PathExclusion.Normalize(path, home);
 
             if (string.IsNullOrWhiteSpace(n)) {
                 normalized = "";
@@ -123,11 +123,11 @@ public sealed class IgnoreCommand(ConfigRoot root, ProfileContext profiles) {
     /// normalization is guarded so a hand-edited entry that Normalize rejects
     /// (null byte, etc.) doesn't crash the command. Exposed for testing.
     /// </summary>
-    public static Profile ApplyAdd(Profile profile, string path) {
-        var normalized = PathExclusion.Normalize(path);
+    public static Profile ApplyAdd(Profile profile, string path, UserHome home) {
+        var normalized = PathExclusion.Normalize(path, home);
         var current    = Current(profile);
 
-        if (current.Any(existing => SafeNormalize(existing) == normalized))
+        if (current.Any(existing => SafeNormalize(existing, home) == normalized))
             return profile;
 
         return profile with { ExcludedPaths = [.. current, normalized] };
@@ -139,12 +139,12 @@ public sealed class IgnoreCommand(ConfigRoot root, ProfileContext profiles) {
     /// — non-normalizable entries are kept (skipped from the removal predicate) so a
     /// bad entry in the stored list doesn't crash the command. Exposed for testing.
     /// </summary>
-    public static Profile ApplyRemove(Profile profile, string path) {
-        var normalized = PathExclusion.Normalize(path);
+    public static Profile ApplyRemove(Profile profile, string path, UserHome home) {
+        var normalized = PathExclusion.Normalize(path, home);
         var current    = Current(profile);
 
         var remaining = current
-            .Where(existing => SafeNormalize(existing) != normalized)
+            .Where(existing => SafeNormalize(existing, home) != normalized)
             .ToArray();
 
         return remaining.Length == current.Length
@@ -152,8 +152,8 @@ public sealed class IgnoreCommand(ConfigRoot root, ProfileContext profiles) {
             : profile with { ExcludedPaths = remaining };
     }
 
-    static string? SafeNormalize(string entry) {
-        try { return PathExclusion.Normalize(entry); } catch { return null; }
+    static string? SafeNormalize(string entry, UserHome home) {
+        try { return PathExclusion.Normalize(entry, home); } catch { return null; }
     }
 
     // JSON source-gen for init-only array properties leaves the value null when

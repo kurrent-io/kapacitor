@@ -15,6 +15,8 @@ namespace Capacitor.Cli.Tests.Integration;
 /// classification, including AlreadyLoaded (which sends zero real transcript lines).
 /// </summary>
 public class AntigravityImportUsagePassTests : IDisposable {
+    [TempHome] public required TempHome Home { get; init; }
+
     readonly WireMockServer _server = WireMockServer.Start();
     readonly TempDir        _tmp    = new();
     readonly string         _home;
@@ -113,14 +115,14 @@ public class AntigravityImportUsagePassTests : IDisposable {
             .RespondWith(Response.Create().WithStatusCode(200));
 
         using var client = new HttpClient();
-        var source = new AntigravityImportSource(home: _home, geminiCliHome: "");
+        var source = new AntigravityImportSource(new(new(_home), ""));
 
         var discovered = await source.DiscoverAsync(new DiscoveryFilters(null, null, null, 0), CancellationToken.None);
         await Assert.That(discovered.Count).IsEqualTo(1);
 
         var classified = await source.ClassifyAsync(
             discovered,
-            new ClassifyContext(client, _server.Url!, MinLines: 0, ExcludedRepos: null, ExcludedPaths: null),
+            new ClassifyContext(client, _server.Url!, MinLines: 0, ExcludedRepos: null, ExcludedPaths: null, Home: Home),
             CancellationToken.None);
         await Assert.That(classified[0].Status).IsEqualTo(ImportCommand.ClassificationStatus.New);
 
@@ -168,12 +170,12 @@ public class AntigravityImportUsagePassTests : IDisposable {
             .RespondWith(Response.Create().WithStatusCode(200));
 
         using var client = new HttpClient();
-        var source = new AntigravityImportSource(home: _home, geminiCliHome: "");
+        var source = new AntigravityImportSource(new(new(_home), ""));
 
         var discovered = await source.DiscoverAsync(new DiscoveryFilters(null, null, null, 0), CancellationToken.None);
         var classified = await source.ClassifyAsync(
             discovered,
-            new ClassifyContext(client, _server.Url!, MinLines: 0, ExcludedRepos: null, ExcludedPaths: null),
+            new ClassifyContext(client, _server.Url!, MinLines: 0, ExcludedRepos: null, ExcludedPaths: null, Home: Home),
             CancellationToken.None);
         await Assert.That(classified[0].Status).IsEqualTo(ImportCommand.ClassificationStatus.AlreadyLoaded);
 

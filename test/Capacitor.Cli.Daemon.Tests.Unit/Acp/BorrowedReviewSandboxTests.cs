@@ -14,6 +14,8 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Acp;
 /// string assertion while shipping the hole.</para>
 /// </summary>
 public class BorrowedReviewSandboxTests {
+    [TempHome] public required TempHome Home { get; init; }
+
     const string Snapshot = "/snapshots/borrowed-abc";
     const string StateRoot = "/snapshots/borrowed-abc.vendor-state";
 
@@ -255,7 +257,9 @@ public class BorrowedReviewSandboxTests {
         Skip.Unless(RuntimeInformation.IsOSPlatform(OSPlatform.OSX) && BorrowedReviewSandbox.Available,
                     "needs macOS with sandbox-exec");
 
+#pragma warning disable RS0030 // the operator's real home is the tree the sandbox must refuse
         var home   = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+#pragma warning restore RS0030
         var target = Path.Combine(home, relative);
         Skip.Unless(File.Exists(target), $"{what} not present on this host: {target}");
 
@@ -365,11 +369,11 @@ public class BorrowedReviewSandboxTests {
     /// for the configured vendor binary, so an enforcement result cannot be an artifact of a
     /// deliberately thin test profile. Asserting containment against a profile that grants less than
     /// production is how a sentinel passes while the shipped boundary leaks.</summary>
-    static string RealisticProfileFor(string snapshot) =>
+    string RealisticProfileFor(string snapshot) =>
         BorrowedReviewSandbox.BuildProfile(
             snapshot,
             Capacitor.Cli.Daemon.Services.WorktreeManager.VendorStateRootFor(snapshot),
-            BorrowedReviewRuntimeRoots.Resolve(ResolveVendorBinary()));
+            BorrowedReviewRuntimeRoots.Resolve(ResolveVendorBinary(), Home));
 
     /// <summary>The real Copilot binary when present, else any plausible interpreter, so the resolved
     /// runtime roots are those of an actual installation.</summary>

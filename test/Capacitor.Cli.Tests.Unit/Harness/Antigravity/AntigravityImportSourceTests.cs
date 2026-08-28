@@ -70,7 +70,7 @@ public class AntigravityImportSourceTests {
         WriteTranscript(home.Path, Child, UserLine("2026-07-02T19:01:00Z"));
         AppendInvoke(home.Path, Root, Child); // Root invokes Child as a subagent
 
-        var source = new AntigravityImportSource(home: home.Path, geminiCliHome: "");
+        var source = new AntigravityImportSource(new(new(home.Path), ""));
         await Assert.That(source.IsAvailable).IsTrue();
 
         var discovered = await source.DiscoverAsync(
@@ -98,7 +98,7 @@ public class AntigravityImportSourceTests {
         AppendInvoke(home.Path, Root,  Child);
         AppendInvoke(home.Path, Child, Grand);
 
-        var source = new AntigravityImportSource(home: home.Path, geminiCliHome: "");
+        var source = new AntigravityImportSource(new(new(home.Path), ""));
         var discovered = await source.DiscoverAsync(
             new DiscoveryFilters(FilterCwd: null, FilterSession: null, Since: null, MinLines: 0),
             CancellationToken.None);
@@ -116,7 +116,7 @@ public class AntigravityImportSourceTests {
         using var home = new TempDir();
         WriteTranscriptUnder(home.Path, CliSub, CliRoot, UserLine("2026-07-02T19:00:00Z"));
 
-        var source = new AntigravityImportSource(home: home.Path, geminiCliHome: "");
+        var source = new AntigravityImportSource(new(new(home.Path), ""));
         await Assert.That(source.IsAvailable).IsTrue(); // available on the CLI root alone
 
         var discovered = await source.DiscoverAsync(
@@ -141,7 +141,7 @@ public class AntigravityImportSourceTests {
         WriteTranscript(home.Path, Root, UserLine("2026-07-02T19:00:00Z"));            // GUI
         WriteTranscriptUnder(home.Path, CliSub, CliRoot, UserLine("2026-07-02T19:05:00Z")); // agy CLI
 
-        var source = new AntigravityImportSource(home: home.Path, geminiCliHome: "");
+        var source = new AntigravityImportSource(new(new(home.Path), ""));
         var discovered = await source.DiscoverAsync(
             new DiscoveryFilters(FilterCwd: null, FilterSession: null, Since: null, MinLines: 0),
             CancellationToken.None);
@@ -159,7 +159,7 @@ public class AntigravityImportSourceTests {
         WriteTranscriptUnder(home.Path, CliSub, CliChild, UserLine("2026-07-02T19:01:00Z"));
         AppendInvokeUnder(home.Path, CliSub, CliRoot, CliChild);
 
-        var source = new AntigravityImportSource(home: home.Path, geminiCliHome: "");
+        var source = new AntigravityImportSource(new(new(home.Path), ""));
         var discovered = await source.DiscoverAsync(
             new DiscoveryFilters(FilterCwd: null, FilterSession: null, Since: null, MinLines: 0),
             CancellationToken.None);
@@ -176,7 +176,7 @@ public class AntigravityImportSourceTests {
         WriteTranscript(home.Path, SessA, UserLine("2026-07-02T19:00:00Z"));
         WriteTranscript(home.Path, SessB, UserLine("2026-07-02T19:00:00Z"));
 
-        var source = new AntigravityImportSource(home: home.Path, geminiCliHome: "");
+        var source = new AntigravityImportSource(new(new(home.Path), ""));
         var discovered = await source.DiscoverAsync(
             new DiscoveryFilters(FilterCwd: null, FilterSession: SessB, Since: null, MinLines: 0),
             CancellationToken.None);
@@ -198,7 +198,7 @@ public class AntigravityImportSourceTests {
         using var home = new TempDir();
         WriteTranscript(home.Path, dashed, UserLine("2026-07-02T19:00:00Z"));
 
-        var source = new AntigravityImportSource(home: home.Path, geminiCliHome: "");
+        var source = new AntigravityImportSource(new(new(home.Path), ""));
         var discovered = await source.DiscoverAsync(
             new DiscoveryFilters(FilterCwd: null, FilterSession: null, Since: null, MinLines: 0),
             CancellationToken.None);
@@ -214,7 +214,7 @@ public class AntigravityImportSourceTests {
 
         using var home = new TempDir();
         WriteTranscript(home.Path, dashed, UserLine("2026-07-02T19:00:00Z"));
-        var source = new AntigravityImportSource(home: home.Path, geminiCliHome: "");
+        var source = new AntigravityImportSource(new(new(home.Path), ""));
 
         // Dashed input matches.
         var byDashed = await source.DiscoverAsync(
@@ -249,7 +249,7 @@ public class AntigravityImportSourceTests {
     [Test]
     public async Task Discover_is_empty_when_no_antigravity_data() {
         using var home = new TempDir();
-        var source = new AntigravityImportSource(home: home.Path, geminiCliHome: "");
+        var source = new AntigravityImportSource(new(new(home.Path), ""));
         await Assert.That(source.IsAvailable).IsFalse();
         var discovered = await source.DiscoverAsync(
             new DiscoveryFilters(null, null, null, 0), CancellationToken.None);

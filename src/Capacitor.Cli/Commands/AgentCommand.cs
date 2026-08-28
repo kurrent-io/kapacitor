@@ -15,7 +15,7 @@ internal readonly record struct AgentRow(
 /// `kcap agent start|ls|stop|attach` — drive daemon-hosted agents from the local
 /// terminal over the daemon's local control socket.
 /// </summary>
-internal sealed class AgentCommand(DaemonStore store, ConfigRoot config, ProfileContext profiles) {
+internal sealed class AgentCommand(DaemonStore store, ConfigRoot config, ProfileContext profiles, UserHome home) {
     internal static readonly string[] KnownSubcommands = ["start", "ls", "stop", "attach"];
 
     /// Verbs that only ever belonged to the pre-rename `agent` daemon group, minus the
@@ -411,7 +411,7 @@ internal sealed class AgentCommand(DaemonStore store, ConfigRoot config, Profile
         if (await CanConnectAsync(sock)) return true;
 
         await Console.Error.WriteLineAsync($"kcap: starting daemon '{name}'…");
-        await new DaemonCommands(store, config, profiles).HandleAsync(["daemon", "start", "-d", "--name", name]);
+        await new DaemonCommands(store, config, profiles, home).HandleAsync(["daemon", "start", "-d", "--name", name]);
 
         var deadline = DateTime.UtcNow.AddSeconds(15);
         while (DateTime.UtcNow < deadline) {

@@ -6,6 +6,8 @@ using Capacitor.Cli.SessionStartMemory;
 namespace Capacitor.Cli.Tests.Unit.SessionStartMemory;
 
 public class WorkItemsNudgeEmitterTests {
+    [TempHome] public required TempHome Home { get; init; }
+
     [Test]
     public async Task Build_returns_null_for_missing_session_id() {
         await Assert.That(WorkItemsNudgeEmitter.Build(null)).IsNull();
@@ -63,7 +65,8 @@ public class WorkItemsNudgeEmitterTests {
 
         // Opt-out wins even for an available harness.
         await Assert.That(WorkItemsNudgeEmitter.Resolve(
-            SessionStartHarness.Codex, "s1", optedOut: true, codexConfigPath: CodexConfigWithWorkItems(tmp))).IsNull();
+            SessionStartHarness.Codex, "s1", optedOut: true, home: Home,
+            codexConfigPath: CodexConfigWithWorkItems(tmp))).IsNull();
     }
 
     [Test]
@@ -71,7 +74,8 @@ public class WorkItemsNudgeEmitterTests {
         using var tmp = new TempDir();
 
         var nudge = WorkItemsNudgeEmitter.Resolve(
-            SessionStartHarness.Codex, "s1", optedOut: false, codexConfigPath: CodexConfigWithWorkItems(tmp));
+            SessionStartHarness.Codex, "s1", optedOut: false, home: Home,
+            codexConfigPath: CodexConfigWithWorkItems(tmp));
         await Assert.That(nudge).IsNotNull();
         await Assert.That(nudge!).Contains("`s1`");
     }
@@ -82,32 +86,28 @@ public class WorkItemsNudgeEmitterTests {
         using var tmp = new TempDir();
         var codexConfig = tmp.CreateFile("config.toml", "model = \"gpt-5-codex\"\n");
         await Assert.That(
-            WorkItemsNudgeEmitter.Resolve(SessionStartHarness.Codex, "s1", optedOut: false, codexConfigPath: codexConfig))
+            WorkItemsNudgeEmitter.Resolve(SessionStartHarness.Codex, "s1", optedOut: false, home: Home,
+                                          codexConfigPath: codexConfig))
             .IsNull();
     }
 }
 
-[NotInParallel("HomeEnvVarMutation")]
+// Availability is read per harness from that vendor's own layout, so every override variable a
+// peer suite clears is one of these reads.
+[NotInParallel("VendorEnvOverrides")]
 public class WorkItemsNudgeAvailabilityTests {
-    static string NewHome(TempDir tmp, out string root) {
-        root = tmp.CreateDir("home");
-        return root;
-    }
+    [TempHome] public required TempHome Home { get; init; }
 
     [Test]
     public async Task Claude_without_an_effective_plugin_suppresses() {
         // A home with no installed kcap plugin → fail closed (no nudge). This is also what keeps the
         // Claude SessionStart hook tests (isolated home / CI) free of the nudge.
-        using var tmp = new TempDir();
-        var home = NewHome(tmp, out _);
-        await Assert.That(WorkItemsNudgeAvailability.IsRegisteredFor(SessionStartHarness.Claude, home)).IsFalse();
+        await Assert.That(WorkItemsNudgeAvailability.IsRegisteredFor(SessionStartHarness.Claude, Home)).IsFalse();
     }
 
     [Test]
     public async Task Claude_with_an_effective_plugin_is_available() {
-        using var tmp = new TempDir();
-        var home = NewHome(tmp, out _);
-        var claude = Path.Combine(home, ".claude");
+        var claude = Home.PathTo(".claude");
         var installPath = Path.Combine(claude, "plugins", "cache", "kcap", "kcap", "1.0.0");
         Directory.CreateDirectory(installPath);
         await File.WriteAllTextAsync(Path.Combine(installPath, ".mcp.json"), "{}");
@@ -118,145 +118,119 @@ public class WorkItemsNudgeAvailabilityTests {
             System.Text.Json.JsonSerializer.Serialize(installPath) + ", \"version\": \"1.0.0\" } ] } }");
         await File.WriteAllTextAsync(
             Path.Combine(claude, "settings.json"), "{ \"enabledPlugins\": { \"kcap@kcap\": true } }");
-        await Assert.That(WorkItemsNudgeAvailability.IsRegisteredFor(SessionStartHarness.Claude, home)).IsTrue();
+        await Assert.That(WorkItemsNudgeAvailability.IsRegisteredFor(SessionStartHarness.Claude, Home)).IsTrue();
     }
 
     [Test]
     public async Task Cursor_present_entry_is_available() {
-        using var tmp = new TempDir();
-        var home = NewHome(tmp, out _);
-        var path = CursorPaths.UserMcpJson(home);
+        var path = CursorPaths.FromEnvironment(Home).UserMcpJson;
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         await File.WriteAllTextAsync(path, """{"mcpServers":{"kcap-workitems":{"command":"kcap","args":["mcp","workitems"]}}}""");
-        await Assert.That(WorkItemsNudgeAvailability.IsRegisteredFor(SessionStartHarness.Cursor, home)).IsTrue();
+        await Assert.That(WorkItemsNudgeAvailability.IsRegisteredFor(SessionStartHarness.Cursor, Home)).IsTrue();
     }
 
     [Test]
     public async Task Cursor_absent_entry_suppresses() {
-        using var tmp = new TempDir();
-        var home = NewHome(tmp, out _);
-        var path = CursorPaths.UserMcpJson(home);
+        var path = CursorPaths.FromEnvironment(Home).UserMcpJson;
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         await File.WriteAllTextAsync(path, """{"mcpServers":{"kcap-review":{"command":"kcap"}}}""");
-        await Assert.That(WorkItemsNudgeAvailability.IsRegisteredFor(SessionStartHarness.Cursor, home)).IsFalse();
+        await Assert.That(WorkItemsNudgeAvailability.IsRegisteredFor(SessionStartHarness.Cursor, Home)).IsFalse();
     }
 
     [Test]
     public async Task Missing_config_file_suppresses() {
-        using var tmp = new TempDir();
-        var home = NewHome(tmp, out _);
-        await Assert.That(WorkItemsNudgeAvailability.IsRegisteredFor(SessionStartHarness.Cursor, home)).IsFalse();
+        await Assert.That(WorkItemsNudgeAvailability.IsRegisteredFor(SessionStartHarness.Cursor, Home)).IsFalse();
     }
 
     [Test]
     public async Task Malformed_config_suppresses() {
-        using var tmp = new TempDir();
-        var home = NewHome(tmp, out _);
-        var path = CursorPaths.UserMcpJson(home);
+        var path = CursorPaths.FromEnvironment(Home).UserMcpJson;
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         await File.WriteAllTextAsync(path, "{ this is not json ");
-        await Assert.That(WorkItemsNudgeAvailability.IsRegisteredFor(SessionStartHarness.Cursor, home)).IsFalse();
+        await Assert.That(WorkItemsNudgeAvailability.IsRegisteredFor(SessionStartHarness.Cursor, Home)).IsFalse();
     }
 
     [Test]
     public async Task OpenCode_disabled_entry_suppresses() {
-        using var tmp = new TempDir();
-        var home = NewHome(tmp, out _);
-        var path = OpenCodePaths.McpConfigJson(home);
+        var path = OpenCodePaths.FromEnvironment(Home).McpConfigJson;
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         // OpenCode's block key is `mcp`; an explicit "enabled": false reads as absent.
         await File.WriteAllTextAsync(path, """{"mcp":{"kcap-workitems":{"type":"local","enabled":false}}}""");
-        await Assert.That(WorkItemsNudgeAvailability.IsRegisteredFor(SessionStartHarness.OpenCode, home)).IsFalse();
+        await Assert.That(WorkItemsNudgeAvailability.IsRegisteredFor(SessionStartHarness.OpenCode, Home)).IsFalse();
     }
 
     [Test]
     public async Task Cursor_non_object_entry_suppresses() {
         // A null / string / array value for the key is malformed → fail closed.
         foreach (var badValue in new[] { "null", "\"kcap\"", "[1,2]" }) {
-            using var tmp = new TempDir();
-            var home = NewHome(tmp, out _);
-            var path = CursorPaths.UserMcpJson(home);
+            var path = CursorPaths.FromEnvironment(Home).UserMcpJson;
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             await File.WriteAllTextAsync(path, "{\"mcpServers\":{\"kcap-workitems\":" + badValue + "}}");
-            await Assert.That(WorkItemsNudgeAvailability.IsRegisteredFor(SessionStartHarness.Cursor, home))
+            await Assert.That(WorkItemsNudgeAvailability.IsRegisteredFor(SessionStartHarness.Cursor, Home))
                 .IsFalse().Because($"value {badValue} is malformed");
         }
     }
 
     [Test]
     public async Task Cursor_non_boolean_enabled_suppresses() {
-        using var tmp = new TempDir();
-        var home = NewHome(tmp, out _);
-        var path = CursorPaths.UserMcpJson(home);
+        var path = CursorPaths.FromEnvironment(Home).UserMcpJson;
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         // A string "false" (or any non-Boolean) enabled value must not read as enabled.
         await File.WriteAllTextAsync(path, """{"mcpServers":{"kcap-workitems":{"command":"kcap","enabled":"false"}}}""");
-        await Assert.That(WorkItemsNudgeAvailability.IsRegisteredFor(SessionStartHarness.Cursor, home)).IsFalse();
+        await Assert.That(WorkItemsNudgeAvailability.IsRegisteredFor(SessionStartHarness.Cursor, Home)).IsFalse();
     }
 
     [Test]
     public async Task Pi_commented_declaration_before_the_real_one_suppresses() {
-        using var tmp = new TempDir();
-        var home = NewHome(tmp, out _);
-        var path = PiPaths.KcapMcpExtension(home);
+        var path = PiPaths.FromEnvironment(Home).KcapMcpExtension;
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         // A commented-out declaration mentioning workitems precedes the REAL declaration, which omits
         // it — comment stripping must make the real one win.
         await File.WriteAllTextAsync(path,
             "// const KCAP_MCP_SERVERS = [\"workitems\"]\nconst KCAP_MCP_SERVERS = [\"review\", \"sessions\"];");
-        await Assert.That(WorkItemsNudgeAvailability.IsRegisteredFor(SessionStartHarness.Pi, home)).IsFalse();
+        await Assert.That(WorkItemsNudgeAvailability.IsRegisteredFor(SessionStartHarness.Pi, Home)).IsFalse();
     }
 
     [Test]
     public async Task Pi_block_commented_workitems_suppresses() {
-        using var tmp = new TempDir();
-        var home = NewHome(tmp, out _);
-        var path = PiPaths.KcapMcpExtension(home);
+        var path = PiPaths.FromEnvironment(Home).KcapMcpExtension;
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         await File.WriteAllTextAsync(path,
             "/* KCAP_MCP_SERVERS = [\"workitems\"] */ const KCAP_MCP_SERVERS = [\"review\"];");
-        await Assert.That(WorkItemsNudgeAvailability.IsRegisteredFor(SessionStartHarness.Pi, home)).IsFalse();
+        await Assert.That(WorkItemsNudgeAvailability.IsRegisteredFor(SessionStartHarness.Pi, Home)).IsFalse();
     }
 
     [Test]
     public async Task Pi_non_exact_element_suppresses() {
-        using var tmp = new TempDir();
-        var home = NewHome(tmp, out _);
-        var path = PiPaths.KcapMcpExtension(home);
+        var path = PiPaths.FromEnvironment(Home).KcapMcpExtension;
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         // "workitems" only as a substring of another element must not count.
         await File.WriteAllTextAsync(path, "const KCAP_MCP_SERVERS = [\"review\", \"workitems-extra\"];");
-        await Assert.That(WorkItemsNudgeAvailability.IsRegisteredFor(SessionStartHarness.Pi, home)).IsFalse();
+        await Assert.That(WorkItemsNudgeAvailability.IsRegisteredFor(SessionStartHarness.Pi, Home)).IsFalse();
     }
 
     [Test]
     public async Task OpenCode_enabled_entry_is_available() {
-        using var tmp = new TempDir();
-        var home = NewHome(tmp, out _);
-        var path = OpenCodePaths.McpConfigJson(home);
+        var path = OpenCodePaths.FromEnvironment(Home).McpConfigJson;
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         await File.WriteAllTextAsync(path, """{"mcp":{"kcap-workitems":{"type":"local","enabled":true}}}""");
-        await Assert.That(WorkItemsNudgeAvailability.IsRegisteredFor(SessionStartHarness.OpenCode, home)).IsTrue();
+        await Assert.That(WorkItemsNudgeAvailability.IsRegisteredFor(SessionStartHarness.OpenCode, Home)).IsTrue();
     }
 
     [Test]
     public async Task Pi_extension_with_workitems_is_available() {
-        using var tmp = new TempDir();
-        var home = NewHome(tmp, out _);
-        var path = PiPaths.KcapMcpExtension(home);
+        var path = PiPaths.FromEnvironment(Home).KcapMcpExtension;
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         await File.WriteAllTextAsync(path, """const KCAP_MCP_SERVERS = ["review", "sessions", "flows", "memory", "analytics", "workitems"];""");
-        await Assert.That(WorkItemsNudgeAvailability.IsRegisteredFor(SessionStartHarness.Pi, home)).IsTrue();
+        await Assert.That(WorkItemsNudgeAvailability.IsRegisteredFor(SessionStartHarness.Pi, Home)).IsTrue();
     }
 
     [Test]
     public async Task Pi_extension_without_workitems_suppresses() {
-        using var tmp = new TempDir();
-        var home = NewHome(tmp, out _);
-        var path = PiPaths.KcapMcpExtension(home);
+        var path = PiPaths.FromEnvironment(Home).KcapMcpExtension;
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         await File.WriteAllTextAsync(path, """const KCAP_MCP_SERVERS = ["review", "sessions", "flows", "memory", "analytics"];""");
-        await Assert.That(WorkItemsNudgeAvailability.IsRegisteredFor(SessionStartHarness.Pi, home)).IsFalse();
+        await Assert.That(WorkItemsNudgeAvailability.IsRegisteredFor(SessionStartHarness.Pi, Home)).IsFalse();
     }
 
     [Test]
@@ -265,7 +239,7 @@ public class WorkItemsNudgeAvailabilityTests {
         var codexConfig = tmp.CreateFile("config.toml",
             "[mcp_servers.kcap-workitems]\ncommand = \"kcap\"\nargs = [\"mcp\", \"workitems\"]\n");
         await Assert.That(
-            WorkItemsNudgeAvailability.IsRegisteredFor(SessionStartHarness.Codex, codexConfigPath: codexConfig)).IsTrue();
+            WorkItemsNudgeAvailability.IsRegisteredFor(SessionStartHarness.Codex, Home, codexConfig)).IsTrue();
     }
 }
 

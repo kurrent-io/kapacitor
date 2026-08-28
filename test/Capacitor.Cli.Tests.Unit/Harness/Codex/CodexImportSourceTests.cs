@@ -1,21 +1,24 @@
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.Core.Harness.Codex;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Harness.Codex;
 
 namespace Capacitor.Cli.Tests.Unit.Harness.Codex;
 
 public class CodexImportSourceTests {
+    [TempHome] public required TempHome Home { get; init; }
+
     [TempConfigRoot] public required TempConfigRoot Config { get; init; }
 
     [Test]
     public async Task vendor_is_codex() {
-        var src = new CodexImportSource(Config.Root);
+        var src = new CodexImportSource(Config.Root, CodexPaths.FromEnvironment(Home).Sessions);
         await Assert.That(src.Vendor).IsEqualTo("codex");
     }
 
     [Test]
     public async Task supports_title_generation() {
-        var src = new CodexImportSource(Config.Root);
+        var src = new CodexImportSource(Config.Root, CodexPaths.FromEnvironment(Home).Sessions);
         await Assert.That(src.SupportsTitleGeneration).IsTrue();
     }
 
@@ -35,7 +38,7 @@ public class CodexImportSourceTests {
 
     [Test]
     public async Task import_session_async_throws_not_implemented() {
-        var src = new CodexImportSource(Config.Root);
+        var src = new CodexImportSource(Config.Root, CodexPaths.FromEnvironment(Home).Sessions);
         var classification = new ImportCommand.SessionClassification {
             SessionId  = "abc",
             FilePath   = "/tmp/none",
@@ -50,6 +53,6 @@ public class CodexImportSourceTests {
             () => src.ImportSessionAsync(classification, ctx, CancellationToken.None)
         );
 
-        await Assert.That(ex?.Message).Contains("E2");
+        await Assert.That(ex?.Message).Contains("ImportChainsAsync");
     }
 }

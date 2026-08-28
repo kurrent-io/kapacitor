@@ -22,7 +22,7 @@ public class KiroImportSourceTests {
         tmp.CreateFile($"{Dashed}.json",
             """{"cwd":"/work","title":"Hi there","created_at":"2026-06-17T10:30:00Z","session_state":{"rts_model_state":{"model_info":{"model_id":"auto"}}}}""");
 
-        var src = new KiroImportSource(Config.Root, sessionsDirOverride: tmp.Path);
+        var src = new KiroImportSource(Config.Root, tmp.Path);
         await Assert.That(src.IsAvailable).IsTrue();
 
         var found = await src.DiscoverAsync(new DiscoveryFilters(null, null, null, 1), CancellationToken.None);
@@ -42,7 +42,7 @@ public class KiroImportSourceTests {
         using var tmp = new TempDir();
         tmp.CreateFile($"{Dashed}.jsonl", "{}\n");
 
-        var src = new KiroImportSource(Config.Root, sessionsDirOverride: tmp.Path);
+        var src = new KiroImportSource(Config.Root, tmp.Path);
 
         var match = await src.DiscoverAsync(new DiscoveryFilters(null, Dashed.Replace("-", ""), null, 1), CancellationToken.None);
         await Assert.That(match.Count).IsEqualTo(1);

@@ -10,10 +10,11 @@ namespace Capacitor.Cli.Commands;
 /// than two arguments threaded through every verb.
 /// </summary>
 sealed class DaemonServiceCommands(
-        DaemonStore store, ConfigRoot root, ProfileContext profiles, IServiceManager manager, string id) {
+        DaemonStore store, ConfigRoot root, ProfileContext profiles, IServiceManager manager, string id,
+        UserHome home) {
     /// <summary>Resolves the OS service manager and the service id once, then runs one verb.</summary>
     public static async Task<int> DispatchAsync(
-            DaemonStore store, ConfigRoot root, ProfileContext profiles, string[] args) {
+            DaemonStore store, ConfigRoot root, ProfileContext profiles, UserHome home, string[] args) {
         if (args.Length == 0) return Usage();
 
         var action  = args[0];
@@ -22,7 +23,7 @@ sealed class DaemonServiceCommands(
 
         IServiceManager manager;
         try {
-            manager = ServiceManagerFactory.ForCurrentOs(root);
+            manager = ServiceManagerFactory.ForCurrentOs(root, home);
         } catch (PlatformNotSupportedException ex) {
             await Console.Error.WriteLineAsync(ex.Message);
             return 1;
@@ -30,7 +31,7 @@ sealed class DaemonServiceCommands(
 
         var verbs = new DaemonServiceCommands(
             store, root, profiles, manager,
-            DaemonStore.Sanitize(DaemonNameResolver.Resolve(rest, profiles.DaemonName)));
+            DaemonStore.Sanitize(DaemonNameResolver.Resolve(rest, profiles.DaemonName)), home);
 
         return action switch {
             "install"   => await verbs.Install(rest, startNow: !noStart),
@@ -535,7 +536,7 @@ sealed class DaemonServiceCommands(
         if (!unitPresent) return (null, null, null, null);
 
         try {
-            var env = LaunchdUnit.EnvFromPlist(File.ReadAllText(LaunchdUnit.PlistPath(id)));
+            var env = LaunchdUnit.EnvFromPlist(File.ReadAllText(LaunchdUnit.PlistPath(home, id)));
             env.TryGetValue("KCAP_PROFILE", out var profile);
             env.TryGetValue("KCAP_EXPECT_SERVER_URL", out var expectedServer);
             env.TryGetValue("KCAP_CONSENT_SEED_DEFAULT", out var consentSeed);

@@ -1,5 +1,6 @@
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core.FirstRun;
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Core.Setup;
 using Capacitor.Cli.Harness.Claude;
 
@@ -10,6 +11,8 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 /// scanned in the first place. Both are places a figure can quietly stop matching the disk.
 /// </summary>
 public class SetupImportLaneTests {
+    [TempHome] public required TempHome Home { get; init; }
+
     [TempConfigRoot] public required TempConfigRoot Config { get; init; }
 
     static ImportCommand.ImportDiscoveryResult Found(
@@ -101,7 +104,7 @@ public class SetupImportLaneTests {
             0);
 
     SetupImportLane Lane(Func<SetupImportLane.Pass, Task<ImportCommand.ImportRunOutcome?>> runner) =>
-        new(Config.Root, Resolutions.None(Config.Root), runner);
+        new(Config.Root, Resolutions.None(Config.Root), Home, HarnessPaths.FromEnvironment(Home), runner);
 
     /// <summary>A run that reported its Done grid with nothing failed.</summary>
     static Task<ImportCommand.ImportRunOutcome?> Clean() =>
@@ -246,7 +249,7 @@ public class SetupImportLaneTests {
         async Task<int?> ThirtyDayCountAsOf(DateTimeOffset asOf) {
             ImportCommand.ImportDiscoveryResult? found = null;
 
-            await new ImportCommand(Config.Root, Resolutions.None(Config.Root)).HandleImport(
+            await new ImportCommand(Config.Root, Resolutions.None(Config.Root), Home).HandleImport(
                 filterCwd:    null,
                 minLines:     1,
                 sources:      [new ClaudeImportSource(Config.Root, projects)],
@@ -270,7 +273,7 @@ public class SetupImportLaneTests {
 
     [Test]
     public async Task Every_catalogue_vendor_has_a_source_when_nothing_filters_them() {
-        var built = SetupCommand.BuildImportSources(Config.Root);
+        var built = SetupCommand.BuildImportSources(Config.Root, HarnessPaths.FromEnvironment(Home));
 
         await Assert.That(built.Select(b => b.Vendor))
                     .IsEquivalentTo(HarnessCatalog.All.Select(h => h.VendorId));
@@ -280,7 +283,7 @@ public class SetupImportLaneTests {
     public async Task Only_the_named_vendors_sources_are_built() {
         // The filter is applied to what gets scanned, which is what makes a reported figure already
         // scoped rather than needing subtraction afterwards.
-        var built = SetupCommand.BuildImportSources(Config.Root, ["claude", "codex"]);
+        var built = SetupCommand.BuildImportSources(Config.Root, HarnessPaths.FromEnvironment(Home), ["claude", "codex"]);
 
         await Assert.That(built.Select(s => s.Vendor)).IsEquivalentTo(["claude", "codex"]);
     }
@@ -289,7 +292,7 @@ public class SetupImportLaneTests {
     public async Task An_empty_vendor_list_builds_nothing_rather_than_everything() {
         // "Scan nothing" is a real answer — every agent on the machine was left unrecorded — and
         // collapsing it to "no filter" would import exactly what the user declined.
-        await Assert.That(SetupCommand.BuildImportSources(Config.Root, [])).IsEmpty();
+        await Assert.That(SetupCommand.BuildImportSources(Config.Root, HarnessPaths.FromEnvironment(Home), [])).IsEmpty();
     }
 
     // ---- What the run reports back to the flow.

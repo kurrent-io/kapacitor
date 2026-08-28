@@ -1,3 +1,4 @@
+using System.Runtime.Versioning;
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
@@ -7,12 +8,13 @@ using Capacitor.Cli.Core.Harness.Cursor;
 using Capacitor.Cli.Core.Harness.Gemini;
 using Capacitor.Cli.Core.Harness.Kiro;
 using Capacitor.Cli.Core.Mcp;
+using TUnit.Core.Enums;
 
 namespace Capacitor.Cli.Tests.Unit.Commands;
 
-// HomeEnvVarMutation: uninstall reads HOME via PathHelpers.HomeDirectory to
-// resolve every user-level path (~/.claude, ~/.codex, ~/.cursor, ~/.agents).
-[NotInParallel(["HomeEnvVarMutation", "CwdMutation"])]
+// VendorEnvOverrides: uninstall resolves every vendor layout through HarnessPaths, so it reads
+// each override variable a peer suite clears.
+[NotInParallel(["VendorEnvOverrides", "CwdMutation"])]
 public class UninstallCommandTests {
     // Uninstall runs `daemon stop --yes`, which enumerates this directory and kills the PIDs it
     // finds; a shared one holding the test runner's own PID makes it kill its own tree.
@@ -101,7 +103,7 @@ public class UninstallCommandTests {
         // Seed config dir with a real file so we can verify deletion.
         await File.WriteAllTextAsync(Path.Combine(fixture.ConfigDir, "profiles.json"), "{}");
 
-        var exit = await new UninstallCommand(Daemons.Store, fixture.Root, Resolutions.None(fixture.Root)).HandleAsync(["uninstall", "--yes"]);
+        var exit = await new UninstallCommand(Daemons.Store, fixture.Root, Resolutions.None(fixture.Root), fixture.UserHome).HandleAsync(["uninstall", "--yes"]);
         await Assert.That(exit).IsEqualTo(0);
 
         // Claude: kcap entries gone, user entries preserved, marker removed.
@@ -160,7 +162,7 @@ public class UninstallCommandTests {
         await File.WriteAllTextAsync(markerPi, CapacitorVersion.Current());
         await File.WriteAllTextAsync(userExt, "export default function(pi){}");
 
-        var exit = await new UninstallCommand(Daemons.Store, fixture.Root, Resolutions.None(fixture.Root)).HandleAsync(["uninstall", "--yes", "--keep-config"]);
+        var exit = await new UninstallCommand(Daemons.Store, fixture.Root, Resolutions.None(fixture.Root), fixture.UserHome).HandleAsync(["uninstall", "--yes", "--keep-config"]);
         await Assert.That(exit).IsEqualTo(0);
 
         await Assert.That(File.Exists(kcapTs)).IsFalse();
@@ -189,7 +191,7 @@ public class UninstallCommandTests {
         await File.WriteAllTextAsync(marker, CapacitorVersion.Current());
         await File.WriteAllTextAsync(userAgent, """{"name":"my-agent"}""");
 
-        var exit = await new UninstallCommand(Daemons.Store, fixture.Root, Resolutions.None(fixture.Root)).HandleAsync(["uninstall", "--yes", "--keep-config"]);
+        var exit = await new UninstallCommand(Daemons.Store, fixture.Root, Resolutions.None(fixture.Root), fixture.UserHome).HandleAsync(["uninstall", "--yes", "--keep-config"]);
         await Assert.That(exit).IsEqualTo(0);
 
         await Assert.That(File.Exists(kcapAgent)).IsFalse();
@@ -220,7 +222,7 @@ public class UninstallCommandTests {
             }
             """);
 
-        var exit = await new UninstallCommand(Daemons.Store, fixture.Root, Resolutions.None(fixture.Root)).HandleAsync(["uninstall", "--yes", "--keep-config"]);
+        var exit = await new UninstallCommand(Daemons.Store, fixture.Root, Resolutions.None(fixture.Root), fixture.UserHome).HandleAsync(["uninstall", "--yes", "--keep-config"]);
         await Assert.That(exit).IsEqualTo(0);
 
         var codexRoot    = JsonNode.Parse(await File.ReadAllTextAsync(codexHooks))!.AsObject();
@@ -252,7 +254,7 @@ public class UninstallCommandTests {
             }
             """);
 
-        var exit = await new UninstallCommand(Daemons.Store, fixture.Root, Resolutions.None(fixture.Root)).HandleAsync(["uninstall", "--yes", "--keep-config"]);
+        var exit = await new UninstallCommand(Daemons.Store, fixture.Root, Resolutions.None(fixture.Root), fixture.UserHome).HandleAsync(["uninstall", "--yes", "--keep-config"]);
         await Assert.That(exit).IsEqualTo(0);
 
         var cursorRoot   = JsonNode.Parse(await File.ReadAllTextAsync(cursorHooks))!.AsObject();
@@ -287,7 +289,7 @@ public class UninstallCommandTests {
             }
             """);
 
-        var exit = await new UninstallCommand(Daemons.Store, fixture.Root, Resolutions.None(fixture.Root)).HandleAsync(["uninstall", "--yes", "--keep-config"]);
+        var exit = await new UninstallCommand(Daemons.Store, fixture.Root, Resolutions.None(fixture.Root), fixture.UserHome).HandleAsync(["uninstall", "--yes", "--keep-config"]);
         await Assert.That(exit).IsEqualTo(0);
 
         var root         = JsonNode.Parse(await File.ReadAllTextAsync(claudeSettings))!.AsObject();
@@ -318,7 +320,7 @@ public class UninstallCommandTests {
         var sentinel = Path.Combine(fixture.ConfigDir, "profiles.json");
         await File.WriteAllTextAsync(sentinel, """{"sentinel":"keep"}""");
 
-        var exit = await new UninstallCommand(Daemons.Store, fixture.Root, Resolutions.None(fixture.Root)).HandleAsync(["uninstall", "--yes", "--keep-config"]);
+        var exit = await new UninstallCommand(Daemons.Store, fixture.Root, Resolutions.None(fixture.Root), fixture.UserHome).HandleAsync(["uninstall", "--yes", "--keep-config"]);
         await Assert.That(exit).IsEqualTo(0);
 
         var root = JsonNode.Parse(await File.ReadAllTextAsync(claudeSettings))!.AsObject();
@@ -363,7 +365,7 @@ public class UninstallCommandTests {
         try {
             Environment.CurrentDirectory = tmp.Path;
 
-            var exit = await new UninstallCommand(Daemons.Store, fixture.Root, Resolutions.None(fixture.Root)).HandleAsync(["uninstall", "--yes", "--project", "--keep-config"]);
+            var exit = await new UninstallCommand(Daemons.Store, fixture.Root, Resolutions.None(fixture.Root), fixture.UserHome).HandleAsync(["uninstall", "--yes", "--project", "--keep-config"]);
             await Assert.That(exit).IsEqualTo(0);
 
             var claudeRoot = JsonNode.Parse(await File.ReadAllTextAsync(projectClaude))!.AsObject();
@@ -382,8 +384,8 @@ public class UninstallCommandTests {
     // Globally sequential rather than keyed. The old "ConsoleStreams" key had no other member, so it
     // serialized this Console.Error capture against nothing: another capturing test could still run
     // concurrently, adopt this test's writer as its "original", and restore it mid-flight. Bare
-    // NotInParallel subsumes the HomeEnvVarMutation / CwdMutation groups this test
-    // also needs, since nothing runs alongside a bare-NotInParallel test.
+    // Bare NotInParallel subsumes the VendorEnvOverrides / CwdMutation groups this test also
+    // needs, since nothing runs alongside it.
     [Test, NotInParallel]
     public async Task Project_flag_errors_when_not_inside_git_tree() {
         await using var fixture = await Fixture.CreateAsync();
@@ -396,7 +398,7 @@ public class UninstallCommandTests {
         try {
             Environment.CurrentDirectory = tmp.Path;
 
-            var exit = await new UninstallCommand(Daemons.Store, fixture.Root, Resolutions.None(fixture.Root)).HandleAsync(["uninstall", "--yes", "--project"]);
+            var exit = await new UninstallCommand(Daemons.Store, fixture.Root, Resolutions.None(fixture.Root), fixture.UserHome).HandleAsync(["uninstall", "--yes", "--project"]);
             await Assert.That(exit).IsEqualTo(1);
             await Assert.That(capture.GetCapturedError()).Contains("--project requires a git working tree");
         } finally {
@@ -435,7 +437,7 @@ public class UninstallCommandTests {
             Path.Combine(cursorDir, CursorHooksInstaller.MarkerFileName),
             CapacitorVersion.Current());
 
-        var exit = await new UninstallCommand(Daemons.Store, fixture.Root, Resolutions.None(fixture.Root)).HandleAsync(["uninstall", "--yes", "--keep-config"]);
+        var exit = await new UninstallCommand(Daemons.Store, fixture.Root, Resolutions.None(fixture.Root), fixture.UserHome).HandleAsync(["uninstall", "--yes", "--keep-config"]);
         await Assert.That(exit).IsEqualTo(0);
 
         await Assert.That(File.Exists(Path.Combine(claudeDir, ClaudePluginInstaller.MarkerFileName))).IsFalse();
@@ -459,14 +461,15 @@ public class UninstallCommandTests {
         var mcpPath = Path.Combine(cursorDir, "mcp.json");
         await File.WriteAllTextAsync(mcpPath, """{"mcpServers":{}}""");
 
-        var marker = new McpMarker("cursor");
+        var home   = fixture.UserHome;
+        var marker = new McpMarker("cursor", home);
         marker.Record(mcpPath, ["kcap-review"]); // simulates a marker surviving a manual JSON edit
         await Assert.That(marker.Owned(mcpPath).ToArray()).IsNotEmpty();
 
-        var exit = await new UninstallCommand(Daemons.Store, fixture.Root, Resolutions.None(fixture.Root)).HandleAsync(["uninstall", "--yes", "--keep-config"]);
+        var exit = await new UninstallCommand(Daemons.Store, fixture.Root, Resolutions.None(fixture.Root), home).HandleAsync(["uninstall", "--yes", "--keep-config"]);
         await Assert.That(exit).IsEqualTo(0);
 
-        await Assert.That(new McpMarker("cursor").Owned(mcpPath).ToArray()).IsEmpty();
+        await Assert.That(new McpMarker("cursor", home).Owned(mcpPath).ToArray()).IsEmpty();
     }
 
     [Test]
@@ -486,15 +489,16 @@ public class UninstallCommandTests {
         var mcpPath = Path.Combine(cursorDir, "mcp.json");
         await File.WriteAllTextAsync(mcpPath, "{ this is not valid json"); // → Unregister returns Failed
 
-        var marker = new McpMarker("cursor");
+        var home   = fixture.UserHome;
+        var marker = new McpMarker("cursor", home);
         marker.Record(mcpPath, ["kcap-review"]);
         await Assert.That(marker.Owned(mcpPath).ToArray()).IsNotEmpty();
 
-        var exit = await new UninstallCommand(Daemons.Store, fixture.Root, Resolutions.None(fixture.Root)).HandleAsync(["uninstall", "--yes", "--keep-config"]);
+        var exit = await new UninstallCommand(Daemons.Store, fixture.Root, Resolutions.None(fixture.Root), home).HandleAsync(["uninstall", "--yes", "--keep-config"]);
         await Assert.That(exit).IsNotEqualTo(0); // the failed cursor MCP unregister propagates
 
         // Marker retained → a retry after the user fixes the file can still find + remove the kcap entries.
-        await Assert.That(new McpMarker("cursor").Owned(mcpPath).ToArray()).IsNotEmpty();
+        await Assert.That(new McpMarker("cursor", home).Owned(mcpPath).ToArray()).IsNotEmpty();
     }
 
     [Test]
@@ -524,7 +528,7 @@ public class UninstallCommandTests {
         var legacyRetired = Path.Combine(legacyDir, "kcap-also-retired");
         Directory.CreateDirectory(legacyRetired);
 
-        var exit = await new UninstallCommand(Daemons.Store, fixture.Root, Resolutions.None(fixture.Root)).HandleAsync(["uninstall", "--yes", "--keep-config"]);
+        var exit = await new UninstallCommand(Daemons.Store, fixture.Root, Resolutions.None(fixture.Root), fixture.UserHome).HandleAsync(["uninstall", "--yes", "--keep-config"]);
         await Assert.That(exit).IsEqualTo(0);
 
         await Assert.That(Directory.Exists(currentSkill)).IsFalse();
@@ -533,7 +537,8 @@ public class UninstallCommandTests {
         await Assert.That(Directory.Exists(userSkill)).IsTrue();
     }
 
-    [Test]
+    [Test, ExcludeOn(OS.Windows)]
+    [UnsupportedOSPlatform("windows")]
     public async Task Config_dir_is_preserved_when_user_level_steps_fail() {
         // Regression for the "discarded return codes" issue: when a step
         // returns non-zero, uninstall must NOT delete ~/.config/kcap —
@@ -543,8 +548,6 @@ public class UninstallCommandTests {
         // Windows file ACLs would need an entirely different setup, so this
         // case is Unix-only. The aggregation logic is the same on every
         // platform; covering Unix is sufficient for regression purposes.
-        if (OperatingSystem.IsWindows()) return;
-
         await using var fixture = await Fixture.CreateAsync();
 
         // Force PluginCommand's Claude remove to return 1 by leaving a valid
@@ -563,7 +566,7 @@ public class UninstallCommandTests {
         await File.WriteAllTextAsync(sentinel, """{"sentinel":"survives-partial-failure"}""");
 
         try {
-            var exit = await new UninstallCommand(Daemons.Store, fixture.Root, Resolutions.None(fixture.Root)).HandleAsync(["uninstall", "--yes"]);
+            var exit = await new UninstallCommand(Daemons.Store, fixture.Root, Resolutions.None(fixture.Root), fixture.UserHome).HandleAsync(["uninstall", "--yes"]);
 
             await Assert.That(exit).IsEqualTo(1);
             await Assert.That(Directory.Exists(fixture.ConfigDir)).IsTrue();
@@ -574,14 +577,13 @@ public class UninstallCommandTests {
         }
     }
 
-    [Test]
+    [Test, ExcludeOn(OS.Windows)]
+    [UnsupportedOSPlatform("windows")]
     public async Task Cursor_hooks_write_failure_propagates_to_exit_code() {
         // Cursor's RemoveCursor previously returned 0 even when the helper's
         // inner try/catch swallowed a write failure. The helper now throws,
         // RemoveCursor catches + returns 1, and uninstall aggregates that
         // into hadFailures.
-        if (OperatingSystem.IsWindows()) return;
-
         await using var fixture = await Fixture.CreateAsync();
 
         var cursorDir = Path.Combine(fixture.Home, ".cursor");
@@ -593,7 +595,7 @@ public class UninstallCommandTests {
         File.SetUnixFileMode(hooksPath, UnixFileMode.UserRead | UnixFileMode.GroupRead | UnixFileMode.OtherRead);
 
         try {
-            var exit = await new UninstallCommand(Daemons.Store, fixture.Root, Resolutions.None(fixture.Root)).HandleAsync(["uninstall", "--yes"]);
+            var exit = await new UninstallCommand(Daemons.Store, fixture.Root, Resolutions.None(fixture.Root), fixture.UserHome).HandleAsync(["uninstall", "--yes"]);
 
             await Assert.That(exit).IsEqualTo(1);
             // Failure path skips the config-dir delete so the user can re-run.
@@ -603,13 +605,12 @@ public class UninstallCommandTests {
         }
     }
 
-    [Test]
+    [Test, ExcludeOn(OS.Windows)]
+    [UnsupportedOSPlatform("windows")]
     public async Task Sweep_failure_propagates_to_exit_code() {
         // SweepCapacitorPrefixedDirs previously logged Directory.Delete errors
         // but never flipped hadFailures, so a stuck kcap-* folder under
         // ~/.agents/skills/ would leave uninstall claiming success.
-        if (OperatingSystem.IsWindows()) return;
-
         await using var fixture = await Fixture.CreateAsync();
 
         var skillsDir = Path.Combine(fixture.Home, ".agents", "skills");
@@ -625,7 +626,7 @@ public class UninstallCommandTests {
             UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
 
         try {
-            var exit = await new UninstallCommand(Daemons.Store, fixture.Root, Resolutions.None(fixture.Root)).HandleAsync(["uninstall", "--yes"]);
+            var exit = await new UninstallCommand(Daemons.Store, fixture.Root, Resolutions.None(fixture.Root), fixture.UserHome).HandleAsync(["uninstall", "--yes"]);
 
             await Assert.That(exit).IsEqualTo(1);
             await Assert.That(Directory.Exists(fixture.ConfigDir)).IsTrue();
@@ -637,35 +638,27 @@ public class UninstallCommandTests {
     }
 
     sealed class Fixture : IAsyncDisposable {
-        TempDir? _tempDir;
+        TempHome? _tempHome;
 
         public required string Home      { get; init; }
         public required string ConfigDir { get; init; }
 
-        public ConfigRoot Root => new(ConfigDir);
-
-        public string? OriginalHome { get; init; }
+        public ConfigRoot Root     => new(ConfigDir);
+        public UserHome   UserHome => new(Home);
 
         public static Task<Fixture> CreateAsync() {
-            var tmp = new TempDir();
-            var configDir = tmp.PathTo(".config", "kcap");
-            Directory.CreateDirectory(configDir);
+            var tmp = new TempHome();
+            var configDir = tmp.CreateDir(".config", "kcap").Path;
 
-            var f = new Fixture {
-                Home         = tmp.GetResolvedPath(),
-                ConfigDir    = configDir,
-                OriginalHome = Environment.GetEnvironmentVariable("HOME"),
-                _tempDir     = tmp
-            };
-
-            Environment.SetEnvironmentVariable("HOME", f.Home);
-
-            return Task.FromResult(f);
+            return Task.FromResult(new Fixture {
+                Home      = tmp.Path,
+                ConfigDir = configDir,
+                _tempHome = tmp
+            });
         }
 
         public ValueTask DisposeAsync() {
-            Environment.SetEnvironmentVariable("HOME", OriginalHome);
-            _tempDir?.Dispose();
+            _tempHome?.Dispose();
             return ValueTask.CompletedTask;
         }
     }

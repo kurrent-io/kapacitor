@@ -20,6 +20,8 @@ namespace Capacitor.Cli.Tests.Integration;
 /// auth, no real server required.
 /// </summary>
 public class SpoolOutageRecoveryTests : IDisposable {
+    [TempHome] public required TempHome Home { get; init; }
+
     [TempConfigRoot] public required TempConfigRoot Config { get; init; }
 
     // 32-hex dashless session id — required by HookSpool.SafeSessionId regex.
@@ -67,7 +69,7 @@ public class SpoolOutageRecoveryTests : IDisposable {
 
     // HandleCore takes a pre-built HttpClient so we bypass auth entirely.
     Task<int> Invoke(HttpClient client, string payload) =>
-        new ClaudeHookCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), new HookClock(TimeProvider.System))
+        new ClaudeHookCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), new HookClock(TimeProvider.System), Home)
             .HandleCore(client, AuthStatus.Ok, MakeSpool(), new StringReader(payload));
 
     IEnumerable<string> SpoolFiles =>

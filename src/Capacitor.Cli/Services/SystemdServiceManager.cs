@@ -1,15 +1,17 @@
+using Capacitor.Cli.Core;
+
 namespace Capacitor.Cli.Services;
 
-sealed class SystemdServiceManager(UnitFileWriter? writeUnit = null) : IServiceManager {
+sealed class SystemdServiceManager(UserHome home, UnitFileWriter? writeUnit = null) : IServiceManager {
     readonly UnitFileWriter _writeUnit = writeUnit ?? ((path, content, encoding) => ServiceFiles.WriteOwnerOnly(path, content, encoding));
 
     public string Describe() => "systemd --user unit";
 
     public IReadOnlyList<GeneratedFile> GenerateFiles(ServiceSpec spec) =>
-        [new GeneratedFile(SystemdUnit.UnitPath(spec.ServiceId), SystemdUnit.Unit(spec))];
+        [new GeneratedFile(SystemdUnit.UnitPath(home, spec.ServiceId), SystemdUnit.Unit(spec))];
 
     public IReadOnlyList<string> ListInstalled() {
-        var dir = SystemdUnit.UserUnitDir();
+        var dir = SystemdUnit.UserUnitDir(home);
         if (!Directory.Exists(dir)) return [];
         return [.. Directory.EnumerateFiles(dir, "kcap-daemon-*.service")
             .Select(f => SystemdUnit.IdFromUnitFileName(Path.GetFileName(f)))
@@ -17,7 +19,7 @@ sealed class SystemdServiceManager(UnitFileWriter? writeUnit = null) : IServiceM
     }
 
     public ServiceStatus Status(string serviceId) {
-        var path = SystemdUnit.UnitPath(serviceId);
+        var path = SystemdUnit.UnitPath(home, serviceId);
         if (!File.Exists(path)) return new ServiceStatus(ServiceState.NotInstalled, null);
         var (_, active, _)      = ServiceProcess.Run("systemctl", SystemdUnit.IsActiveArgs(serviceId));
         var (enabledExit, _, _) = ServiceProcess.Run("systemctl", SystemdUnit.IsEnabledArgs(serviceId));
@@ -26,7 +28,7 @@ sealed class SystemdServiceManager(UnitFileWriter? writeUnit = null) : IServiceM
     }
 
     public ServiceQuery Query(string serviceId) {
-        var path = SystemdUnit.UnitPath(serviceId);
+        var path = SystemdUnit.UnitPath(home, serviceId);
         var unitPresent = File.Exists(path);
         var (_, active, _)      = ServiceProcess.Run("systemctl", SystemdUnit.IsActiveArgs(serviceId));
         var (enabledExit, _, _) = ServiceProcess.Run("systemctl", SystemdUnit.IsEnabledArgs(serviceId));
@@ -39,8 +41,8 @@ sealed class SystemdServiceManager(UnitFileWriter? writeUnit = null) : IServiceM
     /// <summary>The unit-writing half of <see cref="Install"/>, split out so it is testable without
     /// invoking systemctl.</summary>
     internal void WriteUnitFiles(ServiceSpec spec) {
-        Directory.CreateDirectory(SystemdUnit.UserUnitDir());
-        _writeUnit(SystemdUnit.UnitPath(spec.ServiceId), SystemdUnit.Unit(spec), null);
+        Directory.CreateDirectory(SystemdUnit.UserUnitDir(home));
+        _writeUnit(SystemdUnit.UnitPath(home, spec.ServiceId), SystemdUnit.Unit(spec), null);
     }
 
     public void Install(ServiceSpec spec, bool startNow) {
@@ -55,7 +57,7 @@ sealed class SystemdServiceManager(UnitFileWriter? writeUnit = null) : IServiceM
 
     public bool Uninstall(string serviceId, out string? error) {
         ServiceProcess.Run("systemctl", SystemdUnit.DisableNowArgs(serviceId));
-        var path = SystemdUnit.UnitPath(serviceId);
+        var path = SystemdUnit.UnitPath(home, serviceId);
         if (File.Exists(path)) File.Delete(path);
         ServiceProcess.Run("systemctl", SystemdUnit.DaemonReloadArgs());
         error = null;

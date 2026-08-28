@@ -1,9 +1,12 @@
+using Capacitor.Cli.Core;
 using Capacitor.Cli.Services;
 using Microsoft.Extensions.Time.Testing;
 
 namespace Capacitor.Cli.Tests.Unit.Services;
 
 public class ServiceVerifyStartTests {
+    [TempHome] public required TempHome Home { get; init; }
+
     [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
 
     [TempConfigRoot] public required TempConfigRoot Config { get; init; }
@@ -14,7 +17,8 @@ public class ServiceVerifyStartTests {
     /// state machine driven by Start/Stop, so a test only sets the flags/pid it cares about.
     /// <see cref="Calls"/> records every verb in argv-order (per the brief) so a test can assert
     /// e.g. Stop happened after Start, and the restore Query happened after Stop.</summary>
-    sealed class FakeServiceManager : IVerifyServiceManager {
+    sealed class FakeServiceManager(UserHome home) : IVerifyServiceManager {
+        public string UnitPath(string serviceId) => LaunchdUnit.PlistPath(home, serviceId);
         public readonly List<string> Calls = [];
         public bool Started, Stopped, RemainsLoadedAfterStop, ProbeUnknownAfterStop;
         public int? RunningPid = 4242;
@@ -121,7 +125,7 @@ public class ServiceVerifyStartTests {
 
     [Test]
     public async Task Happy_bootstrap_writes_marker_before_start_and_deletes_it_after_verified_success() {
-        var manager = new FakeServiceManager();
+        var manager = new FakeServiceManager(Home);
         var phaseAtStart = "";
         manager.OnStart = id => phaseAtStart = ServiceTxnMarker.Read(Daemons.Store, id)!.Phase;
 
@@ -148,7 +152,7 @@ public class ServiceVerifyStartTests {
 
     [Test]
     public async Task Readiness_never_satisfied_rolls_back_and_reports_readiness_timeout() {
-        var manager = new FakeServiceManager();
+        var manager = new FakeServiceManager(Home);
         var time = new FakeTimeProvider();
 
         static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
@@ -167,7 +171,7 @@ public class ServiceVerifyStartTests {
 
     [Test]
     public async Task Ownership_mismatch_never_satisfies_the_predicate_and_never_uninstalls() {
-        var manager = new FakeServiceManager { RunningPid = 111 };
+        var manager = new FakeServiceManager(Home) { RunningPid = 111 };
         var time = new FakeTimeProvider();
 
         static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
@@ -186,7 +190,7 @@ public class ServiceVerifyStartTests {
 
     [Test]
     public async Task Start_accepts_a_capability_incompatible_hello() {
-        var manager = new FakeServiceManager();
+        var manager = new FakeServiceManager(Home);
 
         // Old daemon: well-formed hello, but no capability data at all.
         static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
@@ -202,7 +206,7 @@ public class ServiceVerifyStartTests {
 
     [Test]
     public async Task Rollback_reserve_exhausted_while_still_loaded_is_restore_verification() {
-        var manager = new FakeServiceManager { RemainsLoadedAfterStop = true, StopError = "launchctl bootout: 5: Input/output error" };
+        var manager = new FakeServiceManager(Home) { RemainsLoadedAfterStop = true, StopError = "launchctl bootout: 5: Input/output error" };
         var time = new FakeTimeProvider();
 
         static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
@@ -232,7 +236,7 @@ public class ServiceVerifyStartTests {
 
     [Test]
     public async Task Rollback_reserve_exhausted_while_still_unknown_is_rollback_budget() {
-        var manager = new FakeServiceManager { ProbeUnknownAfterStop = true, StopError = "launchctl bootout: 5: Input/output error" };
+        var manager = new FakeServiceManager(Home) { ProbeUnknownAfterStop = true, StopError = "launchctl bootout: 5: Input/output error" };
         var time = new FakeTimeProvider();
 
         static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
@@ -253,7 +257,7 @@ public class ServiceVerifyStartTests {
 
     [Test]
     public async Task Predicate_holding_once_is_not_enough_a_failed_final_recheck_still_rolls_back() {
-        var manager = new FakeServiceManager();
+        var manager = new FakeServiceManager(Home);
         var time = new FakeTimeProvider();
 
         // Well-formed exactly once — the primary check catches that one good answer, but the
@@ -276,7 +280,7 @@ public class ServiceVerifyStartTests {
 
     [Test]
     public async Task Final_recheck_gets_the_reserved_confirm_slice_when_the_primary_lands_near_the_deadline() {
-        var manager = new FakeServiceManager();
+        var manager = new FakeServiceManager(Home);
         var time = new FakeTimeProvider();
 
         // The primary hello burns almost the whole poll budget (a slow resolve landing right at
@@ -307,7 +311,7 @@ public class ServiceVerifyStartTests {
         // A hung `launchctl print` paired with a hello that consumes ~all of its budget must not
         // let readiness exceed the forward deadline: the Query is bounded by remaining-to-deadline,
         // so the transaction rolls back rather than committing after ~2x the forward time.
-        var manager = new FakeServiceManager { HangQueryClock = time };
+        var manager = new FakeServiceManager(Home) { HangQueryClock = time };
         Task<HelloProbeResult> Hello(string _, TimeSpan budget) {
             time.Advance(budget);
             return Task.FromResult(new HelloProbeResult(true, 1, "1.2.3", "kcap-daemon"));
@@ -332,7 +336,7 @@ public class ServiceVerifyStartTests {
         // A new job pid on every observation (KeepAlive respawn between the primary check and the
         // final recheck): each check owns, but the pinned incarnation never survives to the
         // recheck, so a crash-looping unit is never committed — it rolls back at the forward cutoff.
-        var manager = new FakeServiceManager { RunningPid = 1000 };
+        var manager = new FakeServiceManager(Home) { RunningPid = 1000 };
         var time = new FakeTimeProvider();
 
         Task<HelloProbeResult> Hello(string _, TimeSpan __) {
@@ -352,7 +356,7 @@ public class ServiceVerifyStartTests {
 
     [Test]
     public async Task Start_success_records_committed_phase_before_deleting_the_marker() {
-        var manager = new FakeServiceManager();
+        var manager = new FakeServiceManager(Home);
         string? phaseAtCommit = null;
 
         static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
@@ -419,7 +423,7 @@ public class ServiceVerifyStartTests {
     [Arguments(true, "evidence_unreadable")]  // query saw the unit but the read reports absent
     public async Task Phase_a_absence_evidence_disambiguates_directive_missing_from_evidence_unreadable(
         bool unitPresent, string expectedReason) {
-        var manager = new FakeServiceManager { UnitPresent = unitPresent };
+        var manager = new FakeServiceManager(Home) { UnitPresent = unitPresent };
 
         static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
             Task.FromResult(new HelloProbeResult(true, 1, "1.2.3", "kcap-daemon"));
@@ -451,7 +455,7 @@ public class ServiceVerifyStartTests {
     // the entry reset.
     [Test, NotInParallel]
     public async Task Last_gate_reason_is_cleared_at_the_next_operation_entry() {
-        var manager = new FakeServiceManager();
+        var manager = new FakeServiceManager(Home);
 
         static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
             Task.FromResult(new HelloProbeResult(true, 1, "1.2.3", "kcap-daemon"));
@@ -480,7 +484,7 @@ public class ServiceVerifyStartTests {
     public async Task Plist_drift_between_phase_a_and_phase_b_rolls_back_to_29_without_ever_starting() {
         // Loaded at the fresh query — the gated path must boot it out (never kickstart it)
         // before re-checking evidence immediately ahead of bootstrap.
-        var manager = new FakeServiceManager { Started = true };
+        var manager = new FakeServiceManager(Home) { Started = true };
         var stopPhases = new List<string?>();
         manager.OnStop = id => stopPhases.Add(ServiceTxnMarker.Read(Daemons.Store, id)?.Phase);
 
@@ -520,7 +524,7 @@ public class ServiceVerifyStartTests {
 
     [Test]
     public async Task Malformed_plist_at_phase_a_is_evidence_unreadable_and_touches_nothing() {
-        var manager = new FakeServiceManager();
+        var manager = new FakeServiceManager(Home);
 
         static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
             Task.FromResult(new HelloProbeResult(true, 1, "1.2.3", "kcap-daemon"));
@@ -543,7 +547,7 @@ public class ServiceVerifyStartTests {
 
     [Test]
     public async Task Duplicate_key_plist_at_phase_a_is_evidence_unreadable_and_touches_nothing() {
-        var manager = new FakeServiceManager();
+        var manager = new FakeServiceManager(Home);
 
         static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
             Task.FromResult(new HelloProbeResult(true, 1, "1.2.3", "kcap-daemon"));
@@ -583,7 +587,7 @@ public class ServiceVerifyStartTests {
 
     [Test]
     public async Task Garbage_plist_at_phase_b_recheck_is_treated_as_drift_and_rolls_back() {
-        var manager = new FakeServiceManager { Started = true };
+        var manager = new FakeServiceManager(Home) { Started = true };
         var stopPhases = new List<string?>();
         manager.OnStop = id => stopPhases.Add(ServiceTxnMarker.Read(Daemons.Store, id)?.Phase);
 
@@ -625,7 +629,7 @@ public class ServiceVerifyStartTests {
         // Start() below on an unconfirmed bootout: that would kickstart launchd's still-loaded,
         // possibly stale definition — exactly the path this gate exists to prevent. Rollback's
         // own re-attempt (the second Stop) succeeds, confirming the restore.
-        var manager = new FakeServiceManager {
+        var manager = new FakeServiceManager(Home) {
             Started = true,
             StopError = "launchctl bootout: 5: Input/output error",
             StopErrorOnceOnly = true,
@@ -662,7 +666,7 @@ public class ServiceVerifyStartTests {
         // on an unconfirmed bootout would silently kickstart the stale still-loaded definition,
         // so the gate must roll back to BootoutUnknown instead, with zero start calls, even
         // though Stop() never reported an error at all.
-        var manager = new FakeServiceManager { Started = true, RemainsLoadedUntilSecondStop = true };
+        var manager = new FakeServiceManager(Home) { Started = true, RemainsLoadedUntilSecondStop = true };
         var time = new FakeTimeProvider();
 
         static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
@@ -691,7 +695,7 @@ public class ServiceVerifyStartTests {
     /// probes already saw matching content.</summary>
     [Test]
     public async Task Post_readiness_recheck_detects_plist_drift_after_confirmed_ready_and_rolls_back_to_29() {
-        var manager = new FakeServiceManager();
+        var manager = new FakeServiceManager(Home);
 
         Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
             Task.FromResult(new HelloProbeResult(true, 1, "1.2.3", "kcap-daemon"));
@@ -727,7 +731,7 @@ public class ServiceVerifyStartTests {
     /// content drift — a swapped binary at the SAME baked path must still roll back to 29.</summary>
     [Test]
     public async Task Post_readiness_recheck_detects_digest_drift_after_confirmed_ready_and_rolls_back_to_29() {
-        var manager = new FakeServiceManager();
+        var manager = new FakeServiceManager(Home);
 
         Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
             Task.FromResult(new HelloProbeResult(true, 1, "1.2.3", "kcap-daemon"));
@@ -757,7 +761,7 @@ public class ServiceVerifyStartTests {
     /// unchanged.</summary>
     [Test]
     public async Task Ungated_start_never_runs_the_post_readiness_recheck() {
-        var manager = new FakeServiceManager();
+        var manager = new FakeServiceManager(Home);
         var readPlistCalls = 0;
 
         static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
@@ -779,7 +783,7 @@ public class ServiceVerifyStartTests {
         // loads the label in the window right before the gate's own bootstrap-only call —
         // manager.StartBootstrapOnly must refuse rather than silently kickstart it the way the
         // generic Start() would.
-        var manager = new FakeServiceManager { LoadedBeforeBootstrapOnly = true };
+        var manager = new FakeServiceManager(Home) { LoadedBeforeBootstrapOnly = true };
 
         static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
             Task.FromResult(new HelloProbeResult(true, 1, "1.2.3", "kcap-daemon"));

@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Config;
 
 namespace Capacitor.Cli;
@@ -11,7 +12,7 @@ namespace Capacitor.Cli;
 ///
 /// Matching rules:
 /// - <c>~</c> or <c>~/</c> (or <c>~\</c> on Windows) at the start of
-///   <c>from</c>/<c>to</c> is expanded to the current user's home directory
+///   <c>from</c>/<c>to</c> is expanded to the given home directory
 ///   (transcript cwds are absolute).
 /// - Path-boundary prefix: <c>cwd == from</c> or <c>cwd starts with from + sep</c>
 ///   where <c>sep</c> is either <c>/</c> or <c>\</c>; so <c>/dev/kapacitor</c>
@@ -27,12 +28,8 @@ static class CwdRemapper {
             ? StringComparison.OrdinalIgnoreCase
             : StringComparison.Ordinal;
 
-    public static string Apply(string cwd, IReadOnlyList<CwdRemap>? rules) =>
-        Apply(cwd, rules, Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
-
-    // Internal seam so tests can pin the home directory and stay cross-platform.
-    internal static string Apply(string cwd, IReadOnlyList<CwdRemap>? rules, string home) =>
-        Apply(cwd, rules, home, PathComparison);
+    public static string Apply(string cwd, IReadOnlyList<CwdRemap>? rules, UserHome home) =>
+        Apply(cwd, rules, home.Path, PathComparison);
 
     // Internal seam for tests that need to pin the comparison policy (so the
     // case-sensitivity behavior can be exercised regardless of host OS).

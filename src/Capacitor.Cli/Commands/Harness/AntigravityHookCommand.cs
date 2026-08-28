@@ -32,7 +32,7 @@ namespace Capacitor.Cli.Commands.Harness;
 /// dashed id lives on only in the transcript file path). Historical import canonicalizes the
 /// same way, so a conversation captured live and later re-imported dedupes to one stream.
 /// </summary>
-sealed class AntigravityHookCommand(ConfigRoot config, ProfileContext profiles, HookClock clock) {
+sealed class AntigravityHookCommand(ConfigRoot config, ProfileContext profiles, HookClock clock, UserHome home) {
     readonly WatcherManager  _watchers = new(config, profiles);
     readonly AgentHookPoster _poster   = new(config, profiles);
 
@@ -92,7 +92,7 @@ sealed class AntigravityHookCommand(ConfigRoot config, ProfileContext profiles, 
         var activeProfile = profiles.Effective;
 
         if (activeProfile?.ExcludedPaths is { Length: > 0 } excludedPaths
-         && PathExclusion.IsExcluded(cwd, excludedPaths)) {
+         && PathExclusion.IsExcluded(cwd, excludedPaths, home)) {
             return 0;
         }
 
@@ -142,7 +142,7 @@ sealed class AntigravityHookCommand(ConfigRoot config, ProfileContext profiles, 
         var forwarded = new JsonObject {
             ["hook_event_name"] = "sessionStart",
             ["session_id"]      = sessionId,
-            ["home_dir"]        = PathHelpers.HomeDirectory,
+            ["home_dir"]        = home.Path,
             ["started_at"]      = DateTimeOffset.UtcNow.ToString("O")
         };
 
@@ -164,7 +164,7 @@ sealed class AntigravityHookCommand(ConfigRoot config, ProfileContext profiles, 
         if (activeProfile?.DefaultVisibility is { } visibility)
             forwarded["default_visibility"] = visibility;
 
-        SessionStartInventory.Stamp(forwarded, config);
+        SessionStartInventory.Stamp(forwarded, config, home);
         var enriched = await RepositoryDetection.EnrichWithRepositoryInfo(config, forwarded.ToJsonString());
 
         if (activeProfile?.ExcludedRepos is { Length: > 0 } excludedRepos
@@ -207,8 +207,8 @@ sealed class AntigravityHookCommand(ConfigRoot config, ProfileContext profiles, 
         // gate below returns early — a withheld watcher must not suppress injection.
         var fragment = await SessionStartMemoryHookSupport.AwaitBounded(memoryTask, budget);
         var workItemsNudge = HarnessNudgeEmitter.Combine(
-            WorkItemsNudgeEmitter.Resolve(SessionStartHarness.Antigravity, sessionId, activeProfile?.DisableWorkItemsNudge is true),
-            HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true, config));
+            WorkItemsNudgeEmitter.Resolve(SessionStartHarness.Antigravity, sessionId, activeProfile?.DisableWorkItemsNudge is true, home),
+            HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true, config, home));
         WritePreInvocationOutput(stdout, fragment, workItemsNudge);
         await stdout.FlushAsync();
 

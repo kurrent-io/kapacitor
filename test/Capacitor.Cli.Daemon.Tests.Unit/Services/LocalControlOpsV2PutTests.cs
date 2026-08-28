@@ -3,6 +3,7 @@ using Capacitor.Cli.Daemon.Pty;
 using Capacitor.Cli.Daemon.Services;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
+using TUnit.Core.Enums;
 
 namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 
@@ -16,8 +17,10 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 /// through <see cref="LocalControlOps"/>, the Core client under test, instead of hand-rolled
 /// frames.
 /// </summary>
+[ExcludeOn(OS.Windows)] // Unix-domain socket path
 public class LocalControlOpsV2PutTests {
     [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+    [TempHome] public required TempHome Home { get; init; }
 
     sealed class NoopHostLifetime : IHostApplicationLifetime {
         public CancellationToken ApplicationStarted  => CancellationToken.None;
@@ -65,7 +68,7 @@ public class LocalControlOpsV2PutTests {
         var permissionBridge = new LocalPermissionBridge(connection, NullLogger<LocalPermissionBridge>.Instance);
 
         var orchestrator = new AgentOrchestrator(
-            config, Config.Root, connection, worktreeManager, repoMatcher,
+            config, Config.Root, Home, connection, worktreeManager, repoMatcher,
             new NoopPtyProcessFactory(), new NoopHttpClientFactory(),
             permissionBridge, new Dictionary<string, IHostedAgentLauncher>(),
             new Dictionary<string, IHostedAgentRuntimeFactory>(), new NoopHostLifetime(),
@@ -113,8 +116,6 @@ public class LocalControlOpsV2PutTests {
 
     [Test]
     public async Task Identity_match_applies_and_follow_up_get_sees_it() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         await RunAsync("lcov2put-a", async (h, ops, ct) => {
             var put = new ConsentPolicyPutV2Dto("lcov2put-a", h.Config.ServerUrl,
                 new ConsentPolicyDto("prompt", 45, []));
@@ -131,8 +132,6 @@ public class LocalControlOpsV2PutTests {
 
     [Test]
     public async Task Name_mismatch_acks_identity_mismatch_and_leaves_policy_unchanged() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         await RunAsync("lcov2put-b", async (h, ops, ct) => {
             var before = await ops.GetConsentPolicyAsync(ct);
 
@@ -151,8 +150,6 @@ public class LocalControlOpsV2PutTests {
 
     [Test]
     public async Task Server_mismatch_acks_identity_mismatch_and_leaves_policy_unchanged() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         await RunAsync("lcov2put-c", async (h, ops, ct) => {
             var before = await ops.GetConsentPolicyAsync(ct);
 

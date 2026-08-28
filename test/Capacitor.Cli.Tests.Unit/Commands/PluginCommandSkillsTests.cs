@@ -233,7 +233,7 @@ public class PluginCommandSkillsTests {
         TextWriter? stdout     = null,
         TextWriter? stderr     = null
     ) => new(
-        HomeDirectory:     fakeHome,
+        Home:     new(fakeHome),
         Profiles:          new ProfileConfig(),
         ResolvePluginPath: () => pluginPath,
         Stdout:            stdout ?? TextWriter.Null,

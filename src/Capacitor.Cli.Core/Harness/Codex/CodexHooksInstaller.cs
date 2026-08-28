@@ -67,7 +67,7 @@ public static class CodexHooksInstaller {
     public static bool ReferencesKcapHook(string hooksPath) {
         try {
             if (!File.Exists(hooksPath)) return false;
-            if (JsonNode.Parse(SharedFileText.ReadAllText(hooksPath)) is not JsonObject root) return false;
+            if (JsonNode.Parse(File.ReadAllTextShared(hooksPath)) is not JsonObject root) return false;
             if (root["hooks"] is not JsonObject hooks) return false;
 
             foreach (var (_, value) in hooks)

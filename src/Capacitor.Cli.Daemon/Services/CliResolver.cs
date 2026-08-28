@@ -1,12 +1,11 @@
-using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Setup;
 
 namespace Capacitor.Cli.Daemon.Services;
 
 /// <summary>
-/// Best-effort lookup that mirrors how a shell finds an executable. Now a thin alias over
-/// <see cref="CliExecutable"/>, which owns the single copy of the PATH/PATHEXT walk shared
-/// with the headless runners — this file used to carry its own near-identical copy behind a
-/// "keep the two in sync" comment that the Windows <c>.cmd</c> gap slipped through anyway.
+/// Best-effort lookup that mirrors how a shell finds an executable — a thin alias over
+/// <see cref="BinaryProbe"/>, which owns the one copy of the PATH/PATHEXT walk. A second copy is
+/// how the Windows <c>.cmd</c> gap survived, so this must never grow its own.
 /// Used by <see cref="IHostedAgentLauncher.IsAvailable"/> at daemon startup to decide which
 /// vendor launchers to advertise over <c>DaemonConnect</c>.
 ///
@@ -20,10 +19,10 @@ internal static class CliResolver {
     /// executable file — either directly (rooted path) or via <c>PATH</c> lookup (bare
     /// command).
     /// </summary>
-    public static bool Exists(string cliPath) => CliExecutable.Exists(cliPath);
+    public static bool Exists(string cliPath) => BinaryProbe.OnPath(cliPath);
 
     /// <summary>
     /// The fully-qualified executable <paramref name="cliPath"/> resolves to, or null.
     /// </summary>
-    public static string? ResolveExecutable(string cliPath) => CliExecutable.Resolve(cliPath);
+    public static string? ResolveExecutable(string cliPath) => BinaryProbe.FromEnvironment().Resolve(cliPath);
 }
