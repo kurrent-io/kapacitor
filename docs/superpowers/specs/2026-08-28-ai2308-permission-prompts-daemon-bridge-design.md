@@ -130,9 +130,11 @@ caller-controlled value that reaches the local wire is bounded before
 - `session_id` is canonicalized by the daemon: it must parse as a `Guid` (any
   case, dashes or not — the hooks only strip dashes, they never lower-case)
   and is emitted as `ToString("N")`. A payload whose `session_id` does not
-  parse is unattributed. The payload's `agent_id` is canonicalized the same
-  way for comparison only; one that does not parse skips its rung. The
-  session rung compares canonical forms on both sides.
+  parse is unattributed. The payload's `agent_id` is compared to each
+  registry key raw first — an exact ordinal match, whether or not either side
+  parses — and then, when both sides parse as GUIDs, in `"N"` form; a value
+  that matches neither way skips the rung. The session rung compares
+  canonical forms on both sides.
 - The DTO's `agent_id` is the attributed agent's registry key — daemon-held,
   never the payload's string — so it is not caller-controlled. A local spawn
   mints it in `"N"` form; a server launch supplies it, and the client model
@@ -205,8 +207,10 @@ PermissionSettlement(PermissionDecision Decision, string Outcome, string Source)
 Replay/registration and claim/broadcast take the **same** gate, so for any
 subscriber a request is observed as either nothing, or `Pending` then
 `Resolved` — never `Pending` alone. The withdrawn set is service-lifetime:
-agent ids are GUIDs never reused, so an entry can never suppress a future
-agent, and it grows by one id per agent the daemon ever tears down.
+an agent id is never reused — a local spawn mints a fresh `"N"` GUID, and a
+server launch's id is minted once per launch by the server — so an entry can
+never suppress a future agent, and the set grows by one id per agent the
+daemon ever tears down.
 
 `PermissionStreamItem` is `Pending(dto) | Resolved(dto)`. Never persisted: a
 daemon restart clears pending prompts, and the hook's HTTP request died with
@@ -221,10 +225,15 @@ the composition of two new virtual members, so a fake can script each leg:
   serverRequestId` — the `RequestPermission2` invoke under `ConnectionRetry`.
   The retry loop already honours `ct` before every attempt; the invoke lambda
   additionally evaluates `abandoned()` **synchronously, immediately before**
-  the hub invoke and throws `OperationCanceledException` when it is true. The
-  token wakes a readiness wait; the predicate is what keeps an invoke off the
-  wire once the request is settled, because a token cancelled from a task
-  continuation is not synchronous with the claim (§2.3.1).
+  the hub invoke and throws `PermissionRequestAbandonedException` when it is
+  true — its own exception type, deliberately neither
+  `OperationCanceledException` nor `InvalidOperationException`, which
+  `ConnectionRetry` classifies as transient and would retry until the token
+  fired. Anything else propagates out of the loop at once, so `Begin` returns
+  to the leg on the same attempt. The token wakes a readiness wait; the
+  predicate is what keeps an invoke off the wire once the request is settled,
+  because a token cancelled from a task continuation is not synchronous with
+  the claim (§2.3.1).
 - `AwaitPermissionDecisionAsync(serverRequestId, ct) → PermissionDecision` —
   `PendingPermissionRegistry.AwaitDecisionAsync`, unchanged. Cancelling `ct`
   drops the registry entry; a decision pushed afterwards is buffered and
@@ -301,8 +310,11 @@ Warning. Its state machine:
    settled request's invoke off the wire when readiness returns.
    - `OperationCanceledException`: if the daemon token is cancelled, exit —
      shutdown, no claim, no `RespondToPermission`, no record. Otherwise the
-     settlement landed while `Begin` was still waiting or about to invoke, so
-     no server request exists and there is nothing to settle; exit.
+     settlement's queued cancellation woke the readiness wait, so no server
+     request exists and there is nothing to settle; exit.
+   - `PermissionRequestAbandonedException`: the predicate saw the settlement
+     before the invoke, with or without the cancellation having run; no
+     server request exists; exit.
    - Any other fault: `TrySettleIfNoSubscriber(requestId, deny, "deny",
      "no_ui")` — today's instant deny, but only if nobody holds the request
      at the moment of the claim; with a subscriber the request stays
@@ -438,15 +450,24 @@ be lost at shutdown — the write cancelled or the listener closed under it —
 while the app holds an `Ok=true` ack and the Codex hook client turns the
 transport failure into deny. So:
 
-- The bridge counts in-flight interactive handlers.
+- One **admission gate** (a lock) owns two things together: an `admitting`
+  flag and the in-flight handler count. The accept loop, after
+  `GetContextAsync` returns, takes the gate: if admission is closed it answers
+  the context 503 and closes it without ever entering the tracked set;
+  otherwise it increments the count **before** scheduling the handler, and
+  the handler decrements in its `finally`. `GetContextAsync` itself cannot be
+  cancelled, so a context that arrives after shutdown began is exactly this
+  rejected case, never an untracked handler.
 - A claimed response is written under a **response token** — a fresh
   `CancellationTokenSource(ResponseWriteTimeout = 2 s)`, never the bridge
   token.
 - `StopAsync` cancels the bridge token (which fires the `daemon_shutdown`
-  claims), then **drains**: waits up to `ShutdownDrain = 2 s` for the
-  in-flight count to reach zero, then closes the listener and awaits the
-  accept loop as today. Closing before the drain would abort the very writes
-  the claim promised.
+  claims), then under the gate closes admission and snapshots the count —
+  one critical section, so nothing can be admitted after the snapshot and
+  nothing admitted before it is invisible — then **drains**: waits up to
+  `ShutdownDrain = 2 s` for the count to reach zero, then closes the listener
+  and awaits the accept loop as today. Closing before the drain would abort
+  the very writes the claim promised.
 
 The contract, stated precisely: `Ok=true` guarantees the app's decision is the
 one the daemon answers the hook with; delivery of that answer fails only if
@@ -651,9 +672,13 @@ exist on a newer daemon; the daemon-update nudge already covers that.
 - **App disconnected.** Entries retained; reconnect replays whatever the daemon
   still holds and the tombstones drop what it does not.
 - **Subscriber gone after a faulted `Begin`.** The request was kept because a
-  subscriber existed at fault time; it stays pending until the app returns, the
-  agent exits, or the hook's own ceiling — never denied on the subscriber's
-  departure.
+  subscriber existed at fault time. Nothing can now retire it but the app
+  answering, the agent's withdrawal, or daemon shutdown: `HttpListener`
+  exposes no per-request disconnect, so the daemon cannot see the hook time
+  out or be killed, and with no server request id there is no server timeout
+  either. The entry — and a retained card — outlive the hook until the agent
+  exits. Accepted: it is the "answered in the TUI" limitation in another
+  form, and the agent's exit bounds it.
 - **Oversized `tool_input`.** Omitted on the wire with the flag set; the card
   still offers the decisions; the hook receives them unchanged. An oversized
   `tool_name` or a non-canonical id makes the request unattributed instead.
@@ -698,12 +723,16 @@ exist on a newer daemon; the daemon-update nudge already covers that.
   `Begin` held in the readiness wait when the app answers (no server request,
   no `RespondToPermission`, the leg completes), the same with the settlement
   continuation deliberately held while readiness flips — the predicate alone
-  must keep the invoke off the wire, several local answers across a prolonged
-  disconnect then reconnect with continuations held (no server requests
-  created, no burst), `Begin` held when the agent is torn down (withdrawn, leg
-  cancelled), withdrawal between attribution and `Register`, attribution by
-  `agent_id` raw and canonical (an upper-case dashed payload id against an
-  `"N"` key, and a non-`"N"` key against its own raw stamp), by session id
+  must keep the invoke off the wire AND `Begin` must return to the leg and the
+  leg complete while the cancellation is still held, several local answers
+  across a prolonged disconnect then reconnect with continuations held (no
+  server requests created, no burst), a faulted `Begin` with a subscriber
+  that then leaves, advanced past the hook's ceiling (still pending, retired
+  only by withdrawal), `Begin` held when the agent is torn down (withdrawn,
+  leg cancelled), withdrawal between attribution and `Register`, attribution
+  by `agent_id` raw and canonical (an upper-case dashed payload id against an
+  `"N"` key, a non-`"N"` key against its own raw stamp, and a non-GUID key
+  against its own raw stamp), by session id
   with upper-case and dashed forms matched, a malformed session id
   unattributed, an over-long registry key not surfaced, two agents on one
   borrowed `cwd` and two agents with one session id both fall through, an
@@ -715,7 +744,10 @@ exist on a newer daemon; the daemon-update nudge already covers that.
   barrier on either side of the token (the app's `Ok=true` always matches
   what the hook receives) driven through the real `StopAsync` — the claimed
   response is delivered inside the drain, and a handler past the drain is the
-  only loss —, a hook response write that throws still leaves the record,
+  only loss —, a context accepted but not yet scheduled when `StopAsync`
+  begins (tracked and drained), a context `GetContextAsync` returns after
+  admission closed (503, untracked, listener close does not abort a drained
+  handler), a hook response write that throws still leaves the record,
   registry cleanup after every interleaving;
   `LocalControlHelloTests` — `permission/1` advertised;
   `OwnerOnlyJsonlLogTests` (0600 from first byte, rotation) with the consent log
@@ -756,5 +788,9 @@ exist on a newer daemon; the daemon-update nudge already covers that.
   locators yield the transcript file's UUID. The daemon canonicalizes every
   side by GUID parse before comparing, so case and dashes never decide a
   match — only a value that is not a GUID at all falls through.
+- **A kept request can outlive its hook.** Without a server request id and
+  without a hook disconnect signal, a request kept for a subscriber that then
+  leaves has no clock; it lives until the agent exits. The card it leaves is
+  the same stale card a TUI answer leaves.
 - **Frame value collisions with AI-2197.** That slice must take values after 21
   and 79; this spec is the reservation.
