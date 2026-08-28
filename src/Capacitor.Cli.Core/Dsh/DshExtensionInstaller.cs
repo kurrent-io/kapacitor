@@ -41,15 +41,21 @@ public static class DshExtensionInstaller {
           try { mkdirSync(dir, { recursive: true }) } catch {}
           const fileFor = id => join(dir, `${id}.jsonl`)
           const write = (id, rec) => { try { appendFileSync(fileFor(id), JSON.stringify(rec) + '\n') } catch {} }
-          const ensureWatcher = id => {
+          const runHook = (id, event, extra = []) => {
             try {
-              const c = spawn('kcap', ['hook','--dsh','--event','session-start','--session',id,'--file',fileFor(id)], { stdio: 'ignore', detached: true })
+              const c = spawn('kcap', ['hook','--dsh','--event',event,'--session',id,'--file',fileFor(id), ...extra], { stdio: 'ignore', detached: true })
               c.on('error', () => {}); c.unref()
             } catch {}
           }
-          ctx.on('session/created', s => { ensureWatcher(s.id); write(s.id, { $kcap: 'header', ...s.header }) })
+          const hookArgs = (h = {}) => {
+            // dsh's session header carries cwd (+ id/createdAt/agentPreset) but NOT model/provider;
+            // its `version` is the schema version, not an app version — so forward only cwd.
+            const cwd = h.cwd || process.cwd()
+            return cwd ? ['--cwd', cwd] : []
+          }
+          ctx.on('session/created', s => { write(s.id, { $kcap: 'header', ...s.header }); runHook(s.id, 'session-start', hookArgs(s.header)) })
           ctx.on('session/event', (s, e) => write(s.id, e))
-          ctx.on('session/disposed', s => write(s.id, { $kcap: 'disposed', id: s.id }))
+          ctx.on('session/disposed', s => { write(s.id, { $kcap: 'disposed', id: s.id }); runHook(s.id, 'session-end', ['--reason','disposed', ...hookArgs(s.header)]) })
         }
         export default apply
         """;
