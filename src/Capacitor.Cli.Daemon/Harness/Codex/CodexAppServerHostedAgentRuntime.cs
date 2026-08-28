@@ -609,13 +609,10 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
             }
         }
 
-        // Ask the app-server PROCESS to exit by closing its stdin (EOF) — `codex app-server`
-        // exits cleanly (code 0) on stdin EOF. Previously this method sent only `turn/interrupt`, and ONLY
-        // when a turn was in flight, so a between-rounds PARK (the reviewer is idle) made it a total no-op:
-        // the process never exited, the daemon waited out the full 15s graceful window and SIGKILLed
-        // (exit 137), delaying AgentUnregistered ~16s on every park. Closing stdin lands the exit inside
-        // the window. Best-effort: if the peer ignores EOF the caller still falls through to
-        // WaitForExitAsync → TerminateAsync, so this can only shorten teardown, never wedge it.
+        // Ask the app-server PROCESS to exit by closing its stdin (EOF) — `codex app-server` exits
+        // cleanly on stdin EOF. Runs unconditionally: a between-rounds park has no in-flight turn to
+        // interrupt, so this is the only step that ends the process. Best-effort — if the peer ignores
+        // EOF the caller still falls through to WaitForExitAsync → TerminateAsync (hard kill).
         try {
             await connection.CloseInputAsync().ConfigureAwait(false);
         } catch (Exception ex) {
