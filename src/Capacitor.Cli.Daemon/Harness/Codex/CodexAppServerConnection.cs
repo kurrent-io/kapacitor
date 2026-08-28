@@ -402,6 +402,26 @@ internal sealed partial class CodexAppServerConnection : IAsyncDisposable {
         }
     }
 
+    /// <summary>Signal a clean shutdown to the peer by closing the WRITE side (its stdin) —
+    /// <c>codex app-server</c> exits 0 on stdin EOF. Serializes with an in-flight write via the write
+    /// gate (bounded, so a stuck write never delays the EOF that shuts the peer down), then disposes
+    /// ONLY the write stream — the read loop still observes the peer's own exit via stdout EOF. Idempotent
+    /// and best-effort: a prior/concurrent <see cref="DisposeAsync"/> or an already-broken stream is
+    /// swallowed, so the caller can fall through to a hard terminate. Does NOT dispose the connection.</summary>
+    public async Task CloseInputAsync() {
+        if (Volatile.Read(ref _disposed) != 0) return;
+
+        bool gated;
+        try { gated = await _writeGate.WaitAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false); }
+        catch (ObjectDisposedException) { return; } // DisposeAsync won the race — stdin is already closed.
+
+        try {
+            await _writeStream.DisposeAsync().ConfigureAwait(false);
+        } finally {
+            if (gated) { try { _writeGate.Release(); } catch (ObjectDisposedException) { /* raced DisposeAsync */ } }
+        }
+    }
+
     public async ValueTask DisposeAsync() {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;

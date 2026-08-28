@@ -591,19 +591,35 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
 
     public async Task RequestGracefulStopAsync() {
         var connection = _connection;
-        var threadId   = _threadId;
-        var turnId     = _dispatcher.CurrentTurnId;
-        if (connection is null || threadId is null || turnId is null)
+        if (connection is null)
             return;
 
+        // If a turn is in flight, interrupt it first so the app-server isn't mid-generation when we ask
+        // it to shut down. Best-effort; never let it block teardown.
+        var threadId = _threadId;
+        var turnId   = _dispatcher.CurrentTurnId;
+        if (threadId is not null && turnId is not null) {
+            try {
+                var interruptParams = ToElement(new JsonObject { ["threadId"] = threadId, ["turnId"] = turnId });
+                await connection.RequestAsync("turn/interrupt", interruptParams, _cts.Token).ConfigureAwait(false);
+                // Bounded wait for the interrupted turn to settle before we close stdin; never block teardown.
+                await WaitForTurnIdleAsync(_cts.Token).WaitAsync(TimeSpan.FromSeconds(5), _time).ConfigureAwait(false);
+            } catch (Exception ex) {
+                _logger.LogDebug(ex, "codex app-server: turn/interrupt during graceful stop failed; continuing to shutdown.");
+            }
+        }
+
+        // Ask the app-server PROCESS to exit by closing its stdin (EOF) — `codex app-server`
+        // exits cleanly (code 0) on stdin EOF. Previously this method sent only `turn/interrupt`, and ONLY
+        // when a turn was in flight, so a between-rounds PARK (the reviewer is idle) made it a total no-op:
+        // the process never exited, the daemon waited out the full 15s graceful window and SIGKILLed
+        // (exit 137), delaying AgentUnregistered ~16s on every park. Closing stdin lands the exit inside
+        // the window. Best-effort: if the peer ignores EOF the caller still falls through to
+        // WaitForExitAsync → TerminateAsync, so this can only shorten teardown, never wedge it.
         try {
-            var interruptParams = ToElement(new JsonObject { ["threadId"] = threadId, ["turnId"] = turnId });
-            await connection.RequestAsync("turn/interrupt", interruptParams, _cts.Token).ConfigureAwait(false);
-            // Bounded wait for the interrupted turn to settle before the caller falls through to
-            // terminate; never let this block teardown.
-            await WaitForTurnIdleAsync(_cts.Token).WaitAsync(TimeSpan.FromSeconds(5), _time).ConfigureAwait(false);
+            await connection.CloseInputAsync().ConfigureAwait(false);
         } catch (Exception ex) {
-            _logger.LogDebug(ex, "codex app-server: graceful stop (turn/interrupt) failed; falling through to terminate.");
+            _logger.LogDebug(ex, "codex app-server: closing stdin during graceful stop failed; falling through to terminate.");
         }
     }
 

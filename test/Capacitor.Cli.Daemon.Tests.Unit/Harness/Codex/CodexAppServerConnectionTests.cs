@@ -442,4 +442,25 @@ public class CodexAppServerConnectionTests {
             // expected shutdown path for this test's owned CTS
         }
     }
+
+    /// <summary>CloseInputAsync completes the WRITE side (the peer's stdin) so a real
+    /// `codex app-server` sees EOF and exits — the graceful-shutdown trigger the park teardown needs.
+    /// Here the peer read observes end-of-stream, the read side stays usable, and it is idempotent.</summary>
+    [Test]
+    public async Task CloseInputAsync_ends_the_write_side_so_the_peer_reads_eof() {
+        await using var harness = new Harness();
+
+        // Precondition — the write side is live: a notification reaches the peer.
+        await harness.Connection.NotifyAsync("session/ping", null);
+        var frame = await harness.ReadFrameFromConnectionAsync();
+        await Assert.That(frame).Contains("session/ping");
+
+        // Closing the input completes the write side; the peer's next read is end-of-stream (EOF).
+        await harness.Connection.CloseInputAsync();
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(harness.ReadFrameFromConnectionAsync);
+        await Assert.That(ex!.Message).Contains("stream completed");
+
+        // Idempotent: a second CloseInputAsync (and the eventual DisposeAsync in the harness) must not throw.
+        await harness.Connection.CloseInputAsync();
+    }
 }
