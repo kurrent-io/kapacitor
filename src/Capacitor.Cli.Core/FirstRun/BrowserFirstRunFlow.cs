@@ -116,9 +116,8 @@ public sealed class BrowserFirstRunFlow(
 
         var setupUrl = $"{serverUrl.TrimEnd('/')}/setup?s={Uri.EscapeDataString(flowId)}";
 
-        // Drained before the prompt renders, so the two presses stay apart: one that preceded this
-        // leg — the Return that confirmed an earlier step — is not an answer to "press any key to
-        // carry on here", and one made in response to that prompt is a real dismissal, never stale.
+        // Drained before the offer renders, so the two presses stay apart: a Return left over from an
+        // earlier step is not an answer to it, and one made in response is a real dismissal.
         if (_keys.CanWatch && _keys.KeyAvailable) _keys.Drain();
 
         progress.Opening(setupUrl);
@@ -208,6 +207,11 @@ public sealed class BrowserFirstRunFlow(
 
         var import = new ImportLaneState();
 
+        // What the terminal has been told about each step, so a poll blip repeating a state cannot
+        // print it twice while a Back-and-re-answer, which leaves the step settled, still can: a tick
+        // naming an answer since abandoned would be the only word on what gets installed.
+        var announced = new Dictionary<FirstRunFlowStep, (FirstRunStepOutcome Outcome, DateTimeOffset? Stamp)>();
+
         while (_clock.GetUtcNow() < deadline) {
             // Polled before the first sleep: a flow the browser has already finished — a resumed link,
             // or a tab that was quicker than this process — should not wait out an interval to be noticed.
@@ -224,9 +228,8 @@ public sealed class BrowserFirstRunFlow(
             var poll = await channel.PollAsync(serverUrl, flowId, ct);
 
             // A key that arrived while the poll was in flight: noticed here rather than after another
-            // interval. Drained rather than read, because the key is usually followed by a Return that
-            // the next prompt would otherwise take as its answer.
-            if (DismissIfKeyDown(last) is { } duringPoll) return duringPoll;
+            // interval.
+            if (DismissIfHandoverKeyDown(last) is { } duringPoll) return duringPoll;
 
             switch (FirstRunFlowPoll.Classify(poll.StatusCode, poll.Body is not null)) {
                 case FirstRunPollVerdict.State:
@@ -241,6 +244,15 @@ public sealed class BrowserFirstRunFlow(
                     // Healthy again — back to the tight cadence, so a terminal reacts to the human
                     // at the speed the human works at.
                     interval = PollInterval;
+
+                    // Before the lanes below, and before anything they print: a scan and an import can
+                    // each run for minutes, and a wait still describing the last poll would spend all of
+                    // it naming the wrong screen — or repeating an unreachable-server warning that this
+                    // poll has just disproved.
+                    progress.Waiting(FirstRunFlowOutcomes.Step(last!.Step), healthy: true);
+
+                    // Then the ticks, so "chose your agents" precedes the scan it starts.
+                    Announce(last!, announced);
 
                     // Before the finished test, so a request made on the last screen is not abandoned by a
                     // flow that settles in the same tick — and the finished test then runs again below,
@@ -260,8 +272,6 @@ public sealed class BrowserFirstRunFlow(
                         return new FirstRunFlowResult.Finished(last!);
                     }
 
-                    progress.PollTick();
-
                     break;
 
                 case FirstRunPollVerdict.Expired:
@@ -279,13 +289,13 @@ public sealed class BrowserFirstRunFlow(
                     // other unhappy poll grows the gap too, so a down or rate-limiting server is not
                     // hammered at the base cadence. Only a good state restores it.
                     interval = Backoff(interval, poll.RetryAfter);
-                    progress.PollTick();
+                    progress.Waiting(FirstRunFlowOutcomes.Step(last?.Step), healthy: false);
 
                     break;
 
                 default:
                     interval = Backoff(interval, null);
-                    progress.PollTick();
+                    progress.Waiting(FirstRunFlowOutcomes.Step(last?.Step), healthy: false);
 
                     break;
             }
@@ -293,6 +303,49 @@ public sealed class BrowserFirstRunFlow(
 
         return new FirstRunFlowResult.Abandoned(last);
     }
+
+    /// <summary>
+    /// Tells the terminal about every step whose outcome or answer has changed since it was last told.
+    ///
+    /// <para><b>A view carrying no stamp cannot un-say an answer that had one.</b> The stamp is absent
+    /// exactly when the decision is, so treating its absence as a change would re-announce the step with
+    /// nothing to say about it — which for the Agents step reads as a decline.</para>
+    /// </summary>
+    void Announce(
+            FirstRunFlowResponse view,
+            Dictionary<FirstRunFlowStep, (FirstRunStepOutcome Outcome, DateTimeOffset? Stamp)> announced) {
+        foreach (var step in FirstRunFlowOutcomes.KnownSteps) {
+            if (!FirstRunFlowOutcomes.IsSettled(view, step)) continue;
+
+            var outcome = FirstRunFlowOutcomes.StatusOf(view, step);
+            var stamp   = StampOf(view, step);
+
+            if (announced.TryGetValue(step, out var told)
+             && told.Outcome == outcome
+             && (stamp is null || stamp == told.Stamp)) continue;
+
+            announced[step] = (outcome, stamp ?? told.Stamp);
+
+            progress.Settled(step, outcome, Detail(view, step));
+        }
+    }
+
+    /// <summary>The server's identity for a step's answer, where the step has one. It advances when the
+    /// answer CHANGES and not when it is merely re-confirmed, which is exactly the trigger for saying the
+    /// step again — nothing here compares it for any other purpose.</summary>
+    static DateTimeOffset? StampOf(FirstRunFlowResponse view, FirstRunFlowStep step) => step switch {
+        FirstRunFlowStep.Agents => view.AgentsDecidedAt,
+        FirstRunFlowStep.Import => view.ImportDecidedAt,
+        _                       => null
+    };
+
+    /// <summary>The harnesses the Agents answer chose, and nothing for any other step: the labels are
+    /// already mapped through the catalogue, so naming them back is not forwarding a wire string.</summary>
+    static string? Detail(FirstRunFlowResponse view, FirstRunFlowStep step) =>
+        step is FirstRunFlowStep.Agents
+     && FirstRunFlowOutcomes.Agents(view)?.Labels.ToList() is { Count: > 0 } labels
+            ? string.Join(", ", labels)
+            : null;
 
     /// <summary>
     /// Scans for importable history once the Agents step has settled, and keeps trying to deliver the
@@ -617,14 +670,31 @@ public sealed class BrowserFirstRunFlow(
         }
     }
 
-    /// <summary>Dismisses when a key is down, draining it. Null when there is nothing to dismiss, so
-    /// the call site can read it as "did a key arrive while I awaited?".</summary>
-    FirstRunFlowResult? DismissIfKeyDown(FirstRunFlowResponse? last) {
-        if (!_keys.CanWatch || !_keys.KeyAvailable) return null;
+    /// <summary>The one key that hands the flow back to the terminal. Not Enter or Space, which get
+    /// pressed by accident; not <c>q</c> or <c>x</c>, which read as "quit setup" — the one thing this
+    /// does not do.</summary>
+    public const char HandoverKey = 't';
 
-        _keys.Drain();
+    /// <summary>
+    /// Dismisses when the handover key is down, draining what follows it. Null when there is nothing to
+    /// dismiss, so the call site can read it as "did a key arrive while I awaited?".
+    ///
+    /// <para>Every other key is consumed and ignored rather than left buffered, or the same stray byte
+    /// would be re-examined on every slice for the rest of the wait.</para>
+    /// </summary>
+    FirstRunFlowResult? DismissIfHandoverKeyDown(FirstRunFlowResponse? last) {
+        if (!_keys.CanWatch) return null;
 
-        return new FirstRunFlowResult.Dismissed(last);
+        while (_keys.KeyAvailable) {
+            if (char.ToLowerInvariant(_keys.ReadKey()) != HandoverKey) continue;
+
+            // The key is usually followed by a Return, which the next prompt would take as its answer.
+            _keys.Drain();
+
+            return new FirstRunFlowResult.Dismissed(last);
+        }
+
+        return null;
     }
 
     /// <summary>Sleeps out <paramref name="interval"/> in <see cref="KeyPollSlice"/> slices, returning
@@ -638,7 +708,7 @@ public sealed class BrowserFirstRunFlow(
         var waited = TimeSpan.Zero;
 
         while (waited < interval) {
-            if (DismissIfKeyDown(last) is not null) return true;
+            if (DismissIfHandoverKeyDown(last) is not null) return true;
 
             var slice = interval - waited < KeyPollSlice ? interval - waited : KeyPollSlice;
             await Task.Delay(slice, _clock, ct);

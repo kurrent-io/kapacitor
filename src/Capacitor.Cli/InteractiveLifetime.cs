@@ -114,6 +114,16 @@ static class InteractiveLifetime {
         }
     }
 
+    /// <summary>Written raw rather than through Spectre: this runs on the way out of a signal handler,
+    /// where taking a renderer's locks is the last thing worth doing.</summary>
+    static void ShowCursor() {
+        try {
+            if (!Console.IsOutputRedirected) Console.Out.Write("\u001b[?25h");
+        } catch {
+            // A closed or detached stdout is exactly the case with no cursor to restore.
+        }
+    }
+
     /// <summary>
     /// The exit every interrupt path takes. <c>Environment.Exit</c> runs no <c>finally</c>, so anything a
     /// command needs to say on its way out has to be said here. The browser setup flow uses it to tell the
@@ -121,6 +131,12 @@ static class InteractiveLifetime {
     /// nobody will act on.
     /// </summary>
     static void Interrupt() {
+        // First, and before the notice spends its budget on the network: a live region hides the cursor
+        // for the duration of a render and gives it back on dispose, and no exit from here unwinds far
+        // enough to dispose one - which leaves the shell with no cursor after an interrupted import or
+        // browser wait.
+        ShowCursor();
+
         FirstRunInterruptRelinquish.RunBeforeExit(ExitNoticeBudget);
 
         Environment.Exit(InterruptExitCode);

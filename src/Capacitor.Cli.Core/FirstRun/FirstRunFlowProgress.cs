@@ -7,8 +7,25 @@ public interface IFirstRunFlowProgress {
     /// because a machine that cannot open one is exactly the machine whose user needs to read it.</summary>
     void Opening(string setupUrl);
 
-    /// <summary>One poll came back with the flow still running.</summary>
-    void PollTick();
+    /// <summary>
+    /// One poll came back with the flow still running, on <paramref name="flowStep"/> — null where the
+    /// server named a step this build has never heard of.
+    ///
+    /// <para><b><paramref name="healthy"/> is what the poll itself did, not what the flow is doing.</b>
+    /// False means no state came back at all, so the step is the last one known rather than the current
+    /// one: naming a screen the user is supposedly looking at, while the server has been silent for
+    /// minutes, states a fact nothing here has.</para>
+    /// </summary>
+    void Waiting(FirstRunFlowStep? flowStep, bool healthy);
+
+    /// <summary>
+    /// <paramref name="flowStep"/> has an outcome, said once per step.
+    ///
+    /// <para><paramref name="detail"/> names the harnesses the Agents answer chose, and is null
+    /// everywhere else — the wire carries nothing else worth repeating back, and a step's own copy is
+    /// the host's to write.</para>
+    /// </summary>
+    void Settled(FirstRunFlowStep flowStep, FirstRunStepOutcome outcome, string? detail);
 
     /// <summary>
     /// The browser asked this machine to perform <paramref name="capability"/>, and it is about to run.
