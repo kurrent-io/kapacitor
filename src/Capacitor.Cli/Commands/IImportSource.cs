@@ -1,4 +1,5 @@
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Harness;
 
 namespace Capacitor.Cli.Commands;
 
@@ -19,7 +20,7 @@ internal sealed record DiscoveryFilters(
 /// </summary>
 internal sealed record DiscoveredSession(
     string                                  SessionId,
-    string                                  Vendor,
+    HarnessId                               Vendor,
     string?                                 Cwd,
     DateTimeOffset?                         FirstTimestamp,
     IReadOnlyDictionary<string, object?>    SourceMeta);
@@ -106,8 +107,8 @@ internal readonly record struct ImportSessionResult(ImportOutcome Outcome, bool 
 /// CodexImportSource, CursorImportSource.
 /// </summary>
 internal interface IImportSource {
-    /// <summary>"claude" | "codex" | "cursor". Stamped onto every produced classification.</summary>
-    string Vendor { get; }
+    /// <summary>Stamped onto every produced classification.</summary>
+    HarnessId Vendor { get; }
 
     /// <summary>True when the source's root data dir / DB is present on this machine.</summary>
     bool IsAvailable { get; }

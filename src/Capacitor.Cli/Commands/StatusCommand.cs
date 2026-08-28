@@ -1,22 +1,12 @@
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.Config;
-using Capacitor.Cli.Core.Setup;
 using Capacitor.Cli.Core.Harness;
-using Capacitor.Cli.Core.Harness.Antigravity;
-using Capacitor.Cli.Core.Harness.Claude;
-using Capacitor.Cli.Core.Harness.Codex;
-using Capacitor.Cli.Core.Harness.Copilot;
-using Capacitor.Cli.Core.Harness.Cursor;
-using Capacitor.Cli.Core.Harness.Gemini;
-using Capacitor.Cli.Core.Harness.Kiro;
-using Capacitor.Cli.Core.Harness.OpenCode;
-using Capacitor.Cli.Core.Harness.Pi;
 
 namespace Capacitor.Cli.Commands;
 
-public sealed class StatusCommand(DaemonStore store, ProfileContext profiles, ConfigRoot config, UserHome home) {
-    readonly HarnessPaths _paths = HarnessPaths.FromEnvironment(home);
+public sealed class StatusCommand(
+        DaemonStore store, ProfileContext profiles, ConfigRoot config, HarnessRegistry harnesses) {
 
     public async Task<int> HandleAsync(string[] args) {
         var baseUrl = profiles.Resolution.ServerUrl;
@@ -80,27 +70,18 @@ public sealed class StatusCommand(DaemonStore store, ProfileContext profiles, Co
         // Hooks
         await Console.Out.WriteAsync("  Hooks:   ");
 
-        var line = BuildHooksStatusLine(
-            claude:   IsClaudePluginInstalled(_paths.Claude.UserSettings),
-            codex:    IsCodexHooksInstalled(_paths.Codex.UserHooksJson),
-            cursor:   CursorHooksInstaller.IsInstalled(_paths.Cursor.UserHooksJson),
-            copilot:  CopilotHooksInstaller.IsInstalled(_paths.Copilot.KcapHooksJson),
-            gemini:   GeminiHooksInstaller.IsInstalled(_paths.Gemini.SettingsJson),
-            kiro:     KiroHooksInstaller.IsInstalled(_paths.Kiro.KcapAgentJson),
-            pi:       PiExtensionInstaller.IsInstalled(_paths.Pi.KcapExtension),
-            opencode: OpenCodeExtensionInstaller.IsInstalled(_paths.OpenCode.KcapPlugin),
-            antigravity: AntigravityHooksInstaller.IsInstalled(_paths.Antigravity.GlobalHooksJson));
+        var line = BuildHooksStatusLine(harnesses.Select(h => (h.Id, h.Signals.IsWired)));
 
         await Console.Out.WriteLineAsync(line);
 
         // Newly-installed-but-unconfigured harnesses. Ledger-independent (a dismissed vendor is
         // still surfaced here) — status always tells the truth, unlike the nudge which respects
         // dismissals. Shares the wired-check with the Hooks line above, so the two never disagree.
-        var detectedAgents = AgentDetection.Detect(_paths, BinaryProbe.FromEnvironment());
-        foreach (var h in HarnessCatalog.All) {
-            if (!h.Select(detectedAgents).Detected) continue;
-            if (_paths.IsWired(h.VendorId)) continue;
-            var install = h.InstallFlag is null ? "kcap plugin install" : $"kcap plugin install {h.InstallFlag}";
+        foreach (var h in harnesses) {
+            if (!harnesses.Detected(h.Id)) continue;
+            if (h.Signals.IsWired) continue;
+            var flag    = h.Id.PluginInstallFlag;
+            var install = flag is null ? "kcap plugin install" : $"kcap plugin install {flag}";
             await Console.Out.WriteLineAsync($"           {h.Label} installed but kcap not configured — run `{install}`");
         }
 
@@ -235,38 +216,16 @@ public sealed class StatusCommand(DaemonStore store, ProfileContext profiles, Co
     }
 
     /// <summary>
-    /// Renders the Hooks status line for every supported agent. Gemini merges its
-    /// hooks into the shared <c>~/.gemini/settings.json</c>, while Pi and OpenCode
-    /// track a live-ingest "extension"/plugin file rather than a hooks file (neither
-    /// has shell hooks), but all share the line for at-a-glance parity. Pure — the
-    /// I/O detection happens in the caller so this stays unit-testable.
+    /// Renders the Hooks status line: every harness, wired or not, in registry order. What "wired"
+    /// means is each vendor's own — Gemini merges its hooks into the shared
+    /// <c>~/.gemini/settings.json</c>, while Pi and OpenCode track a live-ingest extension file
+    /// rather than hooks — but all share the line for at-a-glance parity. Pure: the probing happens
+    /// in the caller.
     /// </summary>
-    internal static string BuildHooksStatusLine(bool claude, bool codex, bool cursor, bool copilot, bool gemini, bool kiro, bool pi, bool opencode, bool antigravity = false) =>
-        string.Join("  ", new[] {
-            claude   ? "Claude ✓"   : "Claude ✗",
-            codex    ? "Codex ✓"    : "Codex ✗",
-            cursor   ? "Cursor ✓"   : "Cursor ✗",
-            copilot  ? "Copilot ✓"  : "Copilot ✗",
-            gemini   ? "Gemini ✓"   : "Gemini ✗",
-            kiro     ? "Kiro ✓"     : "Kiro ✗",
-            pi       ? "Pi ✓"       : "Pi ✗",
-            opencode ? "OpenCode ✓" : "OpenCode ✗",
-            antigravity ? "Antigravity ✓" : "Antigravity ✗"
-        });
+    internal static string BuildHooksStatusLine(IEnumerable<(HarnessId Id, bool Wired)> wiring) =>
+        string.Join("  ", wiring.Select(w => $"{ShortLabel(w.Id)} {(w.Wired ? "✓" : "✗")}"));
 
-    /// <summary>
-    /// True iff <paramref name="settingsPath"/> exists and has
-    /// <c>enabledPlugins["kcap@kcap"] == true</c>. Delegates to the Core source of truth
-    /// (<see cref="HarnessWiring"/>) so the status line and the new-harness nudge share
-    /// one wired-check definition.
-    /// </summary>
-    public static bool IsClaudePluginInstalled(string settingsPath) =>
-        ClaudePluginInstaller.IsPluginEnabled(settingsPath);
-
-    /// <summary>
-    /// True iff <paramref name="hooksPath"/> exists and any hook entry under any
-    /// event references the <c>kcap codex-hook</c> command. Delegates to the Core source of truth.
-    /// </summary>
-    public static bool IsCodexHooksInstalled(string hooksPath) =>
-        CodexHooksInstaller.ReferencesKcapHook(hooksPath);
+    /// <summary>Every vendor shares one line, so the one label carrying a product suffix is
+    /// shortened to fit beside the rest.</summary>
+    static string ShortLabel(HarnessId id) => id is HarnessId.Claude ? "Claude" : HarnessRegistry.LabelOf(id);
 }

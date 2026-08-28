@@ -5,9 +5,6 @@ public sealed class CodexPaths {
     public CodexPaths(UserHome home, string? codexHome) =>
         Home = !string.IsNullOrWhiteSpace(codexHome) ? codexHome : Path.Combine(home.Path, ".codex");
 
-    /// <summary>Reads the one override Codex honours; the home comes from the caller.</summary>
-    public static CodexPaths FromEnvironment(UserHome home) =>
-        new(home, Environment.GetEnvironmentVariable("CODEX_HOME"));
 
     public string Home { get; }
 

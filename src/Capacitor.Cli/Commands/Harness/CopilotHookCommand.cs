@@ -4,6 +4,7 @@ using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.Harness.Copilot;
 using Capacitor.Cli.SessionStartMemory;
+using Capacitor.Cli.Core.Harness;
 
 namespace Capacitor.Cli.Commands.Harness;
 
@@ -70,7 +71,7 @@ sealed class CopilotHookCommand(ConfigRoot config, ProfileContext profiles, Hook
         string payload;
 
         try {
-            payload = SessionStartMemoryOutputAdapters.Render(SessionStartHarness.Copilot, fragment, workItemsNudge);
+            payload = SessionStartMemoryOutputAdapters.Render(HarnessId.Copilot, fragment, workItemsNudge);
         } catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException) {
             return;
         }
@@ -114,7 +115,7 @@ sealed class CopilotHookCommand(ConfigRoot config, ProfileContext profiles, Hook
                 disposeClients: true);
 
             return new SessionStartMemoryOrchestrator(store, provider).GetFragmentAsync(
-                new SessionMemoryLifecycle(SessionStartHarness.Copilot, sessionId, LifecycleInstanceId: null,
+                new SessionMemoryLifecycle(HarnessId.Copilot, sessionId, LifecycleInstanceId: null,
                     IsTopLevel: true, ClassificationAuthoritative: true,
                     SessionStartMemoryHookSupport.ReasonFor(source), CallbackMayRepeat: false),
                 new SessionStartMemoryContextRequest(Url, scopeRoot, disabled, budget, CancellationToken.None,
@@ -319,7 +320,7 @@ sealed class CopilotHookCommand(ConfigRoot config, ProfileContext profiles, Hook
         // Copilot parses this hook's stdout as its (optional) single JSON result document. Silent when
         // there is neither a fragment nor a nudge, which keeps all pre-existing paths byte-identical.
         var workItemsNudge = HarnessNudgeEmitter.Combine(
-            WorkItemsNudgeEmitter.Resolve(SessionStartHarness.Copilot, sessionId, activeProfile?.DisableWorkItemsNudge is true, home),
+            WorkItemsNudgeEmitter.Resolve(HarnessId.Copilot, sessionId, activeProfile?.DisableWorkItemsNudge is true, home),
             HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true, config, home));
         WriteSessionStartOutput(Console.Out, fragment, workItemsNudge);
 
@@ -471,12 +472,12 @@ sealed class CopilotHookCommand(ConfigRoot config, ProfileContext profiles, Hook
     /// not-yet-created file and picks it up on its next poll.
     /// </summary>
     string TranscriptPathFor(string dashedSessionId) {
-        var paths   = CopilotPaths.FromEnvironment(home);
-        var current = CopilotPaths.EventsJsonl(paths.SessionStateDir, dashedSessionId);
+        var paths   = CopilotHarness.FromEnvironment(home).Paths;
+        var current = paths.EventsJsonl(paths.SessionStateDir, dashedSessionId);
 
         if (File.Exists(current)) return current;
 
-        var legacy = CopilotPaths.EventsJsonl(paths.LegacySessionStateDir, dashedSessionId);
+        var legacy = paths.EventsJsonl(paths.LegacySessionStateDir, dashedSessionId);
 
         return File.Exists(legacy) ? legacy : current;
     }

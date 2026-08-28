@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Core.Harness.Antigravity;
 
 namespace Capacitor.Cli.Harness.Antigravity;
@@ -51,7 +52,7 @@ internal sealed class AntigravityImportSource : IImportSource {
     IReadOnlyList<string> BrainRoots =>
         _paths.BrainProductRoots.Select(r => Path.Combine(r, "brain")).ToList();
 
-    public string Vendor => "antigravity";
+    public HarnessId Vendor => HarnessId.Antigravity;
     public bool   IsAvailable => BrainRoots.Any(Directory.Exists);
     public bool   SupportsTitleGeneration => false; // server computes a fallback title at session-end
     public bool   AttachesChildContentOnReplay => true;  // AlreadyLoaded repair branch imports children
@@ -111,7 +112,7 @@ internal sealed class AntigravityImportSource : IImportSource {
         var invokeEdges   = parentMap.Count;
         var danglingChild = parentMap.Keys.Count(c => !allConversationIds.Contains(c));
         var msgButNoInvoke = convIds.Count(id =>
-            Directory.Exists(AntigravityPaths.MessagesDirUnder(productRoot, id))
+            Directory.Exists(_paths.MessagesDirUnder(productRoot, id))
             && !parentMap.ContainsKey(id) && !linkedChildIds.Contains(id));
         Log($"Antigravity import ({Path.GetFileName(productRoot)}): {invokeEdges} invoke edge(s); {danglingChild} invoked child id(s) with no conversation dir; {msgButNoInvoke} conversation(s) with messages/ but no invoke edge");
 
@@ -124,7 +125,7 @@ internal sealed class AntigravityImportSource : IImportSource {
 
             if (sessionFilter is not null && !string.Equals(sessionId, sessionFilter, StringComparison.Ordinal)) continue;
 
-            var transcript = AntigravityPaths.TranscriptFullPathUnder(productRoot, convId);
+            var transcript = _paths.TranscriptFullPathUnder(productRoot, convId);
             if (!File.Exists(transcript)) continue;
 
             var firstTimestamp = ReadFirstTimestamp(transcript);
@@ -333,7 +334,7 @@ internal sealed class AntigravityImportSource : IImportSource {
             // form: the server canonicalizes agent_id on both ingest and watermark read, so this
             // matches live routing/correlation and the dashless session ids used everywhere else
             // (mirrors GeminiImportSource).
-            var childTranscript = AntigravityPaths.TranscriptFullPathUnder(productRoot, childId);
+            var childTranscript = _paths.TranscriptFullPathUnder(productRoot, childId);
             if (!File.Exists(childTranscript)) continue;
 
             var childAgentId = ImportCommand.NormalizeGuid(childId);
@@ -630,7 +631,7 @@ internal sealed class AntigravityImportSource : IImportSource {
         EncodedCwd       = "",
         Meta             = meta,
         Status           = status,
-        Vendor           = "antigravity",
+        Vendor           = HarnessId.Antigravity,
         ProbeErrorReason = probeError,
         TotalLines       = totalLines,
         SourceMeta       = s.SourceMeta,

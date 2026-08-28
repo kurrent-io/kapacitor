@@ -1,3 +1,5 @@
+using Capacitor.Cli.Core.Harness;
+
 namespace Capacitor.Cli.Core.FirstRun;
 
 /// <summary>
@@ -21,7 +23,7 @@ public interface IFirstRunImportLane {
     /// <param name="asOf">The instant the reported windows resolve against. Handed in so the import
     /// that acts on these counts can be given the same one.</param>
     Task<ReportFirstRunImportRequest?> DiscoverAsync(
-        IReadOnlyList<string>? vendors, DateTimeOffset asOf, CancellationToken ct);
+        IReadOnlyList<HarnessId>? vendors, DateTimeOffset asOf, CancellationToken ct);
 
     /// <summary>
     /// Runs the decision: one pass per level, because <c>--private</c> is per invocation.

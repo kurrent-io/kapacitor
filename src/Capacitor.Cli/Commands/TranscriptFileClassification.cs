@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text.Json;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Harness;
 
 namespace Capacitor.Cli.Commands;
 
@@ -8,8 +9,8 @@ namespace Capacitor.Cli.Commands;
 /// HEAD-probes the server for each transcript to decide New / Partial /
 /// AlreadyLoaded / TooShort / Excluded / ProbeError. Used by both
 /// ClaudeImportSource and CodexImportSource — the only difference between
-/// them is the metadata extractor, which is selected internally via the
-/// <c>vendor</c> string (today: "claude" or "codex").
+/// them is the metadata extractor, which is selected internally from
+/// <c>vendor</c>.
 /// </summary>
 internal static class TranscriptFileClassification {
     public static async Task<List<ImportCommand.SessionClassification>> ClassifyAsync(
@@ -21,7 +22,7 @@ internal static class TranscriptFileClassification {
             int                                                          minLines,
             string[]?                                                    excludedRepos,
             CancellationToken                                            ct,
-            string                                                       vendor        = "claude",
+            HarnessId                                                    vendor        = HarnessId.Claude,
             Action?                                                      onProbed      = null,
             string[]?                                                    excludedPaths = null
         ) {
@@ -49,7 +50,7 @@ internal static class TranscriptFileClassification {
             string[]?         excludedRepos,
             string[]?         excludedPaths,
             SemaphoreSlim     probeGate,
-            string            vendor,
+            HarnessId         vendor,
             Action?           onProbed,
             CancellationToken ct
         ) {
@@ -72,10 +73,10 @@ internal static class TranscriptFileClassification {
             string[]?         excludedRepos,
             string[]?         excludedPaths,
             SemaphoreSlim     probeGate,
-            string            vendor,
+            HarnessId         vendor,
             CancellationToken ct
         ) {
-        var isCodex = vendor == "codex";
+        var isCodex = vendor is HarnessId.Codex;
         var meta    = isCodex ? ImportCommand.ExtractCodexSessionMetadata(filePath) : ImportCommand.ExtractSessionMetadata(filePath);
 
         switch (isCodex) {

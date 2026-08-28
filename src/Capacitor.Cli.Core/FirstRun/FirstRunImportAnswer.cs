@@ -1,3 +1,5 @@
+using Capacitor.Cli.Core.Harness;
+
 namespace Capacitor.Cli.Core.FirstRun;
 
 /// <summary>
@@ -84,7 +86,7 @@ public sealed record FirstRunImportChoice(string Owner, string Name, FirstRunImp
 /// two ways to say it are two ways for the screen and the CLI to disagree.</param>
 /// <param name="Window">A <see cref="FirstRunImportWindows"/> key, already checked.</param>
 /// <param name="Titles">Who titles what this imports.</param>
-/// <param name="Vendors">Vendor flags to pass, or null for no filter — which is what an unflagged
+/// <param name="Vendors">The harnesses to import from, or null for no filter — which is what an unflagged
 /// <c>kcap import</c> does, and is different from an empty list.</param>
 /// <param name="DecidedAt">When the answer was made, on the server's clock. Carried, not compared.</param>
 /// <param name="Unreadable">How many repositories named a level this build does not know. Dropped
@@ -94,7 +96,7 @@ public sealed record FirstRunImportAnswer(
         IReadOnlyList<FirstRunImportChoice> Choices,
         string                              Window,
         FirstRunImportTitles                Titles,
-        IReadOnlyList<string>?              Vendors,
+        IReadOnlyList<HarnessId>?           Vendors,
         DateTimeOffset                      DecidedAt,
         int                                 Unreadable) {
     /// <summary>The user asked for nothing, and this build understood all of it. Distinct from an

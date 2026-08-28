@@ -4,6 +4,7 @@ using Capacitor.Cli.Core.Harness.Antigravity;
 using Capacitor.Cli.Daemon.Harness.Kiro;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Capacitor.Cli.Core.Harness.Gemini;
 
 namespace Capacitor.Cli.Daemon.Harness.Antigravity;
 
@@ -132,7 +133,7 @@ internal static class AntigravityReviewerHome {
             // The kcap plugin dir is what lets agy's OWN capture hooks fire (job 1) — its absence is
             // the whole mechanism, so it is checked rather than trusted to follow from "we never wrote
             // it". A future change that seeds a fuller home must trip this, not silently double-capture.
-            if (Directory.Exists(AntigravityPaths.FromEnvironment(new(home)).PluginDir))
+            if (Directory.Exists(AntigravityHarness.Over(GeminiHarness.FromEnvironment(new(home))).Paths.PluginDir))
                 throw new InvalidOperationException(
                     $"antigravity_reviewer_home_not_isolated: '{home}' carries a kcap plugin directory, "
                   + "which would let this reviewer's own capture hooks fire against its conversation.");
@@ -155,7 +156,7 @@ internal static class AntigravityReviewerHome {
     /// — the latter lower to a generic <c>Add&lt;T&gt;</c> that trips NativeAOT (IL3050), the same
     /// rule <c>ClaudeLauncher.BuildReviewFlowMcpConfig</c> and <c>ReviewLaunchBuilder</c> follow.</summary>
     static void WriteMcpConfig(string home, IReadOnlyList<AcpMcpServerSpec> injected) {
-        var pathFull = ResolveInsideHome(home, AntigravityPaths.FromEnvironment(new(home)).McpConfigJson, "mcp_config.json");
+        var pathFull = ResolveInsideHome(home, AntigravityHarness.Over(GeminiHarness.FromEnvironment(new(home))).Paths.McpConfigJson, "mcp_config.json");
 
         Directory.CreateDirectory(Path.GetDirectoryName(pathFull)!);
 
@@ -197,7 +198,7 @@ internal static class AntigravityReviewerHome {
     /// makes the grant exactly this launch's and not the operator's own rules plus it.</para>
     /// </summary>
     static void WriteSettings(string home, IReadOnlyList<AcpMcpServerSpec> injected) {
-        var pathFull = ResolveInsideHome(home, AntigravityPaths.FromEnvironment(new(home)).CliSettingsJson, "settings.json");
+        var pathFull = ResolveInsideHome(home, AntigravityHarness.Over(GeminiHarness.FromEnvironment(new(home))).Paths.CliSettingsJson, "settings.json");
 
         Directory.CreateDirectory(Path.GetDirectoryName(pathFull)!);
 

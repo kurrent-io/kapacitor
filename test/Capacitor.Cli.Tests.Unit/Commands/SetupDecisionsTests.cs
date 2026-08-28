@@ -1,5 +1,6 @@
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core.FirstRun;
+using Capacitor.Cli.Core.Harness;
 
 namespace Capacitor.Cli.Tests.Unit.Commands;
 
@@ -143,7 +144,7 @@ public class SetupDecisionsTests {
     [Test]
     public async Task WithBrowserAnswer_InstallsWhatTheBrowserTurnedOn() {
         var options = SetupDecisions.WithBrowserAnswer(
-            Flags(), Answer(new FirstRunAgentsChoice("cursor", Record: true, Tools: true)));
+            Flags(), Answer(new FirstRunAgentsChoice(HarnessId.Cursor, Record: true, Tools: true)));
 
         await Assert.That(options.SkipCursor).IsFalse();
         await Assert.That(options.SkipCursorMcp).IsFalse();
@@ -154,7 +155,7 @@ public class SetupDecisionsTests {
     [Test]
     public async Task WithBrowserAnswer_LeavesAHarnessTheAnswerNeverNamed() {
         var options = SetupDecisions.WithBrowserAnswer(
-            Flags(), Answer(new FirstRunAgentsChoice("cursor", Record: true, Tools: true)));
+            Flags(), Answer(new FirstRunAgentsChoice(HarnessId.Cursor, Record: true, Tools: true)));
 
         await Assert.That(options.SkipCodex).IsTrue();
         await Assert.That(options.SkipGemini).IsTrue();
@@ -166,7 +167,7 @@ public class SetupDecisionsTests {
     public async Task WithBrowserAnswer_TheFlagStillWinsOverABrowserYes() {
         var options = SetupDecisions.WithBrowserAnswer(
             Flags(skipCursor: true, skipCursorMcp: true),
-            Answer(new FirstRunAgentsChoice("cursor", Record: true, Tools: true)));
+            Answer(new FirstRunAgentsChoice(HarnessId.Cursor, Record: true, Tools: true)));
 
         await Assert.That(options.SkipCursor).IsTrue();
         await Assert.That(options.SkipCursorMcp).IsTrue();
@@ -180,7 +181,7 @@ public class SetupDecisionsTests {
     public async Task WithBrowserAnswer_TheHooksFlagAloneStillBlocksThatVendorsTools() {
         var options = SetupDecisions.WithBrowserAnswer(
             Flags(skipCursor: true),
-            Answer(new FirstRunAgentsChoice("cursor", Record: true, Tools: true)));
+            Answer(new FirstRunAgentsChoice(HarnessId.Cursor, Record: true, Tools: true)));
 
         await Assert.That(options.SkipCursor).IsTrue();
         await Assert.That(options.SkipCursorMcp).IsTrue();
@@ -193,7 +194,7 @@ public class SetupDecisionsTests {
     public async Task WithBrowserAnswer_TheKiroHooksFlagLeavesItsToolsAlone() {
         var options = SetupDecisions.WithBrowserAnswer(
             Flags(skipKiro: true),
-            Answer(new FirstRunAgentsChoice("kiro", Record: true, Tools: true)));
+            Answer(new FirstRunAgentsChoice(HarnessId.Kiro, Record: true, Tools: true)));
 
         await Assert.That(options.SkipKiro).IsTrue();
         await Assert.That(options.SkipKiroMcp).IsFalse();
@@ -203,7 +204,7 @@ public class SetupDecisionsTests {
     public async Task WithBrowserAnswer_TheKiroMcpFlagStillBlocksItsTools() {
         var options = SetupDecisions.WithBrowserAnswer(
             Flags(skipKiroMcp: true),
-            Answer(new FirstRunAgentsChoice("kiro", Record: true, Tools: true)));
+            Answer(new FirstRunAgentsChoice(HarnessId.Kiro, Record: true, Tools: true)));
 
         await Assert.That(options.SkipKiroMcp).IsTrue();
     }
@@ -211,7 +212,7 @@ public class SetupDecisionsTests {
     [Test]
     public async Task WithBrowserAnswer_HonoursRecordWithoutToolsForAVendorThatSeparatesThem() {
         var options = SetupDecisions.WithBrowserAnswer(
-            Flags(), Answer(new FirstRunAgentsChoice("cursor", Record: true, Tools: false)));
+            Flags(), Answer(new FirstRunAgentsChoice(HarnessId.Cursor, Record: true, Tools: false)));
 
         await Assert.That(options.SkipCursor).IsFalse();
         await Assert.That(options.SkipCursorMcp).IsTrue();
@@ -237,7 +238,7 @@ public class SetupDecisionsTests {
     [Test]
     public async Task WithBrowserAnswer_SilencesTheStepsPrompts() {
         var options = SetupDecisions.WithBrowserAnswer(
-            Flags(), Answer(new FirstRunAgentsChoice("codex", Record: true, Tools: true)));
+            Flags(), Answer(new FirstRunAgentsChoice(HarnessId.Codex, Record: true, Tools: true)));
 
         await Assert.That(options.NoPrompt).IsTrue();
     }

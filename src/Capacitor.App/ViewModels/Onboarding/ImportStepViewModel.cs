@@ -3,7 +3,7 @@ using System.Reactive;
 using System.Reactive.Linq;
 using Capacitor.App.Services;
 using Capacitor.Cli.Core;
-using Capacitor.Cli.Core.Setup;
+using Capacitor.Cli.Core.Harness;
 using ReactiveUI;
 
 namespace Capacitor.App.ViewModels.Onboarding;
@@ -11,12 +11,12 @@ namespace Capacitor.App.ViewModels.Onboarding;
 /// One vendor checkbox on the Import step. Unlike plugin-install, `kcap import` has no flagless
 /// Claude default — Claude's own selector is the explicit `--claude` flag.
 public sealed class ImportVendorRow : ReactiveObject {
-    readonly Func<AgentDetectionResult, DetectedAgent> _select;
+    readonly HarnessId _id;
 
     internal ImportVendorRow(AgentVendor vendor) {
-        Label   = vendor.Label;
-        Flag    = vendor.Flag ?? "--claude";
-        _select = vendor.Select;
+        Label = vendor.Label;
+        Flag  = vendor.Id.Flag;
+        _id   = vendor.Id;
     }
 
     public string Label { get; }
@@ -28,20 +28,20 @@ public sealed class ImportVendorRow : ReactiveObject {
         set => this.RaiseAndSetIfChanged(ref _isSelected, value);
     }
 
-    internal bool DetectedIn(AgentDetectionResult result) => _select(result).Detected;
+    internal bool DetectedIn(IReadOnlySet<HarnessId> detected) => detected.Contains(_id);
 }
 
-/// spec §3 step 6 / decision 6: scope + vendor selection, streamed `kcap import` into a bounded
-/// log pane. A completed run's exit code never blocks Next — only leaving mid-run kills it (§7).
+/// Scope + vendor selection, streamed `kcap import` into a bounded log pane. A completed run's exit
+/// code never blocks Next — only leaving mid-run kills it.
 public sealed class ImportStepViewModel : ReactiveObject, IWizardStep {
     internal const int    LogLimit  = 500;
     internal const string RetryHint = "If anything failed, run `kcap import` in a terminal to retry.";
 
     readonly IKcapCli _cli;
-    readonly Func<CancellationToken, Task<AgentDetectionResult>> _detect;
+    readonly Func<CancellationToken, Task<IReadOnlySet<HarnessId>>> _detect;
     readonly Action<Action> _post;
 
-    AgentDetectionResult?    _detected;
+    IReadOnlySet<HarnessId>? _detected;
     CancellationTokenSource? _cts;
     Task?                    _run;
 
@@ -54,7 +54,7 @@ public sealed class ImportStepViewModel : ReactiveObject, IWizardStep {
     string? _status;
 
     public ImportStepViewModel(
-            IKcapCli cli, Func<CancellationToken, Task<AgentDetectionResult>> detect, Action<Action> post) {
+            IKcapCli cli, Func<CancellationToken, Task<IReadOnlySet<HarnessId>>> detect, Action<Action> post) {
         _cli    = cli;
         _detect = detect;
         _post   = post;
@@ -149,7 +149,7 @@ public sealed class ImportStepViewModel : ReactiveObject, IWizardStep {
     public async Task OnEnterAsync(CancellationToken ct) {
         if (_detected is not null) return; // cached: re-entering the step must not stomp user choices
 
-        AgentDetectionResult detected;
+        IReadOnlySet<HarnessId> detected;
         try { detected = await _detect(ct).ConfigureAwait(false); }
         catch (OperationCanceledException) { return; }
 

@@ -3,6 +3,7 @@ using System.Net;
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Core.Harness.Cursor;
 using Capacitor.Cli.Harness.Cursor;
 using TUnit.Core.Enums;
@@ -29,7 +30,7 @@ public class CursorImportSourceTests {
     public async Task vendor_is_cursor() {
         using var fx  = new ProjectsDirFixture();
         var       src = new CursorImportSource(Config.Root, fx.ProjectsDir, fx.WorkspaceStorageDir);
-        await Assert.That(src.Vendor).IsEqualTo("cursor");
+        await Assert.That(src.Vendor).IsEqualTo(HarnessId.Cursor);
     }
 
     [Test]
@@ -106,7 +107,7 @@ public class CursorImportSourceTests {
         await Assert.That(got.Count).IsEqualTo(2);
         await Assert.That(got.Select(s => s.SessionId)).Contains("11111111111111111111111111111111");
         await Assert.That(got.Select(s => s.SessionId)).Contains("22222222222222222222222222222222");
-        await Assert.That(got.All(s => s.Vendor == "cursor")).IsTrue();
+        await Assert.That(got.All(s => s.Vendor == HarnessId.Cursor)).IsTrue();
     }
 
     [Test]
@@ -435,7 +436,7 @@ public class CursorImportSourceTests {
             EncodedCwd = "",
             Meta       = new SessionMetadata(),
             Status     = ImportCommand.ClassificationStatus.New,
-            Vendor     = "cursor",
+            Vendor     = HarnessId.Cursor,
             SourceMeta = new Dictionary<string, object?> {
                 ["TranscriptPath"]  = jsonl,
                 ["WorkspaceFolder"] = "/Users/me/dev/proj",
@@ -508,7 +509,7 @@ public class CursorImportSourceTests {
             EncodedCwd = "",
             Meta       = new SessionMetadata(),
             Status     = ImportCommand.ClassificationStatus.New,
-            Vendor     = "cursor",
+            Vendor     = HarnessId.Cursor,
             SourceMeta = new Dictionary<string, object?> { ["TranscriptPath"] = jsonl },
         };
 
@@ -556,7 +557,7 @@ public class CursorImportSourceTests {
                 EncodedCwd = "",
                 Meta       = new SessionMetadata(),
                 Status     = ImportCommand.ClassificationStatus.New,
-                Vendor     = "cursor",
+                Vendor     = HarnessId.Cursor,
                 SourceMeta = new Dictionary<string, object?> { ["TranscriptPath"] = jsonl },
             },
             new ImportContext(client, "http://localhost", ForcePrivate: false),
@@ -590,7 +591,7 @@ public class CursorImportSourceTests {
                 EncodedCwd = "",
                 Meta       = new SessionMetadata(),
                 Status     = ImportCommand.ClassificationStatus.New,
-                Vendor     = "cursor",
+                Vendor     = HarnessId.Cursor,
                 SourceMeta = new Dictionary<string, object?> { ["TranscriptPath"] = jsonl },
             },
             new ImportContext(client, "http://localhost", ForcePrivate: false),
@@ -636,7 +637,7 @@ public class CursorImportSourceTests {
                 Meta       = new SessionMetadata(),
                 Status     = ImportCommand.ClassificationStatus.AlreadyLoaded,
                 TotalLines = 3,
-                Vendor     = "cursor",
+                Vendor     = HarnessId.Cursor,
                 SourceMeta = new Dictionary<string, object?> { ["TranscriptPath"] = jsonl },
             },
             new ImportContext(client, "http://localhost", ForcePrivate: false),
@@ -679,7 +680,7 @@ public class CursorImportSourceTests {
             Meta       = new SessionMetadata(),
             Status     = ImportCommand.ClassificationStatus.AlreadyLoaded,
             TotalLines = 3,
-            Vendor     = "cursor",
+            Vendor     = HarnessId.Cursor,
             SourceMeta = new Dictionary<string, object?> {
                 ["TranscriptPath"]   = parentJsonl,
                 ["SubagentChildren"] = new List<CursorImportSource.CursorSubagentChild> {
@@ -726,7 +727,7 @@ public class CursorImportSourceTests {
             Meta       = new SessionMetadata(),
             Status     = ImportCommand.ClassificationStatus.AlreadyLoaded,
             TotalLines = 3,
-            Vendor     = "cursor",
+            Vendor     = HarnessId.Cursor,
             SourceMeta = new Dictionary<string, object?> {
                 ["TranscriptPath"]   = parentJsonl,
                 ["SubagentChildren"] = new List<CursorImportSource.CursorSubagentChild> {
@@ -787,7 +788,7 @@ public class CursorImportSourceTests {
             Meta       = new SessionMetadata(),
             Status     = ImportCommand.ClassificationStatus.AlreadyLoaded,
             TotalLines = 3,
-            Vendor     = "cursor",
+            Vendor     = HarnessId.Cursor,
             SourceMeta = new Dictionary<string, object?> {
                 ["TranscriptPath"]   = parentJsonl,
                 ["SubagentChildren"] = new List<CursorImportSource.CursorSubagentChild> {
@@ -838,7 +839,7 @@ public class CursorImportSourceTests {
             Meta       = new SessionMetadata(),
             Status     = ImportCommand.ClassificationStatus.AlreadyLoaded,
             TotalLines = 3,
-            Vendor     = "cursor",
+            Vendor     = HarnessId.Cursor,
             SourceMeta = new Dictionary<string, object?> {
                 ["TranscriptPath"]   = parentJsonl,
                 ["SubagentChildren"] = new List<CursorImportSource.CursorSubagentChild> {
@@ -897,7 +898,7 @@ public class CursorImportSourceTests {
             Meta       = new SessionMetadata(),
             Status     = ImportCommand.ClassificationStatus.AlreadyLoaded,
             TotalLines = 3,
-            Vendor     = "cursor",
+            Vendor     = HarnessId.Cursor,
             SourceMeta = new Dictionary<string, object?> {
                 ["TranscriptPath"]   = parentJsonl,
                 ["SubagentChildren"] = new List<CursorImportSource.CursorSubagentChild> {
@@ -957,7 +958,7 @@ public class CursorImportSourceTests {
             Meta       = new SessionMetadata(),
             Status     = ImportCommand.ClassificationStatus.AlreadyLoaded,
             TotalLines = 3,
-            Vendor     = "cursor",
+            Vendor     = HarnessId.Cursor,
             SourceMeta = new Dictionary<string, object?> {
                 ["TranscriptPath"]   = parentJsonl,
                 ["SubagentChildren"] = new List<CursorImportSource.CursorSubagentChild> {
@@ -1011,7 +1012,7 @@ public class CursorImportSourceTests {
             Meta       = new SessionMetadata(),
             Status     = ImportCommand.ClassificationStatus.AlreadyLoaded,
             TotalLines = 3,
-            Vendor     = "cursor",
+            Vendor     = HarnessId.Cursor,
             SourceMeta = new Dictionary<string, object?> {
                 ["TranscriptPath"]   = parentJsonl,
                 ["SubagentChildren"] = new List<CursorImportSource.CursorSubagentChild> {
@@ -1058,7 +1059,7 @@ public class CursorImportSourceTests {
             Meta       = new SessionMetadata(),
             Status     = ImportCommand.ClassificationStatus.AlreadyLoaded,
             TotalLines = 3,
-            Vendor     = "cursor",
+            Vendor     = HarnessId.Cursor,
             SourceMeta = new Dictionary<string, object?> {
                 ["TranscriptPath"]   = parentJsonl,
                 ["SubagentChildren"] = new List<CursorImportSource.CursorSubagentChild> {
@@ -1196,7 +1197,7 @@ public class CursorImportSourceTests {
             EncodedCwd = "",
             Meta       = new SessionMetadata(),
             Status     = ImportCommand.ClassificationStatus.New,
-            Vendor     = "cursor",
+            Vendor     = HarnessId.Cursor,
             SourceMeta = new Dictionary<string, object?> {
                 ["TranscriptPath"]  = jsonl,
                 ["WorkspaceFolder"] = "/Users/me/dev/proj",
@@ -1241,7 +1242,7 @@ public class CursorImportSourceTests {
             EncodedCwd = "",
             Meta       = new SessionMetadata(),
             Status     = ImportCommand.ClassificationStatus.New,
-            Vendor     = "cursor",
+            Vendor     = HarnessId.Cursor,
             SourceMeta = new Dictionary<string, object?> {
                 ["TranscriptPath"]  = jsonl,
                 ["WorkspaceFolder"] = "/Users/me/dev/proj",
@@ -1420,7 +1421,7 @@ public class CursorImportSourceTests {
                     EncodedCwd = "",
                     Meta       = new SessionMetadata(),
                     Status     = ImportCommand.ClassificationStatus.New,
-                    Vendor     = "cursor",
+                    Vendor     = HarnessId.Cursor,
                     // QuarantineIdentity as ClassifyAsync would have stamped it for a plain
                     // top-level (non-child) session — itself.
                     SourceMeta = new Dictionary<string, object?> {
@@ -1459,7 +1460,7 @@ public class CursorImportSourceTests {
                 EncodedCwd = "",
                 Meta       = new SessionMetadata(),
                 Status     = ImportCommand.ClassificationStatus.New,
-                Vendor     = "cursor",
+                Vendor     = HarnessId.Cursor,
                 SourceMeta = new Dictionary<string, object?> {
                     ["TranscriptPath"]     = jsonl,
                     ["QuarantineIdentity"] = sessionId,
@@ -1508,7 +1509,7 @@ public class CursorImportSourceTests {
                     EncodedCwd = "",
                     Meta       = new SessionMetadata(),
                     Status     = ImportCommand.ClassificationStatus.New,
-                    Vendor     = "cursor",
+                    Vendor     = HarnessId.Cursor,
                     SourceMeta = new Dictionary<string, object?> { ["TranscriptPath"] = jsonl },
                 },
                 new ImportContext(client, "http://localhost", ForcePrivate: false),
@@ -1564,7 +1565,7 @@ public class CursorImportSourceTests {
                     EncodedCwd = "",
                     Meta       = new SessionMetadata(),
                     Status     = ImportCommand.ClassificationStatus.New,
-                    Vendor     = "cursor",
+                    Vendor     = HarnessId.Cursor,
                     SourceMeta = new Dictionary<string, object?> { ["TranscriptPath"] = jsonl },
                 },
                 new ImportContext(client, "http://localhost", ForcePrivate: false),
@@ -1622,7 +1623,7 @@ public class CursorImportSourceTests {
                     EncodedCwd = "",
                     Meta       = new SessionMetadata(),
                     Status     = ImportCommand.ClassificationStatus.New,
-                    Vendor     = "cursor",
+                    Vendor     = HarnessId.Cursor,
                     SourceMeta = new Dictionary<string, object?> { ["TranscriptPath"] = jsonl },
                 },
                 new ImportContext(client, "http://localhost", ForcePrivate: false),
@@ -1680,7 +1681,7 @@ public class CursorImportSourceTests {
                 EncodedCwd = "",
                 Meta       = new SessionMetadata(),
                 Status     = ImportCommand.ClassificationStatus.New,
-                Vendor     = "cursor",
+                Vendor     = HarnessId.Cursor,
                 SourceMeta = new Dictionary<string, object?> {
                     ["TranscriptPath"]    = parentJsonl,
                     ["SubagentChildren"]  = new List<CursorImportSource.CursorSubagentChild> {
@@ -1751,7 +1752,7 @@ public class CursorImportSourceTests {
                 EncodedCwd = "",
                 Meta       = new SessionMetadata(),
                 Status     = ImportCommand.ClassificationStatus.New,
-                Vendor     = "cursor",
+                Vendor     = HarnessId.Cursor,
                 SourceMeta = new Dictionary<string, object?> {
                     ["TranscriptPath"]   = parentJsonl,
                     ["SubagentChildren"] = new List<CursorImportSource.CursorSubagentChild> {
@@ -1924,7 +1925,7 @@ public class CursorImportSourceTests {
             EncodedCwd = "",
             Meta       = new SessionMetadata(),
             Status     = ImportCommand.ClassificationStatus.New,
-            Vendor     = "cursor",
+            Vendor     = HarnessId.Cursor,
             SourceMeta = new Dictionary<string, object?> {
                 ["TranscriptPath"]  = jsonl,
                 ["WorkspaceFolder"] = null,
@@ -1967,7 +1968,7 @@ public class CursorImportSourceTests {
             Meta           = new SessionMetadata(),
             Status         = ImportCommand.ClassificationStatus.Partial,
             ResumeFromLine = 1,
-            Vendor         = "cursor",
+            Vendor         = HarnessId.Cursor,
             SourceMeta     = new Dictionary<string, object?> { ["TranscriptPath"] = jsonl },
         };
 

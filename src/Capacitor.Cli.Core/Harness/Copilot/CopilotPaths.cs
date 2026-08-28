@@ -10,10 +10,6 @@ public sealed class CopilotPaths {
     public CopilotPaths(UserHome home, string? copilotHome) =>
         Root = !string.IsNullOrEmpty(copilotHome) ? copilotHome : Path.Combine(home.Path, ".copilot");
 
-    /// <summary>Reads the one override Copilot honours; the home comes from the caller.</summary>
-    public static CopilotPaths FromEnvironment(UserHome home) =>
-        new(home, Environment.GetEnvironmentVariable("COPILOT_HOME"));
-
     public string Root { get; }
 
     /// <summary>
@@ -62,10 +58,15 @@ public sealed class CopilotPaths {
     /// </summary>
     public string LegacySessionStateDir => Path.Combine(Root, "history-session-state");
 
-    /// <summary>Transcript path for a session dir name (the dashed session uuid).</summary>
-    public static string EventsJsonl(string sessionStateDir, string sessionDirName)
+    /// <summary>Both session-state roots, current first: a session migrated on resume exists in
+    /// both, and <c>session-state/</c> holds the longer transcript.</summary>
+    public IReadOnlyList<string> SessionStateDirs => [SessionStateDir, LegacySessionStateDir];
+
+    /// <summary>Transcript path for a session dir name (the dashed session uuid) under whichever of
+    /// <see cref="SessionStateDirs"/> the caller is walking.</summary>
+    public string EventsJsonl(string sessionStateDir, string sessionDirName)
         => Path.Combine(sessionStateDir, sessionDirName, "events.jsonl");
 
-    public static string WorkspaceYaml(string sessionStateDir, string sessionDirName)
+    public string WorkspaceYaml(string sessionStateDir, string sessionDirName)
         => Path.Combine(sessionStateDir, sessionDirName, "workspace.yaml");
 }

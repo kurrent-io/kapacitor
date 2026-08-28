@@ -5,6 +5,7 @@ using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Harness.Gemini;
 using Capacitor.Cli.SessionStartMemory;
+using Capacitor.Cli.Core.Harness;
 
 namespace Capacitor.Cli.Commands.Harness;
 
@@ -105,7 +106,7 @@ sealed class GeminiHookCommand(ConfigRoot config, ProfileContext profiles, HookC
 
         if (fragment is not null || !string.IsNullOrWhiteSpace(workItemsNudge)) {
             try {
-                var rendered = SessionStartMemoryOutputAdapters.Render(SessionStartHarness.Gemini, fragment, workItemsNudge);
+                var rendered = SessionStartMemoryOutputAdapters.Render(HarnessId.Gemini, fragment, workItemsNudge);
                 if (!string.IsNullOrEmpty(rendered)) payload = rendered;
             } catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException) {
                 // keep AllowPayload
@@ -170,7 +171,7 @@ sealed class GeminiHookCommand(ConfigRoot config, ProfileContext profiles, HookC
     /// per-turn callback like Kiro's agentSpawn. A `resume` re-fire on the same session id is made
     /// idempotent by the lease, not by this flag.</para></summary>
     internal static SessionMemoryLifecycle LifecycleFor(string sessionId, string? source) =>
-        new(SessionStartHarness.Gemini, sessionId, LifecycleInstanceId: null,
+        new(HarnessId.Gemini, sessionId, LifecycleInstanceId: null,
             IsTopLevel: true, ClassificationAuthoritative: true,
             // Shared mapper, NOT a local one: it maps an unrecognised source to Unknown, which the
             // policy suppresses BEFORE any lease is acquired. A local mapper defaulting to New would
@@ -352,7 +353,7 @@ sealed class GeminiHookCommand(ConfigRoot config, ProfileContext profiles, HookC
         // parses hook stdout unconditionally, with the exit code only setting its own `success` flag.
         var fragment = await SessionStartMemoryHookSupport.AwaitBounded(memoryTask, budget);
         var workItemsNudge = HarnessNudgeEmitter.Combine(
-            WorkItemsNudgeEmitter.Resolve(SessionStartHarness.Gemini, sessionId, activeProfile?.DisableWorkItemsNudge is true, home),
+            WorkItemsNudgeEmitter.Resolve(HarnessId.Gemini, sessionId, activeProfile?.DisableWorkItemsNudge is true, home),
             HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true, config, home));
         result.Write(RenderSessionStartPayload(fragment, workItemsNudge));
 

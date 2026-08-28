@@ -1,5 +1,5 @@
-using Capacitor.Cli.Core.Setup;
 using Capacitor.Cli.Core.FirstRun;
+using Capacitor.Cli.Core.Harness;
 
 namespace Capacitor.Cli.Commands;
 
@@ -54,43 +54,43 @@ internal static class SetupDecisions {
     /// terminal setup has always done.</para>
     ///
     /// <para>One function rather than sixteen call sites so the mapping is pinnable: a harness added
-    /// to <see cref="HarnessCatalog"/> and forgotten here would otherwise round-trip through the
-    /// screen, be reported back as chosen, and install nothing.</para>
+    /// to the registry and forgotten here would otherwise round-trip through the screen, be reported
+    /// back as chosen, and install nothing.</para>
     /// </summary>
     public static CodingAgentsStep.Options WithBrowserAnswer(
             CodingAgentsStep.Options options, FirstRunAgentsAnswer? answer) {
         if (answer is null) return options;
 
-        bool Skip(string vendorId, bool flag) => flag || !answer.Records(vendorId);
+        bool Skip(HarnessId harness, bool flag) => flag || !answer.Records(harness);
 
-        bool Tools(string vendorId, bool blockedByFlag) => blockedByFlag || !answer.Tools(vendorId);
+        bool Tools(HarnessId harness, bool blockedByFlag) => blockedByFlag || !answer.Tools(harness);
 
         return options with {
-            SkipClaude      = Skip("claude", options.SkipClaude),
-            SkipCodex       = Skip("codex", options.SkipCodex),
-            SkipCursor      = Skip("cursor", options.SkipCursor),
-            SkipCopilot     = Skip("copilot", options.SkipCopilot),
-            SkipGemini      = Skip("gemini", options.SkipGemini),
-            SkipKiro        = Skip("kiro", options.SkipKiro),
-            SkipPi          = Skip("pi", options.SkipPi),
-            SkipOpenCode    = Skip("opencode", options.SkipOpenCode),
-            SkipAntigravity = Skip("antigravity", options.SkipAntigravity),
+            SkipClaude      = Skip(HarnessId.Claude, options.SkipClaude),
+            SkipCodex       = Skip(HarnessId.Codex, options.SkipCodex),
+            SkipCursor      = Skip(HarnessId.Cursor, options.SkipCursor),
+            SkipCopilot     = Skip(HarnessId.Copilot, options.SkipCopilot),
+            SkipGemini      = Skip(HarnessId.Gemini, options.SkipGemini),
+            SkipKiro        = Skip(HarnessId.Kiro, options.SkipKiro),
+            SkipPi          = Skip(HarnessId.Pi, options.SkipPi),
+            SkipOpenCode    = Skip(HarnessId.OpenCode, options.SkipOpenCode),
+            SkipAntigravity = Skip(HarnessId.Antigravity, options.SkipAntigravity),
 
             // The hooks flag counts against TOOLS as well. `--skip-<vendor>-hooks` is a whole-vendor
             // opt-out, and the browser's separate tools axis must not re-enable the half of it the
             // caller never mentioned: a script that excluded a vendor gets no writes for it.
-            SkipCursorMcp      = Tools("cursor", options.SkipCursor || options.SkipCursorMcp),
-            SkipCopilotMcp     = Tools("copilot", options.SkipCopilot || options.SkipCopilotMcp),
-            SkipGeminiMcp      = Tools("gemini", options.SkipGemini || options.SkipGeminiMcp),
-            SkipPiMcp          = Tools("pi", options.SkipPi || options.SkipPiMcp),
-            SkipOpenCodeMcp    = Tools("opencode", options.SkipOpenCode || options.SkipOpenCodeMcp),
-            SkipAntigravityMcp = Tools("antigravity", options.SkipAntigravity || options.SkipAntigravityMcp),
+            SkipCursorMcp      = Tools(HarnessId.Cursor, options.SkipCursor || options.SkipCursorMcp),
+            SkipCopilotMcp     = Tools(HarnessId.Copilot, options.SkipCopilot || options.SkipCopilotMcp),
+            SkipGeminiMcp      = Tools(HarnessId.Gemini, options.SkipGemini || options.SkipGeminiMcp),
+            SkipPiMcp          = Tools(HarnessId.Pi, options.SkipPi || options.SkipPiMcp),
+            SkipOpenCodeMcp    = Tools(HarnessId.OpenCode, options.SkipOpenCode || options.SkipOpenCodeMcp),
+            SkipAntigravityMcp = Tools(HarnessId.Antigravity, options.SkipAntigravity || options.SkipAntigravityMcp),
 
             // Kiro is the exception, and stays one. `--skip-kiro-hooks` opts out of only the invasive
             // agent clone; the terminal path registers Kiro's MCP under it and says so. Carrying it
             // across here would make the same flag mean two things depending on whether a browser
             // answered, and drop tools that browser selected.
-            SkipKiroMcp        = Tools("kiro", options.SkipKiroMcp),
+            SkipKiroMcp        = Tools(HarnessId.Kiro, options.SkipKiroMcp),
 
             // The browser answered every prompt this step would raise, so it must not raise one.
             NoPrompt = true,

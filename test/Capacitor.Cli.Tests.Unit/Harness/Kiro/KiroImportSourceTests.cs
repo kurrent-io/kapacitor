@@ -1,4 +1,5 @@
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Harness.Kiro;
 
 namespace Capacitor.Cli.Tests.Unit.Harness.Kiro;
@@ -30,7 +31,7 @@ public class KiroImportSourceTests {
         await Assert.That(found.Count).IsEqualTo(1);
         var s = found[0];
         await Assert.That(s.SessionId).IsEqualTo(Dashed.Replace("-", ""));
-        await Assert.That(s.Vendor).IsEqualTo("kiro");
+        await Assert.That(s.Vendor).IsEqualTo(HarnessId.Kiro);
         await Assert.That(s.Cwd).IsEqualTo("/work");
         await Assert.That(s.SourceMeta!["DashedSessionId"]).IsEqualTo(Dashed);
         await Assert.That(s.SourceMeta!["Model"]).IsEqualTo("auto");

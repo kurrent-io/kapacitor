@@ -20,7 +20,7 @@ public static class TestHarnessPaths {
         return new() {
             Claude      = new(home, null),
             Codex       = new(home, null),
-            Cursor      = CursorPaths.FromEnvironment(home),
+            Cursor      = CursorHarness.FromEnvironment(home).Paths,
             Copilot     = new(home, null),
             Gemini      = gemini,
             Antigravity = new AntigravityPaths(gemini),

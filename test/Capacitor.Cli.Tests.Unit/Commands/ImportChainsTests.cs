@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Harness;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
 using WireMock.Server;
@@ -219,7 +220,7 @@ public class ImportChainsTests : IDisposable {
         // Asserting on the URL path here keeps that bug from re-appearing.
         StubAllHookEndpoints();
 
-        var session = MakeNew("codex-routing", 10) with { Vendor = "codex" };
+        var session = MakeNew("codex-routing", 10) with { Vendor = HarnessId.Codex };
         var chains  = new List<List<ImportCommand.SessionClassification>> { new() { session } };
 
         var events = new ImportCommand.ChainWorkerEvents {

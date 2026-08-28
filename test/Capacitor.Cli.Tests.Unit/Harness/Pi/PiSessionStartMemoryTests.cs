@@ -1,6 +1,7 @@
 using Capacitor.Cli.Commands.Harness;
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.SessionStartMemory;
+using Capacitor.Cli.Core.Harness;
 
 namespace Capacitor.Cli.Tests.Unit.Harness.Pi;
 
@@ -55,7 +56,7 @@ public class PiSessionStartMemoryTests {
         var file = Path.Combine(Path.GetTempPath(), "sessions", "20260807T101010_0a1b2c3d-1111-2222-3333-444455556666.jsonl");
         var lifecycle = PiHookCommand.LifecycleFor(file, "startup");
 
-        await Assert.That(lifecycle.Harness).IsEqualTo(SessionStartHarness.Pi);
+        await Assert.That(lifecycle.Harness).IsEqualTo(HarnessId.Pi);
         await Assert.That(lifecycle.SessionId).IsEqualTo(file);
         await Assert.That(lifecycle.IsTopLevel).IsTrue();
         await Assert.That(lifecycle.ClassificationAuthoritative).IsTrue();

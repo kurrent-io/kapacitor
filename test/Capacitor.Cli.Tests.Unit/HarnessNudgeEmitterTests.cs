@@ -5,24 +5,16 @@ namespace Capacitor.Cli.Tests.Unit;
 
 public class HarnessNudgeEmitterTests {
     static readonly DateTimeOffset Now = new(2026, 8, 19, 12, 0, 0, TimeSpan.Zero);
-    // Detection and wiring are stubbed at every call site below, so these are only a shape.
-    static readonly HarnessPaths Paths    = TestHarnessPaths.NoOverrides(new("/nonexistent"));
-    static readonly BinaryProbe  Binaries = BinaryProbe.Searching(null);
 
-    static AgentDetectionResult DetectionWithOnly(params string[] ids) {
-        var set = new HashSet<string>(ids, StringComparer.Ordinal);
-        DetectedAgent A(string id) => new(BinaryFound: set.Contains(id), InstallSignalFound: false);
-        return new(A("claude"), A("codex"), A("cursor"), A("copilot"), A("gemini"),
-                   A("kiro"), A("pi"), A("opencode"), A("antigravity"));
-    }
-
-    static string? Fragment(TempConfigRoot config, AgentDetectionResult detected, Func<HarnessPaths, string, bool> isWired, bool optedOut = false) =>
-        HarnessNudgeEmitter.ResolveFragment(Paths, Binaries, new(config.Root), optedOut, Now, isWired, (_, _) => detected);
+    static string? Fragment(
+            TempConfigRoot config, HarnessId[] detected, HarnessId[]? wired = null, bool optedOut = false) =>
+        HarnessNudgeEmitter.ResolveFragment(
+            TestHarnesses.All(detected, wired), new(config.Root), optedOut, Now);
 
     [Test]
     public async Task Fragment_names_detected_unwired_vendor_and_install_command() {
         using var config = new TempConfigRoot();
-        var f = Fragment(config, DetectionWithOnly("antigravity"), (_, _) => false)!;
+        var f = Fragment(config, [HarnessId.Antigravity])!;
         await Assert.That(f).Contains("Antigravity");
         await Assert.That(f).Contains("kcap plugin install --antigravity");
         await Assert.That(f).Contains("kcap harness dismiss antigravity");
@@ -31,29 +23,30 @@ public class HarnessNudgeEmitterTests {
     [Test]
     public async Task Fragment_null_when_opted_out() {
         using var config = new TempConfigRoot();
-        await Assert.That(Fragment(config, DetectionWithOnly("antigravity"), (_, _) => false, optedOut: true)).IsNull();
+        await Assert.That(Fragment(config, [HarnessId.Antigravity], optedOut: true)).IsNull();
     }
 
     [Test]
     public async Task Fragment_null_when_nothing_nudgeable() {
         using var config = new TempConfigRoot();
-        await Assert.That(Fragment(config, DetectionWithOnly("antigravity"), (_, _) => true)).IsNull();
+        await Assert.That(Fragment(config, [HarnessId.Antigravity], wired: [HarnessId.Antigravity])).IsNull();
     }
 
     [Test]
     public async Task Fragment_folds_multiple_vendors() {
         using var config = new TempConfigRoot();
-        var f = Fragment(config, DetectionWithOnly("gemini", "antigravity"), (_, _) => false)!;
+        var f = Fragment(config, [HarnessId.Gemini, HarnessId.Antigravity])!;
         await Assert.That(f).Contains("Gemini");
         await Assert.That(f).Contains("Antigravity");
     }
 
     [Test]
     public async Task Second_call_is_throttled_to_null() {
-        using var config = new TempConfigRoot();
-        var       store  = new HarnessOfferStore(config.Root);
-        var       first  = HarnessNudgeEmitter.ResolveFragment(Paths, Binaries, store, false, Now, (_, _) => false, (_, _) => DetectionWithOnly("antigravity"));
-        var       second = HarnessNudgeEmitter.ResolveFragment(Paths, Binaries, store, false, Now, (_, _) => false, (_, _) => DetectionWithOnly("antigravity"));
+        using var config    = new TempConfigRoot();
+        var       store     = new HarnessOfferStore(config.Root);
+        var       harnesses = TestHarnesses.All([HarnessId.Antigravity]);
+        var       first     = HarnessNudgeEmitter.ResolveFragment(harnesses, store, false, Now);
+        var       second    = HarnessNudgeEmitter.ResolveFragment(harnesses, store, false, Now);
         await Assert.That(first).IsNotNull();
         await Assert.That(second).IsNull();
     }
@@ -61,23 +54,32 @@ public class HarnessNudgeEmitterTests {
     [Test]
     public async Task Resolving_stamps_last_offered() {
         using var config = new TempConfigRoot();
-        var store = new HarnessOfferStore(config.Root);
-        HarnessNudgeEmitter.ResolveFragment(Paths, Binaries, store, false, Now, (_, _) => false, (_, _) => DetectionWithOnly("antigravity"));
-        await Assert.That(store.Load().Entry("antigravity")!.LastOffered).IsEqualTo(Now);
+        var       store  = new HarnessOfferStore(config.Root);
+        HarnessNudgeEmitter.ResolveFragment(TestHarnesses.All([HarnessId.Antigravity]), store, false, Now);
+        await Assert.That(store.Load().Entry(HarnessId.Antigravity)!.LastOffered).IsEqualTo(Now);
     }
 
+    /// A vendor's own probe can throw — a permission-denied read of its config — and a nudge must
+    /// never break the hook it rides on.
     [Test]
-    public async Task Exception_in_detect_yields_null() {
+    public async Task Exception_in_a_vendor_probe_yields_null() {
         using var config = new TempConfigRoot();
-        var result = HarnessNudgeEmitter.ResolveFragment(Paths, Binaries, (HarnessOfferStore)new(config.Root), false, Now,
-            (_, _) => false, (_, _) => throw new InvalidOperationException("boom"));
+        var exploding = TestHarnesses.Over(
+            BinaryProbe.Searching(null),
+            new TestHarness(HarnessId.Antigravity, "Antigravity", new HarnessSignals {
+                Installed = () => throw new InvalidOperationException("boom"),
+            }));
+
+        var result = HarnessNudgeEmitter.ResolveFragment(exploding, new(config.Root), false, Now);
+
         await Assert.That(result).IsNull();
     }
 
     [Test]
     public async Task Notice_has_kcap_prefix_and_stop_asking_hint() {
         using var config = new TempConfigRoot();
-        var       n      = HarnessNudgeEmitter.ResolveNotice(Paths, Binaries, (HarnessOfferStore)new(config.Root), false, Now, (_, _) => false, (_, _) => DetectionWithOnly("antigravity"))!;
+        var n = HarnessNudgeEmitter.ResolveNotice(
+            TestHarnesses.All([HarnessId.Antigravity]), new(config.Root), false, Now)!;
         await Assert.That(n).Contains("kcap: Antigravity detected");
         await Assert.That(n).Contains("kcap harness dismiss antigravity");
     }

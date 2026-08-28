@@ -19,9 +19,6 @@ public sealed class KiroPaths {
     public KiroPaths(UserHome home, string? kiroHome) =>
         ConfigRoot = !string.IsNullOrEmpty(kiroHome) ? kiroHome : Path.Combine(home.Path, ".kiro");
 
-    /// <summary>Reads the one override Kiro honours; the home comes from the caller.</summary>
-    public static KiroPaths FromEnvironment(UserHome home) =>
-        new(home, Environment.GetEnvironmentVariable("KIRO_HOME"));
 
     /// <summary>Kiro's config root (<c>~/.kiro</c>), or <c>KIRO_HOME</c> when set.</summary>
     public string ConfigRoot { get; }

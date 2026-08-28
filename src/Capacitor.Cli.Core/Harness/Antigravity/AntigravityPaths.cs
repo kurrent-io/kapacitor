@@ -25,9 +25,6 @@ namespace Capacitor.Cli.Core.Harness.Antigravity;
 public sealed class AntigravityPaths(GeminiPaths gemini) {
     public AntigravityPaths(UserHome home, string? geminiCliHome) : this(new GeminiPaths(home, geminiCliHome)) { }
 
-    /// <summary>Reads the one override Antigravity honours (Gemini's); the home comes from the caller.</summary>
-    public static AntigravityPaths FromEnvironment(UserHome home) => new(GeminiPaths.FromEnvironment(home));
-
     /// <summary>Antigravity data root: <c>&lt;gemini-root&gt;/antigravity</c>.</summary>
     public string Root => Path.Combine(gemini.Root, "antigravity");
 
@@ -106,15 +103,15 @@ public sealed class AntigravityPaths(GeminiPaths gemini) {
     /// <summary>Per-conversation "brain" dir under an EXPLICIT product root:
     /// <c>&lt;productRoot&gt;/brain/&lt;id&gt;</c>. The root-parameterized form the dual-root import
     /// resolves paths through; the instance members above fix the root to the GUI's.</summary>
-    public static string BrainDirUnder(string productRoot, string conversationId)
+    public string BrainDirUnder(string productRoot, string conversationId)
         => Path.Combine(productRoot, "brain", conversationId);
 
     /// <summary>Full JSONL transcript under an explicit product root.</summary>
-    public static string TranscriptFullPathUnder(string productRoot, string conversationId)
+    public string TranscriptFullPathUnder(string productRoot, string conversationId)
         => Path.Combine(BrainDirUnder(productRoot, conversationId), ".system_generated", "logs", "transcript_full.jsonl");
 
     /// <summary>Inter-agent messages dir under an explicit product root.</summary>
-    public static string MessagesDirUnder(string productRoot, string conversationId)
+    public string MessagesDirUnder(string productRoot, string conversationId)
         => Path.Combine(BrainDirUnder(productRoot, conversationId), ".system_generated", "messages");
 
     /// <summary>Per-workspace plugin dir (opt-in): <c>&lt;workspaceRoot&gt;/.agents/plugins/kcap</c>.</summary>

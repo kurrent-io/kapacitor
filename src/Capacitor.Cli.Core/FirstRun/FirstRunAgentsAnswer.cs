@@ -1,14 +1,15 @@
-using Capacitor.Cli.Core.Setup;
+using Capacitor.Cli.Core.Harness;
 
 namespace Capacitor.Cli.Core.FirstRun;
 
 /// <summary>One harness the user turned something on for, mapped onto a vendor this build knows.</summary>
-/// <param name="VendorId">A <see cref="HarnessCatalog"/> key. Never a string straight off the wire —
-/// see <see cref="FirstRunFlowOutcomes.Agents(FirstRunFlowResponse?)"/>.</param>
+/// <param name="Harness">Never read straight off the wire — see
+/// <see cref="FirstRunFlowOutcomes.Agents(FirstRunFlowResponse?)"/>, which drops what it cannot
+/// name.</param>
 /// <param name="Record">Install capture, so this harness's sessions record themselves.</param>
 /// <param name="Tools">Register the MCP servers. Answerable on its own, except where a vendor's
 /// install bundles the two.</param>
-public sealed record FirstRunAgentsChoice(string VendorId, bool Record, bool Tools);
+public sealed record FirstRunAgentsChoice(HarnessId Harness, bool Record, bool Tools);
 
 /// <summary>
 /// The Agents screen's answer, as this build reads it.
@@ -43,16 +44,13 @@ public sealed record FirstRunAgentsAnswer(
 
     /// <summary>Install capture for this harness. False for a vendor the answer never mentions — a
     /// harness left off is absent rather than present-and-false.</summary>
-    public bool Records(string vendorId) => Choices.Any(c => Is(c, vendorId) && c.Record);
+    public bool Records(HarnessId harness) => Choices.Any(c => c.Harness == harness && c.Record);
 
     /// <summary>Register this harness's MCP servers. Where a vendor's install bundles the two, the
     /// server refuses an answer whose halves disagree, so this tracks <see cref="Records"/>.</summary>
-    public bool Tools(string vendorId) => Choices.Any(c => Is(c, vendorId) && c.Tools);
+    public bool Tools(HarnessId harness) => Choices.Any(c => c.Harness == harness && c.Tools);
 
-    /// <summary>The harnesses to name back to the user, in catalogue order.</summary>
+    /// <summary>The harnesses to name back to the user, in registry order.</summary>
     public IEnumerable<string> Labels =>
-        HarnessCatalog.All.Where(h => Records(h.VendorId) || Tools(h.VendorId)).Select(h => h.Label);
-
-    static bool Is(FirstRunAgentsChoice choice, string vendorId) =>
-        string.Equals(choice.VendorId, vendorId, StringComparison.Ordinal);
+        HarnessRegistry.Identities.Where(h => Records(h.Id) || Tools(h.Id)).Select(h => h.Label);
 }

@@ -1,25 +1,23 @@
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core.FirstRun;
-using Capacitor.Cli.Core.Setup;
+using Capacitor.Cli.Core.Harness;
 
 namespace Capacitor.Cli.Tests.Unit;
 
-/// Pins the Core harness catalog against the CLI's hand-maintained vendor-flag list, so adding a
+/// Pins Core's harness registry against the CLI's hand-maintained vendor-flag list, so adding a
 /// tenth installable harness fails HERE rather than silently missing every nudge/status surface.
-public class HarnessCatalogConformanceTests {
+public class HarnessRegistryConformanceTests {
     [Test]
-    public async Task Catalog_flags_match_known_vendor_flags_exactly() {
-        var catalogFlags = HarnessCatalog.All.Select(h => "--" + h.VendorId).OrderBy(x => x).ToArray();
-        var knownFlags   = VendorSelection.KnownVendorFlags.OrderBy(x => x).ToArray();
-        await Assert.That(catalogFlags).IsEquivalentTo(knownFlags);
+    public async Task Registry_flags_match_known_vendor_flags_exactly() {
+        var registryFlags = HarnessRegistry.Identities.Select(h => h.Id.Flag).OrderBy(x => x).ToArray();
+        var knownFlags    = VendorSelection.KnownVendorFlags.OrderBy(x => x).ToArray();
+        await Assert.That(registryFlags).IsEquivalentTo(knownFlags);
     }
 
     [Test]
-    public async Task Every_known_vendor_flag_resolves_to_a_catalog_entry() {
-        foreach (var flag in VendorSelection.KnownVendorFlags) {
-            var id = flag.TrimStart('-');
-            await Assert.That(HarnessCatalog.ById(id)).IsNotNull();
-        }
+    public async Task Every_known_vendor_flag_names_a_harness() {
+        foreach (var flag in VendorSelection.KnownVendorFlags)
+            await Assert.That(HarnessId.From(flag.TrimStart('-')) is null).IsFalse();
     }
 
     // The browser-answer fold (SetupDecisions.WithBrowserAnswer) is the second hand-maintained vendor
@@ -33,8 +31,8 @@ public class HarnessCatalogConformanceTests {
     static CodingAgentsStep.Options Bare => new(
         SkipClaude: false, SkipCodex: false, SkipCursor: false, SkipCopilot: false, NoPrompt: false);
 
-    static FirstRunAgentsAnswer Answer(string vendorId, bool record = true, bool tools = true) =>
-        new([new FirstRunAgentsChoice(vendorId, record, tools)],
+    static FirstRunAgentsAnswer Answer(HarnessId harness, bool record = true, bool tools = true) =>
+        new([new FirstRunAgentsChoice(harness, record, tools)],
             new DateTimeOffset(2026, 8, 25, 9, 30, 0, TimeSpan.Zero), Unrecognised: 0);
 
     static FirstRunAgentsAnswer Decline =>
@@ -48,18 +46,19 @@ public class HarnessCatalogConformanceTests {
             ?.GetValue(options) as bool?;
 
     [Test]
-    public async Task Every_catalog_vendor_has_a_hooks_arm_in_the_browser_answer_fold() {
-        foreach (var harness in HarnessCatalog.All) {
-            var property = "Skip" + harness.VendorId;
+    public async Task Every_harness_has_a_hooks_arm_in_the_browser_answer_fold() {
+        foreach (var harness in HarnessRegistry.Identities) {
+            var vendorId = harness.VendorId;
+            var property = "Skip" + vendorId;
 
             // Declined, then chosen. The property must exist AND must move — an arm that is missing
             // reads as "always skipped", which is exactly the silent no-op this pins against.
             var declined = Skip(SetupDecisions.WithBrowserAnswer(Bare, Decline), property);
-            var chosen   = Skip(SetupDecisions.WithBrowserAnswer(Bare, Answer(harness.VendorId)), property);
+            var chosen   = Skip(SetupDecisions.WithBrowserAnswer(Bare, Answer(harness.Id)), property);
 
-            await Assert.That(declined).IsNotNull().Because($"{property} must exist for {harness.VendorId}");
-            await Assert.That(declined!.Value).IsTrue().Because($"{property} must be skipped when {harness.VendorId} is declined");
-            await Assert.That(chosen!.Value).IsFalse().Because($"{property} must be cleared when {harness.VendorId} is chosen");
+            await Assert.That(declined).IsNotNull().Because($"{property} must exist for {vendorId}");
+            await Assert.That(declined!.Value).IsTrue().Because($"{property} must be skipped when {vendorId} is declined");
+            await Assert.That(chosen!.Value).IsFalse().Because($"{property} must be cleared when {vendorId} is chosen");
         }
     }
 
@@ -67,16 +66,17 @@ public class HarnessCatalogConformanceTests {
     // separate them must have their tools arm wired too, or "tools" is accepted and dropped.
     [Test]
     public async Task Every_vendor_that_separates_tools_has_a_tools_arm_in_the_browser_answer_fold() {
-        foreach (var harness in HarnessCatalog.All) {
-            var property = "Skip" + harness.VendorId + "Mcp";
+        foreach (var harness in HarnessRegistry.Identities) {
+            var vendorId = harness.VendorId;
+            var property = "Skip" + vendorId + "Mcp";
 
             if (Skip(Bare, property) is null) continue;
 
-            var off = Skip(SetupDecisions.WithBrowserAnswer(Bare, Answer(harness.VendorId, tools: false)), property);
-            var on  = Skip(SetupDecisions.WithBrowserAnswer(Bare, Answer(harness.VendorId, tools: true)), property);
+            var off = Skip(SetupDecisions.WithBrowserAnswer(Bare, Answer(harness.Id, tools: false)), property);
+            var on  = Skip(SetupDecisions.WithBrowserAnswer(Bare, Answer(harness.Id, tools: true)), property);
 
-            await Assert.That(off!.Value).IsTrue().Because($"{property} must be skipped when {harness.VendorId} tools are declined");
-            await Assert.That(on!.Value).IsFalse().Because($"{property} must be cleared when {harness.VendorId} tools are chosen");
+            await Assert.That(off!.Value).IsTrue().Because($"{property} must be skipped when {vendorId} tools are declined");
+            await Assert.That(on!.Value).IsFalse().Because($"{property} must be cleared when {vendorId} tools are chosen");
         }
     }
 }

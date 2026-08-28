@@ -1,4 +1,7 @@
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.Core.Harness;
+using Capacitor.Cli.Core.Harness.Claude;
+using Capacitor.Cli.Core.Harness.Codex;
 
 namespace Capacitor.Cli.Tests.Unit.Commands;
 
@@ -12,7 +15,7 @@ public class StatusCommandHooksTests {
             { "enabledPlugins": { "kcap@kcap": true } }
             """);
 
-        await Assert.That(StatusCommand.IsClaudePluginInstalled(path)).IsTrue();
+        await Assert.That(ClaudePluginInstaller.IsPluginEnabled(path)).IsTrue();
     }
 
     [Test]
@@ -24,7 +27,7 @@ public class StatusCommandHooksTests {
             { "enabledPlugins": { "kcap@kcap": false } }
             """);
 
-        await Assert.That(StatusCommand.IsClaudePluginInstalled(path)).IsFalse();
+        await Assert.That(ClaudePluginInstaller.IsPluginEnabled(path)).IsFalse();
     }
 
     [Test]
@@ -32,7 +35,7 @@ public class StatusCommandHooksTests {
         using var tmp  = new TempDir();
         var       path = tmp.PathTo("settings.json");
 
-        await Assert.That(StatusCommand.IsClaudePluginInstalled(path)).IsFalse();
+        await Assert.That(ClaudePluginInstaller.IsPluginEnabled(path)).IsFalse();
     }
 
     [Test]
@@ -50,7 +53,7 @@ public class StatusCommandHooksTests {
             }
             """);
 
-        await Assert.That(StatusCommand.IsCodexHooksInstalled(path)).IsTrue();
+        await Assert.That(CodexHooksInstaller.ReferencesKcapHook(path)).IsTrue();
     }
 
     [Test]
@@ -68,7 +71,7 @@ public class StatusCommandHooksTests {
             }
             """);
 
-        await Assert.That(StatusCommand.IsCodexHooksInstalled(path)).IsFalse();
+        await Assert.That(CodexHooksInstaller.ReferencesKcapHook(path)).IsFalse();
     }
 
     [Test]
@@ -76,7 +79,7 @@ public class StatusCommandHooksTests {
         using var tmp  = new TempDir();
         var       path = tmp.PathTo("hooks.json");
 
-        await Assert.That(StatusCommand.IsCodexHooksInstalled(path)).IsFalse();
+        await Assert.That(CodexHooksInstaller.ReferencesKcapHook(path)).IsFalse();
     }
 
     // Fix #2: non-string command field should not throw — treated as not-installed.
@@ -96,17 +99,16 @@ public class StatusCommandHooksTests {
             """);
 
         // Must not throw; numeric command is not a kcap entry.
-        await Assert.That(StatusCommand.IsCodexHooksInstalled(path)).IsFalse();
+        await Assert.That(CodexHooksInstaller.ReferencesKcapHook(path)).IsFalse();
     }
 
+    /// Every harness the build knows appears on the line — a tenth would too, since the line is
+    /// built from the registry rather than a parameter per vendor.
     [Test]
-    public async Task HooksStatusLine_includes_all_eight_agents() {
-        // status must surface every supported agent so an install of any one can be
-        // verified from `kcap status`. Gemini and Kiro were each previously absent
-        // from the line entirely (added in PR #169); OpenCode was likewise missing
-        // until the status surface was wired up.
-        var line = StatusCommand.BuildHooksStatusLine(
-            claude: true, codex: false, cursor: false, copilot: false, gemini: true, kiro: true, pi: true, opencode: true);
+    public async Task HooksStatusLine_reports_every_harness() {
+        var wired = new[] { HarnessId.Claude, HarnessId.Gemini, HarnessId.Kiro, HarnessId.Pi };
+        var line  = StatusCommand.BuildHooksStatusLine(
+            HarnessRegistry.Identities.Select(i => (i.Id, Wired: wired.Contains(i.Id))));
 
         await Assert.That(line).Contains("Claude ✓");
         await Assert.That(line).Contains("Codex ✗");
@@ -115,17 +117,15 @@ public class StatusCommandHooksTests {
         await Assert.That(line).Contains("Gemini ✓");
         await Assert.That(line).Contains("Kiro ✓");
         await Assert.That(line).Contains("Pi ✓");
-        await Assert.That(line).Contains("OpenCode ✓");
+        await Assert.That(line).Contains("OpenCode ✗");
+        await Assert.That(line).Contains("Antigravity ✗");
     }
 
+    /// Claude's label carries a product suffix everywhere else; the line has room for one word.
     [Test]
-    public async Task HooksStatusLine_marks_gemini_kiro_pi_and_opencode_not_installed() {
-        var line = StatusCommand.BuildHooksStatusLine(
-            claude: false, codex: false, cursor: false, copilot: false, gemini: false, kiro: false, pi: false, opencode: false);
+    public async Task HooksStatusLine_shortens_the_one_suffixed_label() {
+        var line = StatusCommand.BuildHooksStatusLine([(HarnessId.Claude, true)]);
 
-        await Assert.That(line).Contains("Gemini ✗");
-        await Assert.That(line).Contains("Kiro ✗");
-        await Assert.That(line).Contains("Pi ✗");
-        await Assert.That(line).Contains("OpenCode ✗");
+        await Assert.That(line).IsEqualTo("Claude ✓");
     }
 }

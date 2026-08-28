@@ -15,9 +15,6 @@ public sealed class GeminiPaths {
         Root = Path.Combine(
             !string.IsNullOrWhiteSpace(geminiCliHome) ? geminiCliHome : home.Path, ".gemini");
 
-    /// <summary>Reads the one override Gemini honours; the home comes from the caller.</summary>
-    public static GeminiPaths FromEnvironment(UserHome home) =>
-        new(home, Environment.GetEnvironmentVariable("GEMINI_CLI_HOME"));
 
     public string Root { get; }
 
@@ -58,7 +55,9 @@ public sealed class GeminiPaths {
     /// </summary>
     public string TmpDir => Path.Combine(Root, "tmp");
 
-    /// <summary>Chat-recording directory for a project tmp dir: <c>&lt;tmp&gt;/&lt;project&gt;/chats</c>.</summary>
+    /// <summary>Chat-recording directory for a project tmp dir: <c>&lt;tmp&gt;/&lt;project&gt;/chats</c>.
+    /// Static because the caller reaches it from a transcript path rather than from this layout —
+    /// subagent discovery walks a dir it was handed, with no root to compose from.</summary>
     public static string ChatsDir(string projectTmpDir)
         => Path.Combine(projectTmpDir, "chats");
 

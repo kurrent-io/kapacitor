@@ -15,6 +15,7 @@ using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.LocalIpc;
 using Capacitor.Cli.Core.Setup;
 using AppUnderTest = Capacitor.App.App;
+using Capacitor.Cli.Core.Harness;
 
 namespace Capacitor.App.Tests.Unit;
 
@@ -128,7 +129,7 @@ static class WizardFixtures {
         public bool ShimApplicable = true;
         public string? CliPath = "/opt/kcap/bin/kcap";
         public string? ShimTarget = "/opt/kcap/bin/kcap";
-        public AgentDetectionResult Detected = VendorDetection.Build("claude");
+        public IReadOnlySet<HarnessId> Detected = VendorDetection.Build("claude");
 
         public GraphHarness(ConfigRoot root) {
             Root    = root;

@@ -1,6 +1,7 @@
 using System.Text.RegularExpressions;
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Harness;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
 using WireMock.Server;
@@ -42,7 +43,7 @@ public class RoutedPrivatizeMembershipTests : IDisposable {
 
     public void Dispose() => _server.Stop();
 
-    const string ProbeVendor    = "membership-probe";
+    const HarnessId ProbeVendor = HarnessId.Kiro;
     const string ProbeSessionId = "9f9f0000000040008000000000000f0f";
 
     /// <summary>
@@ -51,7 +52,7 @@ public class RoutedPrivatizeMembershipTests : IDisposable {
     /// nor the child-content scope holds it, and the in-scope capture is the only thing left.
     /// </summary>
     sealed class ChildContentOutsidePrivateScopeSource : IImportSource {
-        public string Vendor                      => ProbeVendor;
+        public HarnessId Vendor                   => ProbeVendor;
         public bool   IsAvailable                 => true;
         public bool   SupportsTitleGeneration     => false;
         public bool   AttachesChildContentOnReplay => false;
@@ -136,7 +137,7 @@ public class RoutedPrivatizeMembershipTests : IDisposable {
         // The override DID fire: the raw outcome is Skipped, yet the run counts it as Loaded and
         // prints the "Loading" line. Without this the zero-PUT assertion below would pass
         // vacuously — a plain suppressed no-op replay also emits no PUT.
-        await Assert.That(stdout).Contains($"Loading {ProbeSessionId} ({ProbeVendor})");
+        await Assert.That(stdout).Contains($"Loading {ProbeSessionId} ({ProbeVendor.VendorId})");
         var doneIdx = stdout.IndexOf("== Done ==", StringComparison.Ordinal);
         await Assert.That(doneIdx).IsGreaterThanOrEqualTo(0);
         await Assert.That(LineMatches(stdout[doneIdx..], "Loaded", 1)).IsTrue();

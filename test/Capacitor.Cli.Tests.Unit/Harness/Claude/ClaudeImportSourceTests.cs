@@ -1,5 +1,6 @@
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Core.Harness.Claude;
 using Capacitor.Cli.Harness.Claude;
 
@@ -13,7 +14,7 @@ public class ClaudeImportSourceTests {
     [Test]
     public async Task vendor_is_claude() {
         var src = new ClaudeImportSource(Config.Root, new ClaudePaths(Home, null).Projects);
-        await Assert.That(src.Vendor).IsEqualTo("claude");
+        await Assert.That(src.Vendor).IsEqualTo(HarnessId.Claude);
     }
 
     [Test]

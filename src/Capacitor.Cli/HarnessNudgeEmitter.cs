@@ -24,27 +24,21 @@ static class HarnessNudgeEmitter {
     /// <summary>Surface 1: the SessionStart <c>additionalContext</c> fragment telling the agent to
     /// offer setup. Null when opted out, throttled, or nothing is nudgeable.</summary>
     public static string? ResolveFragment(
-            HarnessPaths paths, BinaryProbe binaries, HarnessOfferStore store, bool optedOut,
-            DateTimeOffset now,
-            Func<HarnessPaths, string, bool>? isWired = null,
-            Func<HarnessPaths, BinaryProbe, AgentDetectionResult>? detect = null) =>
-        FormatFragment(ClaimAndStamp(paths, binaries, store, optedOut, now, isWired, detect));
+            HarnessRegistry harnesses, HarnessOfferStore store, bool optedOut, DateTimeOffset now) =>
+        FormatFragment(ClaimAndStamp(harnesses, store, optedOut, now));
 
     /// <summary>Surface 2: the interactive stderr notice, one line per nudgeable vendor. Null when
     /// opted out, throttled, or nothing is nudgeable.</summary>
     public static string? ResolveNotice(
-            HarnessPaths paths, BinaryProbe binaries, HarnessOfferStore store, bool optedOut,
-            DateTimeOffset now,
-            Func<HarnessPaths, string, bool>? isWired = null,
-            Func<HarnessPaths, BinaryProbe, AgentDetectionResult>? detect = null) =>
-        FormatNotice(ClaimAndStamp(paths, binaries, store, optedOut, now, isWired, detect));
+            HarnessRegistry harnesses, HarnessOfferStore store, bool optedOut, DateTimeOffset now) =>
+        FormatNotice(ClaimAndStamp(harnesses, store, optedOut, now));
 
     /// <summary>Hook-site convenience: resolve the SessionStart fragment from the current process
     /// environment and the default on-disk ledger/throttle. <paramref name="optedOut"/> is the
     /// profile's <c>DisableHarnessNudge</c>.</summary>
     public static string? ResolveFragmentForHook(bool optedOut, ConfigRoot config, UserHome home) =>
-        ResolveFragment(HarnessPaths.FromEnvironment(home), BinaryProbe.FromEnvironment(),
-                        new HarnessOfferStore(config), optedOut, DateTimeOffset.UtcNow);
+        ResolveFragment(HarnessRegistry.FromEnvironment(home), new HarnessOfferStore(config),
+                        optedOut, DateTimeOffset.UtcNow);
 
     /// <summary>Joins an existing SessionStart nudge with the harness nudge (either may be null)
     /// into one additional-context blob, blank-line separated — so a delivery helper that carries a
@@ -55,34 +49,28 @@ static class HarnessNudgeEmitter {
         return existing + "\n\n" + harnessNudge;
     }
 
-    static IReadOnlyList<KnownHarness> ClaimAndStamp(
-            HarnessPaths paths, BinaryProbe binaries, HarnessOfferStore store, bool optedOut,
-            DateTimeOffset now,
-            Func<HarnessPaths, string, bool>? isWired,
-            Func<HarnessPaths, BinaryProbe, AgentDetectionResult>? detect) {
+    static IReadOnlyList<IHarness> ClaimAndStamp(
+            HarnessRegistry harnesses, HarnessOfferStore store, bool optedOut, DateTimeOffset now) {
         try {
             if (optedOut) return [];
             if (!store.TryClaimCheck(CheckThrottle)) return [];
 
-            var detected  = (detect ?? AgentDetection.Detect)(paths, binaries);
-            var ledger    = store.Load();
-            var wired     = isWired ?? HarnessWiring.IsWired;
-            var nudgeable = HarnessNudge.Nudgeable(detected, id => wired(paths, id), ledger, now);
+            var nudgeable = HarnessNudge.Nudgeable(harnesses, store.Load(), now);
             if (nudgeable.Count == 0) return [];
 
             // Zero-wait lock on the hook path: never spend a SessionStart hook's exit budget waiting
             // on the ledger mutex — skip stamping on contention (re-nudges next window).
-            store.StampOffered(nudgeable.Select(h => h.VendorId), now, TimeSpan.Zero);
+            store.StampOffered(nudgeable.Select(h => h.Id), now, TimeSpan.Zero);
             return nudgeable;
         } catch {
             return []; // a nudge must never break a hook or a command
         }
     }
 
-    static string InstallCommand(KnownHarness h) =>
-        h.InstallFlag is null ? "kcap plugin install" : $"kcap plugin install {h.InstallFlag}";
+    static string InstallCommand(IHarness h) =>
+        h.Id.PluginInstallFlag is { } flag ? $"kcap plugin install {flag}" : "kcap plugin install";
 
-    static string? FormatFragment(IReadOnlyList<KnownHarness> harnesses) {
+    static string? FormatFragment(IReadOnlyList<IHarness> harnesses) {
         if (harnesses.Count == 0) return null;
 
         var lines = new List<string> {
@@ -92,17 +80,17 @@ static class HarnessNudgeEmitter {
         foreach (var h in harnesses)
             lines.Add($"- {h.Label} — offer to run `{InstallCommand(h)}` to wire it in (hooks, skills, MCP).");
 
-        var ids = string.Join(" ", harnesses.Select(h => h.VendorId));
-        lines.Add($"If the user declines, run `kcap harness dismiss {ids}` so they are not asked again.");
+        var dismiss = harnesses.Select(h => h.Id).DismissCommand();
+        lines.Add($"If the user declines, run `{dismiss}` so they are not asked again.");
 
         return string.Join("\n", lines);
     }
 
-    static string? FormatNotice(IReadOnlyList<KnownHarness> harnesses) {
+    static string? FormatNotice(IReadOnlyList<IHarness> harnesses) {
         if (harnesses.Count == 0) return null;
 
         return string.Join("\n", harnesses.Select(h =>
             $"kcap: {h.Label} detected but not set up for recording — run `{InstallCommand(h)}` " +
-            $"(or `kcap harness dismiss {h.VendorId}` to stop asking)."));
+            $"(or `{new[] { h.Id }.DismissCommand()}` to stop asking)."));
     }
 }

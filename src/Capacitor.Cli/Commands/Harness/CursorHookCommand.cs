@@ -7,6 +7,7 @@ using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.Harness.Cursor;
 using Capacitor.Cli.Harness.Cursor;
 using Capacitor.Cli.SessionStartMemory;
+using Capacitor.Cli.Core.Harness;
 
 namespace Capacitor.Cli.Commands.Harness;
 
@@ -78,7 +79,7 @@ public sealed class CursorHookCommand(ConfigRoot config, ProfileContext profiles
             ct => HttpClientExtensions.CreateClientWithAuthStatusAsync(config, profiles, Url, ct),
             () => {
                 var s = new HookSpool(config);
-                MigrateLegacyCursorSpool(s, CursorPaths.FromEnvironment(home).SpoolDir);
+                MigrateLegacyCursorSpool(s, CursorHarness.FromEnvironment(home).Paths.SpoolDir);
                 s.ReapOlderThan(TimeSpan.FromDays(30));
                 return s;
             });
@@ -195,7 +196,7 @@ public sealed class CursorHookCommand(ConfigRoot config, ProfileContext profiles
 
         var response = winner == inner
             ? await inner
-            : (kindSignal.Kind == "sessionStart" ? SessionStartMemoryOutputAdapters.Render(SessionStartHarness.Cursor, null) : null);
+            : (kindSignal.Kind == "sessionStart" ? SessionStartMemoryOutputAdapters.Render(HarnessId.Cursor, null) : null);
 
         if (response is not null) Console.Write(response);
         return 0;
@@ -248,7 +249,7 @@ public sealed class CursorHookCommand(ConfigRoot config, ProfileContext profiles
             // Task 3's orchestrator (wired at the very end of this method for the top-level,
             // non-child success path) supplies a Ready fragment instead.
             string? EmptyOrNull() =>
-                eventName == "sessionStart" ? SessionStartMemoryOutputAdapters.Render(SessionStartHarness.Cursor, null) : null;
+                eventName == "sessionStart" ? SessionStartMemoryOutputAdapters.Render(HarnessId.Cursor, null) : null;
 
             NormalizeGuidField(node, "session_id");
             node["home_dir"] = home.Path;
@@ -520,9 +521,9 @@ public sealed class CursorHookCommand(ConfigRoot config, ProfileContext profiles
             // orchestration), so re-read it; sessionStart fires once per session and the read is
             // fail-open under the surrounding catch.
             var nudgeProfile   = profiles.Effective;
-            var workItemsNudge = WorkItemsNudgeEmitter.Resolve(SessionStartHarness.Cursor, sessionId, nudgeProfile?.DisableWorkItemsNudge is true, home);
+            var workItemsNudge = WorkItemsNudgeEmitter.Resolve(HarnessId.Cursor, sessionId, nudgeProfile?.DisableWorkItemsNudge is true, home);
             var harnessNudge   = HarnessNudgeEmitter.ResolveFragmentForHook(nudgeProfile?.DisableHarnessNudge is true, config, home);
-            return SessionStartMemoryOutputAdapters.Render(SessionStartHarness.Cursor, fragment,
+            return SessionStartMemoryOutputAdapters.Render(HarnessId.Cursor, fragment,
                 HarnessNudgeEmitter.Combine(workItemsNudge, harnessNudge));
         } catch {
             // Fail-open per design: any exception (budget cancellation,
@@ -530,7 +531,7 @@ public sealed class CursorHookCommand(ConfigRoot config, ProfileContext profiles
             // loop. eventName may be out of scope here (the exception could predate its
             // parse), so fall back to the published kind — the same signal the outer deadline
             // branch reads.
-            return kindSignal.Kind == "sessionStart" ? SessionStartMemoryOutputAdapters.Render(SessionStartHarness.Cursor, null) : null;
+            return kindSignal.Kind == "sessionStart" ? SessionStartMemoryOutputAdapters.Render(HarnessId.Cursor, null) : null;
         }
     }
 
@@ -605,7 +606,7 @@ public sealed class CursorHookCommand(ConfigRoot config, ProfileContext profiles
                 // re-check. Evidence, the re-probe procedure, and the untested Cursor IDE gap
                 // are in
                 // docs/superpowers/specs/2026-07-30-ai1505-cursor-subagent-classification-design.md
-                new SessionMemoryLifecycle(SessionStartHarness.Cursor, sessionId, LifecycleInstanceId: null,
+                new SessionMemoryLifecycle(HarnessId.Cursor, sessionId, LifecycleInstanceId: null,
                     IsTopLevel: true, ClassificationAuthoritative: true, SessionLifecycleReason.New,
                     CallbackMayRepeat: false),
                 new SessionStartMemoryContextRequest(Url, workspaceRoot, disabled, memBudget, memCts.Token,

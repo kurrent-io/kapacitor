@@ -1,4 +1,5 @@
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Harness.Gemini;
 
 namespace Capacitor.Cli.Tests.Unit.Harness.Gemini;
@@ -32,7 +33,7 @@ public class GeminiImportSourceTests {
         var found = await source.DiscoverAsync(new DiscoveryFilters(null, null, null, 1), CancellationToken.None);
 
         await Assert.That(found.Count).IsEqualTo(1);
-        await Assert.That(found[0].Vendor).IsEqualTo("gemini");
+        await Assert.That(found[0].Vendor).IsEqualTo(HarnessId.Gemini);
         // Dashless FULL id from the header — not the 8-char filename shortId.
         await Assert.That(found[0].SessionId).IsEqualTo("11111111111111111111111111111111");
     }

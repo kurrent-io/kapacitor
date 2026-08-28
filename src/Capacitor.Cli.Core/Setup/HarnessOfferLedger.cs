@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using Capacitor.Cli.Core.Harness;
 
 namespace Capacitor.Cli.Core.Setup;
 
@@ -28,11 +29,41 @@ public sealed record HarnessOfferLedger {
     [JsonPropertyName("version")]
     public int Version { get; init; } = 1;
 
+    /// <summary>Keyed by vendor id, the spelling this file has always carried. A row for a vendor
+    /// this build does not know — written by a newer one — is kept rather than dropped, so a
+    /// downgrade does not silently discard a dismissal.</summary>
     [JsonPropertyName("vendors")]
     public Dictionary<string, HarnessOfferEntry> Vendors { get; init; } = new();
 
-    public HarnessOfferEntry? Entry(string vendorId) =>
-        Vendors.TryGetValue(vendorId, out var e) ? e : null;
+    public HarnessOfferEntry? Entry(HarnessId harness) => Vendors.GetValueOrDefault(harness.VendorId);
+
+    /// <summary>This ledger with <paramref name="harnesses"/> marked dismissed, each keeping the
+    /// stamps it already had.</summary>
+    public HarnessOfferLedger WithDismissed(IEnumerable<HarnessId> harnesses, DateTimeOffset now) {
+        var vendors = new Dictionary<string, HarnessOfferEntry>(Vendors);
+
+        foreach (var harness in harnesses) {
+            var prior = Entry(harness);
+
+            vendors[harness.VendorId] = new HarnessOfferEntry {
+                FirstSeen   = prior?.FirstSeen ?? now,
+                LastOffered = prior?.LastOffered,
+                Declined    = true,
+            };
+        }
+
+        return this with { Vendors = vendors };
+    }
+
+    /// <summary>This ledger with every trace of <paramref name="vendorIds"/> gone, so each is
+    /// treated as freshly seen and offered again. Takes the spellings a user typed.</summary>
+    public HarnessOfferLedger Without(IEnumerable<string> vendorIds) {
+        var vendors = new Dictionary<string, HarnessOfferEntry>(Vendors);
+
+        foreach (var vendorId in vendorIds) vendors.Remove(vendorId);
+
+        return this with { Vendors = vendors };
+    }
 }
 
 [JsonSourceGenerationOptions(WriteIndented = true)]

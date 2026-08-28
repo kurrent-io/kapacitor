@@ -5,6 +5,7 @@ using System.Text.Json.Nodes;
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Commands.Harness;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Core.Harness.Pi;
 
 namespace Capacitor.Cli.Harness.Pi;
@@ -50,7 +51,7 @@ internal sealed class PiImportSource : IImportSource {
         }
     }
 
-    public string Vendor => "pi";
+    public HarnessId Vendor => HarnessId.Pi;
 
     public bool IsAvailable => Directory.Exists(_sessionsDir);
 
@@ -446,7 +447,7 @@ internal sealed class PiImportSource : IImportSource {
         EncodedCwd       = "",
         Meta             = meta,
         Status           = status,
-        Vendor           = "pi",
+        Vendor           = HarnessId.Pi,
         ProbeErrorReason = probeErrorReason,
         TotalLines       = totalLines,
         SourceMeta       = s.SourceMeta,

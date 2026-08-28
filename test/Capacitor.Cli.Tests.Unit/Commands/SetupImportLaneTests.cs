@@ -1,7 +1,6 @@
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core.FirstRun;
 using Capacitor.Cli.Core.Harness;
-using Capacitor.Cli.Core.Setup;
 using Capacitor.Cli.Harness.Claude;
 
 namespace Capacitor.Cli.Tests.Unit.Commands;
@@ -18,7 +17,7 @@ public class SetupImportLaneTests {
     static ImportCommand.ImportDiscoveryResult Found(
             IEnumerable<ImportDiscoverySummary.RepoTotals> repos,
             IReadOnlyDictionary<string, int>?              unmatched = null,
-            IReadOnlyList<string>?                        scanned   = null) =>
+            IReadOnlyList<HarnessId>?                     scanned   = null) =>
         new(new ImportDiscoverySummary(
                 [.. repos],
                 unmatched?.Values.Sum() ?? 0,
@@ -32,7 +31,7 @@ public class SetupImportLaneTests {
 
     [Test]
     public async Task Carries_each_repositorys_counts_keyed_by_window() {
-        var report = SetupImportLane.Report(Found([Repo("kurrent-io", "kcap-server", 12)], scanned: ["claude"]));
+        var report = SetupImportLane.Report(Found([Repo("kurrent-io", "kcap-server", 12)], scanned: [HarnessId.Claude]));
 
         var repo = report.Repos.Single();
 
@@ -95,7 +94,7 @@ public class SetupImportLaneTests {
     }
 
     static FirstRunImportAnswer Answer(
-            IReadOnlyList<string>? vendors = null, params (string Name, FirstRunImportLevel Level)[] repos) =>
+            IReadOnlyList<HarnessId>? vendors = null, params (string Name, FirstRunImportLevel Level)[] repos) =>
         new([.. repos.Select(r => new FirstRunImportChoice("kurrent-io", r.Name, r.Level))],
             FirstRunImportWindows.Last30,
             FirstRunImportTitles.Server,
@@ -272,20 +271,20 @@ public class SetupImportLaneTests {
     }
 
     [Test]
-    public async Task Every_catalogue_vendor_has_a_source_when_nothing_filters_them() {
+    public async Task Every_harness_has_a_source_when_nothing_filters_them() {
         var built = SetupCommand.BuildImportSources(Config.Root, HarnessPaths.FromEnvironment(Home));
 
         await Assert.That(built.Select(b => b.Vendor))
-                    .IsEquivalentTo(HarnessCatalog.All.Select(h => h.VendorId));
+                    .IsEquivalentTo(HarnessRegistry.Identities.Select(h => h.Id));
     }
 
     [Test]
     public async Task Only_the_named_vendors_sources_are_built() {
         // The filter is applied to what gets scanned, which is what makes a reported figure already
         // scoped rather than needing subtraction afterwards.
-        var built = SetupCommand.BuildImportSources(Config.Root, HarnessPaths.FromEnvironment(Home), ["claude", "codex"]);
+        var built = SetupCommand.BuildImportSources(Config.Root, HarnessPaths.FromEnvironment(Home), [HarnessId.Claude, HarnessId.Codex]);
 
-        await Assert.That(built.Select(s => s.Vendor)).IsEquivalentTo(["claude", "codex"]);
+        await Assert.That(built.Select(s => s.Vendor)).IsEquivalentTo([HarnessId.Claude, HarnessId.Codex]);
     }
 
     [Test]

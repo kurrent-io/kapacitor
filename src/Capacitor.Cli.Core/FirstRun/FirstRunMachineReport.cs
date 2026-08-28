@@ -13,8 +13,9 @@ namespace Capacitor.Cli.Core.FirstRun;
 /// <param name="Machine">The display tag. Not identity; the server truncates it.</param>
 /// <param name="MachineId">This machine's id, so its reports correlate. Null means unreported — an
 /// empty string would correlate every unreported flow to the same non-machine.</param>
-/// <param name="Harnesses">Per vendor, over the whole catalogue. A vendor missing from here reads as
-/// unknown rather than absent, so every catalogue entry is reported even when both signals are false.</param>
+/// <param name="Harnesses">Per vendor, over every harness this build knows. A vendor missing from
+/// here reads as unknown rather than absent, so all of them are reported even when both signals are
+/// false.</param>
 /// <param name="Declined">Vendors turned down locally, outside the flow.</param>
 /// <param name="LoginShellFindsCli">Whether the login shell resolves the CLI, or null when nothing
 /// probed. <b>Null is not false</b> — see the wire model.</param>
@@ -33,35 +34,35 @@ public sealed record FirstRunMachineReport(
     public IReadOnlyList<string> Detected =>
         [.. Harnesses.Where(kv => kv.Value.BinaryOnPath || kv.Value.ConfigFound).Select(kv => kv.Key)];
 
-    /// <summary>Injectable core: detection, the wired-probe and the ledger already resolved, so the
-    /// vendor→report mapping is testable without touching the filesystem or PATH.</summary>
+    /// <summary>Pure core: the harnesses this process sees and the ledger already resolved, so the
+    /// vendor-to-report mapping is testable without touching the filesystem or PATH.</summary>
     public static FirstRunMachineReport Evaluate(
-            string?              machine,
-            string?              machineId,
-            AgentDetectionResult detected,
-            Func<string, bool>   isWired,
-            HarnessOfferLedger   ledger,
-            bool?                loginShellFindsCli,
-            string?              platform = null) {
-        var harnesses = new Dictionary<string, FirstRunHarnessReport>(StringComparer.Ordinal);
-        var declined  = new List<string>();
+            string?            machine,
+            string?            machineId,
+            HarnessRegistry    harnesses,
+            HarnessOfferLedger ledger,
+            bool?              loginShellFindsCli,
+            string?            platform = null) {
+        var harnessReports = new Dictionary<string, FirstRunHarnessReport>(StringComparer.Ordinal);
+        var declined       = new List<string>();
 
-        foreach (var harness in HarnessCatalog.All) {
-            var agent = harness.Select(detected);
+        foreach (var harness in harnesses) {
+            var vendorId = harness.VendorId;
+            var agent    = harnesses.Detect(harness.Id);
 
-            harnesses[harness.VendorId] = new FirstRunHarnessReport {
+            harnessReports[vendorId] = new FirstRunHarnessReport {
                 BinaryOnPath = agent.BinaryFound,
                 ConfigFound  = agent.InstallSignalFound,
-                AlreadyWired = isWired(harness.VendorId)
+                AlreadyWired = harness.Signals.IsWired
             };
 
-            if (ledger.Entry(harness.VendorId) is { Declined: true }) declined.Add(harness.VendorId);
+            if (ledger.Entry(harness.Id) is { Declined: true }) declined.Add(vendorId);
         }
 
         return new FirstRunMachineReport(
             Blank(machine)   ? null : machine,
             Blank(machineId) ? null : machineId,
-            harnesses,
+            harnessReports,
             declined,
             loginShellFindsCli,
             platform);
@@ -81,18 +82,14 @@ public sealed record FirstRunMachineReport(
     /// a result.</para>
     /// </summary>
     public static FirstRunMachineReport EvaluateCurrent(
-            ConfigRoot config, UserHome home, string? machine, bool? loginShellFindsCli) {
+            ConfigRoot config, HarnessRegistry harnesses, string? machine, bool? loginShellFindsCli) {
         try {
-            var paths    = HarnessPaths.FromEnvironment(home);
-            var binaries = BinaryProbe.FromEnvironment();
-
             return Evaluate(
                 machine,
                 // The one unguarded read here: it creates and writes a config file, unlike every
                 // probe around it, which swallows its own I/O failures.
                 MachineIdOrNull(config),
-                AgentDetection.Detect(paths, binaries),
-                paths.IsWired,
+                harnesses,
                 new HarnessOfferStore(config).Load(),
                 loginShellFindsCli,
                 FirstRunPlatforms.Current());

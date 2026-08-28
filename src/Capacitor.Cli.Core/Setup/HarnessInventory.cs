@@ -13,33 +13,30 @@ public sealed record HarnessInventory(
     Dictionary<string, HarnessInventoryEntry> Vendors,
     string[] Declined) {
 
-    /// <summary>Pure: computes the inventory from an injected detection snapshot + offer ledger +
-    /// machine id, over every <see cref="HarnessCatalog"/> vendor. No I/O, no throttle — both
-    /// carriers (daemon status report, hook ingest) share this.</summary>
+    /// <summary>Computes the inventory from the harnesses this process sees, the offer ledger and
+    /// the machine id. Detection and the wiring probe come off the same instances, so the two cannot
+    /// resolve one vendor's root differently. No throttle — both carriers (daemon status report,
+    /// hook ingest) share this.</summary>
     public static HarnessInventory Evaluate(
-            HarnessPaths paths, BinaryProbe binaries, HarnessOfferLedger ledger, string machineId) =>
-        Evaluate(AgentDetection.Detect(paths, binaries), paths.IsWired, ledger, machineId);
-
-    /// <summary>Injectable core (detection result + wired-probe + ledger already resolved), so the
-    /// vendor→entry mapping is unit-testable without touching the filesystem or PATH.</summary>
-    public static HarnessInventory Evaluate(
-            AgentDetectionResult detected, Func<string, bool> isWired, HarnessOfferLedger ledger, string machineId) {
-        var vendors = new Dictionary<string, HarnessInventoryEntry>(StringComparer.Ordinal);
+            HarnessRegistry harnesses, HarnessOfferLedger ledger, string machineId) {
+        var vendors  = new Dictionary<string, HarnessInventoryEntry>(StringComparer.Ordinal);
         var declined = new List<string>();
 
-        foreach (var h in HarnessCatalog.All) {
-            vendors[h.VendorId] = new HarnessInventoryEntry(
-                Detected: h.Select(detected).Detected,
-                Wired: isWired(h.VendorId));
-            if (ledger.Entry(h.VendorId) is { Declined: true }) declined.Add(h.VendorId);
+        foreach (var harness in harnesses) {
+            var vendorId = harness.VendorId;
+
+            vendors[vendorId] = new HarnessInventoryEntry(
+                Detected: harnesses.Detected(harness.Id),
+                Wired: harness.Signals.IsWired);
+
+            if (ledger.Entry(harness.Id) is { Declined: true }) declined.Add(vendorId);
         }
 
         return new HarnessInventory(machineId, vendors, [.. declined]);
     }
 
-    /// <summary>Production convenience: evaluate from the current process environment, the default
-    /// on-disk offer ledger (read-only — never claims the throttle stamp), and this machine's id.</summary>
-    public static HarnessInventory EvaluateCurrent(ConfigRoot config, UserHome home) =>
-        Evaluate(HarnessPaths.FromEnvironment(home), BinaryProbe.FromEnvironment(),
-                 new HarnessOfferStore(config).Load(), new Core.MachineId(config).Get());
+    /// <summary>Production convenience: evaluate over the given harnesses and the default on-disk
+    /// offer ledger (read-only — never claims the throttle stamp).</summary>
+    public static HarnessInventory EvaluateCurrent(ConfigRoot config, HarnessRegistry harnesses) =>
+        Evaluate(harnesses, new HarnessOfferStore(config).Load(), new Core.MachineId(config).Get());
 }

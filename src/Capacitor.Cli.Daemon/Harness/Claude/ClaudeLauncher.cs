@@ -31,7 +31,7 @@ internal sealed partial class ClaudeLauncher(
 
     public bool IsAvailable() => CliResolver.Exists(CliPath);
 
-    readonly ClaudePaths _paths = ClaudePaths.FromEnvironment(home);
+    readonly ClaudePaths _paths = ClaudeHarness.FromEnvironment(home).Paths;
 
     static readonly Lock                  TrustWriteLock   = new();
     static readonly JsonSerializerOptions IndentedJsonOpts = new() { WriteIndented = true };

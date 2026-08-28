@@ -1,5 +1,8 @@
 using System.Globalization;
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Harness;
+using Capacitor.Cli.Core.Harness.Copilot;
 using Capacitor.Cli.Harness.Copilot;
 
 namespace Capacitor.Cli.Tests.Unit.Harness.Copilot;
@@ -13,35 +16,43 @@ namespace Capacitor.Cli.Tests.Unit.Harness.Copilot;
 public class CopilotImportSourceTests {
     [TempConfigRoot] public required TempConfigRoot Config { get; init; }
 
+    /// <summary>Copilot's layout rooted at a throwaway dir, so discovery walks the real
+    /// <c>session-state/</c> and <c>history-session-state/</c> names rather than dirs Copilot
+    /// would never use.</summary>
+    static CopilotPaths Layout(TempDir tmp) => new(new UserHome(tmp.Path), copilotHome: tmp.Path);
+
     const string Sid1 = "1053bee4-574f-40e3-84ca-463bd7a82dc2";
     const string Sid2 = "4ae28a73-dd66-46ac-81d2-be94b5e87079";
 
     [Test]
     public async Task discovery_skips_scaffolding_dirs_without_events_jsonl() {
         using var tmp = new TempDir();
-        WriteSession(tmp.Path, Sid1, cwd: "/work/a");
+        var paths     = Layout(tmp);
+        WriteSession(paths.SessionStateDir, Sid1, cwd: "/work/a");
         // Failed-startup scaffolding: workspace.yaml but no events.jsonl.
-        tmp.CreateDir(Sid2);
-        tmp.CreateFile([Sid2, "workspace.yaml"], $"id: {Sid2}\ncwd: /work/b\n");
+        Directory.CreateDirectory(Path.Combine(paths.SessionStateDir, Sid2));
+        await File.WriteAllTextAsync(
+            Path.Combine(paths.SessionStateDir, Sid2, "workspace.yaml"), $"id: {Sid2}\ncwd: /work/b\n");
 
-        var source   = new CopilotImportSource(Config.Root, tmp.Path, tmp.PathTo("none"));
+        var source   = new CopilotImportSource(Config.Root, paths);
         var sessions = await source.DiscoverAsync(new DiscoveryFilters(null, null, null, 0), CancellationToken.None);
 
         await Assert.That(sessions.Count).IsEqualTo(1);
         await Assert.That(sessions[0].SessionId).IsEqualTo(Sid1.Replace("-", ""));
-        await Assert.That(sessions[0].Vendor).IsEqualTo("copilot");
+        await Assert.That(sessions[0].Vendor).IsEqualTo(HarnessId.Copilot);
     }
 
     [Test]
     public async Task discovery_reads_workspace_yaml_metadata() {
         using var tmp = new TempDir();
+        var paths     = Layout(tmp);
         WriteSession(
-            tmp.Path, Sid1,
+            paths.SessionStateDir, Sid1,
             cwd: "/work/a",
             name: "Create a file hello.txt containing 'hello world'",
             createdAt: "2026-06-10T20:23:25.556Z");
 
-        var source   = new CopilotImportSource(Config.Root, tmp.Path, tmp.PathTo("none"));
+        var source   = new CopilotImportSource(Config.Root, paths);
         var sessions = await source.DiscoverAsync(new DiscoveryFilters(null, null, null, 0), CancellationToken.None);
 
         await Assert.That(sessions.Count).IsEqualTo(1);
@@ -53,14 +64,13 @@ public class CopilotImportSourceTests {
     [Test]
     public async Task discovery_prefers_current_root_over_legacy_for_same_session() {
         using var tmp = new TempDir();
-        var current = tmp.PathTo("session-state");
-        var legacy  = tmp.PathTo("history-session-state");
+        var paths     = Layout(tmp);
 
-        WriteSession(current, Sid1, cwd: "/work/current");
-        WriteSession(legacy, Sid1, cwd: "/work/legacy");
-        WriteSession(legacy, Sid2, cwd: "/work/legacy-only");
+        WriteSession(paths.SessionStateDir, Sid1, cwd: "/work/current");
+        WriteSession(paths.LegacySessionStateDir, Sid1, cwd: "/work/legacy");
+        WriteSession(paths.LegacySessionStateDir, Sid2, cwd: "/work/legacy-only");
 
-        var source   = new CopilotImportSource(Config.Root, current, legacy);
+        var source   = new CopilotImportSource(Config.Root, paths);
         var sessions = await source.DiscoverAsync(new DiscoveryFilters(null, null, null, 0), CancellationToken.None);
 
         await Assert.That(sessions.Count).IsEqualTo(2);
@@ -73,10 +83,11 @@ public class CopilotImportSourceTests {
     [Test]
     public async Task session_filter_matches_dashless_and_dashed_input() {
         using var tmp = new TempDir();
-        WriteSession(tmp.Path, Sid1, cwd: "/work/a");
-        WriteSession(tmp.Path, Sid2, cwd: "/work/b");
+        var paths     = Layout(tmp);
+        WriteSession(paths.SessionStateDir, Sid1, cwd: "/work/a");
+        WriteSession(paths.SessionStateDir, Sid2, cwd: "/work/b");
 
-        var source = new CopilotImportSource(Config.Root, tmp.Path, tmp.PathTo("none"));
+        var source = new CopilotImportSource(Config.Root, paths);
 
         var byDashed = await source.DiscoverAsync(new DiscoveryFilters(null, Sid1, null, 0), CancellationToken.None);
         await Assert.That(byDashed.Count).IsEqualTo(1);
@@ -90,10 +101,11 @@ public class CopilotImportSourceTests {
     [Test]
     public async Task cwd_filter_excludes_other_workspaces_and_sessions_without_cwd() {
         using var tmp = new TempDir();
-        WriteSession(tmp.Path, Sid1, cwd: "/work/a");
-        WriteSession(tmp.Path, Sid2, cwd: null);   // no workspace.yaml cwd
+        var paths     = Layout(tmp);
+        WriteSession(paths.SessionStateDir, Sid1, cwd: "/work/a");
+        WriteSession(paths.SessionStateDir, Sid2, cwd: null);   // no workspace.yaml cwd
 
-        var source  = new CopilotImportSource(Config.Root, tmp.Path, tmp.PathTo("none"));
+        var source  = new CopilotImportSource(Config.Root, paths);
         var matched = await source.DiscoverAsync(new DiscoveryFilters("/work/a", null, null, 0), CancellationToken.None);
 
         await Assert.That(matched.Count).IsEqualTo(1);
@@ -103,10 +115,11 @@ public class CopilotImportSourceTests {
     [Test]
     public async Task since_filter_gates_on_session_start() {
         using var tmp = new TempDir();
-        WriteSession(tmp.Path, Sid1, cwd: "/work/a", createdAt: "2026-06-01T10:00:00Z");
-        WriteSession(tmp.Path, Sid2, cwd: "/work/b", createdAt: "2026-06-09T10:00:00Z");
+        var paths     = Layout(tmp);
+        WriteSession(paths.SessionStateDir, Sid1, cwd: "/work/a", createdAt: "2026-06-01T10:00:00Z");
+        WriteSession(paths.SessionStateDir, Sid2, cwd: "/work/b", createdAt: "2026-06-09T10:00:00Z");
 
-        var source  = new CopilotImportSource(Config.Root, tmp.Path, tmp.PathTo("none"));
+        var source  = new CopilotImportSource(Config.Root, paths);
         var matched = await source.DiscoverAsync(
             new DiscoveryFilters(null, null, new DateOnly(2026, 6, 5), 0), CancellationToken.None);
 

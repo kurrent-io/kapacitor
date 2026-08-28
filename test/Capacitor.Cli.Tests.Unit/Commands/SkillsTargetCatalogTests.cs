@@ -1,4 +1,5 @@
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.Core.Harness;
 
 namespace Capacitor.Cli.Tests.Unit.Commands;
 
@@ -7,31 +8,20 @@ public class SkillsTargetCatalogTests {
 
     [Test]
     public async Task Consumer_presence_maps_each_target_to_its_readers() {
-        static Capacitor.Cli.Core.Setup.DetectedAgent Yes() => new(true, false);
-        static Capacitor.Cli.Core.Setup.DetectedAgent No()  => new(false, false);
-        static Capacitor.Cli.Core.Setup.AgentDetectionResult Only(string vendor) => new(
-            Claude:      vendor == "claude"      ? Yes() : No(),
-            Codex:       vendor == "codex"       ? Yes() : No(),
-            Cursor:      vendor == "cursor"      ? Yes() : No(),
-            Copilot:     vendor == "copilot"     ? Yes() : No(),
-            Gemini:      vendor == "gemini"      ? Yes() : No(),
-            Kiro:        vendor == "kiro"        ? Yes() : No(),
-            Pi:          vendor == "pi"          ? Yes() : No(),
-            OpenCode:    vendor == "opencode"    ? Yes() : No(),
-            Antigravity: vendor == "antigravity" ? Yes() : No());
+        static HarnessRegistry Only(HarnessId id) => TestHarnesses.All([id]);
 
         // A codex-only machine adopts the shared agents tree and nothing vendored.
-        await Assert.That(SkillsCommand.ConsumerPresent(Only("codex"), "agents")).IsTrue();
-        await Assert.That(SkillsCommand.ConsumerPresent(Only("codex"), "claude")).IsFalse();
-        await Assert.That(SkillsCommand.ConsumerPresent(Only("codex"), "kiro")).IsFalse();
-        await Assert.That(SkillsCommand.ConsumerPresent(Only("codex"), "gemini")).IsFalse();
+        await Assert.That(SkillsCommand.ConsumerPresent(Only(HarnessId.Codex), "agents")).IsTrue();
+        await Assert.That(SkillsCommand.ConsumerPresent(Only(HarnessId.Codex), "claude")).IsFalse();
+        await Assert.That(SkillsCommand.ConsumerPresent(Only(HarnessId.Codex), "kiro")).IsFalse();
+        await Assert.That(SkillsCommand.ConsumerPresent(Only(HarnessId.Codex), "gemini")).IsFalse();
         // The gemini tree is shared by Gemini CLI AND Antigravity.
-        await Assert.That(SkillsCommand.ConsumerPresent(Only("antigravity"), "gemini")).IsTrue();
-        await Assert.That(SkillsCommand.ConsumerPresent(Only("gemini"), "gemini")).IsTrue();
+        await Assert.That(SkillsCommand.ConsumerPresent(Only(HarnessId.Antigravity), "gemini")).IsTrue();
+        await Assert.That(SkillsCommand.ConsumerPresent(Only(HarnessId.Gemini), "gemini")).IsTrue();
         // Claude and Kiro read only their own trees.
-        await Assert.That(SkillsCommand.ConsumerPresent(Only("claude"), "claude")).IsTrue();
-        await Assert.That(SkillsCommand.ConsumerPresent(Only("kiro"), "kiro")).IsTrue();
-        await Assert.That(SkillsCommand.ConsumerPresent(Only("kiro"), "agents")).IsFalse();
+        await Assert.That(SkillsCommand.ConsumerPresent(Only(HarnessId.Claude), "claude")).IsTrue();
+        await Assert.That(SkillsCommand.ConsumerPresent(Only(HarnessId.Kiro), "kiro")).IsTrue();
+        await Assert.That(SkillsCommand.ConsumerPresent(Only(HarnessId.Kiro), "agents")).IsFalse();
     }
 
     [Test]

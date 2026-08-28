@@ -20,7 +20,7 @@ public class CodexPathsCodexHomeTests {
 
         using var env = EnvScope.Exclusive("CODEX_HOME", relocated);
 
-        await Assert.That(CodexPaths.FromEnvironment(new("/fake/home")).Home).IsEqualTo(relocated);
+        await Assert.That(CodexHarness.FromEnvironment(new("/fake/home")).Paths.Home).IsEqualTo(relocated);
     }
 
     [Test]
@@ -28,7 +28,7 @@ public class CodexPathsCodexHomeTests {
     public async Task FromEnvironment_without_the_override_falls_back_to_the_home() {
         using var env = EnvScope.Exclusive("CODEX_HOME", null);
 
-        await Assert.That(CodexPaths.FromEnvironment(new("/fake/home")).Home)
+        await Assert.That(CodexHarness.FromEnvironment(new("/fake/home")).Paths.Home)
             .IsEqualTo(Path.Combine("/fake/home", ".codex"));
     }
 }

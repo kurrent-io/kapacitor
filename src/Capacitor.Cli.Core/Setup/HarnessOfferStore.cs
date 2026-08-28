@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Capacitor.Cli.Core.Harness;
 
 namespace Capacitor.Cli.Core.Setup;
 
@@ -73,13 +74,13 @@ public sealed class HarnessOfferStore(ConfigRoot config) {
     /// records the 7-day floor for the vendors it just offered. Best-effort — persistence result
     /// ignored either way.
     /// </summary>
-    public void StampOffered(IEnumerable<string> vendorIds, DateTimeOffset now, TimeSpan? lockTimeout = null) =>
+    public void StampOffered(IEnumerable<HarnessId> harnesses, DateTimeOffset now, TimeSpan? lockTimeout = null) =>
         Update(l => {
             var vendors = new Dictionary<string, HarnessOfferEntry>(l.Vendors);
-            foreach (var id in vendorIds) {
-                var prior = l.Entry(id);
+            foreach (var harness in harnesses) {
+                var prior = l.Entry(harness);
                 if (prior is { Declined: true }) continue; // never revive an explicit dismissal
-                vendors[id] = new HarnessOfferEntry {
+                vendors[harness.VendorId] = new HarnessOfferEntry {
                     FirstSeen   = prior?.FirstSeen ?? now,
                     LastOffered = now,
                     Declined    = false,

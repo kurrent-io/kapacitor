@@ -7,5 +7,8 @@ namespace Capacitor.Cli.Core.Setup;
 /// fresh install has no on-disk state yet and an IDE-launched vendor has no CLI on PATH.
 /// </summary>
 public sealed record DetectedAgent(bool BinaryFound, bool InstallSignalFound) {
+    /// <summary>Neither signal — what an id outside this process's registry reads as.</summary>
+    public static readonly DetectedAgent None = new(false, false);
+
     public bool Detected => BinaryFound || InstallSignalFound;
 }

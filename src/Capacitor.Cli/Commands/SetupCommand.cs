@@ -218,14 +218,14 @@ sealed class SetupImportLane(
     /// <summary>One invocation's arguments, so a test can assert what each level asked for without
     /// running an import.</summary>
     internal sealed record Pass(
-        FirstRunImportLevel               Level,
+        FirstRunImportLevel                 Level,
         IReadOnlyList<FirstRunImportChoice> Repos,
-        DateOnly?                         Since,
-        bool                              SkipTitle,
-        IReadOnlyList<string>?            Vendors);
+        DateOnly?                           Since,
+        bool                                SkipTitle,
+        IReadOnlyList<HarnessId>?           Vendors);
 
     public async Task<ReportFirstRunImportRequest?> DiscoverAsync(
-            IReadOnlyList<string>? vendors, DateTimeOffset asOf, CancellationToken ct) {
+            IReadOnlyList<HarnessId>? vendors, DateTimeOffset asOf, CancellationToken ct) {
         ImportCommand.ImportDiscoveryResult? found = null;
 
         // Quiet, because the caller owns the terminal for the duration and the figures go to a screen.
@@ -268,7 +268,7 @@ sealed class SetupImportLane(
                 })],
             Unmatched = new Dictionary<string, int>(found.Summary.UnmatchedByWindow, StringComparer.Ordinal),
             RepoTotal = found.Summary.Repos.Count,
-            Vendors   = [.. found.ScannedVendors]
+            Vendors   = [.. found.ScannedVendors.Select(v => v.VendorId)]
         };
     }
 
@@ -585,17 +585,17 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
         // Composed once in Core so the probe set is testable without touching the real
         // environment — see Capacitor.Cli.Core.Setup.AgentDetection for the per-vendor
         // rationale (dual PATH + install-marker signals, Cursor's marker-only exception, etc).
-        var r          = AgentDetection.Detect(_paths, BinaryProbe.FromEnvironment());
+        var harnesses  = HarnessRegistry.FromEnvironment(home);
         var detected   = new CodingAgentsStep.DetectedAgents(
-            Claude:      r.Claude.Detected,
-            Codex:       r.Codex.Detected,
-            Cursor:      r.Cursor.Detected,
-            Copilot:     r.Copilot.Detected,
-            Gemini:      r.Gemini.Detected,
-            Kiro:        r.Kiro.Detected,
-            Pi:          r.Pi.Detected,
-            OpenCode:    r.OpenCode.Detected,
-            Antigravity: r.Antigravity.Detected);
+            Claude:      harnesses.Detected(HarnessId.Claude),
+            Codex:       harnesses.Detected(HarnessId.Codex),
+            Cursor:      harnesses.Detected(HarnessId.Cursor),
+            Copilot:     harnesses.Detected(HarnessId.Copilot),
+            Gemini:      harnesses.Detected(HarnessId.Gemini),
+            Kiro:        harnesses.Detected(HarnessId.Kiro),
+            Pi:          harnesses.Detected(HarnessId.Pi),
+            OpenCode:    harnesses.Detected(HarnessId.OpenCode),
+            Antigravity: harnesses.Detected(HarnessId.Antigravity));
 
         bool PromptYesNo(string text) =>
             AnsiConsole.Prompt(new ConfirmationPrompt(text) { DefaultValue = true });
@@ -764,17 +764,17 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
         // re-offer a vendor the user just saw at the Step 4 prompt (whether they said yes or no).
         // A vendor skipped by its own --skip-<vendor> flag was not meaningfully offered, so it is
         // left unstamped and can still nudge later. Never writes/overwrites a dismissal.
-        var offeredNow = new List<string>();
-        void OfferedIf(bool wasDetected, bool skipped, string id) { if (wasDetected && !skipped) offeredNow.Add(id); }
-        OfferedIf(detected.Claude,      skipClaude,          "claude");
-        OfferedIf(detected.Codex,       skipCodexFlag,       "codex");
-        OfferedIf(detected.Cursor,      skipCursorFlag,      "cursor");
-        OfferedIf(detected.Copilot,     skipCopilotFlag,     "copilot");
-        OfferedIf(detected.Gemini,      skipGeminiFlag,      "gemini");
-        OfferedIf(detected.Kiro,        skipKiroFlag,        "kiro");
-        OfferedIf(detected.Pi,          skipPiFlag,          "pi");
-        OfferedIf(detected.OpenCode,    skipOpenCodeFlag,    "opencode");
-        OfferedIf(detected.Antigravity, skipAntigravityFlag, "antigravity");
+        var offeredNow = new List<HarnessId>();
+        void OfferedIf(bool wasDetected, bool skipped, HarnessId id) { if (wasDetected && !skipped) offeredNow.Add(id); }
+        OfferedIf(detected.Claude,      skipClaude,          HarnessId.Claude);
+        OfferedIf(detected.Codex,       skipCodexFlag,       HarnessId.Codex);
+        OfferedIf(detected.Cursor,      skipCursorFlag,      HarnessId.Cursor);
+        OfferedIf(detected.Copilot,     skipCopilotFlag,     HarnessId.Copilot);
+        OfferedIf(detected.Gemini,      skipGeminiFlag,      HarnessId.Gemini);
+        OfferedIf(detected.Kiro,        skipKiroFlag,        HarnessId.Kiro);
+        OfferedIf(detected.Pi,          skipPiFlag,          HarnessId.Pi);
+        OfferedIf(detected.OpenCode,    skipOpenCodeFlag,    HarnessId.OpenCode);
+        OfferedIf(detected.Antigravity, skipAntigravityFlag, HarnessId.Antigravity);
         new HarnessOfferStore(config).StampOffered(offeredNow, DateTimeOffset.UtcNow);
 
         // Provider API key handling. kcap scrubs ANTHROPIC_API_KEY / OPENAI_API_KEY
@@ -1190,7 +1190,7 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
     /// nothing. Filtering the sources rather than the counts afterwards is what makes a reported figure
     /// already scoped to what the user kept.</param>
     internal static IReadOnlyList<IImportSource> BuildImportSources(
-            ConfigRoot config, HarnessPaths paths, IReadOnlyCollection<string>? vendors = null) {
+            ConfigRoot config, HarnessPaths paths, IReadOnlyCollection<HarnessId>? vendors = null) {
         IReadOnlyList<IImportSource> all = [
             new ClaudeImportSource(config, paths.Claude.Projects),
             new CodexImportSource(config, paths.Codex.Sessions),
@@ -1207,7 +1207,7 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
 
         if (vendors is null) return all;
 
-        var wanted = vendors.ToHashSet(StringComparer.Ordinal);
+        var wanted = vendors.ToHashSet();
 
         return [.. all.Where(s => wanted.Contains(s.Vendor))];
     }
@@ -1419,7 +1419,8 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
                 AnsiConsole.MarkupLine("  [dim]Checking this machine for coding agents…[/]");
 
                 var report = FirstRunMachineReport.EvaluateCurrent(
-                    config, home, Environment.MachineName, await LoginShellFindsCliAsync());
+                    config, HarnessRegistry.FromEnvironment(home),
+                    Environment.MachineName, await LoginShellFindsCliAsync());
 
                 importing = new SetupImportLane(config, profiles, home, _paths);
 

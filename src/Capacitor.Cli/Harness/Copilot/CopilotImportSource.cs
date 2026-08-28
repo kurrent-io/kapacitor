@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Core.Harness.Copilot;
 
 namespace Capacitor.Cli.Harness.Copilot;
@@ -26,27 +27,16 @@ namespace Capacitor.Cli.Harness.Copilot;
 /// </para>
 /// </summary>
 internal sealed class CopilotImportSource : IImportSource {
-    readonly string                                 _sessionStateDir;
-    readonly string                                 _legacySessionStateDir;
+    readonly CopilotPaths                          _paths;
     readonly Func<string, Task<RepositoryPayload?>> _repoDetector;
 
     public CopilotImportSource(
         ConfigRoot                              config,
         CopilotPaths                            paths,
         Func<string, Task<RepositoryPayload?>>? repoDetector = null
-    ) : this(config, paths.SessionStateDir, paths.LegacySessionStateDir, repoDetector) { }
-
-    /// <summary>Both discovery roots given outright, for a caller that walks a layout it laid
-    /// out itself rather than Copilot's.</summary>
-    public CopilotImportSource(
-        ConfigRoot                              config,
-        string                                  sessionStateDir,
-        string                                  legacySessionStateDir,
-        Func<string, Task<RepositoryPayload?>>? repoDetector = null
     ) {
-        _sessionStateDir       = sessionStateDir;
-        _legacySessionStateDir = legacySessionStateDir;
-        _repoDetector          = repoDetector ?? (cwd => RepositoryDetection.DetectRepositoryAsync(config, cwd, detectPullRequest: false));
+        _paths        = paths;
+        _repoDetector = repoDetector ?? (cwd => RepositoryDetection.DetectRepositoryAsync(config, cwd, detectPullRequest: false));
     }
 
     static StringComparison PathComparison =>
@@ -62,9 +52,9 @@ internal sealed class CopilotImportSource : IImportSource {
         }
     }
 
-    public string Vendor => "copilot";
+    public HarnessId Vendor => HarnessId.Copilot;
 
-    public bool IsAvailable => Directory.Exists(_sessionStateDir) || Directory.Exists(_legacySessionStateDir);
+    public bool IsAvailable => _paths.SessionStateDirs.Any(Directory.Exists);
 
     /// <summary>
     /// False — Copilot names every session itself (workspace.yaml <c>name</c>);
@@ -84,15 +74,15 @@ internal sealed class CopilotImportSource : IImportSource {
         var result = new List<DiscoveredSession>();
         var seen   = new HashSet<string>(StringComparer.Ordinal);
 
-        // Current root first — when a pre-GA session was migrated on resume it
-        // exists in both roots, and session-state/ has the longer transcript.
-        foreach (var root in new[] { _sessionStateDir, _legacySessionStateDir }) {
+        // Current root first — when a pre-GA session was migrated on resume it exists in both
+        // roots, and session-state/ has the longer transcript.
+        foreach (var root in _paths.SessionStateDirs) {
             if (!Directory.Exists(root)) continue;
 
             foreach (var sessionDir in Directory.EnumerateDirectories(root)) {
                 try {
                     var dirName = Path.GetFileName(sessionDir);
-                    var jsonl   = CopilotPaths.EventsJsonl(root, dirName);
+                    var jsonl   = _paths.EventsJsonl(root, dirName);
 
                     // Dirs without events.jsonl are failed-startup scaffolding
                     // (workspace.yaml + checkpoints only) — nothing to import.
@@ -104,7 +94,7 @@ internal sealed class CopilotImportSource : IImportSource {
                     if (sessionFilter is not null && !string.Equals(dashless, sessionFilter, StringComparison.Ordinal))
                         continue;
 
-                    var meta = CopilotWorkspaceYaml.TryRead(CopilotPaths.WorkspaceYaml(root, dirName));
+                    var meta = CopilotWorkspaceYaml.TryRead(_paths.WorkspaceYaml(root, dirName));
 
                     if (normalizedCwd is not null
                      && (meta?.Cwd is null
@@ -405,7 +395,7 @@ internal sealed class CopilotImportSource : IImportSource {
         EncodedCwd       = "",
         Meta             = meta,
         Status           = status,
-        Vendor           = "copilot",
+        Vendor           = HarnessId.Copilot,
         ProbeErrorReason = probeErrorReason,
         TotalLines       = totalLines,
         SourceMeta       = s.SourceMeta,

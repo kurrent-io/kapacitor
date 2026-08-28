@@ -2,6 +2,7 @@ using System.Text.Json.Nodes;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.SessionStartMemory;
+using Capacitor.Cli.Core.Harness;
 
 namespace Capacitor.Cli.Commands.Harness;
 
@@ -122,7 +123,7 @@ sealed class AntigravityHookCommand(ConfigRoot config, ProfileContext profiles, 
         string payload;
 
         try {
-            payload = SessionStartMemoryOutputAdapters.Render(SessionStartHarness.Antigravity, fragment, workItemsNudge);
+            payload = SessionStartMemoryOutputAdapters.Render(HarnessId.Antigravity, fragment, workItemsNudge);
         } catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException) {
             return;
         }
@@ -207,7 +208,7 @@ sealed class AntigravityHookCommand(ConfigRoot config, ProfileContext profiles, 
         // gate below returns early — a withheld watcher must not suppress injection.
         var fragment = await SessionStartMemoryHookSupport.AwaitBounded(memoryTask, budget);
         var workItemsNudge = HarnessNudgeEmitter.Combine(
-            WorkItemsNudgeEmitter.Resolve(SessionStartHarness.Antigravity, sessionId, activeProfile?.DisableWorkItemsNudge is true, home),
+            WorkItemsNudgeEmitter.Resolve(HarnessId.Antigravity, sessionId, activeProfile?.DisableWorkItemsNudge is true, home),
             HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true, config, home));
         WritePreInvocationOutput(stdout, fragment, workItemsNudge);
         await stdout.FlushAsync();
@@ -266,7 +267,7 @@ sealed class AntigravityHookCommand(ConfigRoot config, ProfileContext profiles, 
     /// varies between callbacks, so keying on it would mint a fresh lease per invocation.</para>
     /// </summary>
     internal static SessionMemoryLifecycle LifecycleFor(string sessionId) =>
-        new(SessionStartHarness.Antigravity, sessionId, LifecycleInstanceId: null,
+        new(HarnessId.Antigravity, sessionId, LifecycleInstanceId: null,
             IsTopLevel: true, ClassificationAuthoritative: true,
             SessionLifecycleReason.RepeatedTurnCallback, CallbackMayRepeat: true);
 

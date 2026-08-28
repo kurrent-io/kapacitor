@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Harness.OpenCode;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
@@ -22,7 +23,7 @@ public class OpenCodeImportSourceTests {
 
         await Assert.That(sessions.Count).IsEqualTo(1);
         await Assert.That(sessions[0].SessionId).IsEqualTo("ses_root");
-        await Assert.That(sessions[0].Vendor).IsEqualTo("opencode");
+        await Assert.That(sessions[0].Vendor).IsEqualTo(HarnessId.OpenCode);
         await Assert.That(sessions[0].Cwd).IsEqualTo("/work/a");
         await Assert.That(sessions[0].FirstTimestamp)
             .IsEqualTo(DateTimeOffset.FromUnixTimeMilliseconds(1782241513759));
@@ -101,7 +102,7 @@ public class OpenCodeImportSourceTests {
             CancellationToken.None);
 
         await Assert.That(classified[0].Status).IsEqualTo(ImportCommand.ClassificationStatus.New);
-        await Assert.That(classified[0].Vendor).IsEqualTo("opencode");
+        await Assert.That(classified[0].Vendor).IsEqualTo(HarnessId.OpenCode);
         await Assert.That(classified[0].FilePath).IsEqualTo("");
     }
 

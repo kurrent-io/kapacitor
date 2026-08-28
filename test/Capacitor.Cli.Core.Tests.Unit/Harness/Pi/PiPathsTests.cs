@@ -51,7 +51,7 @@ public class PiPathsTests {
 
         using var env = EnvScope.Exclusive("PI_CODING_AGENT_DIR", relocated);
 
-        await Assert.That(PiPaths.FromEnvironment(new("/fake/home")).AgentDir).IsEqualTo(relocated);
+        await Assert.That(PiHarness.FromEnvironment(new("/fake/home")).Paths.AgentDir).IsEqualTo(relocated);
     }
 
     [Test]
@@ -59,7 +59,7 @@ public class PiPathsTests {
     public async Task FromEnvironment_without_the_override_falls_back_to_the_home() {
         using var env = EnvScope.Exclusive("PI_CODING_AGENT_DIR", null);
 
-        await Assert.That(PiPaths.FromEnvironment(new("/fake/home")).AgentDir)
+        await Assert.That(PiHarness.FromEnvironment(new("/fake/home")).Paths.AgentDir)
             .IsEqualTo(Path.Combine("/fake/home", ".pi", "agent"));
     }
 

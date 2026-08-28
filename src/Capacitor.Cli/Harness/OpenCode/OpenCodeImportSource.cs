@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Core.Harness.OpenCode;
 
 namespace Capacitor.Cli.Harness.OpenCode;
@@ -27,7 +28,7 @@ internal sealed class OpenCodeImportSource : IImportSource {
         _ledger = OpenCodeImportLedger.Load(ledgerPath);
     }
 
-    public string Vendor => "opencode";
+    public HarnessId Vendor => HarnessId.OpenCode;
     public bool   IsAvailable => File.Exists(_dbPath);
     public bool   SupportsTitleGeneration => false; // routed; native title forwarded via /hooks/set-title
     public bool   AttachesChildContentOnReplay => false; // AlreadyLoaded early-returns before any POST
@@ -387,7 +388,7 @@ internal sealed class OpenCodeImportSource : IImportSource {
         EncodedCwd       = "",
         Meta             = meta,
         Status           = status,
-        Vendor           = "opencode",
+        Vendor           = HarnessId.OpenCode,
         ProbeErrorReason = probeError,
         TotalLines       = totalLines,
         SourceMeta       = s.SourceMeta,

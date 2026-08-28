@@ -25,7 +25,7 @@ public class GeminiPathsTests {
 
         using var env = EnvScope.Exclusive("GEMINI_CLI_HOME", parent);
 
-        await Assert.That(GeminiPaths.FromEnvironment(new("/fake/home")).SettingsJson)
+        await Assert.That(GeminiHarness.FromEnvironment(new("/fake/home")).Paths.SettingsJson)
             .IsEqualTo(Path.Combine(parent, ".gemini", "settings.json"));
     }
 
@@ -36,7 +36,7 @@ public class GeminiPathsTests {
         using var cli = EnvScope.Exclusive("GEMINI_CLI_HOME", null);
         using var old = EnvScope.Exclusive("GEMINI_HOME", "/should/be/ignored");
 
-        await Assert.That(GeminiPaths.FromEnvironment(new("/fake/home")).Root)
+        await Assert.That(GeminiHarness.FromEnvironment(new("/fake/home")).Paths.Root)
             .IsEqualTo(Path.Combine("/fake/home", ".gemini"));
     }
 

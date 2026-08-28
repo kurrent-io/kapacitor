@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text.Json;
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Harness;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
 using WireMock.Server;
@@ -246,7 +247,7 @@ public class CodexImportTests {
             minLines: 0,
             excludedRepos: null,
             CancellationToken.None,
-            vendor: "codex"
+            vendor: HarnessId.Codex
         );
 
         await Assert.That(result.Count).IsEqualTo(1);
@@ -285,7 +286,7 @@ public class CodexImportTests {
             minLines: 0,
             excludedRepos: null,
             CancellationToken.None,
-            vendor: "codex"
+            vendor: HarnessId.Codex
         );
 
         await Assert.That(result.Count).IsEqualTo(1);

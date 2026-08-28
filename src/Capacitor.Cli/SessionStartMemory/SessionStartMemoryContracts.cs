@@ -1,25 +1,14 @@
 using System.Text.Json.Serialization;
+using Capacitor.Cli.Core.Harness;
 
 namespace Capacitor.Cli.SessionStartMemory;
-
-internal enum SessionStartHarness {
-    Claude,
-    Codex,
-    Cursor,
-    Copilot,
-    Gemini,
-    Kiro,
-    Pi,
-    OpenCode,
-    Antigravity
-}
 
 internal enum SessionLifecycleReason { New, Resume, Reopen, Fork, Compact, RepeatedTurnCallback, Unknown }
 internal enum SessionMemoryLifecycleDecision { EligibleWithLease, EligibleOneShot, IneligibleNoCommit, RetryLaterNoCommit }
 internal enum SessionStartMemoryDisposition { Ready, CompleteWithoutContext, RetryableFailure }
 
 internal sealed record SessionMemoryLifecycle(
-    SessionStartHarness Harness,
+    HarnessId Harness,
     string SessionId,
     string? LifecycleInstanceId,
     bool IsTopLevel,
