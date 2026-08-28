@@ -3437,8 +3437,8 @@ git commit -m "Light the rail pips from pending permission requests"
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var service = new FakeDaemonClientService();
             var pause = new FakePauseController();
-            var actions = NewActions();
-            using var consent = new FakeConsentService();
+            var actions = NewActions(service);
+            var consent = new FakeConsentService();
             using var permissions = new FakePermissionService();
             using var vm = new TrayViewModel(service, pause, actions, consent, permissions: permissions);
 
