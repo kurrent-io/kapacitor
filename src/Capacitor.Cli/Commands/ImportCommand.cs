@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading.Channels;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Harness.Claude;
 using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.FirstRun;
 using Capacitor.Cli.Core.RepoEvidence;
@@ -14,7 +15,7 @@ using Spectre.Console;
 
 namespace Capacitor.Cli.Commands;
 
-class ImportCommand(ConfigRoot config, ProfileContext profiles) {
+class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
     /// <summary>
     /// Maximum parallel worker count for the Importing phase. Both the
     /// channel-based dispatcher in ImportChainsAsync and the TTY slot-row
@@ -730,7 +731,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
         // Back-compat: a null caller (legacy or test) means "Claude only". Once
         // Program.cs migrates in E3, every production caller passes sources
         // explicitly.
-        sources ??= [new ClaudeImportSource(config)];
+        sources ??= [new ClaudeImportSource(config, ClaudePaths.FromEnvironment(home).Projects)];
 
         // --- No-source exit policy ---
         var available = sources.Where(s => s.IsAvailable).ToList();
@@ -918,7 +919,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
         // disk so the user understands why some sessions won't match an org or
         // repo scope, and can fix it by adding cwd_remap entries.
         ReportWorktreeAttributions(worktreeAttributed.Count, display);
-        ReportMissingCwds(sessionCwds, cwdRemap, display);
+        ReportMissingCwds(sessionCwds, cwdRemap, display, home);
 
         if (discoverOnly) {
             discoverySink(new ImportDiscoveryResult(
@@ -1065,6 +1066,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
             MinLines: minLines,
             ExcludedRepos: excludedRepos,
             ExcludedPaths: excludedPaths,
+            Home: home,
             Reimport: reimport
         );
 
@@ -1341,7 +1343,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
                             await concurrencyLimit.WaitAsync();
 
                             try {
-                                var rc = await new WhatsDoneCommand(config, profiles).GenerateForSessionAsync(baseUrl, sid, _ => { }, vnd);
+                                var rc = await new WhatsDoneCommand(config, profiles, home).GenerateForSessionAsync(baseUrl, sid, _ => { }, vnd);
 
                                 if (rc == 0) Interlocked.Increment(ref summariesGenerated);
                                 else {
@@ -2366,9 +2368,9 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
     /// <summary>
     /// Path-based overload: reads the transcript INSIDE this method's own try, so an
     /// invalid/empty path degrades to "no evidence" here too, instead of throwing as a bare call
-    /// argument at the caller, outside any try/catch. Uses <see cref="WatchCommand.ReadLinesShared"/>
-    /// (FileShare.ReadWrite), not <c>File.ReadLines</c> (FileShare.Read — Windows-mandatory,
-    /// denies the write handle a still-flushing agent owns on its own transcript).
+    /// argument at the caller, outside any try/catch. Uses <c>File.ReadLinesShared</c>
+    /// (see <see cref="SharedFileText"/>), not <c>File.ReadLines</c>, whose FileShare.Read is
+    /// Windows-mandatory and denies the write handle a still-flushing agent owns on its transcript.
     /// </summary>
     internal static async Task<JsonObject?> TryBuildEvidenceRepositoryNodeAsync(
             string                                 vendor,
@@ -2377,7 +2379,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
             Func<string, Task<RepositoryPayload?>> detect
         ) {
         try {
-            return await TryBuildEvidenceRepositoryNodeAsync(vendor, WatchCommand.ReadLinesShared(transcriptPath), findRoot, detect);
+            return await TryBuildEvidenceRepositoryNodeAsync(vendor, File.ReadLinesShared(transcriptPath), findRoot, detect);
         } catch {
             return null; // fail-open: an unreadable/invalid path must never break import
         }
@@ -2440,7 +2442,8 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
     internal static void ReportMissingCwds(
             IReadOnlyDictionary<string, string> sessionCwds,
             IReadOnlyList<CwdRemap>?            cwdRemap,
-            ImportDisplay                       display
+            ImportDisplay                       display,
+            UserHome                            home
         ) {
         if (sessionCwds.Count == 0) return;
 
@@ -2455,14 +2458,13 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
 
         var sessionsAffected = sessionCwds.Values.Count(missing.Contains);
         var sortedRoots      = roots.OrderBy(c => c, StringComparer.Ordinal).ToList();
-        var home             = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
 
         var sessionWord = sessionsAffected == 1 ? "session references" : "sessions reference";
         var pathWord    = sortedRoots.Count == 1 ? "path that no longer exists" : "distinct paths that no longer exist";
         display.Line($"{sessionsAffected} {sessionWord} {sortedRoots.Count} {pathWord} on disk:");
 
         const int sampleSize = 5;
-        foreach (var cwd in sortedRoots.Take(sampleSize)) display.Line($"  {ShortenHome(cwd, home)}");
+        foreach (var cwd in sortedRoots.Take(sampleSize)) display.Line($"  {ShortenHome(cwd, home.Path)}");
 
         if (sortedRoots.Count > sampleSize) {
             display.Line($"  ... and {sortedRoots.Count - sampleSize} more");
@@ -2551,13 +2553,13 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
     /// <c>.../&lt;project&gt;/.claude/worktrees/&lt;slug&gt;</c>) to
     /// <c>&lt;project&gt;</c> when the worktree itself no longer exists.
     /// </summary>
-    static string ResolveCwd(
+    string ResolveCwd(
             string                   raw,
             IReadOnlyList<CwdRemap>? cwdRemap,
             ISet<string>?            worktreeAttributed,
             string                   sessionId
         ) {
-        var remapped              = CwdRemapper.Apply(raw, cwdRemap);
+        var remapped              = CwdRemapper.Apply(raw, cwdRemap, home);
         var (final, wasStripped) = WorktreePathResolver.Resolve(remapped);
 
         if (wasStripped) worktreeAttributed?.Add(sessionId);
@@ -2750,7 +2752,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
                 return TitleResult.Skipped;
             }
 
-            var result = await TitleGenerator.GenerateAsync(userText, assistantText, _ => { }, profiles.Resolution.Profile, vendor);
+            var result = await TitleGenerator.GenerateAsync(userText, assistantText, _ => { }, profiles.Resolution.Profile, home, vendor);
 
             if (result is null) {
                 return TitleResult.Skipped;

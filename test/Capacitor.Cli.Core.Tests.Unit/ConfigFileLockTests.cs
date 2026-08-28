@@ -3,6 +3,7 @@ using System.Security.AccessControl;
 using System.Security.Cryptography;
 using System.Security.Principal;
 using System.Text;
+using TUnit.Core.Enums;
 
 namespace Capacitor.Cli.Core.Tests.Unit;
 
@@ -91,9 +92,9 @@ public class ConfigFileLockTests {
         await Assert.That(contender).IsNull();
     }
 
-    [Test]
+    [Test, RunOn(OS.Windows)]
+    [SupportedOSPlatform("windows")]
     public async Task On_Windows_the_mutex_is_Global_and_its_DACL_grants_the_current_user_only() {
-        if (!OperatingSystem.IsWindows()) return;
         await AssertGlobalMutexDaclAsync();
     }
 
@@ -125,7 +126,7 @@ public class ConfigFileLockTests {
         // Exactly one rule: anything else means another identity was granted access to a lock whose
         // whole point is that a different local user cannot squat or hold it.
         await Assert.That(rules.Length).IsEqualTo(1);
-        await Assert.That(rules[0].IdentityReference).IsEqualTo((IdentityReference)WindowsIdentity.GetCurrent().User!);
+        await Assert.That(rules[0].IdentityReference).IsEqualTo(WindowsIdentity.GetCurrent().User!);
         await Assert.That(rules[0].MutexRights).IsEqualTo(MutexRights.FullControl);
         await Assert.That(rules[0].AccessControlType).IsEqualTo(AccessControlType.Allow);
     }

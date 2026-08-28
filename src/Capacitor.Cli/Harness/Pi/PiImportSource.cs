@@ -30,10 +30,10 @@ internal sealed class PiImportSource : IImportSource {
 
     public PiImportSource(
         ConfigRoot                              config,
-        string?                                 sessionsDirOverride = null,
-        Func<string, Task<RepositoryPayload?>>? repoDetector        = null
+        string                                  sessionsDir,
+        Func<string, Task<RepositoryPayload?>>? repoDetector = null
     ) {
-        _sessionsDir  = sessionsDirOverride ?? PiPaths.SessionsDir();
+        _sessionsDir  = sessionsDir;
         _repoDetector = repoDetector ?? (cwd => RepositoryDetection.DetectRepositoryAsync(config, cwd, detectPullRequest: false));
     }
 
@@ -464,8 +464,8 @@ internal sealed class PiImportSource : IImportSource {
         string? excludedPathKey = null;
         if (cwd is not null && ctx.ExcludedPaths is { Count: > 0 } paths) {
             foreach (var entry in paths) {
-                if (PathExclusion.IsExcluded(cwd, [entry])) {
-                    excludedPathKey = PathExclusion.Normalize(entry);
+                if (PathExclusion.IsExcluded(cwd, [entry], ctx.Home)) {
+                    excludedPathKey = PathExclusion.Normalize(entry, ctx.Home);
                     break;
                 }
             }

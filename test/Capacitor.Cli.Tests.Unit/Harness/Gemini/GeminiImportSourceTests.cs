@@ -26,7 +26,7 @@ public class GeminiImportSourceTests {
             "11111111-1111-1111-1111-111111111111",
             """{"id":"u1","timestamp":"t","type":"user","content":[{"text":"hi"}]}""");
 
-        var source = new GeminiImportSource(tmpDirOverride: tmp.Path);
+        var source = new GeminiImportSource(tmp.Path);
         await Assert.That(source.IsAvailable).IsTrue();
 
         var found = await source.DiscoverAsync(new DiscoveryFilters(null, null, null, 1), CancellationToken.None);
@@ -43,7 +43,7 @@ public class GeminiImportSourceTests {
         WriteSession(tmp.Path, "proj", "session-a-22222222.jsonl", "22222222-2222-2222-2222-222222222222");
         WriteSession(tmp.Path, "proj", "session-b-33333333.jsonl", "33333333-3333-3333-3333-333333333333");
 
-        var source = new GeminiImportSource(tmpDirOverride: tmp.Path);
+        var source = new GeminiImportSource(tmp.Path);
         var found  = await source.DiscoverAsync(
             new DiscoveryFilters(null, "22222222-2222-2222-2222-222222222222", null, 1), CancellationToken.None);
 
@@ -54,7 +54,7 @@ public class GeminiImportSourceTests {
     [Test]
     public async Task unavailable_when_tmp_dir_missing() {
         using var tmp = new TempDir();
-        var source = new GeminiImportSource(tmpDirOverride: tmp.PathTo("does-not-exist"));
+        var source = new GeminiImportSource(tmp.PathTo("does-not-exist"));
         await Assert.That(source.IsAvailable).IsFalse();
     }
 

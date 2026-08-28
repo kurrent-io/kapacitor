@@ -41,7 +41,7 @@ public sealed class ConfigRoot(string directory) {
         if (Environment.GetEnvironmentVariable(ConfigDirEnvVar) is { Length: > 0 } configured)
             return new(configured);
 
-        return UnderHome(PathHelpers.HomeDirectory);
+        return UnderHome(UserHome.FromEnvironment().Path);
     }
 
     /// <summary>The root a process with this home resolves for itself. The one place that knows the

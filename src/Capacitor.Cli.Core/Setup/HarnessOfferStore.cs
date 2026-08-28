@@ -21,7 +21,7 @@ public sealed class HarnessOfferStore(ConfigRoot config) {
     public HarnessOfferLedger Load() {
         try {
             if (!File.Exists(_ledgerPath)) return new HarnessOfferLedger();
-            var ledger = JsonSerializer.Deserialize(SharedFileText.ReadAllText(_ledgerPath), HarnessOfferLedgerJsonContext.Default.HarnessOfferLedger)
+            var ledger = JsonSerializer.Deserialize(File.ReadAllTextShared(_ledgerPath), HarnessOfferLedgerJsonContext.Default.HarnessOfferLedger)
                          ?? new HarnessOfferLedger();
             return ledger.Vendors is null ? ledger with { Vendors = new() } : ledger;
         } catch {

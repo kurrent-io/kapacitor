@@ -50,10 +50,19 @@ public static partial class DaemonRunner {
         // Same for KCAP_CONFIG_DIR: read once here, then passed.
         var configRoot = ConfigRoot.FromEnvironment();
 
+        // And the same for the home directory, which the two above fall back to.
+        var userHome = UserHome.FromEnvironment();
+
         // OriginalArgs is captured for self-respawn (detached restart-after-update) and to detect
         // the successor's --await-lock handoff flag. Paths is set here, in the initializer, so the
         // config is never observably path-less.
-        var config = new DaemonConfig { Store = paths, ConfigRoot = configRoot, OriginalArgs = args };
+        var config = new DaemonConfig {
+            Store        = paths,
+            ConfigRoot   = configRoot,
+            Home         = userHome,
+            WorktreeRoot = Path.Combine(userHome.Path, ".capacitor", "worktrees"),
+            OriginalArgs = args,
+        };
         var awaitLock = args.Contains("--await-lock");
 
         // Boot-local carriers: read off ambient env and IMMEDIATELY remove them, before anything
@@ -339,6 +348,7 @@ public static partial class DaemonRunner {
 
         builder.Services.AddSingleton(paths);
         builder.Services.AddSingleton(configRoot);
+        builder.Services.AddSingleton(userHome);
         builder.Services.AddSingleton(config);
         builder.Services.AddSingleton(daemonLock);
         builder.Services.AddSingleton<ServerConnection>();

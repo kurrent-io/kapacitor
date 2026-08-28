@@ -80,6 +80,7 @@ static partial class TitleGenerator {
             string?        assistantText,
             Action<string> log,
             Profile?       profile,
+            UserHome       home,
             string         vendor = "claude"
         ) {
         var prompt = BuildPrompt(userText, assistantText);
@@ -91,7 +92,7 @@ static partial class TitleGenerator {
         // mirroring ClaudeCliResult's shape with zeros for the metric fields.
         var result = vendor == "codex"
             ? await CodexCliRunner.RunAsync(prompt, TimeSpan.FromSeconds(30), log, profile)
-            : await ClaudeCliRunner.RunAsync(prompt, TimeSpan.FromSeconds(15), log, profile, systemPrompt: HeadlessSummarizerSystemPrompt);
+            : await ClaudeCliRunner.RunAsync(prompt, TimeSpan.FromSeconds(15), log, profile, home, systemPrompt: HeadlessSummarizerSystemPrompt);
 
         if (result is null) {
             return null;

@@ -7,6 +7,7 @@ using Capacitor.App.Services;
 using Capacitor.App.ViewModels.Onboarding;
 using Capacitor.App.Views.Onboarding;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Core.Setup;
 using TUnit.Assertions.Enums;
 
@@ -27,6 +28,8 @@ static class VendorDetection {
 /// spec §8/decision 8: the app's detection feed overrides the process PATH with the login-shell
 /// terminal PATH when the probe resolves one. Pure static helper — no AvaloniaSession needed.
 public class AgentDetectionFeedTests {
+    [TempHome] public required TempHome Home { get; init; }
+
     [Test]
     [UnsupportedOSPlatform("windows")]
     public async Task Uses_the_probed_terminal_PATH_not_the_process_PATH() {
@@ -42,10 +45,10 @@ public class AgentDetectionFeedTests {
         // Same probe, two different crafted PATHs: the outcome must track the probe, not
         // whatever the real process PATH happens to contain on this machine.
         var probe = new FakeLoginShellProbe { TerminalPathBehavior = _ => Task.FromResult<string?>(emptyDir) };
-        var withoutClaude = await AgentsStepViewModel.BuildDetectionFeed(probe)(CancellationToken.None);
+        var withoutClaude = await AgentsStepViewModel.BuildDetectionFeed(probe, Home)(CancellationToken.None);
 
         probe.TerminalPathBehavior = _ => Task.FromResult<string?>(claudeDir);
-        var withClaude = await AgentsStepViewModel.BuildDetectionFeed(probe)(CancellationToken.None);
+        var withClaude = await AgentsStepViewModel.BuildDetectionFeed(probe, Home)(CancellationToken.None);
 
         await Assert.That(withoutClaude.Claude.Detected).IsFalse();
         await Assert.That(withClaude.Claude.Detected).IsTrue();
@@ -55,8 +58,8 @@ public class AgentDetectionFeedTests {
     public async Task Falls_back_to_the_process_PATH_when_the_probe_is_inconclusive() {
         var probe = new FakeLoginShellProbe { TerminalPathBehavior = _ => Task.FromResult<string?>(null) };
 
-        var actual   = await AgentsStepViewModel.BuildDetectionFeed(probe)(CancellationToken.None);
-        var expected = AgentDetection.Detect(AgentDetection.FromEnvironment());
+        var actual   = await AgentsStepViewModel.BuildDetectionFeed(probe, Home)(CancellationToken.None);
+        var expected = AgentDetection.Detect(HarnessPaths.FromEnvironment(Home), BinaryProbe.FromEnvironment());
 
         await Assert.That(actual).IsEqualTo(expected);
     }

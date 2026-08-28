@@ -32,6 +32,7 @@ namespace Capacitor.Cli.Tests.Integration;
 /// </summary>
 public class ClaudeHookStdoutTests : IDisposable {
     [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+    [TempHome] public required TempHome Home { get; init; }
 
     readonly WireMockServer _server = WireMockServer.Start();
 
@@ -58,7 +59,7 @@ public class ClaudeHookStdoutTests : IDisposable {
     // concurrently-running test writes to Console can contaminate it.
     async Task<string> RunSessionStartAsync() {
         var stdout = new StringWriter();
-        await new ClaudeHookCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), new HookClock(TimeProvider.System)).Handle(new StringReader(SessionStartPayloadWithoutTranscriptPath()), stdout: stdout);
+        await new ClaudeHookCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), new HookClock(TimeProvider.System), Home).Handle(new StringReader(SessionStartPayloadWithoutTranscriptPath()), stdout: stdout);
         return stdout.ToString();
     }
 

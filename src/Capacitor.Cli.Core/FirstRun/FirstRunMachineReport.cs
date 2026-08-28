@@ -1,3 +1,4 @@
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Core.Setup;
 
 namespace Capacitor.Cli.Core.FirstRun;
@@ -79,17 +80,19 @@ public sealed record FirstRunMachineReport(
     /// crash rendered on the consent screen as "no coding agents were found" is a failure reported as
     /// a result.</para>
     /// </summary>
-    public static FirstRunMachineReport EvaluateCurrent(ConfigRoot config, string? machine, bool? loginShellFindsCli) {
+    public static FirstRunMachineReport EvaluateCurrent(
+            ConfigRoot config, UserHome home, string? machine, bool? loginShellFindsCli) {
         try {
-            var inputs = AgentDetection.FromEnvironment();
+            var paths    = HarnessPaths.FromEnvironment(home);
+            var binaries = BinaryProbe.FromEnvironment();
 
             return Evaluate(
                 machine,
                 // The one unguarded read here: it creates and writes a config file, unlike every
                 // probe around it, which swallows its own I/O failures.
                 MachineIdOrNull(config),
-                AgentDetection.Detect(inputs),
-                vendor => HarnessIntegrationProbe.IsWired(vendor, inputs),
+                AgentDetection.Detect(paths, binaries),
+                paths.IsWired,
                 new HarnessOfferStore(config).Load(),
                 loginShellFindsCli,
                 FirstRunPlatforms.Current());

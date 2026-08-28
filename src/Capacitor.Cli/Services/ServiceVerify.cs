@@ -244,7 +244,7 @@ sealed class ServiceVerify(
         string? unitExpectation = null;
 
         if (gated) {
-            var plistPath = LaunchdUnit.PlistPath(serviceId);
+            var plistPath = manager.UnitPath(serviceId);
             var (readStatus, content) = _discriminatedPlistRead(plistPath);
             phaseAPlistContent = content;
 
@@ -407,7 +407,7 @@ sealed class ServiceVerify(
     /// false means drift. Shared by Phase B's pre-bootstrap and post-readiness rechecks — callers
     /// own their own marker phase and rollback call.</summary>
     bool RecheckPlistUnchanged(string serviceId, string? phaseAPlistContent) {
-        var content = _readPlist(LaunchdUnit.PlistPath(serviceId));
+        var content = _readPlist(manager.UnitPath(serviceId));
         bool digestGood;
         try {
             var binary = content is not null ? LaunchdUnit.BinaryFromPlist(content) : null;

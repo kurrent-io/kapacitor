@@ -41,6 +41,7 @@ public partial class App : Application {
 
     // And its one read of KCAP_CONFIG_DIR.
     readonly ConfigRoot _config = ConfigRoot.FromEnvironment();
+    readonly UserHome   _userHome = UserHome.FromEnvironment();
 
     // And its one read of KCAP_APP_PTY_DUMP: a file every terminal feed frame is appended to as
     // received, for seeing what the emulator was given.
@@ -385,7 +386,7 @@ public partial class App : Application {
             ShimInstaller: new PathShimInstaller(runner, probe),
             UrlOpener: new ShellUrlOpener(),
             Probe: probe,
-            DetectionFeed: AgentsStepViewModel.BuildDetectionFeed,
+            DetectionFeed: probe => AgentsStepViewModel.BuildDetectionFeed(probe, _userHome),
             CliPath: cliPath,
             ShimApplicable: shimApplicable,
             ShimTarget: shimTarget,

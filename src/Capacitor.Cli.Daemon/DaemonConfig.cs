@@ -142,11 +142,14 @@ public class DaemonConfig {
     /// </summary>
     public string[]? AcpPresetVendors { get; set; }
 
-    public string WorktreeRoot { get; set; } = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-        ".capacitor",
-        "worktrees"
-    );
+    /// <summary>The home directory this daemon resolved at boot. Every home-derived daemon path
+    /// reads it, so a descendant can't be handed a different one than the entry point chose.</summary>
+    public UserHome Home {
+        get => field ?? throw new InvalidOperationException($"DaemonConfig.Home was never set; pass a {nameof(UserHome)} in from the entry point.");
+        set;
+    }
+
+    public string WorktreeRoot { get; set; } = "";
 
     public string ClaudePath { get; set; } = "claude";
     public string CodexPath  { get; set; } = "codex";

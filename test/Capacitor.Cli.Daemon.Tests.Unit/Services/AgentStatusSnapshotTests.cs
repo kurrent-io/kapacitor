@@ -19,6 +19,7 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 /// </summary>
 public class AgentStatusSnapshotTests {
     [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+    [TempHome] public required TempHome Home { get; init; }
 
     sealed class NoopHostLifetime : IHostApplicationLifetime {
         public CancellationToken ApplicationStarted  => CancellationToken.None;
@@ -68,7 +69,7 @@ public class AgentStatusSnapshotTests {
         var notifier         = new DaemonStatusNotifier();
 
         var orchestrator = new AgentOrchestrator(
-            config, Config.Root, connection, worktreeManager, repoMatcher,
+            config, Config.Root, Home, connection, worktreeManager, repoMatcher,
             new NoopPtyProcessFactory(), new NoopHttpClientFactory(),
             permissionBridge, new Dictionary<string, IHostedAgentLauncher>(),
             new Dictionary<string, IHostedAgentRuntimeFactory>(), new NoopHostLifetime(),

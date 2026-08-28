@@ -7,11 +7,10 @@ using Capacitor.Cli.Core.Mcp;
 
 namespace Capacitor.Cli.Tests.Unit.Commands;
 
-[NotInParallel("HomeEnvVarMutation")]
 public class PluginCommandCursorTests {
     [Test]
     public async Task install_cursor_if_installed_noops_when_marker_absent() {
-        using var tmp = new FakeUserHome();
+        using var tmp = new TempHome();
         var hooksPath = Path.Combine(tmp.Path, "hooks.json");
 
         var exit = await new PluginCommand(TestEnv(tmp.Path)).HandleAsync(
@@ -22,7 +21,7 @@ public class PluginCommandCursorTests {
 
     [Test]
     public async Task install_cursor_if_installed_short_circuits_on_same_version_marker() {
-        using var tmp = new FakeUserHome();
+        using var tmp = new TempHome();
         var hooksPath = Path.Combine(tmp.Path, "hooks.json");
         CursorHooksInstaller.WriteMarker(hooksPath);
         File.WriteAllText(hooksPath, "{}");
@@ -38,7 +37,7 @@ public class PluginCommandCursorTests {
 
     // `plugin install/remove --cursor` also (un)registers the kcap MCP
     // servers in ~/.cursor/mcp.json. These use an explicit PluginEnvironment
-    // (not PluginEnvironment.FromProcess()) so env.CursorMcpJson resolves under
+    // (not PluginEnvironment.FromProcess()) so env.Paths.Cursor.UserMcpJson resolves under
     // a temp home instead of the real machine's ~/.cursor — mirrors
     // PluginCommandCodexInstallIntegrationTests.TestEnv. The `--if-installed`
     // refresh branch is used (pre-marker hooks.json seeded) rather than a bare
@@ -46,7 +45,7 @@ public class PluginCommandCursorTests {
     // only runs on the non-refresh path) never comes into play.
     [Test]
     public async Task install_cursor_registers_mcp_servers_preserving_user_entries() {
-        using var fakeHome = new FakeUserHome();
+        using var fakeHome = new TempHome();
         var cursorDir = System.IO.Path.Combine(fakeHome.Path, ".cursor");
         Directory.CreateDirectory(cursorDir);
 
@@ -80,7 +79,7 @@ public class PluginCommandCursorTests {
 
     [Test]
     public async Task install_cursor_if_installed_does_not_write_mcp_json_when_never_opted_in() {
-        using var fakeHome = new FakeUserHome();
+        using var fakeHome = new TempHome();
 
         // Hooks were never installed, so the refresh-only postinstall path
         // no-ops before ever touching hooks.json OR mcp.json.
@@ -94,7 +93,7 @@ public class PluginCommandCursorTests {
 
     [Test]
     public async Task install_cursor_skip_cursor_mcp_flag_leaves_mcp_json_untouched() {
-        using var fakeHome = new FakeUserHome();
+        using var fakeHome = new TempHome();
         var cursorDir = System.IO.Path.Combine(fakeHome.Path, ".cursor");
         Directory.CreateDirectory(cursorDir);
 
@@ -113,7 +112,7 @@ public class PluginCommandCursorTests {
 
     [Test]
     public async Task remove_cursor_unregisters_mcp_servers_preserving_user_entries() {
-        using var fakeHome = new FakeUserHome();
+        using var fakeHome = new TempHome();
         var cursorDir = System.IO.Path.Combine(fakeHome.Path, ".cursor");
         Directory.CreateDirectory(cursorDir);
 
@@ -126,7 +125,7 @@ public class PluginCommandCursorTests {
         // sidecar ownership marker exists), then splice in a user-authored
         // server that must survive removal.
         var mcpPath = System.IO.Path.Combine(cursorDir, "mcp.json");
-        JsonMcpConfigWriter.Register(mcpPath, KcapMcpServers.All, McpConfigShape.Standard, cwd: null, new McpMarker("cursor"));
+        JsonMcpConfigWriter.Register(mcpPath, KcapMcpServers.All, McpConfigShape.Standard, cwd: null, new McpMarker("cursor", fakeHome.Home));
         var seeded = JsonNode.Parse(await File.ReadAllTextAsync(mcpPath))!.AsObject();
         seeded["mcpServers"]!["my-tool"] = JsonNode.Parse("""{"command":"my-tool","args":["serve"]}""");
         await File.WriteAllTextAsync(mcpPath, seeded.ToJsonString());
@@ -147,22 +146,22 @@ public class PluginCommandCursorTests {
 
     [Test]
     public async Task remove_cursor_retains_marker_on_failed_unregister_then_retry_removes_entries() {
-        using var fakeHome = new FakeUserHome();
+        using var fakeHome = new TempHome();
         var cursorDir = System.IO.Path.Combine(fakeHome.Path, ".cursor");
         Directory.CreateDirectory(cursorDir);
 
         // A prior real install: kcap entries + sidecar ownership marker.
         var mcpPath = System.IO.Path.Combine(cursorDir, "mcp.json");
-        JsonMcpConfigWriter.Register(mcpPath, KcapMcpServers.All, McpConfigShape.Standard, cwd: null, new McpMarker("cursor"));
+        JsonMcpConfigWriter.Register(mcpPath, KcapMcpServers.All, McpConfigShape.Standard, cwd: null, new McpMarker("cursor", fakeHome.Home));
         var installed = await File.ReadAllTextAsync(mcpPath); // valid content to restore after the "fix"
-        await Assert.That(new McpMarker("cursor").Owned(mcpPath).ToArray()).IsNotEmpty();
+        await Assert.That(new McpMarker("cursor", fakeHome.Home).Owned(mcpPath).ToArray()).IsNotEmpty();
 
         // The config is temporarily malformed/unreadable → Unregister fails-closed.
         await File.WriteAllTextAsync(mcpPath, "{ not valid json");
 
         var failExit = await new PluginCommand(TestEnv(fakeHome.Path)).HandleAsync(["plugin", "remove", "--cursor"]);
         await Assert.That(failExit).IsEqualTo(1);                                          // failed MCP unregister propagates
-        await Assert.That(new McpMarker("cursor").Owned(mcpPath).ToArray()).IsNotEmpty();  // marker RETAINED for retry
+        await Assert.That(new McpMarker("cursor", fakeHome.Home).Owned(mcpPath).ToArray()).IsNotEmpty();  // marker RETAINED for retry
 
         // User fixes the file (kcap entries intact); the retry now succeeds and cleans up.
         await File.WriteAllTextAsync(mcpPath, installed);
@@ -173,7 +172,7 @@ public class PluginCommandCursorTests {
         var servers = root["mcpServers"] as JsonObject;
         var keys    = servers?.Select(kv => kv.Key).ToArray() ?? [];
         await Assert.That(keys).DoesNotContain("kcap-review");
-        await Assert.That(new McpMarker("cursor").Owned(mcpPath).ToArray()).IsEmpty();     // marker cleared after clean removal
+        await Assert.That(new McpMarker("cursor", fakeHome.Home).Owned(mcpPath).ToArray()).IsEmpty();     // marker cleared after clean removal
     }
 
     // Deterministic native-binary path: registration writes the resolved binary as the command
@@ -182,11 +181,14 @@ public class PluginCommandCursorTests {
     internal const string TestBinaryPath = "/opt/kcap-test/bin/kcap";
 
     static PluginEnvironment TestEnv(string fakeHome) => new(
-        HomeDirectory:     fakeHome,
+        Home:     new(fakeHome),
         Profiles:          new ProfileConfig(),
         ResolvePluginPath: () => null,
         Stdout:            TextWriter.Null,
         Stderr:            TextWriter.Null
-    ) { ResolveMcpBinaryPath = () => TestBinaryPath };
+    ) {
+        Paths = TestHarnessPaths.NoOverrides(new(fakeHome)),
+        ResolveMcpBinaryPath = () => TestBinaryPath
+    };
 
 }

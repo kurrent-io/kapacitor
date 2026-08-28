@@ -2,6 +2,7 @@ using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.Setup;
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Core.Harness.Antigravity;
 using Capacitor.Cli.Core.Harness.Claude;
 using Capacitor.Cli.Core.Harness.Codex;
@@ -14,7 +15,9 @@ using Capacitor.Cli.Core.Harness.Pi;
 
 namespace Capacitor.Cli.Commands;
 
-public sealed class StatusCommand(DaemonStore store, ProfileContext profiles, ConfigRoot config) {
+public sealed class StatusCommand(DaemonStore store, ProfileContext profiles, ConfigRoot config, UserHome home) {
+    readonly HarnessPaths _paths = HarnessPaths.FromEnvironment(home);
+
     public async Task<int> HandleAsync(string[] args) {
         var baseUrl = profiles.Resolution.ServerUrl;
         // Version line reuses UpdateNotice's shared check and marks-reported so the exit footer
@@ -78,26 +81,25 @@ public sealed class StatusCommand(DaemonStore store, ProfileContext profiles, Co
         await Console.Out.WriteAsync("  Hooks:   ");
 
         var line = BuildHooksStatusLine(
-            claude:   IsClaudePluginInstalled(ClaudePaths.UserSettings),
-            codex:    IsCodexHooksInstalled(CodexPaths.UserHooksJson),
-            cursor:   CursorHooksInstaller.IsInstalled(CursorPaths.UserHooksJson()),
-            copilot:  CopilotHooksInstaller.IsInstalled(CopilotPaths.KcapHooksJson()),
-            gemini:   GeminiHooksInstaller.IsInstalled(GeminiPaths.SettingsJson()),
-            kiro:     KiroHooksInstaller.IsInstalled(KiroPaths.KcapAgentJson()),
-            pi:       PiExtensionInstaller.IsInstalled(PiPaths.KcapExtension()),
-            opencode: OpenCodeExtensionInstaller.IsInstalled(OpenCodePaths.KcapPlugin()),
-            antigravity: AntigravityHooksInstaller.IsInstalled(AntigravityPaths.GlobalHooksJson()));
+            claude:   IsClaudePluginInstalled(_paths.Claude.UserSettings),
+            codex:    IsCodexHooksInstalled(_paths.Codex.UserHooksJson),
+            cursor:   CursorHooksInstaller.IsInstalled(_paths.Cursor.UserHooksJson),
+            copilot:  CopilotHooksInstaller.IsInstalled(_paths.Copilot.KcapHooksJson),
+            gemini:   GeminiHooksInstaller.IsInstalled(_paths.Gemini.SettingsJson),
+            kiro:     KiroHooksInstaller.IsInstalled(_paths.Kiro.KcapAgentJson),
+            pi:       PiExtensionInstaller.IsInstalled(_paths.Pi.KcapExtension),
+            opencode: OpenCodeExtensionInstaller.IsInstalled(_paths.OpenCode.KcapPlugin),
+            antigravity: AntigravityHooksInstaller.IsInstalled(_paths.Antigravity.GlobalHooksJson));
 
         await Console.Out.WriteLineAsync(line);
 
         // Newly-installed-but-unconfigured harnesses. Ledger-independent (a dismissed vendor is
         // still surfaced here) — status always tells the truth, unlike the nudge which respects
         // dismissals. Shares the wired-check with the Hooks line above, so the two never disagree.
-        var detectionInputs = AgentDetection.FromEnvironment();
-        var detectedAgents  = AgentDetection.Detect(detectionInputs);
+        var detectedAgents = AgentDetection.Detect(_paths, BinaryProbe.FromEnvironment());
         foreach (var h in HarnessCatalog.All) {
             if (!h.Select(detectedAgents).Detected) continue;
-            if (HarnessIntegrationProbe.IsWired(h.VendorId, detectionInputs)) continue;
+            if (_paths.IsWired(h.VendorId)) continue;
             var install = h.InstallFlag is null ? "kcap plugin install" : $"kcap plugin install {h.InstallFlag}";
             await Console.Out.WriteLineAsync($"           {h.Label} installed but kcap not configured — run `{install}`");
         }
@@ -255,7 +257,7 @@ public sealed class StatusCommand(DaemonStore store, ProfileContext profiles, Co
     /// <summary>
     /// True iff <paramref name="settingsPath"/> exists and has
     /// <c>enabledPlugins["kcap@kcap"] == true</c>. Delegates to the Core source of truth
-    /// (<see cref="HarnessIntegrationProbe"/>) so the status line and the new-harness nudge share
+    /// (<see cref="HarnessWiring"/>) so the status line and the new-harness nudge share
     /// one wired-check definition.
     /// </summary>
     public static bool IsClaudePluginInstalled(string settingsPath) =>

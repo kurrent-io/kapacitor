@@ -61,7 +61,7 @@ namespace Capacitor.Cli.Commands.Harness;
 /// observation, not a guarantee. The mitigation does not depend on it: emitting a
 /// valid non-blocking object is correct under any of these selection rules.
 /// </remarks>
-sealed class GeminiHookCommand(ConfigRoot config, ProfileContext profiles, HookClock clock) {
+sealed class GeminiHookCommand(ConfigRoot config, ProfileContext profiles, HookClock clock, UserHome home) {
     readonly WatcherManager  _watchers = new(config, profiles);
     readonly AgentHookPoster _poster   = new(config, profiles);
 
@@ -266,7 +266,7 @@ sealed class GeminiHookCommand(ConfigRoot config, ProfileContext profiles, HookC
         var activeProfile = profiles.Effective;
 
         if (activeProfile?.ExcludedPaths is { Length: > 0 } excludedPaths
-         && PathExclusion.IsExcluded(cwd, excludedPaths)) return 0;
+         && PathExclusion.IsExcluded(cwd, excludedPaths, home)) return 0;
 
         return eventName switch {
             "SessionStart" => await HandleSessionStart(node, sessionId, cwd, activeProfile, spool,
@@ -292,7 +292,7 @@ sealed class GeminiHookCommand(ConfigRoot config, ProfileContext profiles, HookC
             ["hook_event_name"] = "SessionStart",
             ["session_id"]      = sessionId,
             ["source"]          = source,
-            ["home_dir"]        = PathHelpers.HomeDirectory
+            ["home_dir"]        = home.Path
         };
 
         if (cwd is not null) {
@@ -319,7 +319,7 @@ sealed class GeminiHookCommand(ConfigRoot config, ProfileContext profiles, HookC
             forwarded["default_visibility"] = visibility;
         }
 
-        SessionStartInventory.Stamp(forwarded, config);
+        SessionStartInventory.Stamp(forwarded, config, home);
         var enriched = await RepositoryDetection.EnrichWithRepositoryInfo(config, forwarded.ToJsonString());
 
         if (activeProfile?.ExcludedRepos is { Length: > 0 } excludedRepos
@@ -352,8 +352,8 @@ sealed class GeminiHookCommand(ConfigRoot config, ProfileContext profiles, HookC
         // parses hook stdout unconditionally, with the exit code only setting its own `success` flag.
         var fragment = await SessionStartMemoryHookSupport.AwaitBounded(memoryTask, budget);
         var workItemsNudge = HarnessNudgeEmitter.Combine(
-            WorkItemsNudgeEmitter.Resolve(SessionStartHarness.Gemini, sessionId, activeProfile?.DisableWorkItemsNudge is true),
-            HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true, config));
+            WorkItemsNudgeEmitter.Resolve(SessionStartHarness.Gemini, sessionId, activeProfile?.DisableWorkItemsNudge is true, home),
+            HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true, config, home));
         result.Write(RenderSessionStartPayload(fragment, workItemsNudge));
 
         if (!AgentHookPoster.ShouldSpawnAfter(outcome, Url)) return outcome == HookPostOutcome.Failed ? 1 : 0;
@@ -408,7 +408,7 @@ sealed class GeminiHookCommand(ConfigRoot config, ProfileContext profiles, HookC
             ["hook_event_name"] = "SessionEnd",
             ["session_id"]      = sessionId,
             ["reason"]          = TryGetString(node, "reason") ?? "exit",
-            ["home_dir"]        = PathHelpers.HomeDirectory
+            ["home_dir"]        = home.Path
         };
 
         if (cwd is not null) forwarded["cwd"] = cwd;
@@ -438,7 +438,7 @@ sealed class GeminiHookCommand(ConfigRoot config, ProfileContext profiles, HookC
             ["session_id"]        = sessionId,
             ["message"]           = message,
             ["notification_type"] = notificationType,
-            ["home_dir"]          = PathHelpers.HomeDirectory
+            ["home_dir"]          = home.Path
         };
 
         if (cwd is not null) forwarded["cwd"] = cwd;

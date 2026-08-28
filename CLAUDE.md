@@ -176,6 +176,9 @@ Description: **before writing it, open [.github/PULL_REQUEST_TEMPLATE.md](.githu
 ## Dos and donts
 
 - DO use `JsonElementExtensions` instead of checking JSON value kind.
+- DO take a `UserHome` rather than resolving a home yourself: `Environment.GetFolderPath` is banned
+  (`RS0030`, `BannedSymbols.txt`), so a new call is a build error. An exemption is a per-site
+  `#pragma warning disable RS0030` naming why that site cannot take one.
 - DO NOT use Linear issue numbers in comments. If you absolutely need an issue number, use the GitHub issue number.
 
 ## Common mistakes to avoid

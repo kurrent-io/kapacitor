@@ -18,6 +18,11 @@ public class BrowserFirstRunFlowTests {
         public IReadOnlyList<string> Entries => _entries;
 
         public void Add(string entry) => _entries.Add(entry);
+
+        /// <summary>Whether <paramref name="first"/> was logged before <paramref name="second"/>. -1 for an
+        /// absent entry makes a missing one read as "before", so callers assert its presence too.</summary>
+        public bool Precedes(string first, string second) =>
+            _entries.IndexOf(first) < _entries.IndexOf(second);
     }
 
     sealed class FakeChannel(Log log, FakeTimeProvider? clock = null) : IFirstRunFlowChannel {
@@ -52,8 +57,12 @@ public class BrowserFirstRunFlowTests {
                 : outcome);
         }
 
+        /// <summary>Run on each poll, to model something happening to this process mid-wait.</summary>
+        public Action? OnPoll { get; set; }
+
         public Task<FirstRunPollOutcome> PollAsync(string serverUrl, string flowId, CancellationToken ct) {
             PollCount++;
+            OnPoll?.Invoke();
             log.Add("poll");
             if (clock is not null) PollTimes.Add(clock.GetUtcNow());
 
@@ -107,6 +116,59 @@ public class BrowserFirstRunFlowTests {
             return Task.FromResult(new FirstRunImportReportOutcome(
                 OutcomeStatuses.Count > 0 ? OutcomeStatuses.Dequeue() : 200));
         }
+
+        public List<string> Relinquished { get; } = [];
+
+        /// <summary>Status per relinquish in turn; the last repeats. A non-2xx is how "the leg finishes
+        /// anyway" is driven.</summary>
+        public Queue<int> RelinquishStatuses { get; } = new();
+
+        /// <summary>Thrown on the next relinquish, to prove an unexpected fault does not escape the leg.</summary>
+        public Exception? RelinquishThrows { get; set; }
+
+        /// <summary>Run on each relinquish, to model something happening at that exact moment.</summary>
+        public Action? OnRelinquish { get; set; }
+
+        public Task<FirstRunRelinquishOutcome> RelinquishAsync(
+                string serverUrl, string flowId, string reason, CancellationToken ct) {
+            log.Add("relinquish");
+            Relinquished.Add(reason);
+            OnRelinquish?.Invoke();
+
+            if (RelinquishThrows is { } boom) throw boom;
+
+            return Task.FromResult(new FirstRunRelinquishOutcome(
+                RelinquishStatuses.Count > 0 ? RelinquishStatuses.Dequeue() : 200));
+        }
+    }
+
+    /// <summary>
+    /// Stands in for the process-global sink, which is what keeps this class out of assembly-wide
+    /// exclusion. It hands out the REAL <see cref="FirstRunNotice"/>, so the claim arbitration under test
+    /// is the production one rather than a second implementation of it.
+    /// </summary>
+    sealed class FakeInterrupts(Log log) : IFirstRunInterrupts {
+        readonly Log _log = log;
+
+        // The notice itself is the LEG's to dispose, so only its interrupt entry point is held here.
+        Action<TimeSpan>? _interrupt;
+
+        public int Arms { get; private set; }
+
+        public IFirstRunNotice Arm(Func<string, CancellationToken, Task> send, Func<string?> interruptReason) {
+            Arms++;
+            _log.Add("arm");
+
+            var notice = new FirstRunNotice(send, interruptReason, onDispose: _ => _log.Add("disarm"));
+
+            _interrupt = notice.RunBeforeExit;
+
+            return notice;
+        }
+
+        /// <summary>Fires the interrupt path, as a signal handler would.</summary>
+        public void Interrupt(TimeSpan? budget = null) =>
+            _interrupt?.Invoke(budget ?? TimeSpan.FromSeconds(5));
     }
 
     sealed class RecordingProgress(Log log) : IFirstRunFlowProgress {
@@ -132,6 +194,10 @@ public class BrowserFirstRunFlowTests {
 
         public List<(int Repos, int? Sessions)> Imports { get; } = [];
 
+        /// <summary>Run when the wait ends, which is between the poll publishing its result and the leg
+        /// sending its own reason — the one window where an interrupt can claim with a result in view.</summary>
+        public Action? OnWaitEnded { get; set; }
+
         public void Waiting(FirstRunFlowStep? flowStep, bool healthy) {
             Ticks++;
             Waits.Add((flowStep, healthy));
@@ -143,7 +209,10 @@ public class BrowserFirstRunFlowTests {
             Settles.Add((flowStep, outcome, detail));
         }
 
-        public void WaitEnded() => WaitEnds++;
+        public void WaitEnded() {
+            WaitEnds++;
+            OnWaitEnded?.Invoke();
+        }
 
         public void PerformingAction(string capability) {
             log.Add("warn");
@@ -319,7 +388,8 @@ public class BrowserFirstRunFlowTests {
         List<string>        Opened,
         FakeKeys            Keys,
         FakeActions?        Actions,
-        FakeImportLane?     Importing);
+        FakeImportLane?     Importing,
+        FakeInterrupts      Interrupts);
 
     // No keyboard by default: the escape hatch is one test's subject, and left live it would read the
     // host's own console, where a stray keypress during a CI run would end an unrelated test's wait.
@@ -333,12 +403,13 @@ public class BrowserFirstRunFlowTests {
         var browser  = new RecordingBrowser();
         var actions  = capabilities is null ? null : new FakeActions(log, capabilities);
         var lane     = importing ? new FakeImportLane(log) : null;
+        var signals  = new FakeInterrupts(log);
 
         keys ??= new FakeKeys(canWatch: false);
 
         return new(
-            new BrowserFirstRunFlow(channel, progress, browser, clock, keys, actions, lane),
-            channel, progress, clock, log, browser.Urls, keys, actions, lane);
+            new BrowserFirstRunFlow(channel, progress, browser, clock, keys, actions, lane, signals),
+            channel, progress, clock, log, browser.Urls, keys, actions, lane, signals);
     }
 
     static readonly string[] PathShimOnly = [FirstRunMachineCapabilities.PathShim];
@@ -1712,5 +1783,220 @@ public class BrowserFirstRunFlowTests {
         var result = await Run(h);
 
         await Assert.That(result).IsTypeOf<FirstRunFlowResult.Finished>();
+    }
+
+    // ---- saying the machine has gone ----
+
+    [Test]
+    public async Task A_finished_leg_relinquishes_nothing() {
+        // The load-bearing guard: the flow is over on its own terms and the browser is rendering the
+        // payoff, so telling it the machine has gone would replace that with a dead end.
+        var h = Build();
+        h.Channel.Polls.Enqueue(new(200, Done()));
+
+        await Run(h);
+
+        await Assert.That(h.Channel.Relinquished).IsEmpty();
+    }
+
+    [Test]
+    public async Task An_expired_leg_relinquishes_nothing() {
+        // Already terminal server-side, and the store refuses every write past the lifetime — so the
+        // POST would be refused and the page already says the right thing.
+        var h = Build();
+        h.Channel.Polls.Enqueue(new(410, null));
+
+        await Run(h);
+
+        await Assert.That(h.Channel.Relinquished).IsEmpty();
+    }
+
+    /// <summary>The one exit where the terminal carries on, so the one where the page must not send
+    /// anybody back to <c>kcap setup</c>: the run they would restart is in flight.</summary>
+    [Test]
+    public async Task A_dismissed_leg_says_the_terminal_is_taking_over() {
+        var h = Build(new FakeKeys(canWatch: true, pressAfter: 2));
+
+        var result = await Run(h);
+
+        await Assert.That(result).IsTypeOf<FirstRunFlowResult.Dismissed>();
+        await Assert.That(h.Channel.Relinquished.Single()).IsEqualTo(FirstRunRelinquishReasons.Handover);
+    }
+
+    [Test]
+    public async Task An_abandoned_leg_says_nothing_is_left_running() {
+        var h = Build();
+
+        var result = await Run(h);
+
+        await Assert.That(result).IsTypeOf<FirstRunFlowResult.Abandoned>();
+        await Assert.That(h.Channel.Relinquished.Single()).IsEqualTo(FirstRunRelinquishReasons.Stopped);
+    }
+
+    [Test]
+    public async Task A_failed_leg_says_nothing_is_left_running() {
+        var h = Build();
+        h.Channel.Polls.Enqueue(new(200, Running()));
+        h.Channel.Polls.Enqueue(new(401, null));
+
+        var result = await Run(h);
+
+        await Assert.That(result).IsTypeOf<FirstRunFlowResult.Failed>();
+        await Assert.That(h.Channel.Relinquished.Single()).IsEqualTo(FirstRunRelinquishReasons.Stopped);
+    }
+
+    /// <summary>A leg that never reached a flow has nothing to relinquish, and no id to name.</summary>
+    [Test]
+    public async Task A_tenant_that_does_not_serve_the_flow_is_told_nothing() {
+        var h = Build();
+        h.Channel.Creates.Enqueue(new(404, null));
+
+        var result = await Run(h);
+
+        await Assert.That(result).IsTypeOf<FirstRunFlowResult.Unavailable>();
+        await Assert.That(h.Channel.Relinquished).IsEmpty();
+    }
+
+    /// <summary>A refused best-effort relinquish leaves the leg's result unchanged, and the browser then
+    /// waits until the flow's own lifetime ends it.</summary>
+    [Test]
+    public async Task A_relinquish_the_server_refuses_does_not_change_how_the_leg_ended() {
+        var h = Build();
+        h.Channel.RelinquishStatuses.Enqueue(500);
+        h.Channel.Polls.Enqueue(new(200, Running()));
+        h.Channel.Polls.Enqueue(new(404, null));
+
+        var result = await Run(h);
+
+        await Assert.That(result).IsTypeOf<FirstRunFlowResult.Failed>();
+    }
+
+    [Test]
+    public async Task A_relinquish_that_throws_does_not_escape_the_leg() {
+        var h = Build();
+        h.Channel.RelinquishThrows = new InvalidOperationException("boom");
+
+        var result = await Run(h);
+
+        await Assert.That(result).IsTypeOf<FirstRunFlowResult.Abandoned>();
+    }
+
+    // ---- the interrupt path ----
+
+    /// <summary>
+    /// Ctrl+C reaches <c>Environment.Exit</c> from a signal handler, which runs no <c>finally</c> — so the
+    /// leg leaves a callback where the handler can find it.
+    /// </summary>
+    [Test]
+    public async Task An_interrupt_during_the_leg_says_the_machine_stopped() {
+        var h = Build();
+
+        // Fired from inside a poll, because that is when a real signal would arrive.
+        h.Channel.OnPoll = () => h.Interrupts.Interrupt();
+        h.Channel.Polls.Enqueue(new(200, Running()));
+        h.Channel.Polls.Enqueue(new(404, null));
+
+        await Run(h);
+
+        await Assert.That(h.Channel.Relinquished[0]).IsEqualTo(FirstRunRelinquishReasons.Stopped);
+    }
+
+    /// <summary>
+    /// The claim is what stops the two paths contradicting each other. Ending a scope before the leg's own
+    /// send does NOT close it: an interrupt handler that read the callback first still runs it afterwards,
+    /// and the browser then shows whichever of two opposite remedies landed last.
+    ///
+    /// <para><b>The interrupt wins, and that is the honest outcome:</b> the process is being killed, so
+    /// nothing is carrying on however the poll happened to end.</para>
+    /// </summary>
+    [Test]
+    [Arguments(true)]
+    [Arguments(false)]
+    public async Task An_interrupt_racing_the_legs_own_send_produces_exactly_one(bool dismissed) {
+        var h = Build(dismissed ? new FakeKeys(canWatch: true, pressAfter: 2) : null);
+
+        // Fires at the moment the leg's own reason is being sent, which is the window a scope-based fix
+        // leaves open. ONCE, or the second send re-enters this hook and recurses until the stack goes.
+        var fired = false;
+
+        h.Channel.OnRelinquish = () => {
+            if (fired) return;
+
+            fired = true;
+
+            h.Interrupts.Interrupt();
+        };
+
+        if (!dismissed) h.Channel.Polls.Enqueue(new(200, Done()));
+
+        await Run(h);
+
+        // Exactly one, and it is the reason the result named — never that reason plus its opposite.
+        string[] expected = dismissed ? [FirstRunRelinquishReasons.Handover] : [];
+
+        await Assert.That(h.Channel.Relinquished).IsEquivalentTo(expected);
+    }
+
+    /// <summary>
+    /// The other ordering: an interrupt gets there FIRST, so its reason is the one that stands and the
+    /// leg's own send is suppressed rather than appended.
+    /// </summary>
+    [Test]
+    public async Task An_interrupt_that_wins_the_claim_is_the_only_send() {
+        var h = Build(new FakeKeys(canWatch: true, pressAfter: 2));
+
+        // On a poll, before the leg has a result.
+        h.Channel.OnPoll = () => h.Interrupts.Interrupt();
+
+        var result = await Run(h);
+
+        await Assert.That(result).IsTypeOf<FirstRunFlowResult.Dismissed>();
+        await Assert.That(h.Channel.Relinquished).IsEquivalentTo([FirstRunRelinquishReasons.Stopped]);
+    }
+
+    /// <summary>
+    /// An interrupt winning the claim AFTER the leg published a dismissal must still say <c>stopped</c>.
+    /// Borrowing the leg's reason here tells someone their terminal took over at the moment that terminal
+    /// is killed — a dead end with no remedy stated, and the whole reason the two claimants carry their own
+    /// reasons rather than reading one shared field.
+    /// </summary>
+    [Test]
+    public async Task An_interrupt_after_a_dismissal_still_says_the_machine_stopped() {
+        var h = Build(new FakeKeys(canWatch: true, pressAfter: 2));
+
+        // Fires once the result is published and before the leg's own send — the window a shared reason
+        // leaves open.
+        h.Progress.OnWaitEnded = () => h.Interrupts.Interrupt();
+
+        var result = await Run(h);
+
+        await Assert.That(result).IsTypeOf<FirstRunFlowResult.Dismissed>();
+        await Assert.That(h.Channel.Relinquished).IsEquivalentTo([FirstRunRelinquishReasons.Stopped]);
+    }
+
+    /// <summary>And a flow that reached its payoff keeps it: the published result decides whether there is
+    /// anything to say at all, so a finished leg stays silent under an interrupt too.</summary>
+    [Test]
+    public async Task An_interrupt_after_a_finish_says_nothing() {
+        var h = Build();
+        h.Channel.Polls.Enqueue(new(200, Done()));
+
+        h.Progress.OnWaitEnded = () => h.Interrupts.Interrupt();
+
+        var result = await Run(h);
+
+        await Assert.That(result).IsTypeOf<FirstRunFlowResult.Finished>();
+        await Assert.That(h.Channel.Relinquished).IsEmpty();
+    }
+
+    /// <summary>A leg that never reached a flow arms nothing: there is no id to name.</summary>
+    [Test]
+    public async Task A_leg_that_never_reached_a_flow_arms_nothing() {
+        var h = Build();
+        h.Channel.Creates.Enqueue(new(404, null));
+
+        await Run(h);
+
+        await Assert.That(h.Interrupts.Arms).IsEqualTo(0);
     }
 }

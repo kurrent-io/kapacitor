@@ -26,9 +26,7 @@ namespace Capacitor.Cli.Harness.Gemini;
 internal sealed class GeminiImportSource : IImportSource {
     readonly string _tmpDir;
 
-    public GeminiImportSource(string? tmpDirOverride = null) {
-        _tmpDir = tmpDirOverride ?? GeminiPaths.TmpDir();
-    }
+    public GeminiImportSource(string tmpDir) => _tmpDir = tmpDir;
 
     static StringComparison PathComparison =>
         OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()

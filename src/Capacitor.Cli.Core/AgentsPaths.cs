@@ -1,6 +1,7 @@
 namespace Capacitor.Cli.Core;
 
-public static class AgentsPaths {
-    public static string Home          => Path.Combine(PathHelpers.HomeDirectory, ".agents");
-    public static string UserSkillsDir => Path.Combine(Home, "skills");
+/// <summary>The cross-vendor <c>~/.agents</c> tree — skills any harness can load.</summary>
+public sealed class AgentsPaths(UserHome home) {
+    public string Home          => Path.Combine(home.Path, ".agents");
+    public string UserSkillsDir => Path.Combine(Home, "skills");
 }

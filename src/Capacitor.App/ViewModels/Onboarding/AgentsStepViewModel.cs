@@ -1,6 +1,8 @@
 using System.Reactive;
 using System.Reactive.Linq;
 using Capacitor.App.Services;
+using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Core.Setup;
 using ReactiveUI;
 
@@ -198,14 +200,15 @@ public sealed class AgentsStepViewModel : ReactiveObject, IWizardStep {
         Satisfied = selected.Count > 0 && selected.All(r => r.Status == AgentInstallStatus.Succeeded);
     }
 
-    /// The app's detection feed (spec §8/decision 8): process env overridden with the login-shell
-    /// terminal PATH when the probe resolves one — a GUI-launched app otherwise only sees its own
-    /// inherited launchd PATH, not whatever the user's shell profile adds.
-    public static Func<CancellationToken, Task<AgentDetectionResult>> BuildDetectionFeed(ILoginShellProbe probe) =>
+    /// The login-shell terminal PATH when the probe resolves one, in place of the process's own: a
+    /// GUI launch inherits only launchd's PATH, and the app spawns kcap with the terminal's — so
+    /// detecting through the wider process PATH would report agents its own installs cannot reach.
+    public static Func<CancellationToken, Task<AgentDetectionResult>> BuildDetectionFeed(ILoginShellProbe probe, UserHome home) =>
         async ct => {
-            var inputs = AgentDetection.FromEnvironment();
             var terminalPath = await probe.TerminalPathAsync(ct).ConfigureAwait(false);
-            if (terminalPath is not null) inputs = inputs with { PathEnv = terminalPath };
-            return AgentDetection.Detect(inputs);
+            var binaries     = terminalPath is null
+                ? BinaryProbe.FromEnvironment()
+                : BinaryProbe.Searching(terminalPath);
+            return AgentDetection.Detect(HarnessPaths.FromEnvironment(home), binaries);
         };
 }

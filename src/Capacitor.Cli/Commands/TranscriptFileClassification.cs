@@ -14,6 +14,7 @@ namespace Capacitor.Cli.Commands;
 internal static class TranscriptFileClassification {
     public static async Task<List<ImportCommand.SessionClassification>> ClassifyAsync(
             ConfigRoot                                                   config,
+            UserHome                                                     home,
             HttpClient                                                   httpClient,
             string                                                       baseUrl,
             List<(string SessionId, string FilePath, string EncodedCwd)> transcripts,
@@ -28,7 +29,7 @@ internal static class TranscriptFileClassification {
         var       tasks     = new List<Task<ImportCommand.SessionClassification>>(transcripts.Count);
 
         foreach (var (sessionId, filePath, encodedCwd) in transcripts) {
-            tasks.Add(ClassifyOneAsync(config, httpClient, baseUrl, sessionId, filePath, encodedCwd, minLines, excludedRepos, excludedPaths, probeGate, vendor, onProbed, ct));
+            tasks.Add(ClassifyOneAsync(config, home, httpClient, baseUrl, sessionId, filePath, encodedCwd, minLines, excludedRepos, excludedPaths, probeGate, vendor, onProbed, ct));
         }
 
         var results = await Task.WhenAll(tasks);
@@ -38,6 +39,7 @@ internal static class TranscriptFileClassification {
 
     static async Task<ImportCommand.SessionClassification> ClassifyOneAsync(
             ConfigRoot        config,
+            UserHome          home,
             HttpClient        httpClient,
             string            baseUrl,
             string            sessionId,
@@ -52,7 +54,7 @@ internal static class TranscriptFileClassification {
             CancellationToken ct
         ) {
         try {
-            return await ClassifyOneCoreAsync(config, httpClient, baseUrl, sessionId, filePath, encodedCwd, minLines, excludedRepos, excludedPaths, probeGate, vendor, ct);
+            return await ClassifyOneCoreAsync(config, home, httpClient, baseUrl, sessionId, filePath, encodedCwd, minLines, excludedRepos, excludedPaths, probeGate, vendor, ct);
         } finally {
             onProbed?.Invoke();
         }
@@ -60,6 +62,7 @@ internal static class TranscriptFileClassification {
 
     static async Task<ImportCommand.SessionClassification> ClassifyOneCoreAsync(
             ConfigRoot        config,
+            UserHome          home,
             HttpClient        httpClient,
             string            baseUrl,
             string            sessionId,
@@ -210,8 +213,8 @@ internal static class TranscriptFileClassification {
 
                 if (excludedPathKey is null && excludedPaths is { Length: > 0 }) {
                     foreach (var entry in excludedPaths) {
-                        if (PathExclusion.IsExcluded(cwd, [entry])) {
-                            excludedPathKey = PathExclusion.Normalize(entry);
+                        if (PathExclusion.IsExcluded(cwd, [entry], home)) {
+                            excludedPathKey = PathExclusion.Normalize(entry, home);
                             break;
                         }
                     }

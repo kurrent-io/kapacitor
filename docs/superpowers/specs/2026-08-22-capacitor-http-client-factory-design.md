@@ -1,6 +1,4 @@
-# HTTP as three layers: named clients, per-platform clients, caller budgets
-
-No ticket yet — open one before branching, and use its id for the branch and commit prefix.
+# HTTP as three layers: named clients, per-platform clients, caller budgets (AI-1955)
 
 Status: designed, not started. Lands after AI-2147's Part 1 (see *Order against AI-2147*). Every
 count and `file:line` here was verified against the tree at `5d81d284`; re-check before relying on

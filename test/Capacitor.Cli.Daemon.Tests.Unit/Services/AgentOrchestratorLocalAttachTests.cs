@@ -10,6 +10,7 @@ using Capacitor.Cli.Daemon.Pty;
 using Capacitor.Cli.Daemon.Services;
 using Capacitor.Cli.Daemon.Tests.Unit.Pty;
 using Microsoft.Extensions.Logging.Abstractions;
+using TUnit.Core.Enums;
 
 namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 
@@ -17,6 +18,8 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 /// AgentOrchestratorVendorTests to reuse its BuildOrchestrator + test doubles.
 [ParallelLimiter<SubprocessLimit>]
 public class AgentOrchestratorLocalAttachTests {
+    [TempHome] public required TempHome Home { get; init; }
+
     sealed class NoopRestartStrategy : IRestartStrategy { public RestartOutcome Restart() => RestartOutcome.NoOp; }
 
     static RestartCoordinator TestCoordinator(DaemonStore store) =>
@@ -50,7 +53,7 @@ public class AgentOrchestratorLocalAttachTests {
     public async Task Claude_borrowed_cwd_prepare_writes_no_repo_files() {
         using var tmp = new TempDir();
 
-        var launcher = new ClaudeLauncher(LauncherCfg(), NullLogger<ClaudeLauncher>.Instance);
+        var launcher = new ClaudeLauncher(LauncherCfg(), Home, NullLogger<ClaudeLauncher>.Instance);
         launcher.Prepare(CtxFor(tmp.Path));
 
         await Assert.That(File.Exists(tmp.PathTo(".mcp.json"))).IsFalse();
@@ -60,14 +63,14 @@ public class AgentOrchestratorLocalAttachTests {
 
     [Test]
     public async Task Claude_passthrough_forwards_user_args_verbatim() {
-        var launcher = new ClaudeLauncher(LauncherCfg(), NullLogger<ClaudeLauncher>.Instance);
+        var launcher = new ClaudeLauncher(LauncherCfg(), Home, NullLogger<ClaudeLauncher>.Instance);
         var a = launcher.BuildPassthrough(CtxFor("/r"), ["--model", "opus", "fix it"]);
         await Assert.That(a.Args).IsEquivalentTo(new[] { "--model", "opus", "fix it" });
     }
 
     [Test]
     public async Task Codex_passthrough_injects_mandatory_flags_then_user_args() {
-        var launcher = new CodexLauncher(LauncherCfg(), NullLogger<CodexLauncher>.Instance);
+        var launcher = new CodexLauncher(LauncherCfg(), Home, NullLogger<CodexLauncher>.Instance);
         var a = launcher.BuildPassthrough(CtxFor("/r"), ["-m", "gpt"]);
         await Assert.That(a.Args).Contains("--cd");
         await Assert.That(a.Args).Contains("--no-alt-screen");
@@ -77,7 +80,7 @@ public class AgentOrchestratorLocalAttachTests {
 
     [Test]
     public async Task Codex_passthrough_rejects_user_duplicate_of_mandatory_flag() {
-        var launcher = new CodexLauncher(LauncherCfg(), NullLogger<CodexLauncher>.Instance);
+        var launcher = new CodexLauncher(LauncherCfg(), Home, NullLogger<CodexLauncher>.Instance);
         await Assert.That(() => launcher.BuildPassthrough(CtxFor("/r"), ["--cd", "/elsewhere"]))
             .Throws<ArgumentException>();
     }
@@ -634,10 +637,8 @@ public class AgentOrchestratorLocalAttachTests {
     /// which is exactly the shape <c>LocalAgentClient</c>'s Error branch prints and exits 1 on
     /// (shared with every other daemon refusal, e.g. the review-agent stop protection).
     /// </summary>
-    [Test]
+    [Test, ExcludeOn(OS.Windows)] // Unix-domain socket path
     public async Task Attach_over_the_real_socket_refuses_a_hosted_agent_with_no_terminal() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         using var daemons = new TempDaemonStore();
         using var cts = new CancellationTokenSource(WaitHarness.Bounded);
 
@@ -682,10 +683,8 @@ public class AgentOrchestratorLocalAttachTests {
         }
     }
 
-    [Test]
+    [Test, ExcludeOn(OS.Windows)] // Unix-domain socket path
     public async Task Local_socket_list_round_trips_registered_agents_over_a_real_socket() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         using var daemons = new TempDaemonStore();
         using var cts = new CancellationTokenSource(WaitHarness.Bounded);
 
@@ -767,20 +766,16 @@ public class AgentOrchestratorLocalAttachTests {
         }
     }
 
-    [Test]
+    [Test, ExcludeOn(OS.Windows)] // Unix-domain socket path
     public async Task Local_socket_stopv2_without_force_refuses_a_protected_agent_end_to_end() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         var resp = await StopV2OverRealSocketAsync("test-stopv2-refuse", force: false, "flow-1");
 
         await Assert.That(resp!.Type).IsEqualTo(FrameType.Error);
         await Assert.That(resp.Text).Contains("--force");
     }
 
-    [Test]
+    [Test, ExcludeOn(OS.Windows)] // Unix-domain socket path
     public async Task Local_socket_stopv2_with_force_stops_a_protected_agent_end_to_end() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         var resp = await StopV2OverRealSocketAsync("test-stopv2-force", force: true, "flow-1");
 
         await Assert.That(resp!.Type).IsEqualTo(FrameType.StopAck);

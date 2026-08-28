@@ -23,12 +23,14 @@ internal sealed class EvalRunner {
     readonly string              _baseUrl;
     readonly CancellationToken   _shutdownToken;
     readonly ConfigRoot          _configRoot;
+    readonly UserHome            _home;
     readonly ProfileContext      _profiles;
 
     public EvalRunner(
             ServerConnection         connection,
             EvalContextCache         cache,
             ConfigRoot               configRoot,
+            UserHome                 home,
             DaemonConfig             config,
             IHostApplicationLifetime lifetime,
             ILogger<EvalRunner>      logger
@@ -36,6 +38,7 @@ internal sealed class EvalRunner {
         _connection    = connection;
         _cache         = cache;
         _configRoot    = configRoot;
+        _home          = home;
         _profiles      = config.Profiles;
         _logger        = logger;
         _baseUrl       = config.ServerUrl.TrimEnd('/');
@@ -66,6 +69,7 @@ internal sealed class EvalRunner {
                 _baseUrl,
                 httpClient,
                 _profiles.Resolution.Profile,
+                _home,
                 cmd.SessionId,
                 cmd.Questions,
                 catalog,

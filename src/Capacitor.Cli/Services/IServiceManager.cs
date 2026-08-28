@@ -69,6 +69,9 @@ interface IServiceManager {
 /// cref="IServiceManager"/> methods, which stay unbounded.
 /// </summary>
 interface IVerifyServiceManager {
+    /// <summary>Where this manager's unit for <paramref name="serviceId"/> lives, so the location has
+    /// one owner: the manager that writes it.</summary>
+    string                       UnitPath(string serviceId);
     IReadOnlyList<GeneratedFile> GenerateFiles(ServiceSpec spec);
     ServiceQuery Query(string serviceId, TimeSpan timeout);
     void         WriteAndBootstrap(ServiceSpec spec, TimeSpan timeout);

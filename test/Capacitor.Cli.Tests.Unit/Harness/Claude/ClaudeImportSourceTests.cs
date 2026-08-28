@@ -1,21 +1,24 @@
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Harness.Claude;
 using Capacitor.Cli.Harness.Claude;
 
 namespace Capacitor.Cli.Tests.Unit.Harness.Claude;
 
 public class ClaudeImportSourceTests {
+    [TempHome] public required TempHome Home { get; init; }
+
     [TempConfigRoot] public required TempConfigRoot Config { get; init; }
 
     [Test]
     public async Task vendor_is_claude() {
-        var src = new ClaudeImportSource(Config.Root);
+        var src = new ClaudeImportSource(Config.Root, new ClaudePaths(Home, null).Projects);
         await Assert.That(src.Vendor).IsEqualTo("claude");
     }
 
     [Test]
     public async Task supports_title_generation() {
-        var src = new ClaudeImportSource(Config.Root);
+        var src = new ClaudeImportSource(Config.Root, new ClaudePaths(Home, null).Projects);
         await Assert.That(src.SupportsTitleGeneration).IsTrue();
     }
 
@@ -35,7 +38,7 @@ public class ClaudeImportSourceTests {
 
     [Test]
     public async Task import_session_async_throws_not_implemented() {
-        var src = new ClaudeImportSource(Config.Root);
+        var src = new ClaudeImportSource(Config.Root, new ClaudePaths(Home, null).Projects);
         var classification = new ImportCommand.SessionClassification {
             SessionId  = "abc",
             FilePath   = "/tmp/none",
@@ -49,6 +52,6 @@ public class ClaudeImportSourceTests {
             () => src.ImportSessionAsync(classification, ctx, CancellationToken.None)
         );
 
-        await Assert.That(ex?.Message).Contains("E2");
+        await Assert.That(ex?.Message).Contains("ImportChainsAsync");
     }
 }

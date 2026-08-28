@@ -13,13 +13,12 @@ using Microsoft.Extensions.Time.Testing;
 
 namespace Capacitor.Cli.Tests.Unit.Commands.Harness;
 
-// Several tests here read HOME-derived paths (DisabledSessions marker dir,
-// PathHelpers.HomeDirectory injection into the outgoing payload) and one
-// mutates KCAP_AGENT_ID. Serialise against every other test that
-// mutates HOME so a racing HOME-setter from PluginCommand* tests can't
-// land our marker writes in the wrong directory.
-[NotInParallel("HomeEnvVarMutation")]
+// The hook resolves the harness nudge through HarnessPaths, so it reads every vendor override
+// variable a peer suite clears mid-test.
+[NotInParallel("VendorEnvOverrides")]
 public class CursorHookCommandTests {
+    [TempHome] public required TempHome Home { get; init; }
+
     CursorMarkers Markers => new(Config.Root);
 
     [TempConfigRoot] public required TempConfigRoot Config { get; init; }
@@ -168,7 +167,7 @@ public class CursorHookCommandTests {
             });
             using var client = new HttpClient(handler);
 
-            var exit = await new CursorHookCommand(Config.Root, Resolutions.At(Fixture.StubUrl, Config.Root), new HookClock(TimeProvider.System)).HandleCore(
+            var exit = await new CursorHookCommand(Config.Root, Resolutions.At(Fixture.StubUrl, Config.Root), new HookClock(TimeProvider.System), Home).HandleCore(
                 client,
                 new StringReader($$"""{"hook_event_name":"postToolUse","session_id":"{{sid}}","tool_name":"Bash","transcript_path":"/tmp/{{sid}}.jsonl"}"""),
                 spool);
@@ -340,7 +339,7 @@ public class CursorHookCommandTests {
         var clock = new HookClock(spent);          // anchors on construction — advance AFTER it
         spent.Advance(CursorHookCommand.Ceiling - HookBudget.Safety);
 
-        var exit = await new CursorHookCommand(Config.Root, Resolutions.At(Fixture.StubUrl, Config.Root), clock)
+        var exit = await new CursorHookCommand(Config.Root, Resolutions.At(Fixture.StubUrl, Config.Root), clock, Home)
             .HandleWithDeps(
                 new StringReader("""{"hook_event_name":"sessionStart","session_id":"abc"}"""),
                 _ => Task.FromResult((fx.Client, AuthStatus.Ok)),
@@ -362,7 +361,7 @@ public class CursorHookCommandTests {
         var clock = new HookClock(spent);
         spent.Advance(CursorHookCommand.Ceiling);
 
-        var exit = await new CursorHookCommand(Config.Root, Resolutions.At(Fixture.StubUrl, Config.Root), clock).HandleCore(
+        var exit = await new CursorHookCommand(Config.Root, Resolutions.At(Fixture.StubUrl, Config.Root), clock, Home).HandleCore(
             fx.Client,
             new StringReader("""{"hook_event_name":"sessionStart","session_id":"abc"}"""),
             fx.Spool
@@ -535,7 +534,7 @@ public class CursorHookCommandTests {
         // noticing. clientFactory/spoolFactory stand in for real auth/spool setup so the
         // test stays hermetic while still exercising the REAL entry point's cap+emit logic.
         var clock = new FakeTimeProvider();
-        var call  = new CursorHookCommand(Config.Root, Resolutions.At(Fixture.StubUrl, Config.Root), new HookClock(clock))
+        var call  = new CursorHookCommand(Config.Root, Resolutions.At(Fixture.StubUrl, Config.Root), new HookClock(clock), Home)
             .HandleWithDeps(new NeverCompletingReader(),
                 _ => Task.FromResult((fx.Client, AuthStatus.Ok)),
                 () => fx.Spool);
@@ -565,7 +564,7 @@ public class CursorHookCommandTests {
         using var fx = new Fixture(Config.Root);
         var reader = new CancelObservingReader();
 
-        var exit = await new CursorHookCommand(Config.Root, Resolutions.At(Fixture.StubUrl, Config.Root), new HookClock(TimeProvider.System)).HandleCore(fx.Client, reader, fx.Spool);
+        var exit = await new CursorHookCommand(Config.Root, Resolutions.At(Fixture.StubUrl, Config.Root), new HookClock(TimeProvider.System), Home).HandleCore(fx.Client, reader, fx.Spool);
 
         await Assert.That(exit).IsEqualTo(0);
         // The read never resolved (no hook_event_name was ever parsed), so there is
@@ -589,7 +588,7 @@ public class CursorHookCommandTests {
         fx.HoldOnPost = TimeSpan.FromMilliseconds(300);
 
         var sw = System.Diagnostics.Stopwatch.StartNew();
-        var exit = await new CursorHookCommand(Config.Root, Resolutions.At(Fixture.StubUrl, Config.Root), new HookClock(TimeProvider.System)).HandleWithDeps(
+        var exit = await new CursorHookCommand(Config.Root, Resolutions.At(Fixture.StubUrl, Config.Root), new HookClock(TimeProvider.System), Home).HandleWithDeps(
             new StringReader("""{"hook_event_name":"sessionStart","session_id":"abc"}"""),
             _ => Task.FromResult((fx.Client, AuthStatus.Ok)),
             () => fx.Spool);
@@ -618,7 +617,7 @@ public class CursorHookCommandTests {
 
         var sw    = System.Diagnostics.Stopwatch.StartNew();
         var clock = new FakeTimeProvider();
-        var call  = new CursorHookCommand(Config.Root, Resolutions.At(Fixture.StubUrl, Config.Root), new HookClock(clock))
+        var call  = new CursorHookCommand(Config.Root, Resolutions.At(Fixture.StubUrl, Config.Root), new HookClock(clock), Home)
             .HandleWithDeps(
                 new StringReader("""{"hook_event_name":"sessionStart","session_id":"abc"}"""),
                 _ => neverAuths.Task,
@@ -889,7 +888,7 @@ public class CursorHookCommandTests {
         // The real scope resolver runs: its git spawn is bounded by a Stopwatch, so its wall-clock
         // cost cannot eat a budget that only moves when this test says so.
         var elapsed = System.Diagnostics.Stopwatch.StartNew();
-        var call = new CursorHookCommand(Config.Root, Resolutions.At(Fixture.StubUrl, Config.Root), new HookClock(clock)).HandleCore(
+        var call = new CursorHookCommand(Config.Root, Resolutions.At(Fixture.StubUrl, Config.Root), new HookClock(clock), Home).HandleCore(
             hangingClient, new StringReader(payload), fx.Spool);
 
         // Wait (bounded, real-time) for the request to ENTER the handler, then fire the budget clock.
@@ -915,7 +914,7 @@ public class CursorHookCommandTests {
         clock.Advance(TimeSpan.FromSeconds(31));
         fx.MemoryIndexBody = "[]";
 
-        var exit2 = await new CursorHookCommand(Config.Root, Resolutions.At(Fixture.StubUrl, Config.Root), new HookClock(clock)).HandleCore(
+        var exit2 = await new CursorHookCommand(Config.Root, Resolutions.At(Fixture.StubUrl, Config.Root), new HookClock(clock), Home).HandleCore(
             fx.Client, new StringReader(payload), fx.Spool);
         await Assert.That(exit2).IsEqualTo(0);
         // The index GET fires again on fx.Client — proving the first, cancelled attempt's
@@ -991,10 +990,7 @@ public class CursorHookCommandTests {
     }
 
     sealed class Fixture : IDisposable {
-        readonly string _tmpHome = Path.Combine(
-            Path.GetTempPath(),
-            $"kcap-cursor-hook-test-{Guid.NewGuid().ToString("N")[..8]}"
-        );
+        readonly TempHome _home = new("cursor-hook");
 
         readonly string _spoolPath;
         readonly string _transcriptPath;
@@ -1038,9 +1034,8 @@ public class CursorHookCommandTests {
         public ProfileContext Profiles { get; }
 
         public Fixture(ConfigRoot config, HttpStatusCode postStatus = HttpStatusCode.OK, Profile? profile = null) {
-            Directory.CreateDirectory(_tmpHome);
-            _spoolPath      = Path.Combine(_tmpHome, "spool");
-            _transcriptPath = Path.Combine(_tmpHome, "transcript.jsonl");
+            _spoolPath      = _home.PathTo("spool");
+            _transcriptPath = _home.PathTo("transcript.jsonl");
             Config          = config;
             // The stub handler answers regardless of host, so any absolute URL will do — it has to be
             // absolute because the real POST helpers refuse a scheme-less one.
@@ -1089,7 +1084,7 @@ public class CursorHookCommandTests {
         public FakeTimeProvider Clock { get; } = new();
 
         public Task<int> HandleAsync(string stdin) =>
-            new CursorHookCommand(Config, Profiles, new HookClock(Clock)).HandleCore(
+            new CursorHookCommand(Config, Profiles, new HookClock(Clock), _home).HandleCore(
                 Client,
                 stdin: new StringReader(stdin),
                 spool: Spool);
@@ -1102,7 +1097,7 @@ public class CursorHookCommandTests {
 
         public void Dispose() {
             Client.Dispose();
-            try { Directory.Delete(_tmpHome, true); } catch { }
+            _home.Dispose();
         }
     }
 

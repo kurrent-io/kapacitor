@@ -4,13 +4,9 @@ using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.FirstRun;
-using Capacitor.Cli.Core.Harness.Antigravity;
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Core.Harness.Claude;
 using Capacitor.Cli.Core.Harness.Codex;
-using Capacitor.Cli.Core.Harness.Copilot;
-using Capacitor.Cli.Core.Harness.Cursor;
-using Capacitor.Cli.Core.Harness.Gemini;
-using Capacitor.Cli.Core.Harness.Kiro;
 using Capacitor.Cli.Core.Harness.OpenCode;
 using Capacitor.Cli.Core.Harness.Pi;
 using Capacitor.Cli.Core.Instructions;
@@ -216,6 +212,8 @@ sealed class SpectreFirstRunFlowProgress(IKeyWatcher? keys = null) : IFirstRunFl
 sealed class SetupImportLane(
         ConfigRoot config,
         ProfileContext profiles,
+        UserHome home,
+        HarnessPaths paths,
         Func<SetupImportLane.Pass, Task<ImportCommand.ImportRunOutcome?>>? runner = null) : IFirstRunImportLane {
     /// <summary>One invocation's arguments, so a test can assert what each level asked for without
     /// running an import.</summary>
@@ -231,9 +229,9 @@ sealed class SetupImportLane(
         ImportCommand.ImportDiscoveryResult? found = null;
 
         // Quiet, because the caller owns the terminal for the duration and the figures go to a screen.
-        var exit = await new ImportCommand(config, profiles).HandleImport(
+        var exit = await new ImportCommand(config, profiles, home).HandleImport(
             filterCwd:    null,
-            sources:      SetupCommand.BuildImportSources(config, vendors),
+            sources:      SetupCommand.BuildImportSources(config, paths, vendors),
             discoverOnly: true,
             discoverJson: true,
             windowsAsOf:  asOf,
@@ -281,9 +279,9 @@ sealed class SetupImportLane(
     async Task<ImportCommand.ImportRunOutcome?> Run(Pass pass) {
         ImportCommand.ImportRunOutcome? outcome = null;
 
-        await new ImportCommand(config, profiles).HandleImport(
+        await new ImportCommand(config, profiles, home).HandleImport(
             filterCwd:          null,
-            sources:            SetupCommand.BuildImportSources(config, pass.Vendors),
+            sources:            SetupCommand.BuildImportSources(config, paths, pass.Vendors),
             since:              pass.Since,
             scope:              new ImportScope.Repo([.. pass.Repos.Select(c => (c.Owner, c.Name))]),
             skipConfirmation:   true,
@@ -377,7 +375,9 @@ sealed class SetupMachineActions : IFirstRunMachineActions {
     }
 }
 
-public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBrowserLauncher browser) {
+public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBrowserLauncher browser, UserHome home) {
+    readonly HarnessPaths _paths = HarnessPaths.FromEnvironment(home);
+
     public async Task<int> HandleAsync(string[] args) {
         var serverUrlArg     = GetArg(args, "--server-url");
 
@@ -585,7 +585,7 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
         // Composed once in Core so the probe set is testable without touching the real
         // environment — see Capacitor.Cli.Core.Setup.AgentDetection for the per-vendor
         // rationale (dual PATH + install-marker signals, Cursor's marker-only exception, etc).
-        var r          = AgentDetection.Detect(AgentDetection.FromEnvironment());
+        var r          = AgentDetection.Detect(_paths, BinaryProbe.FromEnvironment());
         var detected   = new CodingAgentsStep.DetectedAgents(
             Claude:      r.Claude.Detected,
             Codex:       r.Codex.Detected,
@@ -629,7 +629,7 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
         // guard at the top of HandleAsync returns 1 otherwise).
         var claudeSettingsPath = legacyProjectScope
             ? Path.Combine(gitRoot!, ".claude", "settings.local.json")
-            : ClaudePaths.UserSettings;
+            : _paths.Claude.UserSettings;
 
         var stepOptions = new CodingAgentsStep.Options(
             SkipClaude:  skipClaude,
@@ -676,34 +676,43 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
                 ? new[] { serverUrl }.Concat(profilesForDomains.Profiles.Values.Select(p => p.ServerUrl))
                 : [serverUrl]);
 
+        var copilot  = _paths.Copilot;
+        var pi       = _paths.Pi;
+        var kiro     = _paths.Kiro;
+        var codex    = _paths.Codex;
+        var opencode = _paths.OpenCode;
+        var cursor   = _paths.Cursor;
+        var gemini   = _paths.Gemini;
+        var agy      = _paths.Antigravity;
+
         var stepPaths = new CodingAgentsStep.Paths(
             ClaudeSettingsPath:   claudeSettingsPath,
             ClaudeScopeLabel:     legacyProjectScope ? "project" : "user",
             PluginDir:            pluginPath,
-            CodexHooksPath:       CodexPaths.UserHooksJson,
-            CursorHooksPath:      CursorPaths.UserHooksJson(),
-            CopilotHooksPath:     CopilotPaths.KcapHooksJson(),
-            GeminiSettingsPath:   GeminiPaths.SettingsJson(),
-            AgentsSkillsDir:      AgentsPaths.UserSkillsDir,
-            LegacyCodexSkillsDir: Path.Combine(CodexPaths.Home(), "skills"),
-            KiroHooksPath:        KiroPaths.KcapAgentJson(),
-            PiExtensionPath:      PiPaths.KcapExtension(),
-            OpenCodeExtensionPath: OpenCodePaths.KcapPlugin(),
-            AntigravityHooksPath: AntigravityPaths.GlobalHooksJson(),
-            CodexConfigTomlPath:  Path.Combine(CodexPaths.Home(), "config.toml"),
-            CursorMcpPath:        CursorPaths.UserMcpJson(),
-            CopilotMcpPath:       CopilotPaths.McpConfigJson(),
-            CopilotInstructionsPath: CopilotPaths.InstructionsMd(),
-            GeminiInstructionsPath: GeminiPaths.GeminiMd(),
-            AntigravityMcpPath:       AntigravityPaths.McpConfigJson(),
-            AntigravityInstructionsPath: AntigravityPaths.InstructionsMd(),
-            AntigravitySkillsDir:     AntigravityPaths.SkillsDir(),
-            OpenCodeMcpPath:      OpenCodePaths.McpConfigJson(),
-            OpenCodeInstructionsPath: OpenCodePaths.AgentsMd(),
-            KiroMcpPath:          KiroPaths.SettingsMcpJson(),
-            KiroSkillsDir:        KiroPaths.SkillsDir(),
-            PiMcpExtensionPath:   PiPaths.KcapMcpExtension(),
-            PiAgentsMdPath:       PiPaths.AgentsMd());
+            CodexHooksPath:       codex.UserHooksJson,
+            CursorHooksPath:      cursor.UserHooksJson,
+            CopilotHooksPath:     copilot.KcapHooksJson,
+            GeminiSettingsPath:   gemini.SettingsJson,
+            AgentsSkillsDir:      _paths.Agents.UserSkillsDir,
+            LegacyCodexSkillsDir: codex.SkillsDir,
+            KiroHooksPath:        kiro.KcapAgentJson,
+            PiExtensionPath:      pi.KcapExtension,
+            OpenCodeExtensionPath: opencode.KcapPlugin,
+            AntigravityHooksPath: agy.GlobalHooksJson,
+            CodexConfigTomlPath:  codex.ConfigToml,
+            CursorMcpPath:        cursor.UserMcpJson,
+            CopilotMcpPath:       copilot.McpConfigJson,
+            CopilotInstructionsPath: copilot.InstructionsMd,
+            GeminiInstructionsPath: gemini.GeminiMd,
+            AntigravityMcpPath:       agy.McpConfigJson,
+            AntigravityInstructionsPath: agy.InstructionsMd,
+            AntigravitySkillsDir:     agy.SkillsDir,
+            OpenCodeMcpPath:      opencode.McpConfigJson,
+            OpenCodeInstructionsPath: opencode.AgentsMd,
+            KiroMcpPath:          kiro.SettingsMcpJson,
+            KiroSkillsDir:        kiro.SkillsDir,
+            PiMcpExtensionPath:   pi.KcapMcpExtension,
+            PiAgentsMdPath:       pi.AgentsMd);
 
         var stepInstallers = new CodingAgentsStep.Installers(
             InstallClaudePlugin:    InstallPlugin,
@@ -711,40 +720,40 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
             InstallCursorHooks:     PluginCommand.InstallCursorHooks,
             InstallCopilotHooks:    PluginCommand.InstallCopilotHooks,
             InstallGeminiHooks:     PluginCommand.InstallGeminiHooks,
-            CapacitorOnPath:        () => AgentDetection.BinaryOnPath("kcap"),
+            CapacitorOnPath:        () => BinaryProbe.OnPath("kcap"),
             InstallAgentSkills:     AgentsSkillsInstaller.Install,
             CleanLegacyCodexSkills: legacyDir => AgentsSkillsInstaller.CleanLegacyCodexSkills(legacyDir).RemovedAny,
             InstallKiroHooks:       PluginCommand.InstallKiroHooks,
             InstallPiExtension:     PiExtensionInstaller.Install,
             InstallOpenCodeExtension: OpenCodeExtensionInstaller.Install,
             InstallAntigravityHooks:  PluginCommand.InstallAntigravityHooks,
-            EnableCodexNetworkAccess: () => CodexConfigToml.EnableNetworkAccess(codexAllowDomains),
-            RegisterCodexMcp:         () => CodexConfigToml.RegisterKcapMcpServers(),
+            EnableCodexNetworkAccess: () => CodexConfigToml.EnableNetworkAccess(codexAllowDomains, codex.ConfigToml),
+            RegisterCodexMcp:         () => CodexConfigToml.RegisterKcapMcpServers(codex.ConfigToml),
             // every non-Claude JSON harness registers the ForCursor subset — the full set,
             // kcap-workitems included (see KcapMcpServers.ForCursor).
-            RegisterCursorMcp:        () => HarnessMcpProjections.Cursor.Register(CursorPaths.UserMcpJson()),
-            RegisterCopilotMcp:       () => HarnessMcpProjections.Copilot.Register(CopilotPaths.McpConfigJson()),
+            RegisterCursorMcp:        () => HarnessMcpProjections.Cursor.Register(cursor.UserMcpJson, home),
+            RegisterCopilotMcp:       () => HarnessMcpProjections.Copilot.Register(copilot.McpConfigJson, home),
             InstallCopilotInstructions: () => AgentInstructionsWriter.Write(
-                CopilotPaths.InstructionsMd(), KcapAgentInstructions.Body),
+                copilot.InstructionsMd, KcapAgentInstructions.Body),
             // Skills are already current when the on-disk marker matches this build AND
             // every owned kcap-* folder is present; used to skip the prompt + re-copy
             // (mirrors PluginCommand's postinstall fast path). A missing/stale marker — or a
             // deleted skill folder — reads as "not current" → prompt + install (self-heals).
             AgentSkillsCurrent:       AgentsSkillsInstaller.IsCurrent,
-            RegisterOpenCodeMcp:      () => HarnessMcpProjections.OpenCode.Register(OpenCodePaths.McpConfigJson()),
+            RegisterOpenCodeMcp:      () => HarnessMcpProjections.OpenCode.Register(opencode.McpConfigJson, home),
             InstallOpenCodeInstructions: () => AgentInstructionsWriter.Write(
-                OpenCodePaths.AgentsMd(), KcapAgentInstructions.Body),
-            RegisterKiroMcp:          () => HarnessMcpProjections.Kiro.Register(KiroPaths.SettingsMcpJson()),
-            RegisterGeminiMcp:        () => HarnessMcpProjections.Gemini.Register(GeminiPaths.SettingsJson()),
+                opencode.AgentsMd, KcapAgentInstructions.Body),
+            RegisterKiroMcp:          () => HarnessMcpProjections.Kiro.Register(kiro.SettingsMcpJson, home),
+            RegisterGeminiMcp:        () => HarnessMcpProjections.Gemini.Register(gemini.SettingsJson, home),
             InstallGeminiInstructions: () => AgentInstructionsWriter.Write(
-                GeminiPaths.GeminiMd(), KcapAgentInstructions.Body),
-            RegisterAntigravityMcp:   () => HarnessMcpProjections.Antigravity.Register(AntigravityPaths.McpConfigJson()),
+                gemini.GeminiMd, KcapAgentInstructions.Body),
+            RegisterAntigravityMcp:   () => HarnessMcpProjections.Antigravity.Register(agy.McpConfigJson, home),
             InstallAntigravityInstructions: () => AgentInstructionsWriter.Write(
-                AntigravityPaths.InstructionsMd(), KcapAgentInstructions.Body),
+                agy.InstructionsMd, KcapAgentInstructions.Body),
             // Pi has no JSON MCP config — the "MCP" is a second extension file (kcap-mcp.ts).
             InstallPiMcp:             PiMcpExtensionInstaller.Install,
             InstallPiInstructions:    () => AgentInstructionsWriter.Write(
-                PiPaths.AgentsMd(), KcapAgentInstructions.Body));
+                pi.AgentsMd, KcapAgentInstructions.Body));
 
         void WriteLine(string line) => AnsiConsole.MarkupLine(line);
 
@@ -1157,12 +1166,12 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
     internal static Func<ImportInvocation, Task<int>>? ImportRunnerOverride;
 
     Task<int> DefaultImportRunner(ImportInvocation inv) =>
-        new ImportCommand(config, inv.Profiles).HandleImport(
+        new ImportCommand(config, inv.Profiles, home).HandleImport(
             filterCwd:               null,
             filterSession:           null,
             minLines:                15,
             generateSummaries:       false,
-            sources:                 BuildImportSources(config),
+            sources:                 BuildImportSources(config, _paths),
             explicitVendorSelection: false,
             since:                   null,
             scope:                   new ImportScope.Repo(inv.Repo.Owner, inv.Repo.Name),
@@ -1181,17 +1190,19 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
     /// nothing. Filtering the sources rather than the counts afterwards is what makes a reported figure
     /// already scoped to what the user kept.</param>
     internal static IReadOnlyList<IImportSource> BuildImportSources(
-            ConfigRoot config, IReadOnlyList<string>? vendors = null) {
+            ConfigRoot config, HarnessPaths paths, IReadOnlyCollection<string>? vendors = null) {
         IReadOnlyList<IImportSource> all = [
-            new ClaudeImportSource(config),
-            new CodexImportSource(config),
-            new CursorImportSource(config),
-            new CopilotImportSource(config),
-            new GeminiImportSource(),
-            new KiroImportSource(config),
-            new PiImportSource(config),
-            new OpenCodeImportSource(),
-            new AntigravityImportSource()
+            new ClaudeImportSource(config, paths.Claude.Projects),
+            new CodexImportSource(config, paths.Codex.Sessions),
+            new CursorImportSource(config, paths.Cursor.ProjectsDir, paths.Cursor.WorkspaceStorageDir),
+            new CopilotImportSource(config, paths.Copilot),
+            new GeminiImportSource(paths.Gemini.TmpDir),
+            new KiroImportSource(config, paths.Kiro.SessionsDir),
+            new PiImportSource(config, paths.Pi.SessionsDir),
+            new OpenCodeImportSource(
+                    Path.Combine(paths.OpenCode.DataDir, "opencode.db"),
+                    paths.OpenCode.ImportLedgerJson),
+            new AntigravityImportSource(paths.Antigravity)
         ];
 
         if (vendors is null) return all;
@@ -1408,9 +1419,9 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
                 AnsiConsole.MarkupLine("  [dim]Checking this machine for coding agents…[/]");
 
                 var report = FirstRunMachineReport.EvaluateCurrent(
-                    config, Environment.MachineName, await LoginShellFindsCliAsync());
+                    config, home, Environment.MachineName, await LoginShellFindsCliAsync());
 
-                importing = new SetupImportLane(config, profiles);
+                importing = new SetupImportLane(config, profiles, home, _paths);
 
                 using var progress = new SpectreFirstRunFlowProgress();
 

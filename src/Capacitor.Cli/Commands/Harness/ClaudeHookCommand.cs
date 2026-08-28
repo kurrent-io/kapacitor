@@ -16,7 +16,7 @@ namespace Capacitor.Cli.Commands.Harness;
 /// in the JSON payload — mirroring <see cref="CodexHookCommand"/> and
 /// <see cref="CursorHookCommand"/>.
 /// </summary>
-public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles, HookClock clock) {
+public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles, HookClock clock, UserHome home) {
     readonly WatcherManager _watchers = new(config, profiles);
 
     string Url => profiles.Resolution.ServerUrl!;
@@ -166,7 +166,7 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
                 node["ended_at"] = DateTimeOffset.UtcNow.ToString("O");
             // Surface 3: the degraded arm spools via this path and bypasses HandleCore's stamp, so a
             // replayed session-start must still carry the harness inventory (the hook-ingest carrier).
-            if (command == "session-start") SessionStartInventory.Stamp(node.AsObject(), config);
+            if (command == "session-start") SessionStartInventory.Stamp(node.AsObject(), config, home);
             return node.ToJsonString();
         } catch { return body; }
     }
@@ -251,7 +251,7 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
             try {
                 var cwd = JsonNode.Parse(body)?["cwd"]?.GetValue<string>();
 
-                if (PathExclusion.IsExcluded(cwd, paths)) return true;
+                if (PathExclusion.IsExcluded(cwd, paths, home)) return true;
             } catch {
                 // Best effort
             }
@@ -296,7 +296,7 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
                 NormalizeGuidField(node, "session_id");
                 NormalizeGuidField(node, "agent_id");
 
-                node["home_dir"] = PathHelpers.HomeDirectory;
+                node["home_dir"] = home.Path;
 
                 var agentHostId = Environment.GetEnvironmentVariable("KCAP_AGENT_ID");
 
@@ -306,7 +306,7 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
 
                 // Surface 3: attach this machine's harness inventory, session-start only (the
                 // injections above apply to every event; the inventory is a session-start signal).
-                if (command == "session-start") SessionStartInventory.Stamp(node.AsObject(), config);
+                if (command == "session-start") SessionStartInventory.Stamp(node.AsObject(), config, home);
 
                 body = node.ToJsonString();
             }
@@ -580,7 +580,7 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
                 var slug = node?["slug"]?.GetValue<string>();
 
                 if (slug is not null) {
-                    var planContent = ReadPlanFile(slug);
+                    var planContent = ReadPlanFile(slug, ClaudePaths.FromEnvironment(home));
 
                     if (planContent is not null) {
                         node!["plan_content"] = planContent;
@@ -683,7 +683,7 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
                     var resolvedSlug = responseNode["slug"]?.GetValue<string>();
 
                     if (resolvedSlug is not null) {
-                        var planContent = ReadPlanFile(resolvedSlug);
+                        var planContent = ReadPlanFile(resolvedSlug, ClaudePaths.FromEnvironment(home));
 
                         if (planContent is not null) {
                             await PostPlanContentAsync(client, Url, sessionId, planContent);
@@ -725,8 +725,8 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
                     // The static work-items nudge. Claude has always carried kcap-workitems, so
                     // the availability gate is always satisfied here; only the opt-out can suppress it.
                     var workItemsNudge = WorkItemsNudgeEmitter.Resolve(
-                        SessionStartHarness.Claude, sessionId, activeProfile?.DisableWorkItemsNudge is true);
-                    var harnessNudge = HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true, config);
+                        SessionStartHarness.Claude, sessionId, activeProfile?.DisableWorkItemsNudge is true, home);
+                    var harnessNudge = HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true, config, home);
 
                     var envelope = SessionStartAdditionalContext.BuildEnvelope(
                         lessonsFragment, nudgeFragment, memoryFragment, coordinationFragment, workItemsNudge, harnessNudge);
@@ -994,8 +994,8 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
         } catch { return null; }
     }
 
-    static string? ReadPlanFile(string slug) {
-        var planPath = Path.Combine(ClaudePaths.Plans, $"{slug}.md");
+    static string? ReadPlanFile(string slug, ClaudePaths paths) {
+        var planPath = Path.Combine(paths.Plans, $"{slug}.md");
 
         try {
             return File.Exists(planPath) ? File.ReadAllText(planPath) : null;

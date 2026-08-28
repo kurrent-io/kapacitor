@@ -1,14 +1,11 @@
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Config;
-using Capacitor.Cli.Core.Harness.Antigravity;
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Core.Harness.Claude;
 using Capacitor.Cli.Core.Harness.Codex;
-using Capacitor.Cli.Core.Harness.Copilot;
 using Capacitor.Cli.Core.Harness.Cursor;
 using Capacitor.Cli.Core.Harness.Gemini;
 using Capacitor.Cli.Core.Harness.Kiro;
-using Capacitor.Cli.Core.Harness.OpenCode;
-using Capacitor.Cli.Core.Harness.Pi;
 using Capacitor.Cli.Services;
 
 namespace Capacitor.Cli.Commands;
@@ -28,7 +25,9 @@ namespace Capacitor.Cli.Commands;
 /// Per-agent selective cleanup is intentionally out of scope here; this command
 /// covers all known agents.
 /// </summary>
-public sealed class UninstallCommand(DaemonStore store, ConfigRoot config, ProfileContext profiles) {
+public sealed class UninstallCommand(DaemonStore store, ConfigRoot config, ProfileContext profiles, UserHome home) {
+    readonly HarnessPaths _paths = HarnessPaths.FromEnvironment(home);
+
     public async Task<int> HandleAsync(string[] args) {
         var skipPrompt     = args.Contains("--yes") || args.Contains("-y");
         var keepConfig     = args.Contains("--keep-config");
@@ -53,16 +52,16 @@ public sealed class UninstallCommand(DaemonStore store, ConfigRoot config, Profi
 
         await Console.Out.WriteLineAsync("This will remove kcap from your machine:");
         await Console.Out.WriteLineAsync("  • Stop any running daemons and watcher processes");
-        await Console.Out.WriteLineAsync($"  • Remove kcap entries from {ClaudePaths.UserSettings}");
-        await Console.Out.WriteLineAsync($"  • Remove kcap entries from {CodexPaths.UserHooksJson}");
-        await Console.Out.WriteLineAsync($"  • Remove kcap entries from {CursorPaths.UserHooksJson()}");
-        await Console.Out.WriteLineAsync($"  • Remove {CopilotPaths.KcapHooksJson()}");
-        await Console.Out.WriteLineAsync($"  • Remove kcap entries from {GeminiPaths.SettingsJson()}");
-        await Console.Out.WriteLineAsync($"  • Remove {KiroPaths.KcapAgentJson()} and restore the previous default Kiro agent");
-        await Console.Out.WriteLineAsync($"  • Remove {PiPaths.KcapExtension()}");
-        await Console.Out.WriteLineAsync($"  • Remove {OpenCodePaths.KcapPlugin()}");
-        await Console.Out.WriteLineAsync($"  • Remove the kcap plugin from {AntigravityPaths.PluginDir()}");
-        await Console.Out.WriteLineAsync($"  • Remove agent skills under {AgentsPaths.UserSkillsDir}");
+        await Console.Out.WriteLineAsync($"  • Remove kcap entries from {_paths.Claude.UserSettings}");
+        await Console.Out.WriteLineAsync($"  • Remove kcap entries from {_paths.Codex.UserHooksJson}");
+        await Console.Out.WriteLineAsync($"  • Remove kcap entries from {_paths.Cursor.UserHooksJson}");
+        await Console.Out.WriteLineAsync($"  • Remove {_paths.Copilot.KcapHooksJson}");
+        await Console.Out.WriteLineAsync($"  • Remove kcap entries from {_paths.Gemini.SettingsJson}");
+        await Console.Out.WriteLineAsync($"  • Remove {_paths.Kiro.KcapAgentJson} and restore the previous default Kiro agent");
+        await Console.Out.WriteLineAsync($"  • Remove {_paths.Pi.KcapExtension}");
+        await Console.Out.WriteLineAsync($"  • Remove {_paths.OpenCode.KcapPlugin}");
+        await Console.Out.WriteLineAsync($"  • Remove the kcap plugin from {_paths.Antigravity.PluginDir}");
+        await Console.Out.WriteLineAsync($"  • Remove agent skills under {_paths.Agents.UserSkillsDir}");
 
         if (projectRoot is not null) {
             await Console.Out.WriteLineAsync(
@@ -101,7 +100,7 @@ public sealed class UninstallCommand(DaemonStore store, ConfigRoot config, Profi
         // (launchctl bootout / systemctl disable --now), after which the plain
         // `daemon stop --yes` below mops up any non-service daemons.
         try {
-            var services = ServiceManagerFactory.ForCurrentOs(config);
+            var services = ServiceManagerFactory.ForCurrentOs(config, home);
             foreach (var id in services.ListInstalled()) {
                 if (services.Uninstall(id, out var error)) {
                     await Console.Out.WriteLineAsync($"  • Removed daemon service '{id}' ({services.Describe()})");
@@ -118,12 +117,12 @@ public sealed class UninstallCommand(DaemonStore store, ConfigRoot config, Profi
         // about to delete. --yes silences the multi-daemon confirmation so this
         // works non-interactively. A non-zero exit code means at least one
         // daemon couldn't be stopped; we leave the config dir alone in that case.
-        if (await new DaemonCommands(store, config, profiles).HandleAsync(["daemon", "stop", "--yes"]) != 0) hadFailures = true;
+        if (await new DaemonCommands(store, config, profiles, home).HandleAsync(["daemon", "stop", "--yes"]) != 0) hadFailures = true;
 
         // Kill any orphaned watcher PIDs that the daemon stop didn't catch.
         if (await new CleanupCommand(config, profiles).HandleCleanup() != 0) hadFailures = true;
 
-        var env           = PluginEnvironment.FromProcess(await AppConfig.LoadProfileConfig(config));
+        var env           = PluginEnvironment.FromProcess(await AppConfig.LoadProfileConfig(config), home);
         var pluginCommand = new PluginCommand(env);
 
         // User-level agent integrations. Each remove command is idempotent and
@@ -159,18 +158,18 @@ public sealed class UninstallCommand(DaemonStore store, ConfigRoot config, Profi
         // deliberately RETAINS it when the unregister fails, so a retry can still
         // identify the kcap-owned entries. An unconditional clear here would
         // defeat that recovery path.
-        ClaudePluginInstaller.DeleteMarker(ClaudePaths.UserSettings);
-        CodexHooksInstaller.DeleteMarker(CodexPaths.UserHooksJson);
-        CursorHooksInstaller.DeleteMarker(CursorPaths.UserHooksJson());
-        GeminiHooksInstaller.DeleteMarker(GeminiPaths.SettingsJson());
-        KiroHooksInstaller.DeleteMarker(KiroPaths.KcapAgentJson());
+        ClaudePluginInstaller.DeleteMarker(_paths.Claude.UserSettings);
+        CodexHooksInstaller.DeleteMarker(_paths.Codex.UserHooksJson);
+        CursorHooksInstaller.DeleteMarker(_paths.Cursor.UserHooksJson);
+        GeminiHooksInstaller.DeleteMarker(_paths.Gemini.SettingsJson);
+        KiroHooksInstaller.DeleteMarker(_paths.Kiro.KcapAgentJson);
 
         // Skill installer Remove uses the current SourceNames list, so any
         // kcap-* folder from an older release (renamed/retired skill)
         // would survive. Sweep the directory for our prefix to catch those.
         // Same for legacy ~/.codex/skills/.
-        if (!SweepCapacitorPrefixedDirs(AgentsPaths.UserSkillsDir))            hadFailures = true;
-        if (!SweepCapacitorPrefixedDirs(Path.Combine(CodexPaths.Home(), "skills"))) hadFailures = true;
+        if (!SweepCapacitorPrefixedDirs(_paths.Agents.UserSkillsDir))            hadFailures = true;
+        if (!SweepCapacitorPrefixedDirs(_paths.Codex.SkillsDir)) hadFailures = true;
 
         if (projectRoot is not null) {
             var claudeProject = Path.Combine(projectRoot, ".claude", "settings.local.json");

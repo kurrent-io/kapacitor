@@ -11,6 +11,7 @@ namespace Capacitor.Cli.Daemon.Harness.Claude;
 
 internal sealed partial class ClaudeLauncher(
         DaemonConfig            config,
+        UserHome                home,
         ILogger<ClaudeLauncher> logger
     ) : IHostedAgentLauncher {
 
@@ -29,6 +30,8 @@ internal sealed partial class ClaudeLauncher(
     public IReviewerModelResolver? ReviewerModelResolver => ClaudeReviewerModelResolver.Instance;
 
     public bool IsAvailable() => CliResolver.Exists(CliPath);
+
+    readonly ClaudePaths _paths = ClaudePaths.FromEnvironment(home);
 
     static readonly Lock                  TrustWriteLock   = new();
     static readonly JsonSerializerOptions IndentedJsonOpts = new() { WriteIndented = true };
@@ -57,19 +60,19 @@ internal sealed partial class ClaudeLauncher(
                 FileSystemOverlay.OverlayDirectory(sourceClaudeDir, destClaudeDir);
             }
 
-            SymlinkClaudeProjectDir(ctx.SourceRepoPath, ctx.Worktree.Path);
+            SymlinkClaudeProjectDir(ctx.SourceRepoPath, ctx.Worktree.Path, _paths);
         } catch (Exception ex) {
             LogOverlayFailed(ex, ctx.AgentId);
         }
 
         try {
-            WriteMcpConfig(ctx.SourceRepoPath, ctx.Worktree.Path, config.KcapCliPath);
+            WriteMcpConfig(ctx.SourceRepoPath, ctx.Worktree.Path, _paths, config.KcapCliPath);
         } catch (Exception ex) {
             LogMcpConfigFailed(ex, ctx.AgentId);
         }
 
         try {
-            TrustWorktreeInClaudeConfig(ctx.Worktree.Path);
+            TrustWorktreeInClaudeConfig(ctx.Worktree.Path, _paths);
         } catch (Exception ex) {
             LogTrustWorktreeFailed(ex, ctx.AgentId);
         }
@@ -83,7 +86,7 @@ internal sealed partial class ClaudeLauncher(
         // take.
         if (ctx.IsReviewFlow) {
             try {
-                AcceptBypassPermissionsMode();
+                AcceptBypassPermissionsMode(_paths.UserSettings);
             } catch (Exception ex) {
                 LogBypassAcceptFailed(ex, ctx.AgentId);
             }
@@ -244,7 +247,7 @@ internal sealed partial class ClaudeLauncher(
         => new([.. userArgs], McpConfigPath: null);
 
     public void Cleanup(AgentInstance agent) {
-        try { RemoveClaudeProjectSymlink(agent.Worktree.Path); } catch (Exception ex) {
+        try { RemoveClaudeProjectSymlink(agent.Worktree.Path, _paths); } catch (Exception ex) {
             LogCleanupSymlinkFailed(ex, agent.Id);
         }
 
@@ -311,18 +314,18 @@ internal sealed partial class ClaudeLauncher(
     /// ~/.claude/projects/{source-path-hash} so project-level permissions, settings,
     /// and memory are shared with the hosted agent.
     /// </summary>
-    static void SymlinkClaudeProjectDir(string sourceRepoPath, string worktreePath) {
-        if (!Directory.Exists(ClaudePaths.Projects)) {
+    static void SymlinkClaudeProjectDir(string sourceRepoPath, string worktreePath, ClaudePaths paths) {
+        if (!Directory.Exists(paths.Projects)) {
             return;
         }
 
-        var sourceProjDir = ClaudePaths.ProjectDir(sourceRepoPath);
+        var sourceProjDir = paths.ProjectDir(sourceRepoPath);
 
         if (!Directory.Exists(sourceProjDir)) {
             return;
         }
 
-        var worktreeProjDir = ClaudePaths.ProjectDir(worktreePath);
+        var worktreeProjDir = paths.ProjectDir(worktreePath);
 
         // Don't clobber an existing directory or symlink
         if (Path.Exists(worktreeProjDir)) {
@@ -336,8 +339,8 @@ internal sealed partial class ClaudeLauncher(
     /// Removes the ~/.claude/projects/{worktree-path-hash} symlink if it exists.
     /// Only removes symlinks, never real directories.
     /// </summary>
-    static void RemoveClaudeProjectSymlink(string worktreePath) {
-        var info = new DirectoryInfo(ClaudePaths.ProjectDir(worktreePath));
+    static void RemoveClaudeProjectSymlink(string worktreePath, ClaudePaths paths) {
+        var info = new DirectoryInfo(paths.ProjectDir(worktreePath));
 
         if (info is { Exists: true, LinkTarget: not null }) {
             info.Delete();
@@ -355,7 +358,7 @@ internal sealed partial class ClaudeLauncher(
         return OperatingSystem.IsWindows() ? full.Replace('\\', '/') : full;
     }
 
-    internal static void TrustWorktreeInClaudeConfig(string worktreePath) {
+    internal static void TrustWorktreeInClaudeConfig(string worktreePath, ClaudePaths paths) {
         // Serialize against concurrent agent launches. ~/.claude.json is shared
         // across the whole user and {worktree}/.claude/settings.local.json is
         // touched by MergeToolPermissions on the same path; interleaved reads and
@@ -368,7 +371,7 @@ internal sealed partial class ClaudeLauncher(
             // The spawned `claude` inherits CLAUDE_CONFIG_DIR from the daemon's
             // environment, so it reads/writes the same file we resolve here —
             // $CLAUDE_CONFIG_DIR/.claude.json when set, else ~/.claude.json.
-            var claudeJsonPath = ClaudePaths.UserConfigJson();
+            var claudeJsonPath = paths.UserConfigJson;
 
             // The in-process lock above serializes only THIS daemon; every kcap writer of
             // ~/.claude.json must also take the shared cross-process lock, or this write can
@@ -471,8 +474,6 @@ internal sealed partial class ClaudeLauncher(
     /// wedges on it. The spawned Claude inherits <c>CLAUDE_CONFIG_DIR</c> from the daemon, so it reads
     /// the same file this resolves.
     /// </summary>
-    static void AcceptBypassPermissionsMode() => AcceptBypassPermissionsMode(ClaudePaths.UserSettings);
-
     /// <summary>
     /// Sets <see cref="BypassPermissionsAcceptedKey"/> = true in the settings file at
     /// <paramref name="settingsPath"/>, merging into any existing settings and preserving every other
@@ -607,9 +608,9 @@ internal sealed partial class ClaudeLauncher(
         }
     }
 
-    internal static void WriteMcpConfig(string sourceRepoPath, string worktreePath,
+    internal static void WriteMcpConfig(string sourceRepoPath, string worktreePath, ClaudePaths paths,
                                         string? nativeKcapPath = null) {
-        var claudeJsonPath = ClaudePaths.UserConfigJson();
+        var claudeJsonPath = paths.UserConfigJson;
 
         if (!File.Exists(claudeJsonPath)) return;
 
@@ -646,7 +647,7 @@ internal sealed partial class ClaudeLauncher(
         // never the version marker alone): suppressing an entry is destructive, so a stale
         // marker must not authorize it — without a loadable plugin the copy is the only
         // registration.
-        var pluginInstalled = ClaudePluginInstaller.IsEffectivelyInstalled(ClaudePaths.UserSettings);
+        var pluginInstalled = ClaudePluginInstaller.IsEffectivelyInstalled(paths.UserSettings);
 
         // Add servers from ~/.claude.json (don't overwrite repo-committed ones)
         foreach (var (name, value) in servers) {

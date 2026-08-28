@@ -3,48 +3,50 @@ using Capacitor.Cli.Core.Harness.OpenCode;
 namespace Capacitor.Cli.Core.Tests.Unit.Harness.OpenCode;
 
 public class OpenCodePathsTests {
-    // Parallel-safe: override param is non-null, so no env var is read.
+    static OpenCodePaths Oc(string home, string? configDir = null,
+                            string? xdgConfigHome = null, string? xdgDataHome = null) =>
+        new(new(home), configDir, xdgConfigHome, xdgDataHome);
+
     [Test]
-    public async Task ConfigDir_param_wins_over_home() {
-        await Assert.That(OpenCodePaths.ConfigDir(home: "/fake/home", configDir: "/relocated/oc"))
+    public async Task Config_dir_precedence_is_override_then_xdg_then_home() {
+        await Assert.That(Oc("/fake/home").ConfigDir)
+            .IsEqualTo(Path.Combine("/fake/home", ".config", "opencode"));
+        await Assert.That(Oc("/fake/home", xdgConfigHome: "/xdg").ConfigDir)
+            .IsEqualTo(Path.Combine("/xdg", "opencode"));
+        // OPENCODE_CONFIG_DIR wins over XDG, and is taken verbatim rather than as a parent.
+        await Assert.That(Oc("/fake/home", configDir: "/relocated/oc", xdgConfigHome: "/xdg").ConfigDir)
             .IsEqualTo("/relocated/oc");
     }
 
-    // Parallel-safe: configDir override is non-null, so no env var is read.
     [Test]
-    public async Task McpConfigJson_and_AgentsMd_sit_under_config_dir() {
-        await Assert.That(OpenCodePaths.McpConfigJson(configDir: "/oc"))
-            .IsEqualTo(Path.Combine("/oc", "opencode.json"));
-        await Assert.That(OpenCodePaths.AgentsMd(configDir: "/oc"))
-            .IsEqualTo(Path.Combine("/oc", "AGENTS.md"));
+    public async Task Data_dir_precedence_is_xdg_then_home() {
+        await Assert.That(Oc("/h").DataDir).IsEqualTo(Path.Combine("/h", ".local", "share", "opencode"));
+        await Assert.That(Oc("/h", xdgDataHome: "/xdgd").DataDir).IsEqualTo(Path.Combine("/xdgd", "opencode"));
     }
 
     [Test]
-    [NotInParallel("HomeEnvVarMutation")]
-    public async Task ConfigDir_precedence_OPENCODE_CONFIG_DIR_over_XDG_over_home() {
-        var originalCfg = Environment.GetEnvironmentVariable("OPENCODE_CONFIG_DIR");
-        var originalXdg = Environment.GetEnvironmentVariable("XDG_CONFIG_HOME");
-        try {
-            // Default: neither set -> ~/.config/opencode under home.
-            Environment.SetEnvironmentVariable("OPENCODE_CONFIG_DIR", null);
-            Environment.SetEnvironmentVariable("XDG_CONFIG_HOME", null);
-            await Assert.That(OpenCodePaths.ConfigDir(home: "/fake/home"))
-                .IsEqualTo(Path.Combine("/fake/home", ".config", "opencode"));
+    public async Task Files_sit_under_the_config_dir() {
+        var paths = Oc("/fake/home", configDir: "/oc");
 
-            // XDG only -> $XDG_CONFIG_HOME/opencode.
-            Environment.SetEnvironmentVariable("XDG_CONFIG_HOME", "/xdg");
-            await Assert.That(OpenCodePaths.ConfigDir(home: "/fake/home"))
-                .IsEqualTo(Path.Combine("/xdg", "opencode"));
+        await Assert.That(paths.McpConfigJson).IsEqualTo(Path.Combine("/oc", "opencode.json"));
+        await Assert.That(paths.AgentsMd).IsEqualTo(Path.Combine("/oc", "AGENTS.md"));
+        await Assert.That(paths.KcapPlugin).IsEqualTo(Path.Combine("/oc", "plugins", "kcap.ts"));
+    }
 
-            // OPENCODE_CONFIG_DIR wins over XDG, verbatim, and KcapPlugin follows.
-            var relocated = Path.Combine(Path.GetTempPath(), "kcap-oc-cfg");
-            Environment.SetEnvironmentVariable("OPENCODE_CONFIG_DIR", relocated);
-            await Assert.That(OpenCodePaths.ConfigDir()).IsEqualTo(relocated);
-            await Assert.That(OpenCodePaths.KcapPlugin())
-                .IsEqualTo(Path.Combine(relocated, "plugins", "kcap.ts"));
-        } finally {
-            Environment.SetEnvironmentVariable("OPENCODE_CONFIG_DIR", originalCfg);
-            Environment.SetEnvironmentVariable("XDG_CONFIG_HOME", originalXdg);
-        }
+    // Bare: these three are inherited by any child a concurrent test spawns.
+    [Test]
+    [NotInParallel]
+    public async Task FromEnvironment_reads_the_three_overrides() {
+        var relocated = Path.Combine(Path.GetTempPath(), "kcap-oc-cfg");
+
+        using var cfg  = EnvScope.Exclusive("OPENCODE_CONFIG_DIR", relocated);
+        using var xdgC = EnvScope.Exclusive("XDG_CONFIG_HOME", "/xdg");
+        using var xdgD = EnvScope.Exclusive("XDG_DATA_HOME", "/xdgd");
+
+        var paths = OpenCodePaths.FromEnvironment(new("/fake/home"));
+
+        await Assert.That(paths.ConfigDir).IsEqualTo(relocated);
+        await Assert.That(paths.KcapPlugin).IsEqualTo(Path.Combine(relocated, "plugins", "kcap.ts"));
+        await Assert.That(paths.DataDir).IsEqualTo(Path.Combine("/xdgd", "opencode"));
     }
 }

@@ -13,6 +13,8 @@ namespace Capacitor.Cli.Tests.Unit.Harness.Cursor;
 /// Models the parent/child fixture in <see cref="CursorImportSourceTests"/>.
 /// </summary>
 public class CursorOrphanedChildStandaloneTests {
+    [TempHome] public required TempHome Home { get; init; }
+
     [TempConfigRoot] public required TempConfigRoot Config { get; init; }
 
     const string ParentId = "11111111111111111111111111111111";
@@ -225,8 +227,8 @@ public class CursorOrphanedChildStandaloneTests {
     static DiscoveryFilters Filters(string? filterCwd = null, string? filterSession = null, DateOnly? since = null, int minLines = 0) =>
         new(FilterCwd: filterCwd, FilterSession: filterSession, Since: since, MinLines: minLines);
 
-    static ClassifyContext Ctx(HttpClient http, int minLines = 0) =>
-        new(http, "http://localhost", minLines, ExcludedRepos: null, ExcludedPaths: null);
+    ClassifyContext Ctx(HttpClient http, int minLines = 0) =>
+        new(http, "http://localhost", minLines, ExcludedRepos: null, ExcludedPaths: null, Home: Home);
 
     sealed class ProjectsDirFixture : IDisposable {
         public string Root                { get; }

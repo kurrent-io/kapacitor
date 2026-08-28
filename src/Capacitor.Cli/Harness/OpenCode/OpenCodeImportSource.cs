@@ -22,9 +22,9 @@ internal sealed class OpenCodeImportSource : IImportSource {
     readonly OpenCodeImportLedger _ledger;
     readonly object               _ledgerLock = new(); // routed imports may run concurrently
 
-    public OpenCodeImportSource(string? dbPathOverride = null, string? ledgerPathOverride = null) {
-        _dbPath = dbPathOverride ?? Path.Combine(OpenCodePaths.DataDir(), "opencode.db");
-        _ledger = OpenCodeImportLedger.Load(ledgerPathOverride ?? OpenCodeImportLedger.DefaultPath());
+    public OpenCodeImportSource(string dbPath, string ledgerPath) {
+        _dbPath = dbPath;
+        _ledger = OpenCodeImportLedger.Load(ledgerPath);
     }
 
     public string Vendor => "opencode";

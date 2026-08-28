@@ -7,6 +7,7 @@ using Capacitor.Cli.Daemon.Services;
 using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
+using TUnit.Core.Enums;
 
 namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 
@@ -26,6 +27,7 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 [ParallelLimiter<SubprocessLimit>]
 public class DaemonStatusIpcTests {
     [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+    [TempHome] public required TempHome Home { get; init; }
 
     sealed class NoopHostLifetime : IHostApplicationLifetime {
         public CancellationToken ApplicationStarted  => CancellationToken.None;
@@ -114,7 +116,7 @@ public class DaemonStatusIpcTests {
         var permissionBridge = new LocalPermissionBridge(connection, NullLogger<LocalPermissionBridge>.Instance);
 
         var orchestrator = new AgentOrchestrator(
-            config, Config.Root, connection, worktreeManager, repoMatcher,
+            config, Config.Root, Home, connection, worktreeManager, repoMatcher,
             new NoopPtyProcessFactory(), new NoopHttpClientFactory(),
             permissionBridge, new Dictionary<string, IHostedAgentLauncher>(),
             new Dictionary<string, IHostedAgentRuntimeFactory>(), new NoopHostLifetime(),
@@ -166,7 +168,7 @@ public class DaemonStatusIpcTests {
         var permissionBridge = new LocalPermissionBridge(connection, NullLogger<LocalPermissionBridge>.Instance);
 
         var orchestrator = new AgentOrchestrator(
-            config, Config.Root, connection, worktreeManager, repoMatcher,
+            config, Config.Root, Home, connection, worktreeManager, repoMatcher,
             new NoopPtyProcessFactory(), new NoopHttpClientFactory(),
             permissionBridge, new Dictionary<string, IHostedAgentLauncher>(),
             new Dictionary<string, IHostedAgentRuntimeFactory>(), new NoopHostLifetime(),
@@ -255,10 +257,8 @@ public class DaemonStatusIpcTests {
         await Assert.That(DaemonStatusIpc.ConnectionText(state)).IsEqualTo(expected);
     }
 
-    [Test]
+    [Test, ExcludeOn(OS.Windows)]
     public async Task Subscribe_pushes_an_immediate_snapshot_with_daemon_block_and_agents() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         await RunAsync("st-a", async (h, ct) => {
             h.Orchestrator.SeedAgentForTest("s1", kind: LaunchKind.ReviewFlow,
                 flowRunId: "flow_1", flowRole: "reviewer", requester: "github:12345");
@@ -281,10 +281,8 @@ public class DaemonStatusIpcTests {
         });
     }
 
-    [Test] // pid/instance_id identity on the daemon block, first snapshot
+    [Test, ExcludeOn(OS.Windows)] // pid/instance_id identity on the daemon block, first snapshot
     public async Task First_snapshot_carries_pid_and_instance_id() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         await RunAsync("st-id", async (h, ct) => {
             h.Config.InstanceId = "inst-status-1";
 
@@ -297,10 +295,8 @@ public class DaemonStatusIpcTests {
         });
     }
 
-    [Test] // add / status-change / removal each trigger a re-push
+    [Test, ExcludeOn(OS.Windows)] // add / status-change / removal each trigger a re-push
     public async Task Each_mutation_triggers_a_re_push() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         await RunAsync("st-b", async (h, ct) => {
             await using var s = await ConnectAsync(h.SockPath, ct);
             await FrameCodec.WriteAsync(s, new LocalFrame(FrameType.StatusSubscribe), ct);
@@ -327,10 +323,8 @@ public class DaemonStatusIpcTests {
         });
     }
 
-    [Test] // burst coalescing: at most one trailing snapshot after the in-flight push
+    [Test, ExcludeOn(OS.Windows)] // burst coalescing: at most one trailing snapshot after the in-flight push
     public async Task A_pulse_burst_coalesces_into_one_trailing_snapshot() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         await RunAsync("st-c", async (h, ct) => {
             // Wide enough that 5 back-to-back synchronous pulses land inside one debounce window.
             h.StatusIpc.Debounce = TimeSpan.FromMilliseconds(150);
@@ -351,10 +345,8 @@ public class DaemonStatusIpcTests {
         });
     }
 
-    [Test] // two-subscriber convergence + slow subscriber doesn't stall the fast one
+    [Test, ExcludeOn(OS.Windows)] // two-subscriber convergence + slow subscriber doesn't stall the fast one
     public async Task Both_subscribers_converge_after_a_change_and_a_slow_one_stalls_only_itself() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         await RunAsync("st-d", async (h, ct) => {
             await using var a = await ConnectAsync(h.SockPath, ct);
             await FrameCodec.WriteAsync(a, new LocalFrame(FrameType.StatusSubscribe), ct);
@@ -385,10 +377,8 @@ public class DaemonStatusIpcTests {
         });
     }
 
-    [Test] // cursor-before-snapshot + pulse-after-mutation regressions, deterministic via the hook
+    [Test, ExcludeOn(OS.Windows)] // cursor-before-snapshot + pulse-after-mutation regressions, deterministic via the hook
     public async Task A_mutation_at_the_snapshot_boundary_still_converges() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         await RunAsync("st-e", async (h, ct) => {
             // BEFORE subscribing: land a mutation+pulse exactly between snapshot and wait,
             // deterministically, via the self-clearing test hook.
@@ -415,10 +405,8 @@ public class DaemonStatusIpcTests {
         });
     }
 
-    [Test] // subscriber EOF reaps the handler promptly
+    [Test, ExcludeOn(OS.Windows)] // subscriber EOF reaps the handler promptly
     public async Task Subscriber_eof_reaps_the_handler_promptly() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         await RunAsync("st-f", async (h, ct) => {
             var s = await ConnectAsync(h.SockPath, ct);
             await FrameCodec.WriteAsync(s, new LocalFrame(FrameType.StatusSubscribe), ct);
@@ -482,10 +470,8 @@ public class DaemonStatusIpcTests {
         }
     }
 
-    [Test] // snapshot stress: no exceptions, every payload internally consistent, converges
+    [Test, ExcludeOn(OS.Windows)] // snapshot stress: no exceptions, every payload internally consistent, converges
     public async Task Concurrent_mutations_never_produce_an_inconsistent_payload() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         await RunAsync("st-g", async (h, ct) => {
             h.StatusIpc.Debounce = TimeSpan.FromMilliseconds(25);
 
@@ -528,10 +514,8 @@ public class DaemonStatusIpcTests {
         });
     }
 
-    [Test] // §5: StatusSubscribe on a shutting-down daemon — the connection just closes
+    [Test, ExcludeOn(OS.Windows)] // §5: StatusSubscribe on a shutting-down daemon — the connection just closes
     public async Task Daemon_shutdown_closes_the_subscription() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         await RunAsync("st-h", async (h, ct) => {
             await using var s = await ConnectAsync(h.SockPath, ct);
             await FrameCodec.WriteAsync(s, new LocalFrame(FrameType.StatusSubscribe), ct);

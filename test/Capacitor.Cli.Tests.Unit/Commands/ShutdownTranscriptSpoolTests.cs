@@ -11,7 +11,9 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 /// after recovery, without a manual `kcap import`.
 /// </summary>
 public class ShutdownTranscriptSpoolTests {
-    WatchCommand Watch => field ??= new(Config.Root, Resolutions.None(Config.Root));
+    [TempHome] public required TempHome Home { get; init; }
+
+    WatchCommand Watch => field ??= new(Config.Root, Resolutions.None(Config.Root), Home);
 
     CursorMarkers Markers => new(Config.Root);
 

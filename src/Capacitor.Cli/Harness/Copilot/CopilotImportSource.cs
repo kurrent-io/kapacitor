@@ -32,12 +32,20 @@ internal sealed class CopilotImportSource : IImportSource {
 
     public CopilotImportSource(
         ConfigRoot                              config,
-        string?                                 sessionStateDirOverride = null,
-        string?                                 legacyDirOverride       = null,
-        Func<string, Task<RepositoryPayload?>>? repoDetector            = null
+        CopilotPaths                            paths,
+        Func<string, Task<RepositoryPayload?>>? repoDetector = null
+    ) : this(config, paths.SessionStateDir, paths.LegacySessionStateDir, repoDetector) { }
+
+    /// <summary>Both discovery roots given outright, for a caller that walks a layout it laid
+    /// out itself rather than Copilot's.</summary>
+    public CopilotImportSource(
+        ConfigRoot                              config,
+        string                                  sessionStateDir,
+        string                                  legacySessionStateDir,
+        Func<string, Task<RepositoryPayload?>>? repoDetector = null
     ) {
-        _sessionStateDir       = sessionStateDirOverride ?? CopilotPaths.SessionStateDir();
-        _legacySessionStateDir = legacyDirOverride       ?? CopilotPaths.LegacySessionStateDir();
+        _sessionStateDir       = sessionStateDir;
+        _legacySessionStateDir = legacySessionStateDir;
         _repoDetector          = repoDetector ?? (cwd => RepositoryDetection.DetectRepositoryAsync(config, cwd, detectPullRequest: false));
     }
 
@@ -488,8 +496,8 @@ internal sealed class CopilotImportSource : IImportSource {
         string? excludedPathKey = null;
         if (cwd is not null && ctx.ExcludedPaths is { Count: > 0 } paths) {
             foreach (var entry in paths) {
-                if (PathExclusion.IsExcluded(cwd, [entry])) {
-                    excludedPathKey = PathExclusion.Normalize(entry);
+                if (PathExclusion.IsExcluded(cwd, [entry], ctx.Home)) {
+                    excludedPathKey = PathExclusion.Normalize(entry, ctx.Home);
                     break;
                 }
             }

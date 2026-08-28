@@ -10,16 +10,17 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 public class DaemonCommandsServiceInstallTests {
     [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
     [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+    [TempHome] public required TempHome Home { get; init; }
 
     [Test]
     public async Task Verify_flag_is_rejected_on_a_non_launchd_manager() {
-        var exit = await new DaemonServiceCommands(Daemons.Store, Config.Root, Resolutions.None(Config.Root), new SystemdServiceManager(), "test-id").Install(["--verify"], true);
+        var exit = await new DaemonServiceCommands(Daemons.Store, Config.Root, Resolutions.None(Config.Root), new SystemdServiceManager(Home), "test-id", Home).Install(["--verify"], true);
         await Assert.That(exit).IsEqualTo(1);
     }
 
     [Test]
     public async Task Verify_flag_is_rejected_on_the_windows_manager_too() {
-        var exit = await new DaemonServiceCommands(Daemons.Store, Config.Root, Resolutions.None(Config.Root), new WindowsScheduledTaskServiceManager(Config.Root), "test-id").Install(["--verify"], true);
+        var exit = await new DaemonServiceCommands(Daemons.Store, Config.Root, Resolutions.None(Config.Root), new WindowsScheduledTaskServiceManager(Config.Root), "test-id", Home).Install(["--verify"], true);
         await Assert.That(exit).IsEqualTo(1);
     }
 
@@ -30,7 +31,7 @@ public class DaemonCommandsServiceInstallTests {
     /// reason).</summary>
     [Test]
     public async Task Replace_without_verify_is_rejected() {
-        var exit = await new DaemonServiceCommands(Daemons.Store, Config.Root, Resolutions.None(Config.Root), new SystemdServiceManager(), "test-id").Install(["--replace"], true);
+        var exit = await new DaemonServiceCommands(Daemons.Store, Config.Root, Resolutions.None(Config.Root), new SystemdServiceManager(Home), "test-id", Home).Install(["--replace"], true);
         await Assert.That(exit).IsEqualTo(1);
     }
 
@@ -39,7 +40,7 @@ public class DaemonCommandsServiceInstallTests {
     /// --no-start).</summary>
     [Test]
     public async Task No_start_with_verify_is_rejected() {
-        var exit = await new DaemonServiceCommands(Daemons.Store, Config.Root, Resolutions.None(Config.Root), new SystemdServiceManager(), "test-id").Install(["--verify", "--no-start"], startNow: false);
+        var exit = await new DaemonServiceCommands(Daemons.Store, Config.Root, Resolutions.None(Config.Root), new SystemdServiceManager(Home), "test-id", Home).Install(["--verify", "--no-start"], startNow: false);
         await Assert.That(exit).IsEqualTo(1);
     }
 
@@ -55,7 +56,7 @@ public class DaemonCommandsServiceInstallTests {
         var manager = new CountingManager();
         var spec = new ServiceSpec(id, "/x/kcap-daemon", "/x/log", new Dictionary<string, string>(), []);
 
-        var exit = await new DaemonServiceCommands(Daemons.Store, Config.Root, Resolutions.None(Config.Root), manager, "test-id").InstallPlain(spec, startNow: true);
+        var exit = await new DaemonServiceCommands(Daemons.Store, Config.Root, Resolutions.None(Config.Root), manager, "test-id", Home).InstallPlain(spec, startNow: true);
 
         await Assert.That(exit).IsEqualTo(1);
         await Assert.That(manager.InstallCalls).IsEqualTo(0);

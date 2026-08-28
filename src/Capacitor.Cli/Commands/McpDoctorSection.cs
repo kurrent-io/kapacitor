@@ -1,12 +1,7 @@
 using Capacitor.Cli.Core;
-using Capacitor.Cli.Core.Harness.Antigravity;
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Core.Harness.Claude;
 using Capacitor.Cli.Core.Harness.Codex;
-using Capacitor.Cli.Core.Harness.Copilot;
-using Capacitor.Cli.Core.Harness.Cursor;
-using Capacitor.Cli.Core.Harness.Gemini;
-using Capacitor.Cli.Core.Harness.Kiro;
-using Capacitor.Cli.Core.Harness.OpenCode;
 using Capacitor.Cli.Core.Mcp;
 
 namespace Capacitor.Cli.Commands;
@@ -40,13 +35,13 @@ static class McpDoctorSection {
 
     /// <summary>The user-scope registration files kcap writes (Claude's own config is handled
     /// separately — it carries the duplicate audit too, not just the stale-path scan).</summary>
-    internal static IReadOnlyList<RegistrationFile> DefaultJsonRegistrations() => [
-        new("Cursor",      CursorPaths.UserMcpJson(),        "mcpServers"),
-        new("Copilot",     CopilotPaths.McpConfigJson(),     "mcpServers"),
-        new("Kiro",        KiroPaths.SettingsMcpJson(),      "mcpServers"),
-        new("Gemini",      GeminiPaths.SettingsJson(),       "mcpServers"),
-        new("OpenCode",    OpenCodePaths.McpConfigJson(),    "mcp"),
-        new("Antigravity", AntigravityPaths.McpConfigJson(), "mcpServers"),
+    internal static IReadOnlyList<RegistrationFile> DefaultJsonRegistrations(HarnessPaths paths) => [
+        new("Cursor",      paths.Cursor.UserMcpJson, "mcpServers"),
+        new("Copilot",     paths.Copilot.McpConfigJson, "mcpServers"),
+        new("Kiro",        paths.Kiro.SettingsMcpJson, "mcpServers"),
+        new("Gemini",      paths.Gemini.SettingsJson, "mcpServers"),
+        new("OpenCode",    paths.OpenCode.McpConfigJson, "mcp"),
+        new("Antigravity", paths.Antigravity.McpConfigJson, "mcpServers"),
     ];
 
     /// <summary>Returns the number of issues found (0 = healthy).</summary>

@@ -1,4 +1,13 @@
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.Core.Harness.Antigravity;
+using Capacitor.Cli.Core.Harness.Claude;
+using Capacitor.Cli.Core.Harness.Codex;
+using Capacitor.Cli.Core.Harness.Copilot;
+using Capacitor.Cli.Core.Harness.Cursor;
+using Capacitor.Cli.Core.Harness.Gemini;
+using Capacitor.Cli.Core.Harness.Kiro;
+using Capacitor.Cli.Core.Harness.OpenCode;
+using Capacitor.Cli.Core.Harness.Pi;
 using Capacitor.Cli.Harness.Antigravity;
 using Capacitor.Cli.Harness.Claude;
 using Capacitor.Cli.Harness.Codex;
@@ -22,6 +31,8 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 /// windows for exactly the long-running sessions people have most of.
 /// </remarks>
 internal sealed class ImportDiscoveryAgeTests {
+    [TempHome] public required TempHome Home { get; init; }
+
     [TempConfigRoot] public required TempConfigRoot Config { get; init; }
 
     static DiscoveredSession Session(
@@ -40,7 +51,7 @@ internal sealed class ImportDiscoveryAgeTests {
         var       day  = tmp.CreateDir("sessions", "2026", "01", "05");
         var       roll = day.CreateFile("rollout-abc.jsonl", "{}");
 
-        var age = new CodexImportSource(Config.Root).DiscoveryAge(Session("codex", null, roll));
+        var age = new CodexImportSource(Config.Root, CodexPaths.FromEnvironment(Home).Sessions).DiscoveryAge(Session("codex", null, roll));
 
         // Not the file's mtime, which is now: --since prunes Codex on the directory alone.
         await Assert.That(age!.Value.UtcDateTime.Date).IsEqualTo(new DateTime(2026, 1, 5));
@@ -54,7 +65,7 @@ internal sealed class ImportDiscoveryAgeTests {
             /*lang=json*/ "{\"type\":\"user\",\"timestamp\":\"2026-08-01T10:00:00Z\",\"message\":{\"content\":\"later\"}}",
         ]);
 
-        var age = new ClaudeImportSource(Config.Root).DiscoveryAge(Session("claude", null, path));
+        var age = new ClaudeImportSource(Config.Root, new ClaudePaths(Home, null).Projects).DiscoveryAge(Session("claude", null, path));
 
         // A session started in January and appended to today belongs to January, which is the window
         // --since places it in. Taking mtime would count it inside a 30-day window it is not in.
@@ -74,7 +85,7 @@ internal sealed class ImportDiscoveryAgeTests {
 
         var path = tmp.CreateFile("session.jsonl", [.. lines]);
 
-        var age = new ClaudeImportSource(Config.Root).DiscoveryAge(Session("claude", null, path));
+        var age = new ClaudeImportSource(Config.Root, new ClaudePaths(Home, null).Projects).DiscoveryAge(Session("claude", null, path));
 
         await Assert.That(age!.Value.UtcDateTime.Date).IsEqualTo(new DateTime(2026, 1, 5));
     }
@@ -84,7 +95,7 @@ internal sealed class ImportDiscoveryAgeTests {
         using var tmp  = new TempDir();
         var       path = tmp.CreateFile("garbage.jsonl", "not json at all");
 
-        var age = new ClaudeImportSource(Config.Root).DiscoveryAge(Session("claude", null, path));
+        var age = new ClaudeImportSource(Config.Root, new ClaudePaths(Home, null).Projects).DiscoveryAge(Session("claude", null, path));
 
         // Same fallback the --since filter takes when the metadata carries no timestamp.
         await Assert.That(age).IsNotNull();
@@ -115,15 +126,23 @@ internal sealed class ImportDiscoveryAgeTests {
 
     /// <summary>Every source but Claude and Codex, which resolve no timestamp during discovery.</summary>
     IImportSource SourceFor(string vendor) => vendor switch {
-        "gemini"      => new GeminiImportSource(),
-        "kiro"        => new KiroImportSource(Config.Root),
-        "pi"          => new PiImportSource(Config.Root),
-        "copilot"     => new CopilotImportSource(Config.Root),
-        "antigravity" => new AntigravityImportSource(),
-        "opencode"    => new OpenCodeImportSource(),
-        "cursor"      => new CursorImportSource(Config.Root),
+        "gemini"      => new GeminiImportSource(GeminiPaths.FromEnvironment(Home).TmpDir),
+        "kiro"        => new KiroImportSource(Config.Root, KiroPaths.FromEnvironment(Home).SessionsDir),
+        "pi"          => new PiImportSource(Config.Root, PiPaths.FromEnvironment(Home).SessionsDir),
+        "copilot"     => new CopilotImportSource(Config.Root, CopilotPaths.FromEnvironment(Home)),
+        "antigravity" => new AntigravityImportSource(AntigravityPaths.FromEnvironment(Home)),
+        "opencode"    => new OpenCodeImportSource(
+            Path.Combine(OpenCodePaths.FromEnvironment(Home).DataDir, "opencode.db"),
+            OpenCodePaths.FromEnvironment(Home).ImportLedgerJson),
+        "cursor"      => NewCursorSource(),
         _             => throw new ArgumentOutOfRangeException(nameof(vendor), vendor, null),
     };
+
+    CursorImportSource NewCursorSource() {
+        var paths = CursorPaths.FromEnvironment(Home);
+
+        return new(Config.Root, paths.ProjectsDir, paths.WorkspaceStorageDir);
+    }
 
     [Test]
     public async Task An_age_that_cannot_be_determined_is_null_rather_than_guessed() {

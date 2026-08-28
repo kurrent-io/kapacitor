@@ -13,6 +13,8 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 /// <c>Console.Out</c>, so these cannot run beside a test capturing console streams.</remarks>
 [NotInParallel]
 public class DaemonCommandsServiceEnsureTests {
+    [TempHome] public required TempHome Home { get; init; }
+
     [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
     [TempConfigRoot]  public required TempConfigRoot  Config  { get; init; }
 
@@ -36,7 +38,7 @@ public class DaemonCommandsServiceEnsureTests {
         var manager = new FakeManager {
             QueryResult = new ServiceQuery(LabelProbe.Unknown, false, ServiceState.NotInstalled, null, null)
         };
-        var exit = await new DaemonServiceCommands(Daemons.Store, Config.Root, Resolutions.None(Config.Root), manager, "test-id").Ensure(["--json"]);
+        var exit = await new DaemonServiceCommands(Daemons.Store, Config.Root, Resolutions.None(Config.Root), manager, "test-id", Home).Ensure(["--json"]);
         await Assert.That(exit).IsEqualTo(1);
     }
 
@@ -49,7 +51,7 @@ public class DaemonCommandsServiceEnsureTests {
         using var held = ServiceTxnLock.TryAcquire(Daemons.Store, "test-id", TimeSpan.FromSeconds(1));
         await Assert.That(held).IsNotNull();
 
-        var exit = await new DaemonServiceCommands(Daemons.Store, Config.Root, Resolutions.None(Config.Root), manager, "test-id").Ensure(["--json"]);
+        var exit = await new DaemonServiceCommands(Daemons.Store, Config.Root, Resolutions.None(Config.Root), manager, "test-id", Home).Ensure(["--json"]);
         await Assert.That(exit).IsEqualTo(1);
     }
 

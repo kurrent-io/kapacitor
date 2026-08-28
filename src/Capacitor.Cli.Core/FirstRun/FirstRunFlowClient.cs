@@ -28,6 +28,13 @@ public sealed record FirstRunImportReportOutcome(int StatusCode) {
     public bool Recorded => StatusCode is >= 200 and < 300;
 }
 
+/// <summary>One attempt at saying this machine has gone. Never retried: it is sent as the leg ends, so
+/// there is no later tick, and what a failure costs is a browser left waiting until the flow's own
+/// lifetime ends it.</summary>
+public sealed record FirstRunRelinquishOutcome(int StatusCode) {
+    public bool Recorded => StatusCode is >= 200 and < 300;
+}
+
 /// <summary>The flow routes, as a seam: the loop, the backoff and the guards around them are the
 /// part worth testing, and they should not need a socket to exercise.</summary>
 public interface IFirstRunFlowChannel {
@@ -53,6 +60,11 @@ public interface IFirstRunFlowChannel {
     /// the run is over, so a refusal and an empty choice are both reported rather than left silent.</summary>
     Task<FirstRunImportReportOutcome> ReportImportOutcomeAsync(
         string serverUrl, string flowId, ReportFirstRunImportOutcomeRequest report, CancellationToken ct);
+
+    /// <summary>Says this machine has stopped listening, so the browser stops offering decisions nothing
+    /// will act on. Best effort by design: it is the last thing the leg does.</summary>
+    Task<FirstRunRelinquishOutcome> RelinquishAsync(
+        string serverUrl, string flowId, string reason, CancellationToken ct);
 }
 
 /// <summary>
@@ -164,6 +176,28 @@ public sealed class FirstRunFlowClient(HttpClient http) : IFirstRunFlowChannel {
             using var req = new HttpRequestMessage(
                     HttpMethod.Post,
                     $"{Base(serverUrl)}/api/first-run/flows/{Uri.EscapeDataString(flowId)}/import-outcome") {
+                Content = new StringContent(payload, Encoding.UTF8, "application/json")
+            };
+
+            using var resp = await http.SendAsync(req, ct);
+
+            return new((int)resp.StatusCode);
+        } catch (Exception e) when (IsTransient(e, ct)) {
+            return new(0);
+        }
+    }
+
+    /// <inheritdoc/>
+    public async Task<FirstRunRelinquishOutcome> RelinquishAsync(
+            string serverUrl, string flowId, string reason, CancellationToken ct) {
+        var payload = JsonSerializer.Serialize(
+            new RelinquishFirstRunFlowRequest { Reason = reason },
+            CapacitorJsonContext.Default.RelinquishFirstRunFlowRequest);
+
+        try {
+            using var req = new HttpRequestMessage(
+                    HttpMethod.Post,
+                    $"{Base(serverUrl)}/api/first-run/flows/{Uri.EscapeDataString(flowId)}/relinquish") {
                 Content = new StringContent(payload, Encoding.UTF8, "application/json")
             };
 

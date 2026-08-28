@@ -18,15 +18,16 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 /// one is a re-install.
 /// </para>
 /// </remarks>
-[NotInParallel("HomeEnvVarMutation")]
+// PATH: the fresh-install precheck resolves `kcap` through it, and so does every peer that
+// probes for a vendor CLI.
+[NotInParallel("VendorEnvOverrides")]
 public sealed class PluginCommandStaleAgentTests {
     static readonly StaleAgentProcess Running = new("kiro", 4821, "/home/dev/gaffer");
 
     [Test]
     public async Task A_first_install_names_a_session_that_was_already_running() {
         using var onPath   = new KcapOnPath();
-        using var kiroHome = new EnvScope("KIRO_HOME", null);
-        using var home     = new FakeUserHome();
+        using var home     = new TempHome();
         using var pipe     = new StringWriter();
         var env = Env(home.Path, pipe, found: [Running]);
         SeedAgent(env, installed: false);
@@ -40,8 +41,7 @@ public sealed class PluginCommandStaleAgentTests {
     [Test]
     public async Task Re_installing_over_an_existing_agent_says_nothing() {
         using var onPath   = new KcapOnPath();
-        using var kiroHome = new EnvScope("KIRO_HOME", null);
-        using var home     = new FakeUserHome();
+        using var home     = new TempHome();
         using var pipe     = new StringWriter();
         var env = Env(home.Path, pipe, found: [Running]);
         SeedAgent(env, installed: true);
@@ -59,8 +59,7 @@ public sealed class PluginCommandStaleAgentTests {
     [Test]
     public async Task A_first_install_with_nothing_running_says_nothing() {
         using var onPath   = new KcapOnPath();
-        using var kiroHome = new EnvScope("KIRO_HOME", null);
-        using var home     = new FakeUserHome();
+        using var home     = new TempHome();
         using var pipe     = new StringWriter();
         var env = Env(home.Path, pipe, found: []);
         SeedAgent(env, installed: false);
@@ -73,15 +72,14 @@ public sealed class PluginCommandStaleAgentTests {
     [Test]
     public async Task An_install_that_failed_claims_nothing_about_future_sessions() {
         using var onPath   = new KcapOnPath();
-        using var kiroHome = new EnvScope("KIRO_HOME", null);
-        using var home     = new FakeUserHome();
+        using var home     = new TempHome();
         using var pipe     = new StringWriter();
         var env = Env(home.Path, pipe, found: [Running]);
 
         // A directory where the agent JSON belongs: the clone can't write it, the command exits
         // non-zero, and live capture was never installed — so naming a session that "isn't being
         // captured" would be true but useless, and blaming this install for it would be a lie.
-        Directory.CreateDirectory(env.KiroKcapAgentJson);
+        Directory.CreateDirectory(env.Paths.Kiro.KcapAgentJson);
 
         var exit = await new PluginCommand(env).HandleAsync(["plugin", "install", "--kiro"]);
 
@@ -93,10 +91,10 @@ public sealed class PluginCommandStaleAgentTests {
     // Seeding the file skips the clone (InstallKiroHooks only shells out when it's absent) and leaves
     // the rest of the install — hook injection, default flip, marker — running for real.
     static void SeedAgent(PluginEnvironment env, bool installed) {
-        Directory.CreateDirectory(Path.GetDirectoryName(env.KiroKcapAgentJson)!);
-        File.WriteAllText(env.KiroKcapAgentJson, """{"name":"kcap","hooks":{}}""");
+        Directory.CreateDirectory(Path.GetDirectoryName(env.Paths.Kiro.KcapAgentJson)!);
+        File.WriteAllText(env.Paths.Kiro.KcapAgentJson, """{"name":"kcap","hooks":{}}""");
 
-        if (installed) KiroHooksInstaller.WriteMarker(env.KiroKcapAgentJson, "kiro_default");
+        if (installed) KiroHooksInstaller.WriteMarker(env.Paths.Kiro.KcapAgentJson, "kiro_default");
     }
 
     /// <summary>The fresh install refuses unless `kcap` resolves — the agent it writes invokes it.</summary>
@@ -121,12 +119,13 @@ public sealed class PluginCommandStaleAgentTests {
     }
 
     static PluginEnvironment Env(string home, TextWriter stdout, StaleAgentProcess[] found) => new(
-        HomeDirectory:     home,
+        Home:     new(home),
         Profiles:          new ProfileConfig(),
         ResolvePluginPath: () => null,
         Stdout:            stdout,
         Stderr:            TextWriter.Null
     ) {
+        Paths = TestHarnessPaths.NoOverrides(new(home)),
         ResolveMcpBinaryPath = () => "/usr/local/bin/kcap",
         // Never the real process table: what a CI box happens to be running must not decide a result.
         FindStaleAgents      = _ => found,

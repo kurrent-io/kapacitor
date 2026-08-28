@@ -38,6 +38,18 @@ public sealed class TempConfigRootAttribute(string? hint = null)
     protected override TempConfigRoot Create(string name) => new(name);
 }
 
+/// <summary><c>[TempHome] public required TempHome Home { get; init; }</c></summary>
+public sealed class TempHomeAttribute(string? hint = null) : TempFixtureAttribute<TempHome>(hint) {
+    protected override TempHome Create(string name) =>
+        Shared == SharedType.None
+            ? new(name)
+            // A shared home is sound only for a class that never writes into it, and nothing here
+            // proves that yet: one directory handed to concurrently running tests is the
+            // passes-alone-interferes-in-parallel bug this fixture exists to remove.
+            : throw new NotSupportedException(
+                "TempHome is per-test: a shared lifetime needs a write check that does not exist yet.");
+}
+
 /// <summary><c>[TempDaemonPaths] public required TempDaemonPaths Daemons { get; init; }</c></summary>
 public sealed class TempDaemonPathsAttribute(string? hint = null)
         : TempFixtureAttribute<TempDaemonStore>(hint) {

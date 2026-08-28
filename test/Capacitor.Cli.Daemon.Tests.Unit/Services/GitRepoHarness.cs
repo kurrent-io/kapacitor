@@ -1,6 +1,6 @@
 using System.ComponentModel;
 using System.Diagnostics;
-using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Setup;
 
 namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 
@@ -44,7 +44,7 @@ internal static class GitRepoHarness {
             // itself.
             var cwdExists = Directory.Exists(cwd);
             var gitProbe  = ProbeGitStartable();
-            var resolved  = CliExecutable.Resolve("git");   // shared helper: PATHEXT + Unix exec bit
+            var resolved  = BinaryProbe.FromEnvironment().Resolve("git");   // shared helper: PATHEXT + Unix exec bit
 
             throw new InvalidOperationException(
                 $"Failed to start 'git {string.Join(' ', args)}'. " +
@@ -83,7 +83,7 @@ internal static class GitRepoHarness {
     ///
     /// Authoritative because it uses the same mechanism that just failed, and it splits the ENOENT
     /// ambiguity: startable means the fault was the working directory, not startable means it was
-    /// the executable. `CliExecutable.Resolve` reports WHICH git alongside it.
+    /// the executable. `BinaryProbe.Resolve` reports WHICH git alongside it.
     /// </summary>
     internal static string ProbeGitStartable() {
         // Bounded so the diagnostic can never become the problem. This runs on a FAILURE path in a

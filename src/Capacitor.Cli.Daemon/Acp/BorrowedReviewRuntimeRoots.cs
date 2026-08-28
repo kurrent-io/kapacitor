@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using Capacitor.Cli.Core;
 
 namespace Capacitor.Cli.Daemon.Acp;
 
@@ -76,14 +77,13 @@ internal static class BorrowedReviewRuntimeRoots {
     /// <param name="directoryExists">Directory probe. Production passes
     /// <see cref="Directory.Exists"/>; tests pass a fake so the layout rules are assertable against a
     /// synthetic prefix without creating one on disk.</param>
-    /// <param name="userHome">The daemon user's home directory, which is never itself granted. Tests
-    /// pass an explicit value so the rule is assertable without depending on the real <c>HOME</c>.</param>
+    /// <param name="home">The daemon user's home directory, which is never itself granted.</param>
     /// <param name="fileExists">File probe, for the crypto literals. Defaults to
     /// <see cref="File.Exists"/>.</param>
     /// <param name="measuredPrefixes">Test seam ONLY, for the synthetic layouts below. Production passes
     /// null and gets <see cref="MeasuredPrefixes"/>.</param>
     internal static BorrowedReviewRuntimeGrants Resolve(
-            string vendorBinaryPath, Func<string, bool>? directoryExists = null, string? userHome = null,
+            string vendorBinaryPath, UserHome home, Func<string, bool>? directoryExists = null,
             Func<string, bool>? fileExists = null, IReadOnlyList<string>? measuredPrefixes = null) {
         var dirExists  = directoryExists ?? Directory.Exists;
         var thisExists = fileExists ?? directoryExists ?? File.Exists;
@@ -96,7 +96,7 @@ internal static class BorrowedReviewRuntimeRoots {
         // /home -> /System/Volumes/Data/home — a real prefix under home resolves to a physical path that
         // is not lexically "within" the logical home, and the under-home refusal below would silently
         // not apply. Comparing against both forms cannot be defeated by either one.
-        var home = HomeForms(userHome ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
+        var homeForms = HomeForms(home.Path);
 
         // A bare command name — the shipped default for every vendor path — must never reach here:
         // Path.GetFullPath would resolve it against the DAEMON'S CURRENT DIRECTORY, making that
@@ -119,7 +119,7 @@ internal static class BorrowedReviewRuntimeRoots {
         files.Add(resolved);
 
         var prefix = FindInstallationPrefix(
-            packageDirectory, dirExists, home, measuredPrefixes ?? MeasuredPrefixes);
+            packageDirectory, dirExists, homeForms, measuredPrefixes ?? MeasuredPrefixes);
 
         if (prefix is not null) {
             foreach (var subdirectory in SoftwareSubdirectories) {

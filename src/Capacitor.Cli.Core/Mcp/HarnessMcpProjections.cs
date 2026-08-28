@@ -20,18 +20,19 @@ public sealed record HarnessMcpProjection(
     /// <summary>Writes this harness's kcap servers into <paramref name="configPath"/>. The marker name
     /// is derived from the harness rather than passed in, so the two call sites cannot disagree about
     /// which entries kcap owns — a mismatch there would strand entries on uninstall.</summary>
-    public JsonMcpConfigWriter.Change Register(string configPath, string? cwd = null,
+    public JsonMcpConfigWriter.Change Register(string configPath, UserHome home, string? cwd = null,
                                                Func<string?>? resolveBinaryPath = null) =>
-        JsonMcpConfigWriter.Register(configPath, Servers, Shape, cwd, new McpMarker(Harness), resolveBinaryPath);
+        JsonMcpConfigWriter.Register(configPath, Servers, Shape, cwd, new McpMarker(Harness, home), resolveBinaryPath);
 
-    public JsonMcpConfigWriter.Change Unregister(string configPath) =>
-        JsonMcpConfigWriter.Unregister(configPath, Shape, new McpMarker(Harness));
+    public JsonMcpConfigWriter.Change Unregister(string configPath, UserHome home) =>
+        JsonMcpConfigWriter.Unregister(configPath, Shape, new McpMarker(Harness, home));
 
     /// <summary>Whether kcap currently owns any entry in this harness's config — the "is the MCP
     /// half already installed?" probe. Here rather than at the call site for the same reason as the
     /// marker itself: a probe reading a DIFFERENT ownership tuple than the writer would report an
     /// existing install as absent, and the refresh path would then skip it.</summary>
-    public bool OwnsAnything(string configPath) => new McpMarker(Harness).Owned(configPath).Any();
+    public bool OwnsAnything(string configPath, UserHome home) =>
+        new McpMarker(Harness, home).Owned(configPath).Any();
 }
 
 /// <summary>The JSON-config harnesses, and the single definition of what each one gets.

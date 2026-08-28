@@ -25,6 +25,8 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 /// </summary>
 [ParallelLimiter<SubprocessLimit>]
 public class AgentOrchestratorBorrowLaunchTests {
+    [TempHome] public required TempHome Home { get; init; }
+
     // The bridge's loopback listener can still refuse a connection while coming up, so the manifest
     // is fetched with a bound rather than once.
     static async Task<string> FetchAsync(HttpClient client, string url) {
@@ -43,6 +45,7 @@ public class AgentOrchestratorBorrowLaunchTests {
             var ptyFactory = new SpyPtyProcessFactory();
             var launcher = new ClaudeLauncher(
                 new DaemonConfig { ClaudePath = "spy-claude", ServerUrl = "http://127.0.0.1:1" },
+                Home,
                 NullLogger<ClaudeLauncher>.Instance);
             await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, ptyFactory,
                 new Dictionary<string, IHostedAgentLauncher> { ["claude"] = launcher });

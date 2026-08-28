@@ -1,8 +1,6 @@
-namespace Capacitor.Cli.Core.Setup;
+using Capacitor.Cli.Core.Harness;
 
-/// <summary>One vendor's line in a <see cref="HarnessInventory"/>: is the harness installed on this
-/// machine, and is kcap wired into it.</summary>
-public sealed record HarnessInventoryEntry(bool Detected, bool Wired);
+namespace Capacitor.Cli.Core.Setup;
 
 /// <summary>
 /// A machine's coding-agent inventory (surface 3): per vendor, detected + kcap-wired, plus the
@@ -18,8 +16,9 @@ public sealed record HarnessInventory(
     /// <summary>Pure: computes the inventory from an injected detection snapshot + offer ledger +
     /// machine id, over every <see cref="HarnessCatalog"/> vendor. No I/O, no throttle — both
     /// carriers (daemon status report, hook ingest) share this.</summary>
-    public static HarnessInventory Evaluate(AgentDetectionInputs inputs, HarnessOfferLedger ledger, string machineId) =>
-        Evaluate(AgentDetection.Detect(inputs), id => HarnessIntegrationProbe.IsWired(id, inputs), ledger, machineId);
+    public static HarnessInventory Evaluate(
+            HarnessPaths paths, BinaryProbe binaries, HarnessOfferLedger ledger, string machineId) =>
+        Evaluate(AgentDetection.Detect(paths, binaries), paths.IsWired, ledger, machineId);
 
     /// <summary>Injectable core (detection result + wired-probe + ledger already resolved), so the
     /// vendor→entry mapping is unit-testable without touching the filesystem or PATH.</summary>
@@ -40,6 +39,7 @@ public sealed record HarnessInventory(
 
     /// <summary>Production convenience: evaluate from the current process environment, the default
     /// on-disk offer ledger (read-only — never claims the throttle stamp), and this machine's id.</summary>
-    public static HarnessInventory EvaluateCurrent(ConfigRoot config) =>
-        Evaluate(AgentDetection.FromEnvironment(), new HarnessOfferStore(config).Load(), new Core.MachineId(config).Get());
+    public static HarnessInventory EvaluateCurrent(ConfigRoot config, UserHome home) =>
+        Evaluate(HarnessPaths.FromEnvironment(home), BinaryProbe.FromEnvironment(),
+                 new HarnessOfferStore(config).Load(), new Core.MachineId(config).Get());
 }

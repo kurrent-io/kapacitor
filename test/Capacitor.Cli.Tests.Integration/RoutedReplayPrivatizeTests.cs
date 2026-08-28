@@ -37,6 +37,7 @@ namespace Capacitor.Cli.Tests.Integration;
 /// </summary>
 public class RoutedReplayPrivatizeTests : IDisposable {
     [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+    [TempHome] public required TempHome Home { get; init; }
 
     readonly WireMockServer _server     = WireMockServer.Start();
     readonly TempDir        _tmp        = new();
@@ -128,10 +129,10 @@ public class RoutedReplayPrivatizeTests : IDisposable {
         StubVisibilityPut();
     }
 
-    Task<int> RunAntigravityImport(bool forcePrivate) => new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root)).HandleImport(
+    Task<int> RunAntigravityImport(bool forcePrivate) => new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), Home).HandleImport(
         filterCwd: null,
         minLines: 0,
-        sources: [new AntigravityImportSource(home: _agHome, geminiCliHome: "")],
+        sources: [new AntigravityImportSource(new(new(_agHome), ""))],
         scope: new ImportScope.All(),
         skipConfirmation: true,
         forcePrivate: forcePrivate
@@ -242,10 +243,10 @@ public class RoutedReplayPrivatizeTests : IDisposable {
             .RespondWith(Response.Create().WithStatusCode(500));
         StubVisibilityPut();
 
-        var exitCode = await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root)).HandleImport(
+        var exitCode = await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), Home).HandleImport(
             filterCwd: null,
             minLines: 0,
-            sources: [new GeminiImportSource(tmpDirOverride: _geminiHome)],
+            sources: [new GeminiImportSource(_geminiHome)],
             scope: new ImportScope.All(),
             skipConfirmation: true,
             forcePrivate: true
