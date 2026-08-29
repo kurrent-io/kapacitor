@@ -140,7 +140,7 @@ public sealed class ChatTabViewModel : ReactiveObject {
             .Transform(p => new PermissionCardViewModel(p, permissions, _rootSubject))
             .DisposeMany()
             .SortAndBind(out var pendingPermissions, Comparer<PermissionCardViewModel>.Create((a, b) => {
-                var byTime = string.CompareOrdinal(a.RequestedAtKey, b.RequestedAtKey);
+                var byTime = a.RequestedAt.CompareTo(b.RequestedAt);
                 return byTime != 0 ? byTime : string.CompareOrdinal(a.RequestId, b.RequestId);
             }))
             .Subscribe()

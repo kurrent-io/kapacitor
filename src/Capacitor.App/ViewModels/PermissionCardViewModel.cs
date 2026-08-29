@@ -21,8 +21,8 @@ public sealed class PermissionCardViewModel : ReactiveObject, IDisposable {
     public string Detail => _detail.Value;
     public bool ShowsAllowAlways { get; }
 
-    /// Sortable ISO text — the tie-break key ChatTabViewModel's card comparer orders by.
-    internal string RequestedAtKey => _entry.RequestedAt.ToString("O");
+    /// The instant ChatTabViewModel's card comparer orders by.
+    internal DateTimeOffset RequestedAt => _entry.RequestedAt;
 
     // Feeds AllowCommand/AllowAlwaysCommand/DenyCommand's canExecute via this subject rather than
     // this.WhenAnyValue: that call routes through ReactiveUI's ObservableForProperty/RxAppBuilder
