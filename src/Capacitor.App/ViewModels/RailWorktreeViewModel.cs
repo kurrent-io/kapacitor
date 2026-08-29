@@ -13,8 +13,8 @@ namespace Capacitor.App.ViewModels;
 
 /// One worktree level of the rail: the collapsible row plus its session rows. ShowHeader=false
 /// is the No-repository group's single nested group — rendered headerless, sessions always
-/// visible (spec §3). No ObserveOn here: the OUTER pipeline (SessionRailViewModel) marshals to
-/// the UI thread before any group cache is mutated, so everything below already runs there.
+/// visible (spec §3). No ObserveOn here: SessionRailViewModel marshals the group cache pipeline
+/// and agentsWithPending to the UI thread once at the root before either reaches this class.
 public sealed class RailWorktreeViewModel : ReactiveObject, IDisposable {
     public string Path { get; }
     public string Label { get; }

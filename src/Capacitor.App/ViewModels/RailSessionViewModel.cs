@@ -9,8 +9,9 @@ using ReactiveUI;
 namespace Capacitor.App.ViewModels;
 
 /// One session row of the rail. Recreated per dto revision (DynamicData Transform), so every
-/// static field is computed once from the ctor dto; only IsSelected is live — selection changes
-/// are not dto revisions. Age is a point-in-time snapshot (SessionCardViewModel precedent).
+/// static field is computed once from the ctor dto; IsSelected and NeedsYou stay live because
+/// selection and pending-set membership each change without a dto revision. Age is a
+/// point-in-time snapshot (SessionCardViewModel precedent).
 public sealed class RailSessionViewModel : ReactiveObject, IDisposable {
     public string Id { get; }
     public string Primary { get; }
