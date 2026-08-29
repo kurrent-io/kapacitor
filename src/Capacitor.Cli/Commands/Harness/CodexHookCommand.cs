@@ -551,7 +551,8 @@ sealed class CodexHookCommand(ConfigRoot config, ProfileContext profiles, HookCl
         client.Timeout = Timeout.InfiniteTimeSpan;
 
         try {
-            using var content = new StringContent(node.ToJsonString(), Encoding.UTF8, "application/json");
+            var bridgePayload = BuildBridgePayload(node, HookAgentId.FromEnvironment());
+            using var content = new StringContent(bridgePayload.ToJsonString(), Encoding.UTF8, "application/json");
             using var resp    = await client.PostAsync($"{bridgeBase}/codex/permission-request", content);
 
             if (!resp.IsSuccessStatusCode) {
@@ -567,6 +568,12 @@ sealed class CodexHookCommand(ConfigRoot config, ProfileContext profiles, HookCl
             Console.Error.WriteLine($"[kcap] codex-hook permission-request bridge error: {ex.Message}");
             return EmitDenyAndExitNonzero();
         }
+    }
+
+    internal static JsonObject BuildBridgePayload(JsonNode node, string? agentId) {
+        var payload = (JsonObject)node.DeepClone();
+        if (agentId is not null) payload["agent_id"] = agentId;
+        return payload;
     }
 
     static int EmitDenyAndExitNonzero() {

@@ -812,4 +812,13 @@ public class CodexHookCommandTests : IDisposable {
             Environment.SetEnvironmentVariable("KCAP_SKIP", previousSkip);
         }
     }
+
+    [Test]
+    public async Task Bridge_payload_adds_agent_id_beside_the_hooks_own_cwd() {
+        var node = System.Text.Json.Nodes.JsonNode.Parse("""{"session_id":"abc","cwd":"/repo","tool_name":"shell","tool_input":{"command":"ls"}}""")!;
+        var bridge = CodexHookCommand.BuildBridgePayload(node, "agent-1");
+        await Assert.That(bridge["agent_id"]!.GetValue<string>()).IsEqualTo("agent-1");
+        await Assert.That(bridge["cwd"]!.GetValue<string>()).IsEqualTo("/repo");
+        await Assert.That(node["agent_id"]).IsNull().Because("the hook's own node is not mutated");
+    }
 }
