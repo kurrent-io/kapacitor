@@ -570,7 +570,7 @@ internal sealed partial class LocalPermissionBridge(
 
                 if (pending is null) {
                     // Server-only path.
-                    if (attributed is not null) LogUnattributable(logger, sessionId);
+                    if (attributed is not null) LogPendingOutOfBounds(logger, sessionId);
                     try {
                         decision = await server.RequestPermissionAsync(sessionId, toolName, toolInput, suggestions, ct);
                     } catch (Exception ex) {
@@ -616,15 +616,22 @@ internal sealed partial class LocalPermissionBridge(
     }
 
     /// Written under a bounded token of its own, never the bridge token: shutdown cancels that
-    /// token before the drain, and a claimed answer must still reach the hook.
+    /// token before the drain, and a claimed answer must still reach the hook. A failed write
+    /// aborts the connection rather than leaving it open for the caller's Close() to fault on
+    /// already-sent headers.
     static async Task WriteResponseAsync(HttpListenerContext context, string responseJson) {
         using var writeCts = new CancellationTokenSource(ResponseWriteTimeout);
         var bytes = Encoding.UTF8.GetBytes(responseJson);
         context.Response.ContentType     = "application/json";
         context.Response.StatusCode      = 200;
         context.Response.ContentLength64 = bytes.LongLength;
-        await context.Response.OutputStream.WriteAsync(bytes, writeCts.Token);
-        context.Response.Close();
+        try {
+            await context.Response.OutputStream.WriteAsync(bytes, writeCts.Token);
+            context.Response.Close();
+        } catch {
+            context.Response.Abort();
+            throw;
+        }
     }
 
     internal static PermissionPendingDto? BuildPending(
@@ -648,10 +655,10 @@ internal sealed partial class LocalPermissionBridge(
     async Task RunServerLegAsync(
             PermissionPendingDto pending, string? toolName, JsonElement? toolInput, JsonElement? suggestions,
             Task<PermissionSettlement> settlement, CancellationToken daemonToken) {
-        Interlocked.Increment(ref _serverLegsInFlight);
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(daemonToken);
-        var wake = settlement.ContinueWith(_ => { try { cts.Cancel(); } catch (ObjectDisposedException) { } }, TaskScheduler.Default);
+        _ = settlement.ContinueWith(_ => { try { cts.Cancel(); } catch (ObjectDisposedException) { } }, TaskScheduler.Default);
         try {
+            Interlocked.Increment(ref _serverLegsInFlight);
             string serverRequestId;
             try {
                 serverRequestId = await server.BeginPermissionRequestAsync(
@@ -686,7 +693,6 @@ internal sealed partial class LocalPermissionBridge(
         } catch (Exception ex) {
             LogServerLegFaulted(logger, ex, pending.RequestId);
         } finally {
-            _ = wake;
             Interlocked.Decrement(ref _serverLegsInFlight);
         }
     }
@@ -873,8 +879,8 @@ internal sealed partial class LocalPermissionBridge(
     [LoggerMessage(Level = LogLevel.Warning, Message = "Local permission bridge has {PrefixCount} listener prefixes; revoked reviewer prefixes are retained until the daemon stops")]
     static partial void LogReviewerPrefixHighWater(ILogger logger, int prefixCount);
 
-    [LoggerMessage(Level = LogLevel.Debug, Message = "Permission request for session {SessionId} could not be attributed to a live agent; server-only path")]
-    static partial void LogUnattributable(ILogger logger, string sessionId);
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Permission request for session {SessionId} was attributed but exceeds the pending bounds; server-only path")]
+    static partial void LogPendingOutOfBounds(ILogger logger, string sessionId);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Server leg for permission request {RequestId} could not begin")]
     static partial void LogServerLegBeginFailed(ILogger logger, Exception exception, string requestId);

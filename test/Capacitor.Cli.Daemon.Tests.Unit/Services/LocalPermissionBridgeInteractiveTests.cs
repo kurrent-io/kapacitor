@@ -34,12 +34,10 @@ public class LocalPermissionBridgeInteractiveTests {
             Client.PostAsync($"{Bridge.BaseUrl}/claude/permission-request",
                 JsonContent.Create(new { session_id = Session, tool_name = toolName, tool_input = new { command = "ls" }, agent_id = agentId, cwd = "/repo" }));
 
-#pragma warning disable CA1822 // instance method to keep call sites as `h.BehaviorOf(...)`
-        public async Task<string> BehaviorOf(HttpResponseMessage response) {
+        public static async Task<string> BehaviorOf(HttpResponseMessage response) {
             using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
             return doc.RootElement.GetProperty("hookSpecificOutput").GetProperty("decision").GetProperty("behavior").GetString()!;
         }
-#pragma warning restore CA1822
 
         public string[] LogLines() {
             var path = Tmp.PathTo("permission-decisions.jsonl");
@@ -48,7 +46,10 @@ public class LocalPermissionBridgeInteractiveTests {
 
         public async Task<PermissionPendingDto> WaitPendingAsync() {
             var deadline = DateTime.UtcNow.AddSeconds(5);
-            while (Broker.PendingSnapshot().Count == 0 && DateTime.UtcNow < deadline) await Task.Delay(10);
+            while (Broker.PendingSnapshot().Count == 0) {
+                if (DateTime.UtcNow > deadline) throw new TimeoutException("Timed out waiting for a pending request");
+                await Task.Delay(10);
+            }
             return Broker.PendingSnapshot().Single();
         }
 
@@ -71,7 +72,7 @@ public class LocalPermissionBridgeInteractiveTests {
         await Assert.That(pending.AgentId).IsEqualTo("agent-1");
 
         await Assert.That(h.Broker.TrySettle(pending.RequestId, Allow, "allow", "app")).IsTrue();
-        await Assert.That(await h.BehaviorOf(await response)).IsEqualTo("allow");
+        await Assert.That(await Harness.BehaviorOf(await response)).IsEqualTo("allow");
 
         var ct = await awaitCts.Task.WaitAsync(TimeSpan.FromSeconds(5));
         await WaitUntil(() => ct.IsCancellationRequested, "the server await is cancelled");
@@ -97,7 +98,7 @@ public class LocalPermissionBridgeInteractiveTests {
         _ = await reader.ReadAsync(new CancellationTokenSource(5000).Token); // Pending
 
         serverDecision.SetResult(Deny);
-        await Assert.That(await h.BehaviorOf(await response)).IsEqualTo("deny");
+        await Assert.That(await Harness.BehaviorOf(await response)).IsEqualTo("deny");
         var resolved = ((PermissionStreamItem.Resolved)await reader.ReadAsync(new CancellationTokenSource(5000).Token)).Dto;
         await Assert.That(resolved.Source).IsEqualTo("server");
         await Assert.That(h.Broker.TrySettle(pending.RequestId, Allow, "allow", "app")).IsFalse();
@@ -114,7 +115,7 @@ public class LocalPermissionBridgeInteractiveTests {
         var response = h.PostAsync();
         var pending = await h.WaitPendingAsync();
         h.Broker.TrySettle(pending.RequestId, Allow, "allow", "app");
-        await Assert.That(await h.BehaviorOf(await response)).IsEqualTo("allow");
+        await Assert.That(await Harness.BehaviorOf(await response)).IsEqualTo("allow");
         await WaitUntil(() => h.Server.Responds.Count == 1, "respond attempted");
         await Assert.That(h.LogLines()[0]).Contains("\"outcome\":\"allow\"");
     }
@@ -125,7 +126,7 @@ public class LocalPermissionBridgeInteractiveTests {
         h.Server.BeginScript = (_, _) => throw new Microsoft.AspNetCore.SignalR.HubException("boom");
         await h.StartAsync();
         var response = await h.PostAsync();
-        await Assert.That(await h.BehaviorOf(response)).IsEqualTo("deny");
+        await Assert.That(await Harness.BehaviorOf(response)).IsEqualTo("deny");
         await Assert.That(h.LogLines()[0]).Contains("\"source\":\"no_ui\"");
         await Assert.That(h.Server.Responds.Count).IsEqualTo(0);
     }
@@ -144,7 +145,7 @@ public class LocalPermissionBridgeInteractiveTests {
         await Task.Delay(100);
         await Assert.That(response.IsCompleted).IsFalse().Because("a subscriber leaving never denies");
         h.Broker.TrySettle(pending.RequestId, Allow, "allow", "app");
-        await Assert.That(await h.BehaviorOf(await response)).IsEqualTo("allow");
+        await Assert.That(await Harness.BehaviorOf(await response)).IsEqualTo("allow");
     }
 
     [Test, NotInParallel(nameof(LocalPermissionBridgeInteractiveTests))]
@@ -169,7 +170,7 @@ public class LocalPermissionBridgeInteractiveTests {
         await WaitUntil(() => seen is not null, "Begin entered");
 
         h.Broker.TrySettle(pending.RequestId, Allow, "allow", "app");
-        await Assert.That(await h.BehaviorOf(await response)).IsEqualTo("allow");
+        await Assert.That(await Harness.BehaviorOf(await response)).IsEqualTo("allow");
         release.SetResult();
         await WaitUntil(() => h.Bridge.ServerLegsInFlightForTest == 0, "the leg completes");
         await Assert.That(invoked).IsEqualTo(0);
@@ -185,7 +186,7 @@ public class LocalPermissionBridgeInteractiveTests {
         var response = h.PostAsync();
         _ = await h.WaitPendingAsync();
         h.Broker.WithdrawForAgent("agent-1");
-        await Assert.That(await h.BehaviorOf(await response)).IsEqualTo("deny");
+        await Assert.That(await Harness.BehaviorOf(await response)).IsEqualTo("deny");
         await Assert.That(h.LogLines()[0]).Contains("\"source\":\"agent_gone\"");
         await WaitUntil(() => h.Bridge.ServerLegsInFlightForTest == 0, "the leg completes");
     }
@@ -195,7 +196,7 @@ public class LocalPermissionBridgeInteractiveTests {
         await using var h = new Harness(attributeTo: null);
         await h.StartAsync();
         var response = await h.PostAsync();
-        await Assert.That(await h.BehaviorOf(response)).IsEqualTo("allow"); // the fake's legacy composition
+        await Assert.That(await Harness.BehaviorOf(response)).IsEqualTo("allow"); // the fake's legacy composition
         await Assert.That(h.Broker.PendingSnapshot().Count).IsEqualTo(0);
         await Assert.That(h.LogLines().Length).IsEqualTo(0);
     }
@@ -212,7 +213,7 @@ public class LocalPermissionBridgeInteractiveTests {
         await Assert.That(pending.ToolInput).IsNull();
         await Assert.That(pending.ToolInputOmitted).IsTrue();
         h.Broker.TrySettle(pending.RequestId, Allow, "allow", "app");
-        await Assert.That(await h.BehaviorOf(await response)).IsEqualTo("allow");
+        await Assert.That(await Harness.BehaviorOf(await response)).IsEqualTo("allow");
     }
 
     [Test]
