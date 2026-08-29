@@ -47,11 +47,11 @@ public class PiPathsTests {
     [NotInParallel]
     public async Task FromEnvironment_takes_PI_CODING_AGENT_DIR_as_the_agent_leaf() {
         // The env value IS the leaf — no extra /agent appended, unlike the home default.
-        var relocated = Path.Combine(Path.GetTempPath(), "kcap-pi-agent");
+        using var relocated = new TempDir();
 
-        using var env = EnvScope.Exclusive("PI_CODING_AGENT_DIR", relocated);
+        using var env = EnvScope.Exclusive("PI_CODING_AGENT_DIR", relocated.Path);
 
-        await Assert.That(PiHarness.FromEnvironment(new("/fake/home")).Paths.AgentDir).IsEqualTo(relocated);
+        await Assert.That(PiHarness.FromEnvironment(new("/fake/home")).Paths.AgentDir).IsEqualTo(relocated.Path);
     }
 
     [Test]

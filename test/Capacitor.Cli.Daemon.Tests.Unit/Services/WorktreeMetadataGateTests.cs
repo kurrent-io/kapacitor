@@ -14,10 +14,9 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 /// — rather than an elapsed-time bound on the operation itself. That is strictly stronger, but be clear
 /// about the residual assumption: the second acquisition must reach the semaphore within the settle
 /// window below, or the expected order would also appear WITHOUT exclusion. There is no seam to observe
-/// "reached the gate", so the window is sized generously against work that takes microseconds. The real
-/// evidence that these assertions bite is mutation testing: deleting the gate fails all three of them
-/// (an earlier version of this file used IsEquivalentTo, which ignores ordering, and passed with the
-/// gate deleted — hence the positional assertions).</para>
+/// "reached the gate", so the window is sized generously against work that takes microseconds. Mutation
+/// testing is what shows these assertions bite: deleting the gate fails all three, but only because the
+/// checks are positional — <c>IsEquivalentTo</c> ignores ordering and would pass regardless.</para>
 /// </summary>
 [ParallelLimiter<SubprocessLimit>]
 public class WorktreeMetadataGateTests {
@@ -111,20 +110,16 @@ public class WorktreeMetadataGateTests {
         // must exclude each other even though their paths differ. Keying on the checkout path (rather
         // than rev-parse --git-common-dir) lets these run concurrently — the exact unguarded add this
         // change exists to prevent.
-        using var root = new TempDir();
-        var main   = root.PathTo("main");
-        var linked = root.PathTo("linked");
-        Directory.CreateDirectory(main);
+        using var repo = GitRepo.Create();
+        // A linked worktree must sit outside the repository it comes from.
+        using var worktrees = new TempDir();
+        var linked = worktrees.PathTo("linked");
 
-        Git(main, "init", "-q", ".");
-        Git(main, "config", "user.email", "t@t");
-        Git(main, "config", "user.name", "t");
-        File.WriteAllText(Path.Combine(main, "a.txt"), "a");
-        Git(main, "add", "-A");
-        Git(main, "commit", "-q", "-m", "init");
-        Git(main, "worktree", "add", "-q", linked, "-b", "side");
+        repo.CreateFile("a.txt", "a");
+        repo.CommitAll("init");
+        repo.AddWorktree(linked, "side");
 
-        await AssertSecondWaitsForFirst(main, linked);
+        await AssertSecondWaitsForFirst(repo.Path, linked);
     }
 
     [Test]
@@ -166,13 +161,4 @@ public class WorktreeMetadataGateTests {
             .WaitAsync(TimeSpan.FromSeconds(30));
     }
 
-    static void Git(string cwd, params string[] args) {
-        using var proc = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("git", args) {
-            WorkingDirectory = cwd, RedirectStandardOutput = true, RedirectStandardError = true
-        })!;
-        proc.WaitForExit();
-
-        if (proc.ExitCode != 0)
-            throw new InvalidOperationException($"git {string.Join(' ', args)}: {proc.StandardError.ReadToEnd()}");
-    }
 }

@@ -22,7 +22,8 @@ public class ConfigRootTests {
     /// <c>..</c> segment still escapes; no caller passes a segment it did not write itself.</summary>
     [Test]
     public async Task Path_keeps_the_root_when_a_segment_looks_rooted() {
-        var root = new ConfigRoot(Path.Combine(Path.GetTempPath(), "kcap-root"));
+        using var tmp = new TempDir();
+        var root = new ConfigRoot(tmp.Path);
 
         var joined = root.Path($"{Path.DirectorySeparatorChar}etc", "passwd");
 

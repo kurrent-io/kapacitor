@@ -14,8 +14,8 @@ public class OpenCodePathsTests {
         await Assert.That(Oc("/fake/home", xdgConfigHome: "/xdg").ConfigDir)
             .IsEqualTo(Path.Combine("/xdg", "opencode"));
         // OPENCODE_CONFIG_DIR wins over XDG, and is taken verbatim rather than as a parent.
-        await Assert.That(Oc("/fake/home", configDir: "/relocated/oc", xdgConfigHome: "/xdg").ConfigDir)
-            .IsEqualTo("/relocated/oc");
+        await Assert.That(Oc("/fake/home", configDir: "/relocated.Path/oc", xdgConfigHome: "/xdg").ConfigDir)
+            .IsEqualTo("/relocated.Path/oc");
     }
 
     [Test]
@@ -37,16 +37,16 @@ public class OpenCodePathsTests {
     [Test]
     [NotInParallel]
     public async Task FromEnvironment_reads_the_three_overrides() {
-        var relocated = Path.Combine(Path.GetTempPath(), "kcap-oc-cfg");
+        using var relocated = new TempDir();
 
-        using var cfg  = EnvScope.Exclusive("OPENCODE_CONFIG_DIR", relocated);
+        using var cfg  = EnvScope.Exclusive("OPENCODE_CONFIG_DIR", relocated.Path);
         using var xdgC = EnvScope.Exclusive("XDG_CONFIG_HOME", "/xdg");
         using var xdgD = EnvScope.Exclusive("XDG_DATA_HOME", "/xdgd");
 
         var paths = OpenCodeHarness.FromEnvironment(new("/fake/home")).Paths;
 
-        await Assert.That(paths.ConfigDir).IsEqualTo(relocated);
-        await Assert.That(paths.KcapPlugin).IsEqualTo(Path.Combine(relocated, "plugins", "kcap.ts"));
+        await Assert.That(paths.ConfigDir).IsEqualTo(relocated.Path);
+        await Assert.That(paths.KcapPlugin).IsEqualTo(relocated.PathTo("plugins", "kcap.ts"));
         await Assert.That(paths.DataDir).IsEqualTo(Path.Combine("/xdgd", "opencode"));
     }
 }

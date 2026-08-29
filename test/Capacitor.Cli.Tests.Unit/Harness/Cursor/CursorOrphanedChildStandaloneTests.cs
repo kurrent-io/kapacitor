@@ -231,12 +231,14 @@ public class CursorOrphanedChildStandaloneTests {
         new(http, "http://localhost", minLines, ExcludedRepos: null, ExcludedPaths: null, Home: Home);
 
     sealed class ProjectsDirFixture : IDisposable {
+        readonly TempDir _root = new("cursorprojects");
+
         public string Root                { get; }
         public string ProjectsDir         => Path.Combine(Root, ".cursor", "projects");
         public string WorkspaceStorageDir => Path.Combine(Root, "workspaceStorage");
 
         public ProjectsDirFixture() {
-            Root = Path.Combine(Path.GetTempPath(), $"kcap-cursor-orphan-{Guid.NewGuid():N}");
+            Root = _root.Path;
             Directory.CreateDirectory(ProjectsDir);
             Directory.CreateDirectory(WorkspaceStorageDir);
         }

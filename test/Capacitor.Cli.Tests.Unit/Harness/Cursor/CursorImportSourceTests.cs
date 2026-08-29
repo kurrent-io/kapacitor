@@ -70,7 +70,7 @@ public class CursorImportSourceTests {
 
     [Test]
     public async Task is_unavailable_when_projects_dir_missing() {
-        var missing = Path.Combine(Path.GetTempPath(), $"kcap-cursor-missing-{Guid.NewGuid():N}");
+        using var missingDir = TempDir.WithPathTo("kcap-cursor-missing", out var missing);
         var src     = new CursorImportSource(Config.Root, missing, missing);
         await Assert.That(src.IsAvailable).IsFalse();
     }
@@ -89,7 +89,7 @@ public class CursorImportSourceTests {
 
     [Test]
     public async Task discover_returns_empty_when_projects_dir_missing() {
-        var missing = Path.Combine(Path.GetTempPath(), $"kcap-cursor-missing-{Guid.NewGuid():N}");
+        using var missingDir = TempDir.WithPathTo("kcap-cursor-missing", out var missing);
         var src     = new CursorImportSource(Config.Root, missing, missing);
         var result  = await src.DiscoverAsync(Filters(), CancellationToken.None);
         await Assert.That(result.Count).IsEqualTo(0);
@@ -2158,12 +2158,14 @@ public class CursorImportSourceTests {
         new(http, "http://localhost", minLines, ExcludedRepos: null, ExcludedPaths: null, Home: Home);
 
     sealed class ProjectsDirFixture : IDisposable {
+        readonly TempDir _root = new("cursorprojects");
+
         public string Root                { get; }
         public string ProjectsDir         => Path.Combine(Root, ".cursor", "projects");
         public string WorkspaceStorageDir => Path.Combine(Root, "workspaceStorage");
 
         public ProjectsDirFixture() {
-            Root = Path.Combine(Path.GetTempPath(), $"kcap-cursor-walker-{Guid.NewGuid():N}");
+            Root = _root.Path;
             Directory.CreateDirectory(ProjectsDir);
             Directory.CreateDirectory(WorkspaceStorageDir);
         }

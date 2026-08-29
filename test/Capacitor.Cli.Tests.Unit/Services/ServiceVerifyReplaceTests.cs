@@ -95,7 +95,7 @@ public class ServiceVerifyReplaceTests {
     }
 
     static ServiceSpec Spec(string daemonPath) =>
-        new(Id, daemonPath, Path.Combine(Path.GetTempPath(), "daemon.log"), new Dictionary<string, string>(), []);
+        new(Id, daemonPath, Path.ChangeExtension(daemonPath, ".log"), new Dictionary<string, string>(), []);
 
     static string? OwnPlist(string _) => OwnPlistContent;
 

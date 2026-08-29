@@ -9,16 +9,15 @@ using Capacitor.Cli.Core.Harness.Cursor;
 
 namespace Capacitor.Cli.Tests.Unit.Commands;
 
-// Task 15 — acceptance tests encoding the spec's Testing section (Step 1), reusing the
-// pure/HTTP seams Tasks 1-14 already built. Where a criterion is already fully covered by an
-// existing unit test from an earlier task, the test below is deliberately THIN — it asserts the
-// end-to-end contract from a different vantage point (a real HTTP round trip, a combined
-// probe+consume flow, a per-vendor matrix) rather than re-deriving the same proof — and says so
-// in its doc comment.
+// Acceptance tests reusing existing pure/HTTP seams. Where a criterion is already fully covered
+// by an existing unit test, the test below is deliberately THIN — it asserts the end-to-end
+// contract from a different vantage point (a real HTTP round trip, a combined probe+consume
+// flow, a per-vendor matrix) rather than re-deriving the same proof — and says so in its doc
+// comment.
 //
 // ---------------------------------------------------------------------------------------------
-// Step 4 (spec) — manual/live verification checklist. NOT automated (each needs a real outage,
-// a real signal, or a real Kiro sidecar race); reproduced here so it travels with the PR:
+// Manual/live verification checklist. NOT automated (each needs a real outage, a real signal, or
+// a real Kiro sidecar race); reproduced here so it isn't lost:
 //
 //   1. Outage during an active session → after recovery, transcript tail + session-end are
 //      present on the server without a manual `kcap import` (as long as the outage stayed
@@ -50,7 +49,7 @@ public class LiveWatchHardeningAcceptanceTests {
 
     CursorMarkers Markers => new(Config.Root);
 
-    static string TmpDir(string prefix) => Path.Combine(Path.GetTempPath(), $"kcap-{prefix}-{Guid.NewGuid():N}");
+    static TempDir TmpDir(string prefix) => new(prefix);
 
     // ── 1. Spawn-before-post across all 7 watcher-backed non-Claude vendors ──────────────────
 
@@ -63,15 +62,12 @@ public class LiveWatchHardeningAcceptanceTests {
     ///
     /// <para>Exercises the real per-vendor route strings (not just the generic outcome), so a
     /// wrong/missing route on any one vendor's call site would show up here. Antigravity and
-    /// Gemini additionally get their own bespoke gate checked
+    /// Gemini each have their own bespoke spawn gate
     /// (<see cref="AntigravityHookCommand.SpawnGateForTest"/> /
-    /// <see cref="GeminiHookCommand.SpawnGateForTest"/>) — Task 6's actual regression fix for
-    /// those two (Antigravity previously gated on <c>exit == 0</c>; Gemini used the POST-only
-    /// legacy path). Kiro/OpenCode/Pi/Copilot/Codex call
-    /// <see cref="AgentHookPoster.ShouldSpawnAfter"/> directly at their call site (verified by
-    /// reading <c>KiroHookCommand.cs</c>/<c>OpenCodeHookCommand.cs</c>/<c>PiHookCommand.cs</c>/
-    /// <c>CopilotHookCommand.cs</c>/<c>CodexHookCommand.cs</c>), so the shared assertion below
-    /// covers them; <see cref="SpawnBeforePostTests"/> already covers the bare
+    /// <see cref="GeminiHookCommand.SpawnGateForTest"/>) that must independently agree with the
+    /// shared predicate. Kiro/OpenCode/Pi/Copilot/Codex call
+    /// <see cref="AgentHookPoster.ShouldSpawnAfter"/> directly at their call site, so the shared
+    /// assertion below covers them; <see cref="SpawnBeforePostTests"/> already covers the bare
     /// predicate in isolation — this test's value-add is the per-vendor ROUTE matrix.</para>
     /// </summary>
     [Test]
@@ -83,23 +79,21 @@ public class LiveWatchHardeningAcceptanceTests {
         ];
 
         foreach (var route in routes) {
-            var dir = TmpDir("spawn-matrix");
-            try {
-                var spool = new HookSpool(dir);
-                var sessionId = Guid.NewGuid().ToString("N");
+            using var dir = TmpDir("spawn-matrix");
+            var spool = new HookSpool(dir.Path);
+            var sessionId = Guid.NewGuid().ToString("N");
 
-                var outcome = await Poster.PostOrSpoolAsync(
-                    () => Task.FromResult<(HttpClient, AuthStatus)>((new HttpClient(), AuthStatus.Expired)), route, """{"session_id":"x"}""",
-                    agentTag: route, spool, sessionId, route);
+            var outcome = await Poster.PostOrSpoolAsync(
+                () => Task.FromResult<(HttpClient, AuthStatus)>((new HttpClient(), AuthStatus.Expired)), route, """{"session_id":"x"}""",
+                agentTag: route, spool, sessionId, route);
 
-                await Assert.That(outcome).IsEqualTo(HookPostOutcome.Spooled);
-                await Assert.That(AgentHookPoster.ShouldSpawnAfter(outcome, "http://localhost:1")).IsTrue();
-                await Assert.That(spool.HasBacklog(sessionId)).IsTrue(); // capture-on-lapse via the spool
-            } finally { try { Directory.Delete(dir, true); } catch { } }
+            await Assert.That(outcome).IsEqualTo(HookPostOutcome.Spooled);
+            await Assert.That(AgentHookPoster.ShouldSpawnAfter(outcome, "http://localhost:1")).IsTrue();
+            await Assert.That(spool.HasBacklog(sessionId)).IsTrue(); // capture-on-lapse via the spool
         }
 
-        // Task 6's actual regressions: each vendor's own bespoke gate must agree with the shared
-        // predicate, not just re-derive it independently.
+        // Each vendor's own bespoke gate must agree with the shared predicate, not just
+        // re-derive it independently.
         await Assert.That(AntigravityHookCommand.SpawnGateForTest(HookPostOutcome.Spooled, "http://localhost:1")).IsTrue();
         await Assert.That(GeminiHookCommand.SpawnGateForTest(HookPostOutcome.Spooled, "http://localhost:1")).IsTrue();
     }
@@ -118,21 +112,21 @@ public class LiveWatchHardeningAcceptanceTests {
     /// </summary>
     [Test]
     public async Task Codex_StdoutHandshake_UnaffectedByALargeUnreachableSpoolBacklog() {
-        var lifecycleDir  = TmpDir("codex-stdout-lifecycle");
-        var transcriptDir = TmpDir("codex-stdout-transcript");
-        try {
-            var lifecycle  = new HookSpool(lifecycleDir);
-            var transcript = new TranscriptSpool(transcriptDir);
+        using var lifecycleDir  = TmpDir("codex-stdout-lifecycle");
+        using var transcriptDir = TmpDir("codex-stdout-transcript");
 
-            // ~5 MB backlog spread across many sessions' transcript spools — large enough that a
-            // naive synchronous scan/read would be observable if it ran before stdout.
-            const int perSessionBytes = 64 * 1024;
-            const int sessionCount    = 80; // 80 * 64KB ≈ 5 MB
-            for (var i = 0; i < sessionCount; i++) {
-                var sid  = Guid.NewGuid().ToString("N");
-                var body = $"{{\"padding\":\"{new string('x', perSessionBytes)}\"}}";
-                transcript.Append(sid, body);
-                lifecycle.Append(sid, "session-start/codex", """{"session_id":"x"}""");
+        var lifecycle  = new HookSpool(lifecycleDir.Path);
+        var transcript = new TranscriptSpool(transcriptDir.Path);
+
+        // ~5 MB backlog spread across many sessions' transcript spools — large enough that a
+        // naive synchronous scan/read would be observable if it ran before stdout.
+        const int perSessionBytes = 64 * 1024;
+        const int sessionCount    = 80; // 80 * 64KB ≈ 5 MB
+        for (var i = 0; i < sessionCount; i++) {
+            var sid  = Guid.NewGuid().ToString("N");
+            var body = $"{{\"padding\":\"{new string('x', perSessionBytes)}\"}}";
+            transcript.Append(sid, body);
+            lifecycle.Append(sid, "session-start/codex", """{"session_id":"x"}""");
             }
 
             var sw             = new StringWriter();
@@ -151,10 +145,6 @@ public class LiveWatchHardeningAcceptanceTests {
 
             // Let the real (bounded ~1.5s) drain attempt finish so the test exits cleanly.
             await handshake;
-        } finally {
-            try { Directory.Delete(lifecycleDir, true); } catch { }
-            try { Directory.Delete(transcriptDir, true); } catch { }
-        }
     }
 
     // ── 3+4. Global drain pass ordering + needs-import delivery, over a REAL HTTP round trip ──
@@ -179,45 +169,42 @@ public class LiveWatchHardeningAcceptanceTests {
         using var server = WireMockServer.Start();
         server.Given(Request.Create().UsingPost()).RespondWith(Response.Create().WithStatusCode(200).WithBody("{}"));
 
-        var dir = TmpDir("global-drain-http");
-        try {
-            var lifecycle  = new HookSpool(Path.Combine(dir, "life"));
-            var transcript = new TranscriptSpool(Path.Combine(dir, "tx"), capBytes: 32); // tiny cap → needs-import
-            var sid        = Guid.NewGuid().ToString("N");
+        using var dir = TmpDir("global-drain-http");
 
-            lifecycle.Append(sid, "session-start/kiro", """{"phase":"start"}""");
-            transcript.Append(sid, "{\"lines\":[\"" + new string('x', 100) + "\"]}"); // exceeds cap
-            lifecycle.Append(sid, "session-end/kiro", """{"phase":"end"}""");
+        var lifecycle  = new HookSpool(dir.PathTo("life"));
+        var transcript = new TranscriptSpool(dir.PathTo("tx"), capBytes: 32); // tiny cap → needs-import
+        var sid        = Guid.NewGuid().ToString("N");
 
-            await Assert.That(transcript.NeedsImport(sid)).IsTrue();
+        lifecycle.Append(sid, "session-start/kiro", """{"phase":"start"}""");
+        transcript.Append(sid, "{\"lines\":[\"" + new string('x', 100) + "\"]}"); // exceeds cap
+        lifecycle.Append(sid, "session-end/kiro", """{"phase":"end"}""");
 
-            using var client = new HttpClient();
-            // currentSessionId: null — this drain pass belongs to a DIFFERENT vendor's own
-            // invocation; `sid`'s session never fires another hook of its own.
-            await LifecycleSpoolDrain.RunAsync(
-                Markers, client, server.Url!, lifecycle, transcript, currentSessionId: null,
-                budget: TimeSpan.FromSeconds(5), ct: CancellationToken.None);
+        await Assert.That(transcript.NeedsImport(sid)).IsTrue();
 
-            var hits = server.LogEntries.Select(e => e.RequestMessage).ToList();
-            var routeOrder = hits.Select(h => h.Path).ToList();
+        using var client = new HttpClient();
+        // currentSessionId: null — this drain pass belongs to a DIFFERENT vendor's own
+        // invocation; `sid`'s session never fires another hook of its own.
+        await LifecycleSpoolDrain.RunAsync(
+            Markers, client, server.Url!, lifecycle, transcript, currentSessionId: null,
+            budget: TimeSpan.FromSeconds(5), ct: CancellationToken.None);
 
-            await Assert.That(routeOrder).Contains("/hooks/session-start/kiro");
-            await Assert.That(routeOrder).Contains("/hooks/session-needs-import");
-            await Assert.That(routeOrder).Contains("/hooks/session-end/kiro");
+        var hits = server.LogEntries.Select(e => e.RequestMessage).ToList();
+        var routeOrder = hits.Select(h => h.Path).ToList();
 
-            // Ordering: start, THEN the needs-import marker (delivered once the transcript is
-            // resolved — dropped past its cap counts as resolved), THEN end LAST.
-            var startIdx  = routeOrder.IndexOf("/hooks/session-start/kiro");
-            var importIdx = routeOrder.IndexOf("/hooks/session-needs-import");
-            var endIdx    = routeOrder.IndexOf("/hooks/session-end/kiro");
-            await Assert.That(startIdx).IsLessThan(importIdx);
-            await Assert.That(importIdx).IsLessThan(endIdx);
+        await Assert.That(routeOrder).Contains("/hooks/session-start/kiro");
+        await Assert.That(routeOrder).Contains("/hooks/session-needs-import");
+        await Assert.That(routeOrder).Contains("/hooks/session-end/kiro");
 
-            await Assert.That(lifecycle.HasBacklog(sid)).IsFalse();
-            await Assert.That(lifecycle.IsMarkedEnded(sid)).IsTrue();
-        } finally {
-            try { Directory.Delete(dir, true); } catch { }
-        }
+        // Ordering: start, THEN the needs-import marker (delivered once the transcript is
+        // resolved — dropped past its cap counts as resolved), THEN end LAST.
+        var startIdx  = routeOrder.IndexOf("/hooks/session-start/kiro");
+        var importIdx = routeOrder.IndexOf("/hooks/session-needs-import");
+        var endIdx    = routeOrder.IndexOf("/hooks/session-end/kiro");
+        await Assert.That(startIdx).IsLessThan(importIdx);
+        await Assert.That(importIdx).IsLessThan(endIdx);
+
+        await Assert.That(lifecycle.HasBacklog(sid)).IsFalse();
+        await Assert.That(lifecycle.IsMarkedEnded(sid)).IsTrue();
     }
 
     // ── 5. Shutdown final-line contract, combining the probe AND the consuming read ──────────

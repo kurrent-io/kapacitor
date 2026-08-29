@@ -10,7 +10,7 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 /// <summary>
 /// Orchestrator construction for the AgentOrchestrator suite. These used to be merged into every
 /// test file by a 30-fragment <c>partial class AgentOrchestratorVendorTests</c>; they live here so
-/// each test file can declare a class named after itself. See also <see cref="GitRepoHarness"/>
+/// each test file can declare a class named after itself. See also <see cref="GitRepo"/>
 /// and <see cref="WaitHarness"/>.
 /// </summary>
 internal static class AgentOrchestratorHarness {

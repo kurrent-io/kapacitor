@@ -12,77 +12,43 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 [ParallelLimiter<SubprocessLimit>]
 public class WorktreeManagerTests {
     // A class, not a record: 'Clone' is disallowed as a record member name.
-    sealed class Repo(TempDir tmp, TempDirHandle upstream, TempDirHandle clone) : IDisposable {
-        public TempDirHandle Upstream { get; } = upstream;
-        public TempDirHandle Clone    { get; } = clone;
+    sealed class Repo(GitRepo upstream, GitRepo clone, TempDir cloneDir) : IDisposable {
+        public GitRepo Upstream { get; } = upstream;
+        public GitRepo Clone    { get; } = clone;
 
-        public void Dispose() => tmp.Dispose();
-    }
-
-    static Repo MakeUpstreamWithSideRef(string sideRefName, out string sideCommitSha) {
-        var tmp = new TempDir();
-        var upstream = tmp.CreateDir("upstream");
-
-        Git(upstream, "init", "-q");
-        Git(upstream, "config", "user.email", "test@example.com");
-        Git(upstream, "config", "user.name", "Test");
-        upstream.CreateFile("main.txt", "main");
-        Git(upstream, "add", "-A");
-        Git(upstream, "commit", "-q", "-m", "initial");
-
-        // Capture the default branch name; git's default has shifted from
-        // master to main and varies by user config.
-        var defaultBranch = GitCapture(upstream, "branch", "--show-current").Trim();
-
-        // Create a second commit on a detached side branch and store it under
-        // a custom ref so the clone can fetch it like a PR head.
-        Git(upstream, "checkout", "-q", "-b", "side");
-        upstream.CreateFile("side.txt", "side");
-        Git(upstream, "add", "-A");
-        Git(upstream, "commit", "-q", "-m", "side commit");
-        sideCommitSha = GitCapture(upstream, "rev-parse", "HEAD").Trim();
-        Git(upstream, "update-ref", sideRefName, sideCommitSha);
-        Git(upstream, "checkout", "-q", defaultBranch);
-        Git(upstream, "branch", "-D", "side");
-
-        // Allow `git clone` of a non-bare repo over the file:// protocol.
-        Git(upstream, "config", "uploadpack.allowAnySHA1InWant", "true");
-
-        var clone = tmp.PathTo("clone");
-        Git(tmp.Path, "clone", "-q", upstream, clone);
-        // Repository-local identity is part of the fixture: several snapshot tests add commits in
-        // the clone, and CI intentionally has no global Git author configured. Without this the
-        // tests pass only on developer machines whose personal config happens to fill the gap.
-        Git(clone, "config", "user.email", "test@example.com");
-        Git(clone, "config", "user.name", "Test");
-
-        return new Repo(tmp, upstream, new TempDirHandle(clone));
-    }
-
-    static void Git(string cwd, params string[] args) {
-        var psi = new ProcessStartInfo("git", args) {
-            WorkingDirectory       = cwd,
-            RedirectStandardOutput = true,
-            RedirectStandardError  = true
-        };
-        using var proc = Process.Start(psi)!;
-        proc.WaitForExit();
-
-        if (proc.ExitCode != 0) {
-            throw new InvalidOperationException($"git {string.Join(' ', args)} failed: {proc.StandardError.ReadToEnd()}");
+        // Clone attaches to a directory cloneDir owns, so deleting that removes it.
+        public void Dispose() {
+            Upstream.Dispose();
+            cloneDir.Dispose();
         }
     }
 
-    static string GitCapture(string cwd, params string[] args) {
-        var psi = new ProcessStartInfo("git", args) {
-            WorkingDirectory       = cwd,
-            RedirectStandardOutput = true,
-            RedirectStandardError  = true
-        };
-        using var proc = Process.Start(psi)!;
-        proc.WaitForExit();
+    static Repo MakeUpstreamWithSideRef(string sideRefName, out string sideCommitSha) {
+        var upstream = GitRepo.Create("upstream");
 
-        return proc.ExitCode != 0 ? throw new InvalidOperationException($"git {string.Join(' ', args)} failed: {proc.StandardError.ReadToEnd()}") : proc.StandardOutput.ReadToEnd();
+        upstream.CreateFile("main.txt", "main");
+        upstream.CommitAll("initial");
+
+        var defaultBranch = upstream.CurrentBranch;
+
+        // A second commit on a side branch, stored under a custom ref so the clone can fetch it like
+        // a PR head.
+        upstream.Checkout("side", create: true);
+        upstream.CreateFile("side.txt", "side");
+        upstream.CommitAll("side commit");
+        sideCommitSha = upstream.Head;
+        upstream.Do("update-ref", sideRefName, sideCommitSha);
+        upstream.Checkout(defaultBranch);
+        upstream.Do("branch", "-D", "side");
+
+        // Allow `git clone` of a non-bare repo over the file:// protocol.
+        upstream.Config("uploadpack.allowAnySHA1InWant", "true");
+
+        // The clone is its own repository, so it gets its own directory rather than one inside the
+        // upstream it came from.
+        var cloneDir = new TempDir("clone");
+
+        return new Repo(upstream, upstream.Clone(cloneDir.PathTo("repo")), cloneDir);
     }
 
     [Test]
@@ -93,7 +59,7 @@ public class WorktreeManagerTests {
         var worktree = await manager.CreateAsync(repo.Clone, name: "review-pr-42", baseRef: "refs/pull/42/head");
 
         try {
-            var head = GitCapture(worktree.Path, "rev-parse", "HEAD").Trim();
+            var head = GitRepo.At(worktree.Path).Head;
 
             await Assert.That(head).IsEqualTo(sideSha);
             await Assert.That(worktree.Branch).IsEqualTo("capacitor/review-pr-42");
@@ -118,27 +84,19 @@ public class WorktreeManagerTests {
     }
 
     /// <summary>
-    /// Concurrent review launches against the same source repo previously
-    /// raced on the shared <c>FETCH_HEAD</c> ref — fetch N would land on
-    /// <c>FETCH_HEAD</c> after fetch M, then worktree-add for M would create
-    /// the wrong commit. The fix routes each fetch into a per-worktree
-    /// <c>refs/kcap/review/{name}</c> and worktree-adds from that ref.
-    /// This test asserts each worktree HEAD lines up with the SHA we asked
-    /// for, even when 5 launches are issued in parallel.
+    /// Each fetch is routed into its own <c>refs/kcap/review/{name}</c> ref and worktree-added
+    /// from that ref rather than the shared <c>FETCH_HEAD</c>, so concurrent launches against the
+    /// same source repo cannot land on each other's commit. Asserts each worktree HEAD matches the
+    /// SHA it asked for, with 5 launches issued in parallel.
     /// </summary>
     [Test]
     public async Task CreateAsync_ConcurrentBaseRefs_EachWorktreePinnedToCorrectSha() {
-        using var tmp = new TempDir();
-        var upstream = tmp.CreateDir("upstream");
+        using var upstream = GitRepo.Create("upstream");
 
-        Git(upstream, "init", "-q");
-        Git(upstream, "config", "user.email", "test@example.com");
-        Git(upstream, "config", "user.name", "Test");
         upstream.CreateFile("main.txt", "main");
-        Git(upstream, "add", "-A");
-        Git(upstream, "commit", "-q", "-m", "initial");
+        upstream.CommitAll("initial");
 
-        var defaultBranch = GitCapture(upstream, "branch", "--show-current").Trim();
+        var defaultBranch = upstream.CurrentBranch;
 
         // Build 5 distinct side commits, each saved as its own ref so the clone
         // can fetch them as if they were PR heads.
@@ -147,19 +105,19 @@ public class WorktreeManagerTests {
 
         for (var i = 0; i < concurrency; i++) {
             var refName = $"refs/pull/{100 + i}/head";
-            Git(upstream, "checkout", "-q", "-b", $"side-{i}");
+            upstream.Checkout($"side-{i}", create: true);
             upstream.CreateFile($"side-{i}.txt", $"side-{i}");
-            Git(upstream, "add", "-A");
-            Git(upstream, "commit", "-q", "-m", $"side {i}");
-            var sha = GitCapture(upstream, "rev-parse", "HEAD").Trim();
-            Git(upstream, "update-ref", refName, sha);
-            Git(upstream, "checkout", "-q", defaultBranch);
-            Git(upstream, "branch", "-D", $"side-{i}");
+            upstream.CommitAll($"side {i}");
+            var sha = upstream.Head;
+            upstream.Do("update-ref", refName, sha);
+            upstream.Checkout(defaultBranch);
+            upstream.Do("branch", "-D", $"side-{i}");
             refs[i] = (refName, sha);
         }
 
-        var clone = tmp.CreateDir("clone");
-        Git(Path.GetTempPath(), "clone", "-q", upstream, clone);
+        // The clone gets its own directory rather than one inside the upstream it came from.
+        using var cloneDir = new TempDir("clone");
+        var clone = upstream.Clone(cloneDir.PathTo("repo"));
 
         var manager   = new WorktreeManager(new DaemonConfig(), NullLogger<WorktreeManager>.Instance);
         var worktrees = new WorktreeInfo[concurrency];
@@ -174,7 +132,7 @@ public class WorktreeManagerTests {
 
         try {
             for (var i = 0; i < concurrency; i++) {
-                var head = GitCapture(worktrees[i].Path, "rev-parse", "HEAD").Trim();
+                var head = GitRepo.At(worktrees[i].Path).Head;
                 await Assert.That(head).IsEqualTo(refs[i].Sha);
                 await Assert.That(worktrees[i].FetchedRef).IsEqualTo($"refs/kcap/review/review-{i}");
             }
@@ -200,12 +158,12 @@ public class WorktreeManagerTests {
         await Assert.That(worktree.FetchedRef).IsEqualTo("refs/kcap/review/review-77");
 
         // Sanity: ref exists before cleanup.
-        var beforeRefs = GitCapture(repo.Clone, "for-each-ref", "refs/kcap/review/").Trim();
+        var beforeRefs = repo.Clone.Do("for-each-ref", "refs/kcap/review/").Text;
         await Assert.That(beforeRefs).Contains("refs/kcap/review/review-77");
 
         await WorktreeManager.RemoveAsync(worktree);
 
-        var afterRefs = GitCapture(repo.Clone, "for-each-ref", "refs/kcap/review/").Trim();
+        var afterRefs = repo.Clone.Do("for-each-ref", "refs/kcap/review/").Text;
         await Assert.That(afterRefs).IsEmpty();
     }
 
@@ -219,11 +177,11 @@ public class WorktreeManagerTests {
         var root = tmp.PathTo("root");
 
         subRepo.Clone.CreateFile("lib.txt", "sub-tracked");
-        Git(subRepo.Clone, "add", "lib.txt");
-        Git(subRepo.Clone, "commit", "-m", "sub content");
+        subRepo.Clone.Do("add", "lib.txt");
+        subRepo.Clone.Do("commit", "-m", "sub content");
 
-        Git(superRepo.Clone, "-c", "protocol.file.allow=always", "submodule", "add", subRepo.Clone, "vendored");
-        Git(superRepo.Clone, "commit", "-m", "add submodule");
+        superRepo.Clone.Do("-c", "protocol.file.allow=always", "submodule", "add", subRepo.Clone, "vendored");
+        superRepo.Clone.Do("commit", "-m", "add submodule");
 
         // Dirty + untracked inside the submodule: the whole point of borrowing is that the
         // reviewer sees the developer's actual working tree, not the pinned commit.
@@ -266,8 +224,7 @@ public class WorktreeManagerTests {
 
         // Forge a gitlink entry whose path is a symlink to a directory outside the source.
         Directory.CreateSymbolicLink(repo.Clone.PathTo("vendored"), outside);
-        Git(repo.Clone, "update-index", "--add", "--cacheinfo",
-            "160000," + new string('a', 40) + ",vendored");
+        repo.Clone.Do("update-index", "--add", "--cacheinfo", "160000," + new string('a', 40) + ",vendored");
 
         var manager = new WorktreeManager(
             new DaemonConfig { WorktreeRoot = root }, NullLogger<WorktreeManager>.Instance);
@@ -295,7 +252,7 @@ public class WorktreeManagerTests {
             await Assert.That(File.Exists(Path.Combine(snapshot.Path, ".git"))).IsFalse();
             await Assert.That(File.ReadAllText(Path.Combine(snapshot.Path, "main.txt"))).IsEqualTo("dirty");
             await Assert.That(File.ReadAllText(Path.Combine(snapshot.Path, "untracked.txt"))).IsEqualTo("one");
-            await Assert.That(GitCapture(repo.Clone, "worktree", "list", "--porcelain")).DoesNotContain(snapshot.Path);
+            await Assert.That(repo.Clone.Do("worktree", "list", "--porcelain").Text).DoesNotContain(snapshot.Path);
 
             File.WriteAllText(Path.Combine(snapshot.Path, "reviewer-created.txt"), "must disappear");
             File.WriteAllText(Path.Combine(snapshot.Path, ".git", "reviewer-metadata"), "must disappear");
@@ -425,8 +382,8 @@ public class WorktreeManagerTests {
 
         var route = repo.Clone.PathTo("linked-parent");
         Directory.CreateSymbolicLink(route, external);
-        Git(repo.Clone, "add", "linked-parent");
-        Git(repo.Clone, "commit", "-q", "-m", "branch parent link");
+        repo.Clone.Do("add", "linked-parent");
+        repo.Clone.Do("commit", "-q", "-m", "branch parent link");
         Directory.Delete(route);
         Directory.CreateDirectory(route);
         File.WriteAllText(Path.Combine(route, "dirty.txt"), "dirty working bytes");
@@ -453,8 +410,8 @@ public class WorktreeManagerTests {
         File.WriteAllText(external, "keep-me");
         var route = repo.Clone.PathTo("linked-leaf");
         File.CreateSymbolicLink(route, external);
-        Git(repo.Clone, "add", "linked-leaf");
-        Git(repo.Clone, "commit", "-q", "-m", "branch leaf link");
+        repo.Clone.Do("add", "linked-leaf");
+        repo.Clone.Do("commit", "-q", "-m", "branch leaf link");
         File.Delete(route);
         File.WriteAllText(route, "dirty working bytes");
 
@@ -495,8 +452,8 @@ public class WorktreeManagerTests {
         var trackedDir = repo.Clone.PathTo("tracked-dir");
         Directory.CreateDirectory(trackedDir);
         File.WriteAllText(Path.Combine(trackedDir, "child.txt"), "public");
-        Git(repo.Clone, "add", "tracked-dir/child.txt");
-        Git(repo.Clone, "commit", "-q", "-m", "tracked child");
+        repo.Clone.Do("add", "tracked-dir/child.txt");
+        repo.Clone.Do("commit", "-q", "-m", "tracked child");
         Directory.Delete(trackedDir, true);
         external.CreateFile("child.txt", "private external bytes");
         Directory.CreateSymbolicLink(trackedDir, external);
@@ -519,9 +476,9 @@ public class WorktreeManagerTests {
             "The stale spelling is distinct only on a case-sensitive filesystem.");
 
         repo.Clone.CreateFile("Alias.txt", "old committed spelling");
-        Git(repo.Clone, "add", "Alias.txt");
-        Git(repo.Clone, "commit", "-q", "-m", "add alias");
-        Git(repo.Clone, "mv", "Alias.txt", "alias.txt");
+        repo.Clone.Do("add", "Alias.txt");
+        repo.Clone.Do("commit", "-q", "-m", "add alias");
+        repo.Clone.Do("mv", "Alias.txt", "alias.txt");
         repo.Clone.CreateFile("alias.txt", "new staged spelling");
 
         var manager = new WorktreeManager(

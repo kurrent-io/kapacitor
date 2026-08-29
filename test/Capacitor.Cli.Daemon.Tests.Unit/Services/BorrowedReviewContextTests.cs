@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Nodes;
@@ -19,9 +18,9 @@ public class BorrowedReviewContextTests {
         var privateBytes = "{\"mcpServers\":{\"private-secret\":{}}}"u8.ToArray();
 
         await File.WriteAllBytesAsync(repo.PathTo(".mcp.json"), indexBytes);
-        Git(repo.Path, "add", ".mcp.json");
-        Git(repo.Path, "commit", "-q", "-m", "add branch config");
-        Git(repo.Path, "update-index", indexFlag, ".mcp.json");
+        repo.Do("add", ".mcp.json");
+        repo.Do("commit", "-q", "-m", "add branch config");
+        repo.Do("update-index", indexFlag, ".mcp.json");
         await File.WriteAllBytesAsync(repo.PathTo(".mcp.json"), privateBytes);
 
         var manager = new WorktreeManager(
@@ -72,7 +71,7 @@ public class BorrowedReviewContextTests {
         var staged = "{\"mcpServers\":{\"staged\":{}}}"u8.ToArray();
         var unstaged = "{\"mcpServers\":{\"unstaged-private\":{}}}"u8.ToArray();
         await File.WriteAllBytesAsync(repo.PathTo(".mcp.json"), staged);
-        Git(repo.Path, "add", ".mcp.json");
+        repo.Do("add", ".mcp.json");
         await File.WriteAllBytesAsync(repo.PathTo(".mcp.json"), unstaged);
 
         var snapshot = await Manager(root.Path).CreateBorrowedSnapshotAsync(
@@ -92,8 +91,8 @@ public class BorrowedReviewContextTests {
         repo.CreateDir(".mcp.json");
         const string decomposedChild = "cafe\u0301";
         repo.CreateFile([".mcp.json", decomposedChild], "branch data");
-        Git(repo.Path, "add", ".mcp.json/" + decomposedChild);
-        Git(repo.Path, "commit", "-q", "-m", "reserved path directory");
+        repo.Do("add", ".mcp.json/" + decomposedChild);
+        repo.Do("commit", "-q", "-m", "reserved path directory");
 
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
             await Manager(root.Path).CreateBorrowedSnapshotAsync(repo.Path, "review", CancellationToken.None));
@@ -107,8 +106,8 @@ public class BorrowedReviewContextTests {
         using var repo = NewGitRepo();
         using var root = new TempDir();
         File.CreateSymbolicLink(repo.PathTo(".mcp.json"), "tracked.txt");
-        Git(repo.Path, "add", ".mcp.json");
-        Git(repo.Path, "commit", "-q", "-m", "reserved path symlink");
+        repo.Do("add", ".mcp.json");
+        repo.Do("commit", "-q", "-m", "reserved path symlink");
 
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
             await Manager(root.Path).CreateBorrowedSnapshotAsync(repo.Path, "review", CancellationToken.None));
@@ -125,7 +124,7 @@ public class BorrowedReviewContextTests {
         var overRoot  = roots.PathTo("over");
 
         await File.WriteAllBytesAsync(exactRepo.PathTo(".mcp.json"), new byte[256 * 1024]);
-        Git(exactRepo.Path, "add", ".mcp.json");
+        exactRepo.Do("add", ".mcp.json");
         var exact = await Manager(exactRoot).CreateBorrowedSnapshotAsync(
             exactRepo.Path, "review", CancellationToken.None);
         try {
@@ -141,8 +140,8 @@ public class BorrowedReviewContextTests {
         var overBytes = new byte[256 * 1024 + 1];
         overBytes[0] = (byte)'x';
         await File.WriteAllBytesAsync(overRepo.PathTo(".mcp.json"), overBytes);
-        Git(overRepo.Path, "add", ".mcp.json");
-        var expectedOid = GitCapture(overRepo.Path, "rev-parse", ":.mcp.json").Trim();
+        overRepo.Do("add", ".mcp.json");
+        var expectedOid = overRepo.Do("rev-parse", ":.mcp.json").Text.Trim();
         var over = await Manager(overRoot).CreateBorrowedSnapshotAsync(
             overRepo.Path, "review", CancellationToken.None);
         try {
@@ -174,7 +173,7 @@ public class BorrowedReviewContextTests {
         repo.CreateDir(".cursor");
         await File.WriteAllBytesAsync(repo.PathTo(".cursor", "mcp.json"), oversized);
         await File.WriteAllBytesAsync(repo.PathTo(".mcp.json"), small);
-        Git(repo.Path, "add", ".cursor/mcp.json", ".mcp.json");
+        repo.Do("add", ".cursor/mcp.json", ".mcp.json");
 
         var snapshot = await Manager(root.Path).CreateBorrowedSnapshotAsync(
             repo.Path, "review", CancellationToken.None);
@@ -197,7 +196,7 @@ public class BorrowedReviewContextTests {
         using var root = new TempDir();
         var small = "{\"mcpServers\":{\"initial\":{}}}"u8.ToArray();
         await File.WriteAllBytesAsync(repo.PathTo(".mcp.json"), small);
-        Git(repo.Path, "add", ".mcp.json");
+        repo.Do("add", ".mcp.json");
         var manager = Manager(root.Path);
         var snapshot = await manager.CreateBorrowedSnapshotAsync(
             repo.Path, "review", CancellationToken.None);
@@ -206,7 +205,7 @@ public class BorrowedReviewContextTests {
             // throw here is what used to terminate a live reviewer mid-flow.
             await File.WriteAllBytesAsync(
                 repo.PathTo(".mcp.json"), new byte[256 * 1024 + 1]);
-            Git(repo.Path, "add", ".mcp.json");
+            repo.Do("add", ".mcp.json");
 
             var generation = await manager.SyncBorrowedSnapshotFromSourceAsync(
                 repo.Path, snapshot.SnapshotRoot!, snapshot.GitRelativeCwd!, [],
@@ -277,13 +276,11 @@ public class BorrowedReviewContextTests {
     public async Task Matching_unmerged_index_entry_fails_closed() {
         using var repo = NewGitRepo();
         using var root = new TempDir();
-        var oid = GitCapture(repo.Path, "rev-parse", "HEAD:tracked.txt").Trim();
-        GitWithInput(repo.Path,
-            Encoding.ASCII.GetBytes(
+        var oid = repo.Do("rev-parse", "HEAD:tracked.txt").Text.Trim();
+        repo.DoWithInput(Encoding.ASCII.GetBytes(
                 $"100644 {oid} 1\t.mcp.json\n" +
                 $"100644 {oid} 2\t.mcp.json\n" +
-                $"100644 {oid} 3\t.mcp.json\n"),
-            "update-index", "--index-info");
+                $"100644 {oid} 3\t.mcp.json\n"), "update-index", "--index-info");
 
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
             await Manager(root.Path).CreateBorrowedSnapshotAsync(
@@ -301,10 +298,8 @@ public class BorrowedReviewContextTests {
         var badRoot       = roots.PathTo("bad");
         var unrelatedRoot = roots.PathTo("unrelated");
 
-        var badOid = GitCapture(badRepo.Path, "rev-parse", "HEAD:tracked.txt").Trim();
-        GitWithInput(badRepo.Path,
-            RawIndexRecord(badOid, ".mcp.json/"u8, 0xff),
-            "update-index", "-z", "--index-info");
+        var badOid = badRepo.Do("rev-parse", "HEAD:tracked.txt").Text.Trim();
+        badRepo.DoWithInput(RawIndexRecord(badOid, ".mcp.json/"u8, 0xff), "update-index", "-z", "--index-info");
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
             await Manager(badRoot).CreateBorrowedSnapshotAsync(
                 badRepo.Path, "review", CancellationToken.None));
@@ -313,11 +308,9 @@ public class BorrowedReviewContextTests {
 
         var expected = "{\"mcpServers\":{}}"u8.ToArray();
         await File.WriteAllBytesAsync(unrelatedRepo.PathTo(".mcp.json"), expected);
-        Git(unrelatedRepo.Path, "add", ".mcp.json");
-        var unrelatedOid = GitCapture(unrelatedRepo.Path, "rev-parse", "HEAD:tracked.txt").Trim();
-        GitWithInput(unrelatedRepo.Path,
-            RawIndexRecord(unrelatedOid, "unrelated-"u8, 0xff),
-            "update-index", "-z", "--index-info");
+        unrelatedRepo.Do("add", ".mcp.json");
+        var unrelatedOid = unrelatedRepo.Do("rev-parse", "HEAD:tracked.txt").Text.Trim();
+        unrelatedRepo.DoWithInput(RawIndexRecord(unrelatedOid, "unrelated-"u8, 0xff), "update-index", "-z", "--index-info");
         var snapshot = await Manager(unrelatedRoot).CreateBorrowedSnapshotAsync(
             unrelatedRepo.Path, "review", CancellationToken.None);
         try {
@@ -332,10 +325,8 @@ public class BorrowedReviewContextTests {
     public async Task Matching_gitlink_reports_non_regular_context_failure() {
         using var repo = NewGitRepo();
         using var root = new TempDir();
-        var commit = GitCapture(repo.Path, "rev-parse", "HEAD").Trim();
-        GitWithInput(repo.Path,
-            Encoding.ASCII.GetBytes($"160000 {commit} 0\t.mcp.json\n"),
-            "update-index", "--index-info");
+        var commit = repo.Do("rev-parse", "HEAD").Text.Trim();
+        repo.DoWithInput(Encoding.ASCII.GetBytes($"160000 {commit} 0\t.mcp.json\n"), "update-index", "--index-info");
 
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
             await Manager(root.Path).CreateBorrowedSnapshotAsync(
@@ -348,10 +339,8 @@ public class BorrowedReviewContextTests {
     public async Task Regular_mode_entry_whose_object_is_not_a_blob_fails_closed() {
         using var repo = NewGitRepo();
         using var root = new TempDir();
-        var commit = GitCapture(repo.Path, "rev-parse", "HEAD").Trim();
-        GitWithInput(repo.Path,
-            Encoding.ASCII.GetBytes($"100644 {commit} 0\t.mcp.json\n"),
-            "update-index", "--index-info");
+        var commit = repo.Do("rev-parse", "HEAD").Text.Trim();
+        repo.DoWithInput(Encoding.ASCII.GetBytes($"100644 {commit} 0\t.mcp.json\n"), "update-index", "--index-info");
 
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
             await Manager(root.Path).CreateBorrowedSnapshotAsync(
@@ -421,10 +410,9 @@ public class BorrowedReviewContextTests {
     public async Task Case_collisions_follow_the_actual_destination_filesystem_semantics() {
         using var repo = NewGitRepo();
         using var root = new TempDir();
-        var oid = GitCapture(repo.Path, "rev-parse", "HEAD:tracked.txt").Trim();
-        GitWithInput(repo.Path, Encoding.ASCII.GetBytes(
-            $"100644 {oid} 0\t.mcp.json\n100644 {oid} 0\t.MCP.JSON\n"),
-            "update-index", "--index-info");
+        var oid = repo.Do("rev-parse", "HEAD:tracked.txt").Text.Trim();
+        repo.DoWithInput(Encoding.ASCII.GetBytes(
+            $"100644 {oid} 0\t.mcp.json\n100644 {oid} 0\t.MCP.JSON\n"), "update-index", "--index-info");
 
         var caseSensitive = IsCaseSensitive(root.Path);
         if (!caseSensitive) {
@@ -450,7 +438,7 @@ public class BorrowedReviewContextTests {
         using var root = new TempDir();
         byte[] bytes = [0xff, 0xfe, 0x00, 0x61];
         await File.WriteAllBytesAsync(repo.PathTo(".mcp.json"), bytes);
-        Git(repo.Path, "add", ".mcp.json");
+        repo.Do("add", ".mcp.json");
         var snapshot = await Manager(root.Path).CreateBorrowedSnapshotAsync(
             repo.Path, "review", CancellationToken.None);
         try {
@@ -479,53 +467,17 @@ public class BorrowedReviewContextTests {
         } finally { await WorktreeManager.RemoveAsync(snapshot); }
     }
 
-    static TempDir NewGitRepo() {
-        var repo = new TempDir();
-        Git(repo.Path, "init", "-q");
-        Git(repo.Path, "config", "user.email", "test@example.com");
-        Git(repo.Path, "config", "user.name", "Test");
+    static GitRepo NewGitRepo() {
+        var repo = GitRepo.Create();
+
         repo.CreateFile("tracked.txt", "tracked");
-        Git(repo.Path, "add", "tracked.txt");
-        Git(repo.Path, "commit", "-q", "-m", "initial");
+        repo.CommitAll("initial");
+
         return repo;
     }
 
     static WorktreeManager Manager(string root) => new(
         new DaemonConfig { WorktreeRoot = root }, NullLogger<WorktreeManager>.Instance);
-
-    static void Git(string cwd, params string[] args) {
-        _ = GitCapture(cwd, args);
-    }
-
-    static string GitCapture(string cwd, params string[] args) {
-        using var process = Process.Start(new ProcessStartInfo("git", args) {
-            WorkingDirectory = cwd,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false
-        })!;
-        process.WaitForExit();
-        if (process.ExitCode != 0)
-            throw new InvalidOperationException(
-                $"git {string.Join(' ', args)} failed: {process.StandardError.ReadToEnd()}");
-        return process.StandardOutput.ReadToEnd();
-    }
-
-    static void GitWithInput(string cwd, byte[] input, params string[] args) {
-        using var process = Process.Start(new ProcessStartInfo("git", args) {
-            WorkingDirectory = cwd,
-            RedirectStandardInput = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false
-        })!;
-        process.StandardInput.BaseStream.Write(input);
-        process.StandardInput.Close();
-        process.WaitForExit();
-        if (process.ExitCode != 0)
-            throw new InvalidOperationException(
-                $"git {string.Join(' ', args)} failed: {process.StandardError.ReadToEnd()}");
-    }
 
     static byte[] RawIndexRecord(string oid, ReadOnlySpan<byte> pathPrefix, byte trailingByte) {
         using var bytes = new MemoryStream();

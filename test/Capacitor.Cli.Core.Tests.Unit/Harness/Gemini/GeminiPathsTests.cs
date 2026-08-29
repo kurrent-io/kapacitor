@@ -21,12 +21,11 @@ public class GeminiPathsTests {
     [Test]
     [NotInParallel]
     public async Task FromEnvironment_reads_GEMINI_CLI_HOME_as_the_parent_of_dot_gemini() {
-        var parent = Path.Combine(Path.GetTempPath(), "kcap-gemini-cfg");
-
-        using var env = EnvScope.Exclusive("GEMINI_CLI_HOME", parent);
+        using var parent = new TempDir();
+        using var env    = EnvScope.Exclusive("GEMINI_CLI_HOME", parent.Path);
 
         await Assert.That(GeminiHarness.FromEnvironment(new("/fake/home")).Paths.SettingsJson)
-            .IsEqualTo(Path.Combine(parent, ".gemini", "settings.json"));
+            .IsEqualTo(parent.PathTo(".gemini", "settings.json"));
     }
 
     // The defunct GEMINI_HOME must NOT be honored.

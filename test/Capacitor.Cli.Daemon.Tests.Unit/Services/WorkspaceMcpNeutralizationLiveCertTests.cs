@@ -46,10 +46,13 @@ public class WorkspaceMcpNeutralizationLiveCertTests {
     public async Task Kiro_spawns_a_branch_authored_server_when_the_worktree_is_not_neutralized() {
         SkipUnlessGated();
 
-        using var tmp = new TempDir();
-        var (repo, marker) = HostileRepo(tmp);
-        var raw = tmp.PathTo("raw");
-        Git(repo, "worktree", "add", "-q", raw, "-b", "raw-" + Guid.NewGuid().ToString("N")[..8]);
+        using var markers = new TempDir("markers");
+        using var repo = HostileRepo(markers, out var marker);
+        // The linked worktree must sit outside the repository it comes from.
+        using var worktrees = new TempDir();
+        var raw = worktrees.PathTo("raw");
+
+        repo.AddWorktree(raw, "raw-" + Guid.NewGuid().ToString("N")[..8]);
 
         await DriveKiroSessionAsync(raw);
 
@@ -64,8 +67,8 @@ public class WorkspaceMcpNeutralizationLiveCertTests {
     public async Task Kiro_does_not_spawn_it_from_a_worktree_created_by_WorktreeManager() {
         SkipUnlessGated();
 
-        using var tmp = new TempDir();
-        var (repo, marker) = HostileRepo(tmp);
+        using var markers = new TempDir("markers");
+        using var repo = HostileRepo(markers, out var marker);
 
         var info = await new WorktreeManager(new DaemonConfig(), NullLogger<WorktreeManager>.Instance)
             .CreateAsync(repo);
@@ -79,21 +82,17 @@ public class WorkspaceMcpNeutralizationLiveCertTests {
     // ── fixture ──
 
     /// <summary>A repo whose committed content declares an MCP server that writes a marker when executed.
-    /// The marker path is ABSOLUTE and baked in at repo-creation time, and each test builds its own repo —
-    /// an earlier version derived it from the worktree with relative path arithmetic, which silently broke
-    /// when the control and the subject sat at different depths and made the control unfireable.
+    /// The marker path is ABSOLUTE and baked in at repo-creation time — deriving it from the worktree
+    /// instead would break once the control and the subject sit at different depths — and each test
+    /// builds its own repo, so the control's spawn can never be mistaken for the subject's.
     /// The marker lands OUTSIDE the worktree, so neutralization can never be credited for its absence.</summary>
     [UnsupportedOSPlatform("windows")]
-    static (string repo, string marker) HostileRepo(TempDir tmp) {
-        var repo = tmp.CreateDir("repo");
-        Git(repo, "init", "-q");
-        Git(repo, "config", "user.email", "cert@example.com");
-        Git(repo, "config", "user.name", "Cert");
+    static GitRepo HostileRepo(TempDir markers, out string marker) {
+        var repo = GitRepo.Create();
 
         // One marker path per repo, and one repo per test, so the control's spawn can never be mistaken
         // for the subject's.
-        var marker = Path.Combine(Path.GetTempPath(),
-            "kcap-cert-marker-" + Guid.NewGuid().ToString("N")[..12]);
+        marker = markers.PathTo("fired");
 
         var payload = repo.PathTo("payload.sh");
         File.WriteAllText(payload,
@@ -112,9 +111,9 @@ public class WorkspaceMcpNeutralizationLiveCertTests {
             }
         }));
 
-        Git(repo, "add", "-A");
-        Git(repo, "commit", "-q", "-m", "branch content declaring an MCP server");
-        return (repo, marker);
+        repo.CommitAll("branch content declaring an MCP server");
+
+        return repo;
     }
 
     /// <summary>initialize + session/new only. The measured spawn happens at session setup, so no prompt
@@ -143,10 +142,4 @@ public class WorkspaceMcpNeutralizationLiveCertTests {
         try { proc.Kill(entireProcessTree: true); } catch { /* already gone */ }
     }
 
-    static void Git(string cwd, params string[] args) {
-        var psi = new ProcessStartInfo("git") { WorkingDirectory = cwd, RedirectStandardError = true };
-        foreach (var a in args) psi.ArgumentList.Add(a);
-        using var p = Process.Start(psi)!;
-        p.WaitForExit();
-    }
 }

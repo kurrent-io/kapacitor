@@ -13,6 +13,8 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 
 public class LocalPermissionBridgeTests {
+    [TempDir] public required TempDir Tmp { get; init; }
+
     static (LocalPermissionBridge bridge, FakeServerConnection server) CreateBridge(
             Func<string, string?, JsonElement?, JsonElement?, CancellationToken, Task<PermissionDecision>>? respond = null,
             ILogger<LocalPermissionBridge>? logger = null
@@ -1158,8 +1160,9 @@ public class LocalPermissionBridgeTests {
         } finally { await bridge.DisposeAsync(); }
     }
 
-    static BorrowedReviewContextGeneration ReviewGeneration(string value) =>
-        new(value, Path.Combine(Path.GetTempPath(), value), Encoding.UTF8.GetBytes($"{{\"value\":\"{value}\"}}"));
+    // The path is handed to a bridge that may write it, so it lives in a directory that gets cleaned.
+    BorrowedReviewContextGeneration ReviewGeneration(string value) =>
+        new(value, Tmp.PathTo(value), Encoding.UTF8.GetBytes($"{{\"value\":\"{value}\"}}"));
 
     /// <summary>A second bridge retries when its first probed port is already claimed in-process.</summary>
     [Test, NotInParallel(nameof(LocalPermissionBridgeTests))]

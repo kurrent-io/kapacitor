@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Runtime.Versioning;
 using Capacitor.Cli.Daemon.Services;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -32,11 +31,10 @@ public class WorkspaceMcpNeutralizationTests {
 
     /// <summary>Every declared path, one case each, so a removal fails by name rather than shrinking a
     /// count assertion that still passes.
-    /// <para>Sourced FROM the canonical list, not restated as attributes. Restating it meant a newly added
-    /// vendor path silently got no case while this test still claimed to cover "every declared path" —
-    /// list-drift produced three separate defects in this change and this was one more copy of it. The
-    /// expected-set test below stays independent on purpose: it guards against a path being REMOVED from
-    /// the list, which a self-sourced test cannot catch.</para></summary>
+    /// <para>Sourced FROM the canonical list, not restated as attributes — restating it would let a newly
+    /// added vendor path silently get no case while this test still claimed to cover "every declared
+    /// path". The expected-set test below stays independent on purpose: it guards against a path being
+    /// REMOVED from the list, which a self-sourced test cannot catch.</para></summary>
     public static IEnumerable<string> DeclaredPaths() => WorktreeManager.WorkspaceMcpConfigPaths;
 
     [Test]
@@ -90,9 +88,9 @@ public class WorkspaceMcpNeutralizationTests {
 
     // ── symlinks: the branch is hostile, so deletion must not be weaponisable ──
 
-    /// <summary>THE case this guard exists for, and the one review corrected. A branch symlinks a config
-    /// DIRECTORY at the operator's real one. The LINK must go — leaving it means the vendor follows it and
-    /// executes what it finds — and the operator's file behind it must NOT be touched.</summary>
+    /// <summary>THE case this guard exists for. A branch symlinks a config DIRECTORY at the operator's
+    /// real one. The LINK must go — leaving it means the vendor follows it and executes what it finds —
+    /// and the operator's file behind it must NOT be touched.</summary>
     [Test]
     public async Task A_config_dir_symlinked_OUTSIDE_is_unlinked_without_touching_its_target() {
         SkipUnlessPosixSymlinks();
@@ -114,10 +112,9 @@ public class WorkspaceMcpNeutralizationTests {
     }
 
     /// <summary>
-    /// The exact Critical the reviewer raised against the first implementation, kept as a named regression.
-    /// A branch commits <c>.kiro</c> as a symlink escaping the worktree, plus the content it points at. The
-    /// original code resolved the ancestor, saw it land outside, and SKIPPED — leaving the symlink for the
-    /// vendor to follow. Removing the routing entry is what makes the target's location irrelevant.
+    /// A branch commits <c>.kiro</c> as a symlink escaping the worktree, plus the content it points at.
+    /// Resolving the ancestor and skipping when it lands outside would leave the symlink for the vendor
+    /// to follow; removing the routing entry makes the target's location irrelevant.
     /// </summary>
     [Test]
     public async Task A_config_dir_symlinked_to_an_escaping_relative_path_is_unlinked() {
@@ -226,10 +223,10 @@ public class WorkspaceMcpNeutralizationTests {
     }
 
     /// <summary>
-    /// The round-1 bug class, in the place the round-2 fix created. Removing a real directory at a config
-    /// path must not follow a symlink NESTED inside it: a branch commits `.cursor/mcp.json/` as a directory
-    /// containing a link to the operator's home, and a recursive delete that follows would destroy their
-    /// data. The whole tree goes; whatever the nested link pointed at does not.
+    /// Removing a real directory at a config path must not follow a symlink NESTED inside it: a branch
+    /// commits `.cursor/mcp.json/` as a directory containing a link to the operator's home, and a
+    /// recursive delete that follows would destroy their data. The whole tree goes; whatever the nested
+    /// link pointed at does not.
     /// </summary>
     [Test]
     public async Task Removing_a_real_directory_does_not_follow_a_symlink_nested_inside_it() {
@@ -295,23 +292,21 @@ public class WorkspaceMcpNeutralizationTests {
         Skip.Unless(!OperatingSystem.IsWindows(), "POSIX hook script with a shebang");
 
         var marker = Path.Combine(NewDir("hookmarker"), "fired");
-        var repo = NewDir("hookrepo");
-        Git(repo, "init", "-q");
-        Git(repo, "config", "user.email", "t@e.com");
-        Git(repo, "config", "user.name", "T");
-        // The operator's own config points hooks at a path the BRANCH controls — the whole hazard.
-        Git(repo, "config", "core.hooksPath", ".githooks");
+        using var repo = GitRepo.Create();
+
+        // Opted into explicitly, on top of a hermetic base: hooks point at a path the BRANCH
+        // controls, which is the whole hazard.
+        repo.Config("core.hooksPath", ".githooks");
 
         var hook = Path.Combine(repo, ".githooks", "post-checkout");
         Directory.CreateDirectory(Path.GetDirectoryName(hook)!);
         File.WriteAllText(hook, $"#!/bin/sh\nprintf fired > '{marker}'\n");
         File.SetUnixFileMode(hook, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-        File.WriteAllText(Path.Combine(repo, "README.md"), "hi");
-        Git(repo, "add", "-A");
-        Git(repo, "commit", "-q", "-m", "branch ships its own post-checkout");
+        repo.CreateFile("README.md", "hi");
+        repo.CommitAll("branch ships its own post-checkout");
 
         // CONTROL — plain git, honouring the repo's hooksPath. This MUST run the hook.
-        Git(repo, "worktree", "add", "-q", Path.Combine(NewDir("ctl"), "wt"), "-b", "ctl-" + Guid.NewGuid().ToString("N")[..8]);
+        repo.AddWorktree(Path.Combine(NewDir("ctl"), "wt"), "ctl-" + Guid.NewGuid().ToString("N")[..8]);
         await Assert.That(File.Exists(marker))
             .IsTrue()
             .Because("the control must reproduce hook execution, or the assertion below is vacuous");
@@ -325,16 +320,13 @@ public class WorkspaceMcpNeutralizationTests {
     }
 
     /// <summary>
-    /// Borrowed snapshots are a supported launch mode and were NOT covered: the snapshot exclusion list
-    /// named two filenames, so <c>.kiro/settings/mcp.json</c> — the one file measured to get a command
-    /// executed at session setup — survived into a launched snapshot. Review found it; the doc comment on
-    /// the strip helper had claimed "every creation path" and was wrong.
+    /// Borrowed snapshots are a launch mode too, so the exclusion list must cover every declared workspace
+    /// config path — including <c>.kiro/settings/mcp.json</c>, which Kiro executes at session setup.
     ///
-    /// <para>Asserted on the LIST rather than by building a snapshot, because the two lists diverging is
-    /// the actual defect: a future vendor added to one and not the other reproduces it exactly. Read
-    /// directly rather than by reflection — the first version reflected on a private FIELD and broke the
-    /// moment that field became a property, which is a test failing for a reason unrelated to its
-    /// subject.</para>
+    /// <para>Asserted on the LIST rather than by building a snapshot, because list divergence is the
+    /// actual defect: a future vendor added to one list and not the other reproduces it exactly. Read
+    /// directly rather than by reflection, since reflecting on a private field breaks the moment it
+    /// becomes a property — a failure unrelated to the test's subject.</para>
     /// </summary>
     [Test]
     public async Task Borrowed_snapshots_exclude_every_workspace_mcp_config_path() {
@@ -354,10 +346,9 @@ public class WorkspaceMcpNeutralizationTests {
         await Assert.That(plan.SnapshotExclusions).Contains(".attached");
     }
 
-    /// <summary>The two most recently added paths, called out separately from the membership sweep above
-    /// because each is a distinct defect: <c>.github/mcp.json</c> is a Copilot discovery path the list
-    /// simply never had (it carried <c>.github/copilot/mcp.json</c>, a different file), and it was
-    /// unprotected at the root of every borrowed snapshot regardless of cwd scope.</summary>
+    /// <summary><c>.github/mcp.json</c> is a distinct Copilot discovery path from
+    /// <c>.github/copilot/mcp.json</c>; omitting it leaves the root of every borrowed snapshot
+    /// unprotected regardless of cwd scope.</summary>
     [Test]
     public async Task Canonical_list_covers_the_copilot_paths_that_were_missing() {
         await Assert.That(WorktreeManager.WorkspaceMcpConfigPaths).Contains(".github/mcp.json");
@@ -374,9 +365,8 @@ public class WorkspaceMcpNeutralizationTests {
     /// <summary>The standalone end-to-end case: a NON-GIT source carrying a workspace MCP config yields a
     /// snapshot with that config stripped, and absent from the initial commit too.
     ///
-    /// <para>Removed while the standalone copy was broken, because the branch could not complete at all.
-    /// Restored now that it can. This is the only test that exercises the strip through the real standalone
-    /// creation path rather than against a hand-built directory.</para>
+    /// <para>The only test that exercises the strip through the real standalone creation path rather than
+    /// against a hand-built directory.</para>
     ///
     /// <para>The source is asserted NON-GIT first. Without that, a fixture that accidentally produced a
     /// repo with commits would send this down the linked-worktree branch, and the test would pass while
@@ -400,39 +390,11 @@ public class WorkspaceMcpNeutralizationTests {
         await Assert.That(File.Exists(Path.Combine(worktree.Path, ".mcp.json"))).IsFalse()
             .Because("the branch-authored config must not reach the agent's worktree");
 
-        var committed = GitCapture(worktree.Path, "ls-tree", "-r", "--name-only", "HEAD");
+        var committed = GitRepo.At(worktree.Path).Try("ls-tree", "-r", "--name-only", "HEAD").Text;
         await Assert.That(committed).Contains("README.md")
             .Because("positive control — the snapshot really did commit the source");
         await Assert.That(committed).DoesNotContain(".mcp.json")
             .Because("stripping before the commit is the point: a later checkout would restore it");
     }
 
-    static string GitCapture(string cwd, params string[] args) {
-        var psi = new ProcessStartInfo("git") {
-            WorkingDirectory = cwd, RedirectStandardError = true, RedirectStandardOutput = true
-        };
-        foreach (var a in args) psi.ArgumentList.Add(a);
-        using var p = Process.Start(psi)!;
-        var stdout = p.StandardOutput.ReadToEnd();
-        p.WaitForExit();
-
-        return stdout;
-    }
-
-    /// <summary>Fixture git. Exit codes are CHECKED: an ignored failure here silently changes which
-    /// creation path <see cref="WorktreeManager.CreateAsync"/> selects (a repo that failed to commit is
-    /// not "a git repo with commits", so it takes the standalone branch), and the test would then pass
-    /// while asserting about a code path it never executed.</summary>
-    static void Git(string cwd, params string[] args) {
-        var psi = new ProcessStartInfo("git") {
-            WorkingDirectory = cwd, RedirectStandardError = true, RedirectStandardOutput = true
-        };
-        foreach (var a in args) psi.ArgumentList.Add(a);
-        using var p = Process.Start(psi)!;
-        var stderr = p.StandardError.ReadToEnd();
-        p.WaitForExit();
-
-        if (p.ExitCode != 0)
-            throw new InvalidOperationException($"fixture `git {string.Join(' ', args)}` failed: {stderr}");
-    }
 }

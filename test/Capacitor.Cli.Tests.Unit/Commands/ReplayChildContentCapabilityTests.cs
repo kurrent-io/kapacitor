@@ -91,7 +91,8 @@ public class ReplayChildContentCapabilityTests {
     // Constructed with throwaway paths: only the capability/vendor properties are read, and no
     // source touches disk in its constructor.
     IImportSource MakeSource(string vendor) {
-        var scratch = Path.Combine(Path.GetTempPath(), "kcap-capability-probe");
+        using var tmp = new TempDir();
+        var scratch = tmp.PathTo("capability-probe");
 
         return vendor switch {
             "claude"      => new ClaudeImportSource(Config.Root, scratch),

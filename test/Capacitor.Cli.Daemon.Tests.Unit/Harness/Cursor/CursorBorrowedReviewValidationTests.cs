@@ -22,7 +22,7 @@ public class CursorBorrowedReviewValidationTests {
     /// as the ordinary steady state rather than an error.</summary>
     [Test]
     public async Task TryMatchValidatedBuild_NonMatchingPath_ReturnsNullWithoutThrowing() {
-        var path = Path.Combine(Path.GetTempPath(), "kcap-not-cursor-" + Guid.NewGuid().ToString("N")[..8]);
+        using var pathDir = TempDir.WithPathTo("kcap-not-cursor", out var path);
 
         await Assert.That(CursorBorrowedReviewValidation.TryMatchValidatedBuild(path)).IsNull();
     }

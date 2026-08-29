@@ -8,7 +8,7 @@ public class ServiceVerifyInstallProductionPathTests {
     const string Id = "prodpath-install";
 
     static ServiceSpec Spec(string daemonPath) =>
-        new(Id, daemonPath, Path.Combine(Path.GetTempPath(), "prodpath-install-daemon.log"),
+        new(Id, daemonPath, Path.ChangeExtension(daemonPath, ".log"),
             new Dictionary<string, string>(), []);
 
     // File.Exists reads a directory as absent, so recovery must classify via the discriminated

@@ -48,8 +48,8 @@ public class OpenCodeImportSourceTests {
 
     [Test]
     public async Task IsAvailable_false_when_db_missing() {
-        var source = new OpenCodeImportSource(Path.Combine(Path.GetTempPath(), "no-such-kcap.db"),
-            Path.Combine(Path.GetTempPath(), $"kcap-ledger-{Guid.NewGuid():N}.json"));
+        using var tmp = new TempDir();
+        var source = new OpenCodeImportSource(tmp.PathTo("no-such-kcap.db"), tmp.PathTo("ledger.json"));
         await Assert.That(source.IsAvailable).IsFalse();
     }
 

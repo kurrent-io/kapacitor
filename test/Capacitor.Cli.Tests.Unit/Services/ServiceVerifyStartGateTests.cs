@@ -7,9 +7,11 @@ namespace Capacitor.Cli.Tests.Unit.Services;
 /// No filesystem, no lock, no manager — every case is driven purely through the function's own
 /// parameters, per the task brief verbatim.</summary>
 public class ServiceVerifyStartGateTests {
+    [TempDir] public required TempDir Tmp { get; init; }
+
     // Every case either bakes its own KCAP_CONFIG_DIR or never reaches the profile lookup, so the
     // default root is dead evidence here — a directory nothing creates keeps it that way.
-    static readonly ConfigRoot NeverRead = new(Path.Combine(Path.GetTempPath(), "kcap-start-gate-never-read"));
+    ConfigRoot NeverRead => new(Tmp.PathTo("never-read"));
 
     [Test]
     public async Task Gate_inactive_without_invoking_directive() {

@@ -106,7 +106,7 @@ public class ServiceVerifyInstallTests {
     }
 
     static ServiceSpec Spec(string daemonPath) =>
-        new(Id, daemonPath, Path.Combine(Path.GetTempPath(), "daemon.log"), new Dictionary<string, string>(), []);
+        new(Id, daemonPath, Path.ChangeExtension(daemonPath, ".log"), new Dictionary<string, string>(), []);
 
     // A matching-fingerprint readPlist: the final recheck and rollback's foreign-file guard both
     // see "our own" unit still on disk, unmodified since WriteAndBootstrap.

@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Runtime.Versioning;
 using Capacitor.Cli.Daemon.Services;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -11,12 +10,12 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 /// git runs it during <c>worktree add</c> — before anything has neutralised the tree.
 /// <c>core.hooksPath</c> does not affect filters, so the hook guard does nothing here.
 ///
-/// <para>EVERY defined driver is disabled, with no exemption. Four designs tried to keep git-lfs working —
-/// classify the command, allowlist the name, authenticate the binding, rebind to a resolved path — and
-/// review defeated each at the exemption itself. Nothing is parsed, resolved or authenticated now, so there
-/// is nothing to subvert. The cost is documented and logged rather than silent: an OWNED worktree checks
-/// out through git and so holds LFS pointer text (standalone and borrowed snapshots carry the source's own
-/// bytes), and the overrides cover kcap's creation commands only — not git the agent later runs there.</para>
+/// <para>EVERY defined driver is disabled, with no exemption — including git-lfs. An exemption needs a
+/// name to impersonate, a binding to authenticate, or a path to resolve; nothing is parsed, resolved or
+/// authenticated now, so there is nothing to subvert. The cost is documented and logged rather than
+/// silent: an OWNED worktree checks out through git and so holds LFS pointer text (standalone and
+/// borrowed snapshots carry the source's own bytes), and the overrides cover kcap's creation commands
+/// only — not git the agent later runs there.</para>
 /// </summary>
 [ParallelLimiter<SubprocessLimit>]
 public class BranchFilterContainmentTests {
@@ -25,9 +24,9 @@ public class BranchFilterContainmentTests {
     // ── every defined driver is disabled ──
 
     /// <summary>
-    /// No command is inspected, so no command can evade the guard. These are the four shapes that defeated
-    /// the classifier design plus the two that defeated its successors — all now irrelevant, which is the
-    /// point of removing the classification entirely.
+    /// No command is inspected, so no command can evade the guard, whatever shape it takes — a bare
+    /// relative file, shell chaining past a trusted-looking token, or a rooted path whose shell still runs
+    /// a relative half.
     /// </summary>
     [Test]
     [Arguments("./tools/f")]
@@ -38,8 +37,8 @@ public class BranchFilterContainmentTests {
     [Arguments("git-lfs smudge -- %f; ./tools/f")]     // shell chaining past a trusted-looking token
     [Arguments("/usr/local/bin/filter")]
     public async Task Every_defined_driver_is_disabled_whatever_its_command(string command) {
-        var repo = NewRepo();
-        Git(repo, "config", "filter.custom.smudge", command);
+        using var repo = NewRepo();
+        repo.Do("config", "filter.custom.smudge", command);
 
         var overrides = await WorktreeManager.BranchFilterOverridesAsync(repo);
 
@@ -48,17 +47,17 @@ public class BranchFilterContainmentTests {
     }
 
     /// <summary>
-    /// `lfs` has NO exemption. Four designs tried to keep it working and review defeated each one at the
-    /// exemption itself, so there is no longer a name to impersonate, a binding to authenticate, or a path
-    /// to resolve. The cost is documented and logged: an OWNED worktree checks out through git and so
-    /// holds LFS pointer text, while standalone and borrowed snapshots carry the source's own bytes.
+    /// `lfs` has NO exemption: an exemption needs a name to impersonate, a binding to authenticate, or a
+    /// path to resolve, and disabling it unconditionally leaves none of those. The cost is documented and
+    /// logged: an OWNED worktree checks out through git and so holds LFS pointer text, while standalone
+    /// and borrowed snapshots carry the source's own bytes.
     /// </summary>
     [Test]
     public async Task The_lfs_driver_has_no_exemption() {
-        var repo = NewRepo();
-        Git(repo, "config", "filter.lfs.smudge", "git-lfs smudge -- %f");
-        Git(repo, "config", "filter.lfs.process", "git-lfs filter-process");
-        Git(repo, "config", "filter.lfs.required", "true");
+        using var repo = NewRepo();
+        repo.Do("config", "filter.lfs.smudge", "git-lfs smudge -- %f");
+        repo.Do("config", "filter.lfs.process", "git-lfs filter-process");
+        repo.Do("config", "filter.lfs.required", "true");
 
         var overrides = await WorktreeManager.BranchFilterOverridesAsync(repo);
 
@@ -71,13 +70,13 @@ public class BranchFilterContainmentTests {
     ///
     /// <para>Computed from git rather than hard-coded, because enumeration sees EFFECTIVE config: a host
     /// with git-lfs installed has a global <c>filter.lfs.*</c>, so "a repo with no filters of its own" is
-    /// not a repo with no filters. An earlier version asserted an empty result and passed only on machines
-    /// without git-lfs — green locally, red on CI, which is the test encoding its author's laptop.</para>
+    /// not a repo with no filters — asserting an empty result here would pass only on a machine without
+    /// git-lfs installed.</para>
     /// </summary>
     [Test]
     public async Task The_override_set_covers_exactly_the_drivers_git_reports() {
-        var repo = NewRepo();
-        Git(repo, "config", "filter.custom.smudge", "./tools/f");
+        using var repo = NewRepo();
+        repo.Do("config", "filter.custom.smudge", "./tools/f");
 
         var expected = EffectiveDriverNames(repo);
         var overrides = await WorktreeManager.BranchFilterOverridesAsync(repo);
@@ -112,7 +111,7 @@ public class BranchFilterContainmentTests {
     [Arguments("filter", "Mixed", "clean", "filter.Mixed.clean")]   // subsection case IS preserved
     public async Task A_mixed_case_config_spelling_is_still_enumerated_and_overridden(
             string section, string subsection, string variable, string canonical) {
-        var repo = NewRepo();
+        using var repo = NewRepo();
         File.AppendAllText(Path.Combine(repo, ".git", "config"),
             $"[{section} \"{subsection}\"]\n\t{variable} = ./tools/f\n");
 
@@ -137,30 +136,22 @@ public class BranchFilterContainmentTests {
             .ToHashSet(StringComparer.Ordinal);
 
     /// <summary>Driver names git reports for the repo's EFFECTIVE config, global scope included.</summary>
-    static HashSet<string> EffectiveDriverNames(string repo) {
-        var psi = new ProcessStartInfo("git") {
-            WorkingDirectory = repo, RedirectStandardOutput = true, RedirectStandardError = true
-        };
-        foreach (var a in new[] { "config", "--name-only", "--get-regexp", "^filter\\..*\\.(clean|smudge|process)$" })
-            psi.ArgumentList.Add(a);
-
-        using var p = Process.Start(psi)!;
-        var stdout = p.StandardOutput.ReadToEnd();
-        p.WaitForExit();
-
-        return stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+    static HashSet<string> EffectiveDriverNames(string repo) =>
+        // Try, not Do: --get-regexp exits 1 when nothing matches, which is a legitimate answer here.
+        GitRepo.At(repo)
+            .Try("config", "--name-only", "--get-regexp", "^filter\\..*\\.(clean|smudge|process)$").Text
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries)
             .Select(static k => k.Trim().Split('.'))
             .Where(static parts => parts.Length >= 3)
             .Select(static parts => string.Join('.', parts[1..^1]))
             .ToHashSet(StringComparer.Ordinal);
-    }
 
     /// <summary>`filter.my.tool.smudge` is driver `my.tool`; naive splitting would emit overrides for a
     /// driver that does not exist and leave the real one live.</summary>
     [Test]
     public async Task A_dotted_driver_name_survives_parsing() {
-        var repo = NewRepo();
-        Git(repo, "config", "filter.my.tool.smudge", "./tools/f");
+        using var repo = NewRepo();
+        repo.Do("config", "filter.my.tool.smudge", "./tools/f");
 
         await Assert.That(await WorktreeManager.BranchFilterOverridesAsync(repo))
             .Contains(new GitConfigOverride("filter.my.tool.smudge", ""));
@@ -171,8 +162,8 @@ public class BranchFilterContainmentTests {
     /// why enumeration is `--name-only -z` and never parses values.</summary>
     [Test]
     public async Task A_newline_inside_a_config_value_cannot_hide_a_driver() {
-        var repo = NewRepo();
-        Git(repo, "config", "filter.sneaky.smudge", "cat\n./tools/f");
+        using var repo = NewRepo();
+        repo.Do("config", "filter.sneaky.smudge", "cat\n./tools/f");
 
         await Assert.That(await WorktreeManager.BranchFilterOverridesAsync(repo))
             .Contains(new GitConfigOverride("filter.sneaky.smudge", ""));
@@ -196,20 +187,19 @@ public class BranchFilterContainmentTests {
         Skip.Unless(!OperatingSystem.IsWindows(), "POSIX filter script with a shebang");
 
         var marker = Path.Combine(NewDir("eqmarker"), "fired");
-        var repo = NewRepo();
+        using var repo = NewRepo();
         Directory.CreateDirectory(Path.Combine(repo, "tools"));
         var script = Path.Combine(repo, "tools", "f");
         File.WriteAllText(script, $"#!/bin/sh\nprintf fired > '{marker}'\ncat\n");
         File.SetUnixFileMode(script, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         File.WriteAllText(Path.Combine(repo, "zz.txt"), "payload\n");   // sorts after tools/f — see above
         File.WriteAllText(Path.Combine(repo, ".gitattributes"), "zz.txt filter=evil=x\n");
-        Git(repo, "add", "-A");
-        Git(repo, "commit", "-q", "-m", "branch selects a driver whose name contains '='");
-        Git(repo, "config", "filter.evil=x.smudge", "./tools/f");
+        repo.Do("add", "-A");
+        repo.Do("commit", "-q", "-m", "branch selects a driver whose name contains '='");
+        repo.Do("config", "filter.evil=x.smudge", "./tools/f");
 
         // CONTROL — plain git honours the '='-named driver and runs branch code.
-        Git(repo, "worktree", "add", "-q", Path.Combine(NewDir("ctl"), "wt"),
-            "-b", "ctl-" + Guid.NewGuid().ToString("N")[..8]);
+        repo.Do("worktree", "add", "-q", Path.Combine(NewDir("ctl"), "wt"), "-b", "ctl-" + Guid.NewGuid().ToString("N")[..8]);
         await Assert.That(File.Exists(marker))
             .IsTrue()
             .Because("the control must reproduce filter execution, or the assertion below is vacuous");
@@ -235,24 +225,22 @@ public class BranchFilterContainmentTests {
         Skip.Unless(!OperatingSystem.IsWindows(), "POSIX filter script with a shebang");
 
         var marker = Path.Combine(NewDir("filtermarker"), "fired");
-        var repo = NewRepo();
+        using var repo = NewRepo();
         Directory.CreateDirectory(Path.Combine(repo, "tools"));
         var script = Path.Combine(repo, "tools", "f");
         File.WriteAllText(script, $"#!/bin/sh\nprintf fired > '{marker}'\ncat\n");
         File.SetUnixFileMode(script, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         // The filtered path must sort AFTER the script: git checks out in index order, so a filtered
         // `data.txt` would smudge before `tools/f` exists and the exec would merely fail. The attack is
-        // therefore ordering-dependent, and naming it `zz.txt` is what makes the control actually fire —
-        // the first version of this test used `data.txt` and its control failed, correctly.
+        // therefore ordering-dependent, which is why the fixture names it `zz.txt`.
         File.WriteAllText(Path.Combine(repo, "zz.txt"), "payload\n");
         File.WriteAllText(Path.Combine(repo, ".gitattributes"), "zz.txt filter=evil\n");
-        Git(repo, "add", "-A");
-        Git(repo, "commit", "-q", "-m", "branch ships its own filter");
-        Git(repo, "config", "filter.evil.smudge", "./tools/f");
+        repo.Do("add", "-A");
+        repo.Do("commit", "-q", "-m", "branch ships its own filter");
+        repo.Do("config", "filter.evil.smudge", "./tools/f");
 
         // CONTROL — plain git honours the relative command and runs branch code.
-        Git(repo, "worktree", "add", "-q", Path.Combine(NewDir("ctl"), "wt"),
-            "-b", "ctl-" + Guid.NewGuid().ToString("N")[..8]);
+        repo.Do("worktree", "add", "-q", Path.Combine(NewDir("ctl"), "wt"), "-b", "ctl-" + Guid.NewGuid().ToString("N")[..8]);
         await Assert.That(File.Exists(marker))
             .IsTrue()
             .Because("the control must reproduce filter execution, or the assertion below is vacuous");
@@ -285,7 +273,7 @@ public class BranchFilterContainmentTests {
         Skip.Unless(!OperatingSystem.IsWindows(), "POSIX filter script with a shebang");
 
         var marker = Path.Combine(NewDir("utf8marker"), "fired");
-        var repo = NewRepo();
+        using var repo = NewRepo();
         Directory.CreateDirectory(Path.Combine(repo, "tools"));
         var script = Path.Combine(repo, "tools", "f");
         File.WriteAllText(script, $"#!/bin/sh\nprintf fired > '{marker}'\ncat\n");
@@ -299,8 +287,8 @@ public class BranchFilterContainmentTests {
 
         File.WriteAllBytes(Path.Combine(repo, ".gitattributes"), WithFF("zz.txt filter=ev", "il\n"));
         File.WriteAllText(Path.Combine(repo, "zz.txt"), "payload\n");   // sorts after tools/f — see above
-        Git(repo, "add", "-A");
-        Git(repo, "commit", "-q", "-m", "branch selects a driver named with a raw 0xff");
+        repo.Do("add", "-A");
+        repo.Do("commit", "-q", "-m", "branch selects a driver named with a raw 0xff");
 
         var config = Path.Combine(repo, ".git", "config");
         var appended = new List<byte>(File.ReadAllBytes(config));
@@ -308,8 +296,7 @@ public class BranchFilterContainmentTests {
         File.WriteAllBytes(config, [.. appended]);
 
         // CONTROL — plain git honours the 0xff-named driver and runs branch code.
-        Git(repo, "worktree", "add", "-q", Path.Combine(NewDir("ctl"), "wt"),
-            "-b", "ctl-" + Guid.NewGuid().ToString("N")[..8]);
+        repo.Do("worktree", "add", "-q", Path.Combine(NewDir("ctl"), "wt"), "-b", "ctl-" + Guid.NewGuid().ToString("N")[..8]);
         await Assert.That(File.Exists(marker))
             .IsTrue()
             .Because("the control must reproduce filter execution, or the assertion below is vacuous");
@@ -332,7 +319,7 @@ public class BranchFilterContainmentTests {
     /// </summary>
     [Test]
     public async Task A_non_round_trippable_driver_name_is_refused_on_every_platform() {
-        var repo = NewRepo();
+        using var repo = NewRepo();
 
         // Written as BYTES: a process argument cannot carry 0xff — .NET would encode it to valid UTF-8.
         var config = Path.Combine(repo, ".git", "config");
@@ -340,17 +327,10 @@ public class BranchFilterContainmentTests {
         bytes.AddRange([.. "[filter \"ev"u8, 0xff, .. "il\"]\n\tsmudge = ./tools/f\n"u8]);
         File.WriteAllBytes(config, [.. bytes]);
 
-        // Precondition via the REGEX-FREE listing. `EffectiveDriverNames` uses `--get-regexp`, which is
-        // blind to exactly this key — that blindness is the bug the enumeration change fixed, so using it
-        // here would fail the precondition rather than test the refusal. (It did, first time round.)
-        var psi = new ProcessStartInfo("git") {
-            WorkingDirectory = repo, RedirectStandardOutput = true, RedirectStandardError = true,
-            StandardOutputEncoding = new System.Text.UTF8Encoding(false, false)
-        };
-        foreach (var a in new[] { "config", "--list", "--name-only" }) psi.ArgumentList.Add(a);
-        using var listing = Process.Start(psi)!;
-        var keys = listing.StandardOutput.ReadToEnd();
-        listing.WaitForExit();
+        // Precondition via the REGEX-FREE listing: `EffectiveDriverNames` uses `--get-regexp`, which is
+        // blind to exactly this key, so using it here would fail the precondition rather than test the
+        // refusal.
+        var keys = repo.Try("config", "--list", "--name-only").Text;
         await Assert.That(keys).Contains("filter.")
             .Because("git must report the key, or there is nothing for the guard to refuse");
 
@@ -362,27 +342,13 @@ public class BranchFilterContainmentTests {
 
     string NewDir(string tag) => Tmp.CreateDir(tag);
 
-    string NewRepo() {
-        var repo = NewDir("repo");
-        Git(repo, "init", "-q");
-        Git(repo, "config", "user.email", "t@e.com");
-        Git(repo, "config", "user.name", "T");
-        File.WriteAllText(Path.Combine(repo, "README.md"), "hi");
-        Git(repo, "add", "-A");
-        Git(repo, "commit", "-q", "-m", "init");
+    static GitRepo NewRepo() {
+        var repo = GitRepo.Create();
+
+        repo.CreateFile("README.md", "hi");
+        repo.CommitAll("init");
+
         return repo;
     }
 
-    static void Git(string cwd, params string[] args) {
-        var psi = new ProcessStartInfo("git") {
-            WorkingDirectory = cwd, RedirectStandardError = true, RedirectStandardOutput = true
-        };
-        foreach (var a in args) psi.ArgumentList.Add(a);
-        using var p = Process.Start(psi)!;
-        var stderr = p.StandardError.ReadToEnd();
-        p.WaitForExit();
-
-        if (p.ExitCode != 0)
-            throw new InvalidOperationException($"fixture `git {string.Join(' ', args)}` failed: {stderr}");
-    }
 }

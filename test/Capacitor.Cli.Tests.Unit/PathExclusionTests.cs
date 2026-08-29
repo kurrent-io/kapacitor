@@ -38,7 +38,7 @@ public class PathExclusionTests {
 
     [Test]
     public async Task IsExcluded_does_not_match_sibling_with_shared_prefix() {
-        // /tmp/foo vs /tmp/foobar — must NOT match
+        // foo vs foobar share a prefix but foobar is not a descendant — must NOT match.
         using var tmp    = new TempDir();
         var       foo    = tmp.PathTo("foo");
         var       foobar = tmp.PathTo("foobar");
@@ -90,14 +90,13 @@ public class PathExclusionTests {
         using var real = new TempDir();
         using var link = TempSymlink.To(real.Path);
 
-        // cwd uses the real path; entry uses the symlinked path.
         await Assert.That(PathExclusion.IsExcluded(real.Path, [link.Path], Home)).IsTrue();
     }
 
     [Test]
     public async Task IsExcluded_resolves_parent_symlinks() {
-        // /link -> /real, cwd is /link/sub. Ignoring /real (or /link) must match
-        // /link/sub. Today this fails because only the leaf is resolved.
+        // link -> real, cwd is link/sub: ignoring real (or link) must match link/sub too,
+        // which requires resolving symlinks in parent components, not just the leaf.
         using var real = new TempDir();
         using var link = TempSymlink.To(real.Path);
 
@@ -184,20 +183,27 @@ public class PathExclusionTests {
 }
 
 sealed class TempSymlink : IDisposable {
+    readonly TempDir _parent;
+
     public string Path { get; }
 
-    TempSymlink(string path) => Path = path;
-
-    public static TempSymlink To(string target) {
-        var p = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "kap-pathex-link-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateSymbolicLink(p, target);
-
-        return new(p);
+    TempSymlink(TempDir parent, string path) {
+        _parent = parent;
+        Path    = path;
     }
 
+    public static TempSymlink To(string target) {
+        var parent = new TempDir("pathexlink");
+        var link   = parent.PathTo("link");
+
+        Directory.CreateSymbolicLink(link, target);
+
+        return new(parent, link);
+    }
+
+    // The link first: deleting the directory tree would follow it into the target otherwise.
     public void Dispose() {
-        try { Directory.Delete(Path); } catch {
-            /* best effort */
-        }
+        try { Directory.Delete(Path); } catch { /* best effort */ }
+        _parent.Dispose();
     }
 }

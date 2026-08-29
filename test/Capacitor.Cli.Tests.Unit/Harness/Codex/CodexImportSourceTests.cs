@@ -32,7 +32,7 @@ public class CodexImportSourceTests {
 
     [Test]
     public async Task is_unavailable_when_sessions_dir_missing() {
-        var missing = Path.Combine(Path.GetTempPath(), "kcap-codex-source-missing-" + Guid.NewGuid().ToString("N"));
+        using var missingDir = TempDir.WithPathTo("kcap-codex-source-missing", out var missing);
         var src     = new CodexImportSource(Config.Root, missing);
         await Assert.That(src.IsAvailable).IsFalse();
     }

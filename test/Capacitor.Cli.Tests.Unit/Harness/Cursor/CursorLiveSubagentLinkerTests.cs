@@ -63,8 +63,9 @@ public class CursorLiveSubagentLinkerTests {
 
     [Test]
     public async Task discover_siblings_is_fail_open_for_a_missing_transcripts_root() {
+        using var tmp = new TempDir();
         var siblings = CursorLiveSubagentLinker.DiscoverSiblingTranscripts(
-            Path.Combine(Path.GetTempPath(), $"kcap-curs-missing-{Guid.NewGuid():N}", "sid", "sid.jsonl"));
+            tmp.PathTo("missing", "sid", "sid.jsonl"));
 
         await Assert.That(siblings).IsEmpty();
     }

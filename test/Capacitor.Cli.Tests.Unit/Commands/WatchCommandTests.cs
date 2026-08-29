@@ -1091,10 +1091,11 @@ public class ClaudeToolTrackingSourceTests {
 
     [Test]
     public async Task Backfill_on_a_missing_file_is_a_silent_no_op() {
+        using var tmp = TempDir.WithPathTo("missing.jsonl", out var missing);
         var pending = new HashSet<string>(StringComparer.Ordinal);
 
         await WatchCommand.BackfillClaudePendingToolCallsAsync(
-            pending, Path.Combine(Path.GetTempPath(), $"kcap-missing-{Guid.NewGuid():N}.jsonl"), upToLine: 5, CancellationToken.None);
+            pending, missing, upToLine: 5, CancellationToken.None);
 
         await Assert.That(pending.Count).IsEqualTo(0);
     }

@@ -5,7 +5,9 @@ namespace Capacitor.Cli.Core.Tests.Unit.Harness.Codex;
 public class CodexPathsTests {
     [Test]
     public async Task Discover_returns_empty_when_root_missing() {
-        var result = CodexPaths.Discover(Path.Combine(Path.GetTempPath(), $"codex-missing-{Guid.NewGuid():N}"));
+        using var tmp = TempDir.WithPathTo("codex-missing", out var missing);
+
+        var result = CodexPaths.Discover(missing);
         await Assert.That(result).IsEmpty();
     }
 
