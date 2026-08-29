@@ -37,10 +37,21 @@ internal sealed partial class LocalPermissionBridge(
     const string PathSuffix      = "/permission-request";
 
     internal static readonly TimeSpan ResponseWriteTimeout = TimeSpan.FromSeconds(2);
+    internal static readonly TimeSpan ShutdownDrain        = TimeSpan.FromSeconds(2);
 
     readonly PermissionPromptBroker _broker      = broker ?? new();
     readonly PermissionDecisionLog? _decisionLog = decisionLog;
     int _serverLegsInFlight;
+
+    // One gate owns admission and the in-flight count together, so a snapshot taken under it
+    // is exact: nothing admitted after it, nothing admitted before it invisible.
+    readonly object _admission = new();
+    bool _admitting = true;
+    int  _inFlight;
+
+    internal int  InFlightHandlersForTest => Volatile.Read(ref _inFlight);
+    internal bool AdmittingForTest { get { lock (_admission) return _admitting; } }
+    internal Func<Task>? BeforeHandlerRunsForTest { get; set; }
 
     /// Assigned by the orchestrator after construction (it takes this bridge in its own
     /// constructor, so the dependency cannot point the other way). Null = every request is
@@ -123,6 +134,7 @@ internal sealed partial class LocalPermissionBridge(
                 listener.Start();
                 _listener    = listener;
                 _listenerClosed = 0;
+                _admitting   = true;
                 _sharedToken = token;
                 _port        = port;
                 BaseUrl      = $"http://127.0.0.1:{port}/{token}";
@@ -186,6 +198,12 @@ internal sealed partial class LocalPermissionBridge(
             try { await cts.CancelAsync(); }
             catch (ObjectDisposedException) { /* already stopped and disposed — nothing to cancel */ }
         }
+
+        // Closing the listener before the drain would abort the very responses the claims promised.
+        lock (_admission) _admitting = false;
+        var drainDeadline = DateTime.UtcNow + ShutdownDrain;
+        while (Volatile.Read(ref _inFlight) > 0 && DateTime.UtcNow < drainDeadline)
+            await Task.Delay(10, CancellationToken.None);
 
         // Close exactly once, before awaiting the accept loop. Stop() alone releases the port but
         // leaves HttpListener's prefix registered until a later Close(); another bridge can claim
@@ -347,9 +365,27 @@ internal sealed partial class LocalPermissionBridge(
                 break;
             }
 
-            // Fire-and-forget — each request is independent and the SignalR
-            // round-trip blocks until the user decides (potentially hours).
-            _ = Task.Run(() => HandleAsync(context, ct), ct);
+            bool admitted;
+            lock (_admission) {
+                admitted = _admitting;
+                if (admitted) _inFlight++;
+            }
+            if (!admitted) {
+                try { context.Response.StatusCode = 503; context.Response.Close(); } catch { /* peer gone */ }
+                continue;
+            }
+            // CancellationToken.None on the Task.Run scheduling token, deliberately: a delegate
+            // cancelled before it starts never runs its finally, and the count would never reach zero.
+            _ = Task.Run(() => RunTrackedAsync(context, ct), CancellationToken.None);
+        }
+    }
+
+    async Task RunTrackedAsync(HttpListenerContext context, CancellationToken ct) {
+        try {
+            if (BeforeHandlerRunsForTest is { } hold) await hold();
+            await HandleAsync(context, ct);
+        } finally {
+            lock (_admission) _inFlight--;
         }
     }
 
@@ -480,8 +516,10 @@ internal sealed partial class LocalPermissionBridge(
                 return;
             }
 
+            // Not bound to ct: the request already arrived, so this read is brief regardless of
+            // shutdown, and a drained handler must still reach its own claim below.
             using var reader = new StreamReader(context.Request.InputStream, Encoding.UTF8);
-            var       body   = await reader.ReadToEndAsync(ct);
+            var       body   = await reader.ReadToEndAsync(CancellationToken.None);
 
             JsonNode? node;
 
