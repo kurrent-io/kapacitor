@@ -33,7 +33,7 @@ public sealed class LocalControlOps(DaemonStore store, string daemonName, TimePr
 
     // Internal seams for tests (same pattern as LocalControlClient):
     internal TimeSpan ConnectTimeout      = TimeSpan.FromSeconds(5);
-    internal TimeSpan ConsentReplyTimeout = TimeSpan.FromSeconds(10);
+    internal TimeSpan ReplyTimeout = TimeSpan.FromSeconds(10);
     internal TimeSpan StopReplyTimeout    = TimeSpan.FromSeconds(40); // StopAck lands only after graceful stop (~25s worst case)
 
     const string DaemonUnreachable = "daemon_unreachable";
@@ -57,7 +57,7 @@ public sealed class LocalControlOps(DaemonStore store, string daemonName, TimePr
     }
 
     public async Task<ConsentPolicyDto> GetConsentPolicyAsync(CancellationToken ct) {
-        var reply = await ExchangeAsync(new LocalFrame(FrameType.ConsentRulesGet), ConsentReplyTimeout, ct);
+        var reply = await ExchangeAsync(new LocalFrame(FrameType.ConsentRulesGet), ReplyTimeout, ct);
         switch (reply.Type) {
             case FrameType.ConsentRules:
                 var dto = DeserializeOrThrow(reply.Text, ConsentIpcJsonContext.Default.ConsentPolicyDto, "malformed consent policy reply");
@@ -72,7 +72,7 @@ public sealed class LocalControlOps(DaemonStore store, string daemonName, TimePr
 
     public async Task<ConsentAckDto> PutConsentPolicyAsync(ConsentPolicyDto policy, CancellationToken ct) {
         var json = JsonSerializer.Serialize(policy, ConsentIpcJsonContext.Default.ConsentPolicyDto);
-        var reply = await ExchangeAsync(LocalFrame.ConsentJson(FrameType.ConsentRulesPut, json), ConsentReplyTimeout, ct);
+        var reply = await ExchangeAsync(LocalFrame.ConsentJson(FrameType.ConsentRulesPut, json), ReplyTimeout, ct);
         switch (reply.Type) {
             case FrameType.ConsentAck:
                 var ack = DeserializeOrThrow(reply.Text, ConsentIpcJsonContext.Default.ConsentAckDto, "malformed consent ack reply");
@@ -87,7 +87,7 @@ public sealed class LocalControlOps(DaemonStore store, string daemonName, TimePr
 
     public async Task<ConsentAckDto> PutConsentPolicyV2Async(ConsentPolicyPutV2Dto put, CancellationToken ct) {
         var json = JsonSerializer.Serialize(put, ConsentIpcJsonContext.Default.ConsentPolicyPutV2Dto);
-        var reply = await ExchangeAsync(LocalFrame.ConsentJson(FrameType.ConsentRulesPutV2, json), ConsentReplyTimeout, ct);
+        var reply = await ExchangeAsync(LocalFrame.ConsentJson(FrameType.ConsentRulesPutV2, json), ReplyTimeout, ct);
         switch (reply.Type) {
             case FrameType.ConsentAck:
                 var ack = DeserializeOrThrow(reply.Text, ConsentIpcJsonContext.Default.ConsentAckDto, "malformed consent ack reply");
@@ -104,7 +104,7 @@ public sealed class LocalControlOps(DaemonStore store, string daemonName, TimePr
         var json = JsonSerializer.Serialize(resolve, ConsentIpcJsonContext.Default.ConsentResolveDto);
         // ConsentResolveV2, never the v1 frame: a v1 daemon must fail closed at its codec rather
         // than resolve by id without the identity check (spec §4.1).
-        var reply = await ExchangeAsync(LocalFrame.ConsentJson(FrameType.ConsentResolveV2, json), ConsentReplyTimeout, ct);
+        var reply = await ExchangeAsync(LocalFrame.ConsentJson(FrameType.ConsentResolveV2, json), ReplyTimeout, ct);
         switch (reply.Type) {
             case FrameType.ConsentAck:
                 var ack = DeserializeOrThrow(reply.Text, ConsentIpcJsonContext.Default.ConsentAckDto, "malformed consent ack reply");
@@ -119,7 +119,7 @@ public sealed class LocalControlOps(DaemonStore store, string daemonName, TimePr
 
     public async Task<PermissionAckDto> ResolvePermissionAsync(PermissionResolveDto resolve, CancellationToken ct) {
         var json  = JsonSerializer.Serialize(resolve, PermissionIpcJsonContext.Default.PermissionResolveDto);
-        var reply = await ExchangeAsync(LocalFrame.PermissionJson(FrameType.PermissionResolve, json), ConsentReplyTimeout, ct);
+        var reply = await ExchangeAsync(LocalFrame.PermissionJson(FrameType.PermissionResolve, json), ReplyTimeout, ct);
         switch (reply.Type) {
             case FrameType.PermissionAck:
                 var ack = DeserializeOrThrow(reply.Text, PermissionIpcJsonContext.Default.PermissionAckDto, "malformed permission ack reply");

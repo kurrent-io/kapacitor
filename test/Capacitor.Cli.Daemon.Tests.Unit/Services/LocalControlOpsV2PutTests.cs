@@ -107,7 +107,7 @@ public class LocalControlOpsV2PutTests {
             await Assert.That(File.Exists(h.SockPath)).IsTrue();
             var ops = new LocalControlOps(h.Daemons.Store, daemonName) {
                 ConnectTimeout = TimeSpan.FromSeconds(2),
-                ConsentReplyTimeout = TimeSpan.FromSeconds(5),
+                ReplyTimeout = TimeSpan.FromSeconds(5),
             };
             await body(h, ops, cts.Token);
         } finally {

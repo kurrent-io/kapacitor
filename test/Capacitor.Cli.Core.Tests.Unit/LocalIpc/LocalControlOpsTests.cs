@@ -161,7 +161,7 @@ public class LocalControlOpsTests {
         await using var server = new ScriptedOpsServer(daemons.Store.SocketPath(name), scripts);
         var ops = new LocalControlOps(daemons.Store, name) {
             ConnectTimeout = TimeSpan.FromSeconds(2),
-            ConsentReplyTimeout = TimeSpan.FromSeconds(2),
+            ReplyTimeout = TimeSpan.FromSeconds(2),
             StopReplyTimeout = TimeSpan.FromSeconds(2),
         };
         configure?.Invoke(ops);
@@ -443,7 +443,7 @@ public class LocalControlOpsTests {
             var ex = await Assert.ThrowsAsync<LocalControlOpsException>(
                 async () => await ops.ResolveConsentAsync(new ConsentResolveDto("r1", "allow", null, "p1"), CancellationToken.None));
             await Assert.That(ex!.Reason).IsEqualTo("timed_out");
-        }, configure: ops => ops.ConsentReplyTimeout = TimeSpan.FromMilliseconds(100));
+        }, configure: ops => ops.ReplyTimeout = TimeSpan.FromMilliseconds(100));
     }
 
     [Test]
@@ -456,7 +456,7 @@ public class LocalControlOpsTests {
             await Task.Delay(50); // let connect+write land so cancellation is observed during the reply wait
             cts.Cancel();
             await Assert.ThrowsAsync<OperationCanceledException>(async () => await task);
-        }, configure: ops => ops.ConsentReplyTimeout = TimeSpan.FromSeconds(30));
+        }, configure: ops => ops.ReplyTimeout = TimeSpan.FromSeconds(30));
     }
 
     // ---- ResolvePermissionAsync ----
