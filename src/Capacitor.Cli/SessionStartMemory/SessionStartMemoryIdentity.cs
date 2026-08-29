@@ -19,6 +19,21 @@ internal static class SessionStartMemoryIdentity {
         return Convert.ToHexStringLower(SHA256.HashData(stream.ToArray()));
     }
 
+    /// <summary>
+    /// Key for the once-per-session nudge claim: the same identity inputs as <see cref="Create"/>
+    /// under a distinct domain byte, so a nudge claim can never collide with — or spend — the memory
+    /// lane's lease for the same session.
+    /// </summary>
+    public static string CreateNudgeKey(HarnessId harness, string sessionId) {
+        var normalized = NormalizeSessionId(harness, sessionId)
+            ?? throw new ArgumentException("A stable session identity is required.", nameof(sessionId));
+        using var stream = new MemoryStream();
+        stream.WriteByte(0x02);
+        WritePresent(stream, harness.VendorId);
+        WritePresent(stream, normalized);
+        return Convert.ToHexStringLower(SHA256.HashData(stream.ToArray()));
+    }
+
     public static string? NormalizeSessionId(HarnessId harness, string? value) {
         if (string.IsNullOrEmpty(value)) return null;
         if (harness is HarnessId.Cursor or HarnessId.Copilot or HarnessId.Antigravity)

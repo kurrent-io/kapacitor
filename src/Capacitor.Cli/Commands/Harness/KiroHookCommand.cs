@@ -44,6 +44,11 @@ sealed class KiroHookCommand(ConfigRoot config, ProfileContext profiles, HookClo
     /// killed, so an overrun costs the injection outright.</summary>
     static readonly TimeSpan Ceiling = TimeSpan.FromSeconds(5);
 
+    /// <summary>Bound on the nudge claim's store work. The fragment write never waits on the claim —
+    /// a still-pending claim defers the nudges to a post-flush append — so this caps only that
+    /// deferred wait.</summary>
+    static readonly TimeSpan NudgeClaimBudget = TimeSpan.FromMilliseconds(750);
+
     /// <summary>
     /// Writes the team-memory fragment as Kiro consumes it: raw text, no envelope.
     ///
@@ -237,6 +242,11 @@ sealed class KiroHookCommand(ConfigRoot config, ProfileContext profiles, HookClo
             // Remaining already reserves Safety — do not subtract it again.
             budget.Remaining);
 
+        // agentSpawn fires per prompt and Kiro persists appended stdout, so the nudges below are
+        // gated by a durable once-per-session claim — the payload carries no counter to key on.
+        // The claim overlaps the memory fetch; the write site consults it without waiting.
+        var nudgeClaim = NudgeLease.TryClaimAsync(config, clock.Time, HarnessId.Kiro, sessionId, NudgeClaimBudget);
+
         // Spawn-before-post: capture must start on Posted OR Spooled (auth lapse /
         // outage) — a doomed/delayed lifecycle POST must never withhold the watcher. On a real
         // failure PostOrSpoolAsync already logged to stderr; a lapse or transient outage instead
@@ -255,11 +265,32 @@ sealed class KiroHookCommand(ConfigRoot config, ProfileContext profiles, HookClo
         // a fragment sitting in a buffer when Kiro's hook timeout kills the process is a fragment
         // whose lease was spent for nothing.
         var fragment = await SessionStartMemoryHookSupport.AwaitBounded(memoryTask, budget);
-        var workItemsNudge = HarnessNudgeEmitter.Combine(
+        // Nothing may stand between the resolved fetch and the write below, so the claim is only
+        // consulted here, never waited for: a still-pending claim defers the nudges to a second
+        // append after the flush, where it IS awaited to completion — an abandoned-but-running
+        // claim could commit its record with nothing emitted and silence the nudges for the
+        // session. The emitters run at most once per firing: the harness nudge stamps a ledger.
+        string? ResolveNudges() => HarnessNudgeEmitter.Combine(
             WorkItemsNudgeEmitter.Resolve(HarnessId.Kiro, sessionId, activeProfile?.DisableWorkItemsNudge is true, home),
             HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true, config, home));
+        var nudgeDecided = nudgeClaim.IsCompleted;
+        var workItemsNudge = nudgeDecided && await nudgeClaim ? ResolveNudges() : null;
         WriteAgentSpawnOutput(Console.Out, fragment, workItemsNudge);
         await Console.Out.FlushAsync();
+
+        // The deferred append: clipped to the remaining ceiling as well as the claim's own budget,
+        // because overrunning the ceiling discards even flushed output — the fragment, not just the
+        // nudge. A clipped-but-still-running claim can commit unemitted in that corner; one session
+        // without its nudge beats a discarded fragment. The nudge-only render's marker line is read
+        // only by the Pi/OpenCode capture scripts, so it is inert in Kiro context.
+        if (!nudgeDecided && budget.Remaining is { Ticks: > 0 } claimWait) {
+            var claimed = false;
+            try { claimed = await nudgeClaim.WaitAsync(claimWait); } catch (TimeoutException) { }
+            if (claimed) {
+                WriteAgentSpawnOutput(Console.Out, null, ResolveNudges());
+                await Console.Out.FlushAsync();
+            }
+        }
 
         // BOUNDED by what is left of the ceiling. Writing early is not sufficient on its own: Kiro
         // appends stdout only from a hook that COMPLETED, so an invocation killed at Kiro's timeout

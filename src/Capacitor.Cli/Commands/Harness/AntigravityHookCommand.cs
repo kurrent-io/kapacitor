@@ -317,9 +317,9 @@ sealed class AntigravityHookCommand(ConfigRoot config, ProfileContext profiles, 
 
     /// <summary>
     /// Whether this PreInvocation is the conversation's first, read from the vendor's own
-    /// <c>invocationNum</c> counter — the one payload field that varies between callbacks. An absent,
-    /// non-numeric, or non-positive value reads as first: a payload without a usable counter cannot
-    /// distinguish callbacks, and emitting once too often beats never emitting.
+    /// <c>invocationNum</c> counter — the one payload field that varies between callbacks. Any value
+    /// at or below one reads as first, and so does an absent or non-numeric one: a payload without a
+    /// usable counter cannot distinguish callbacks, and emitting once too often beats never emitting.
     /// </summary>
     internal static bool IsFirstInvocation(JsonObject payload) =>
         payload["invocationNum"] is not JsonValue value
