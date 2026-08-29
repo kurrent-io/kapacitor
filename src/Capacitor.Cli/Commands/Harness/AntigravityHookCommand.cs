@@ -207,9 +207,14 @@ sealed class AntigravityHookCommand(ConfigRoot config, ProfileContext profiles, 
         // subtracts HookBudget.Safety — do NOT subtract it again. Written even when the watcher-spawn
         // gate below returns early — a withheld watcher must not suppress injection.
         var fragment = await SessionStartMemoryHookSupport.AwaitBounded(memoryTask, budget);
-        var workItemsNudge = HarnessNudgeEmitter.Combine(
-            WorkItemsNudgeEmitter.Resolve(HarnessId.Antigravity, sessionId, activeProfile?.DisableWorkItemsNudge is true, home),
-            HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true, config, home));
+        // Nudges are unleased pure functions of the session id, so on this repeating callback they
+        // must be gated by the vendor's own per-conversation counter: without the gate every turn
+        // re-injects them as another persistent userMessage step.
+        var workItemsNudge = IsFirstInvocation(payload)
+            ? HarnessNudgeEmitter.Combine(
+                WorkItemsNudgeEmitter.Resolve(HarnessId.Antigravity, sessionId, activeProfile?.DisableWorkItemsNudge is true, home),
+                HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true, config, home))
+            : null;
         WritePreInvocationOutput(stdout, fragment, workItemsNudge);
         await stdout.FlushAsync();
 
@@ -309,6 +314,17 @@ sealed class AntigravityHookCommand(ConfigRoot config, ProfileContext profiles, 
             return Task.FromResult<string?>(null);
         }
     }
+
+    /// <summary>
+    /// Whether this PreInvocation is the conversation's first, read from the vendor's own
+    /// <c>invocationNum</c> counter — the one payload field that varies between callbacks. An absent
+    /// or non-numeric value reads as first: a payload without the counter cannot distinguish
+    /// callbacks, and emitting once too often beats never emitting.
+    /// </summary>
+    internal static bool IsFirstInvocation(JsonObject payload) =>
+        payload["invocationNum"] is not JsonValue value
+     || !value.TryGetValue<long>(out var invocation)
+     || invocation <= 1;
 
     /// <summary>The event name — the first positional token after <c>--antigravity</c>.</summary>
     internal static string? EventArg(string[] args) {

@@ -244,4 +244,26 @@ public class AntigravitySessionStartMemoryTests {
         await Assert.That(sw.ToString()).IsEqualTo("");
         await Assert.That(consulted).IsTrue();
     }
+
+    // The nudges carry no lease, so on this repeating callback only the invocation counter keeps
+    // them from re-injecting a persistent userMessage step every turn.
+
+    [Test]
+    public async Task The_first_invocation_emits_nudges() {
+        await Assert.That(AntigravityHookCommand.IsFirstInvocation(Payload("""{"invocationNum":1}"""))).IsTrue();
+    }
+
+    [Test]
+    public async Task A_later_invocation_suppresses_nudges() {
+        await Assert.That(AntigravityHookCommand.IsFirstInvocation(Payload("""{"invocationNum":2}"""))).IsFalse();
+        await Assert.That(AntigravityHookCommand.IsFirstInvocation(Payload("""{"invocationNum":97}"""))).IsFalse();
+    }
+
+    // Fail-open: a payload that cannot distinguish callbacks must still emit.
+    [Test]
+    public async Task A_missing_or_non_numeric_counter_reads_as_the_first_invocation() {
+        await Assert.That(AntigravityHookCommand.IsFirstInvocation(Payload("{}"))).IsTrue();
+        await Assert.That(AntigravityHookCommand.IsFirstInvocation(Payload("""{"invocationNum":"2"}"""))).IsTrue();
+        await Assert.That(AntigravityHookCommand.IsFirstInvocation(Payload("""{"invocationNum":0}"""))).IsTrue();
+    }
 }
