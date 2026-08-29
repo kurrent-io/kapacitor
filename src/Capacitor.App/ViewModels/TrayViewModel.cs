@@ -158,7 +158,7 @@ public sealed class TrayViewModel : ReactiveObject, IDisposable {
         var (state, count) = Project(status, snap);
         var baseState = state; // the row's own verdict (rows 1-10), before either upgrade below
 
-        // Row 11 (spec §8): pending consent or a pending permission request asserts Attention only
+        // Row 11: pending consent or a pending permission request asserts Attention only
         // while Connected — the owner has something waiting. Judged against baseState (not state)
         // so a later independent upgrade can never make this fire retroactively; connection-trouble
         // rows above already left baseState at something other than Idle/Running, so they keep
