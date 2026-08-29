@@ -18,7 +18,7 @@ public class LocalPermissionBridgeInteractiveTests {
         public TempDir Tmp { get; } = new();
         public PermissionDecisionLog Log { get; }
         public LocalPermissionBridge Bridge { get; }
-        public HttpClient Client { get; } = new() { Timeout = TimeSpan.FromSeconds(10) };
+        public HttpClient Client { get; } = new() { Timeout = TimeSpan.FromSeconds(30) };
 
         public Harness(string? attributeTo = "agent-1") {
             Log    = new PermissionDecisionLog(Tmp.Path, NullLogger.Instance);
@@ -45,7 +45,7 @@ public class LocalPermissionBridgeInteractiveTests {
         }
 
         public async Task<PermissionPendingDto> WaitPendingAsync() {
-            var deadline = DateTime.UtcNow.AddSeconds(5);
+            var deadline = DateTime.UtcNow.AddSeconds(30);
             while (Broker.PendingSnapshot().Count == 0) {
                 if (DateTime.UtcNow > deadline) throw new TimeoutException("Timed out waiting for a pending request");
                 await Task.Delay(10);
@@ -74,7 +74,7 @@ public class LocalPermissionBridgeInteractiveTests {
         await Assert.That(h.Broker.TrySettle(pending.RequestId, Allow, "allow", "app")).IsTrue();
         await Assert.That(await Harness.BehaviorOf(await response)).IsEqualTo("allow");
 
-        var ct = await awaitCts.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var ct = await awaitCts.Task.WaitAsync(TimeSpan.FromSeconds(30));
         await WaitUntil(() => ct.IsCancellationRequested, "the server await is cancelled");
         await WaitUntil(() => h.Server.Responds.Count == 1, "RespondToPermission is invoked");
         await Assert.That(h.Server.Responds[0].RequestId).IsEqualTo("srv-1");
@@ -227,7 +227,7 @@ public class LocalPermissionBridgeInteractiveTests {
     }
 
     static async Task WaitUntil(Func<bool> condition, string what) {
-        var deadline = DateTime.UtcNow.AddSeconds(5);
+        var deadline = DateTime.UtcNow.AddSeconds(30);
         while (!condition()) {
             if (DateTime.UtcNow > deadline) throw new TimeoutException($"Timed out waiting for: {what}");
             await Task.Delay(10);

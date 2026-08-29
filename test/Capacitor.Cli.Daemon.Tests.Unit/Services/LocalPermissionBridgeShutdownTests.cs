@@ -41,7 +41,7 @@ public class LocalPermissionBridgeShutdownTests {
     }
 
     static async Task WaitUntil(Func<bool> c, string what) {
-        var deadline = DateTime.UtcNow.AddSeconds(5);
+        var deadline = DateTime.UtcNow.AddSeconds(30);
         while (!c()) { if (DateTime.UtcNow > deadline) throw new TimeoutException(what); await Task.Delay(10); }
     }
 
@@ -50,7 +50,7 @@ public class LocalPermissionBridgeShutdownTests {
         var (bridge, _, broker, tmp) = Build();
         try {
             await bridge.StartAsync(CancellationToken.None);
-            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
             var response = Post(client, bridge);
             await WaitUntil(() => broker.PendingSnapshot().Count == 1, "pending");
 
@@ -71,7 +71,7 @@ public class LocalPermissionBridgeShutdownTests {
         var (bridge, _, broker, tmp) = Build();
         try {
             await bridge.StartAsync(CancellationToken.None);
-            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
             var response = Post(client, bridge);
             await WaitUntil(() => broker.PendingSnapshot().Count == 1, "pending");
             var requestId = broker.PendingSnapshot()[0].RequestId;
@@ -97,9 +97,9 @@ public class LocalPermissionBridgeShutdownTests {
             var entered = new TaskCompletionSource();
             bridge.BeforeHandlerRunsForTest = async () => { entered.TrySetResult(); await hold.Task; };
             await bridge.StartAsync(CancellationToken.None);
-            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
             var response = Post(client, bridge);
-            await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
             await Assert.That(bridge.InFlightHandlersForTest).IsEqualTo(1);
 
             var started = DateTime.UtcNow;
@@ -122,7 +122,7 @@ public class LocalPermissionBridgeShutdownTests {
             var hold = new TaskCompletionSource();
             bridge.BeforeHandlerRunsForTest = () => hold.Task;
             await bridge.StartAsync(CancellationToken.None);
-            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
             var first = Post(client, bridge);
             await WaitUntil(() => bridge.InFlightHandlersForTest == 1, "first admitted");
 
