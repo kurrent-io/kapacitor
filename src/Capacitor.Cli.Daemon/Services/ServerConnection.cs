@@ -939,34 +939,30 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     /// the positional-arity fragility that broke earlier hosted-permission changes.
     /// </summary>
     public virtual async Task<PermissionDecision> RequestPermissionAsync(
-            string            sessionId,
-            string?           toolName,
-            JsonElement?      toolInput,
-            JsonElement?      suggestions,
-            CancellationToken ct = default
-        ) {
-        // RequestPermission2 is a SHORT invocation: the server tracks the request, broadcasts the
-        // prompt to the UI, and returns a requestId right away — it does NOT stay pending for the
-        // whole elicitation wait. That keeps the connection's single parallel-invocation slot free
-        // so DaemonPing isn't starved (the reconnect-storm / spurious-deny bug). The user's
-        // decision arrives later via the "PermissionResolved" push, correlated by requestId.
-        //
-        // The invoke is still wrapped in ConnectionRetry: a SignalR blip while obtaining the
-        // requestId is transient (gated on IsReady so it can't fire against an unregistered
-        // connection). Once we have the requestId, the await survives reconnects on its own — the
-        // pending entry lives in-process, and the server re-resolves the daemon connection at push
-        // time, so a reconnect between request and decision is transparent.
-        //
-        // isRetriableServerError closes the residual ownership race: if IsReady is true but a
-        // specific agent's re-registration didn't restore server-side ownership, RequestPermission2
-        // throws "Caller is not the daemon owning session". Retry that a bounded number of times
-        // (giving re-registration a moment) rather than treating it as a final deny.
-        var requestId = await ConnectionRetry.InvokeWithConnectionRetryAsync(
-            () => _hub.InvokeAsync<string>(
-                "RequestPermission2",
-                new HostedPermissionRequest(sessionId, toolName, toolInput, suggestions),
-                ct
-            ),
+            string sessionId, string? toolName, JsonElement? toolInput, JsonElement? suggestions, CancellationToken ct = default) {
+        var requestId = await BeginPermissionRequestAsync(sessionId, toolName, toolInput, suggestions, ct, static () => false);
+        return await AwaitPermissionDecisionAsync(requestId, ct);
+    }
+
+    public enum RespondOutcomeKind { Applied, NotPending, Failed }
+    public readonly record struct RespondOutcome(RespondOutcomeKind Kind, string? Reason);
+
+    /// The RequestPermission2 invoke under ConnectionRetry. `abandoned` is evaluated synchronously
+    /// immediately before every hub invoke: a token cancelled from a task continuation is not
+    /// synchronous with the settlement that requested it, so the predicate is what keeps a settled
+    /// request's invoke off the wire when readiness returns.
+    public virtual Task<string> BeginPermissionRequestAsync(
+            string sessionId, string? toolName, JsonElement? toolInput, JsonElement? suggestions,
+            CancellationToken ct, Func<bool> abandoned) =>
+        ConnectionRetry.InvokeWithConnectionRetryAsync(
+            () => {
+                if (abandoned()) throw new PermissionRequestAbandonedException();
+                return _hub.InvokeAsync<string>(
+                    "RequestPermission2",
+                    new HostedPermissionRequest(sessionId, toolName, toolInput, suggestions),
+                    ct
+                );
+            },
             () => IsReady,
             PermissionRetryPollInterval,
             attempt => LogPermissionRetry(sessionId, attempt),
@@ -975,8 +971,25 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
             maxServerErrorRetries: OwnershipNotReadyMaxRetries
         );
 
-        return await _pendingPermissions.AwaitDecisionAsync(requestId, ct);
+    public virtual Task<PermissionDecision> AwaitPermissionDecisionAsync(string serverRequestId, CancellationToken ct) =>
+        _pendingPermissions.AwaitDecisionAsync(serverRequestId, ct);
+
+    /// The hub method the web UI answers through, invoked as the owner so the web card clears
+    /// after a local settlement. Never throws; runs on the daemon-lifetime token.
+    public virtual async Task<RespondOutcome> RespondToPermissionAsync(string sessionId, string serverRequestId, PermissionDecision decision) {
+        try {
+            await _hub.InvokeAsync("RespondToPermission", sessionId, serverRequestId, decision.Behavior,
+                decision.ApplyPermissions, decision.UpdatedInput, _ct);
+            return new RespondOutcome(RespondOutcomeKind.Applied, null);
+        } catch (Exception ex) {
+            return ClassifyRespondFailure(ex);
+        }
     }
+
+    internal static RespondOutcome ClassifyRespondFailure(Exception ex) =>
+        ex is Microsoft.AspNetCore.SignalR.HubException he && he.Message.Contains("no longer pending", StringComparison.Ordinal)
+            ? new RespondOutcome(RespondOutcomeKind.NotPending, he.Message)
+            : new RespondOutcome(RespondOutcomeKind.Failed, ex.Message);
 
     /// <summary>
     /// Forwards an ACP permission/elicitation interaction to the server's

@@ -1360,25 +1360,35 @@ public class LocalPermissionBridgeTests {
 /// without a real server. RequestPermissionAsync is virtual on the base class.
 /// </summary>
 sealed class FakeServerConnection(Func<string, string?, JsonElement?, JsonElement?, CancellationToken, Task<PermissionDecision>>? respond)
-    : ServerConnection(
-        new() { Name = "test", ServerUrl = "http://127.0.0.1:1" },
-        NullLoggerFactory.Instance,
-        NullLogger<ServerConnection>.Instance
-    ) {
+    : ServerConnection(new() { Name = "test", ServerUrl = "http://127.0.0.1:1" }, NullLoggerFactory.Instance, NullLogger<ServerConnection>.Instance) {
     public List<Call> Calls { get; } = [];
+    public List<(string SessionId, string RequestId, PermissionDecision Decision)> Responds { get; } = [];
 
-    public override Task<PermissionDecision> RequestPermissionAsync(
-            string            sessionId,
-            string?           toolName,
-            JsonElement?      toolInput,
-            JsonElement?      suggestions,
-            CancellationToken ct = default
-        ) {
+    /// Scripted legs. Null = the legacy composition (RequestPermissionAsync via `respond`).
+    public Func<CancellationToken, Func<bool>, Task<string>>? BeginScript { get; set; }
+    public Func<string, CancellationToken, Task<PermissionDecision>>? AwaitScript { get; set; }
+    public Func<RespondOutcome> RespondScript = () => new RespondOutcome(RespondOutcomeKind.Applied, null);
+
+    public override Task<PermissionDecision> RequestPermissionAsync(string sessionId, string? toolName, JsonElement? toolInput, JsonElement? suggestions, CancellationToken ct = default) {
         Calls.Add(new Call(sessionId, toolName, toolInput, suggestions));
+        return respond is null ? Task.FromResult(new PermissionDecision("allow", null, null)) : respond(sessionId, toolName, toolInput, suggestions, ct);
+    }
 
-        return respond is null
-            ? Task.FromResult(new PermissionDecision("allow", null, null))
-            : respond(sessionId, toolName, toolInput, suggestions, ct);
+    public override Task<string> BeginPermissionRequestAsync(string sessionId, string? toolName, JsonElement? toolInput, JsonElement? suggestions, CancellationToken ct, Func<bool> abandoned) {
+        Calls.Add(new Call(sessionId, toolName, toolInput, suggestions));
+        if (BeginScript is not null) return BeginScript(ct, abandoned);
+        if (abandoned()) throw new PermissionRequestAbandonedException();
+        return Task.FromResult("srv-1");
+    }
+
+    public override Task<PermissionDecision> AwaitPermissionDecisionAsync(string serverRequestId, CancellationToken ct) =>
+        AwaitScript is not null ? AwaitScript(serverRequestId, ct)
+            : respond is not null ? respond("", null, null, null, ct)
+            : Task.FromResult(new PermissionDecision("allow", null, null));
+
+    public override Task<RespondOutcome> RespondToPermissionAsync(string sessionId, string serverRequestId, PermissionDecision decision) {
+        Responds.Add((sessionId, serverRequestId, decision));
+        return Task.FromResult(RespondScript());
     }
 
     public sealed record Call(string SessionId, string? ToolName, JsonElement? ToolInput, JsonElement? Suggestions);
