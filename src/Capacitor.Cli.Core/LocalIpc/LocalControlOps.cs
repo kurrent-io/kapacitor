@@ -20,6 +20,7 @@ public interface ILocalControlOps {
     Task<ConsentAckDto>    PutConsentPolicyAsync(ConsentPolicyDto policy, CancellationToken ct);
     Task<ConsentAckDto>    PutConsentPolicyV2Async(ConsentPolicyPutV2Dto put, CancellationToken ct);
     Task<ConsentAckDto>    ResolveConsentAsync(ConsentResolveDto resolve, CancellationToken ct);
+    Task<PermissionAckDto> ResolvePermissionAsync(PermissionResolveDto resolve, CancellationToken ct);
 }
 
 /// One-shot Core IPC operations behind a fresh socket per call — no Hello negotiation (callers
@@ -113,6 +114,21 @@ public sealed class LocalControlOps(DaemonStore store, string daemonName, TimePr
                 throw new LocalControlOpsException(DaemonRejected, reply.Text);
             default:
                 throw new LocalControlOpsException(UnexpectedReply, $"unexpected daemon response to consent resolve ({reply.Type})");
+        }
+    }
+
+    public async Task<PermissionAckDto> ResolvePermissionAsync(PermissionResolveDto resolve, CancellationToken ct) {
+        var json  = JsonSerializer.Serialize(resolve, PermissionIpcJsonContext.Default.PermissionResolveDto);
+        var reply = await ExchangeAsync(LocalFrame.PermissionJson(FrameType.PermissionResolve, json), ConsentReplyTimeout, ct);
+        switch (reply.Type) {
+            case FrameType.PermissionAck:
+                var ack = DeserializeOrThrow(reply.Text, PermissionIpcJsonContext.Default.PermissionAckDto, "malformed permission ack reply");
+                if (ack is null) throw new LocalControlOpsException(UnexpectedReply, "malformed permission ack reply");
+                return ack;
+            case FrameType.Error:
+                throw new LocalControlOpsException(DaemonRejected, reply.Text);
+            default:
+                throw new LocalControlOpsException(UnexpectedReply, $"unexpected daemon response to permission resolve ({reply.Type})");
         }
     }
 

@@ -77,6 +77,13 @@ public class LocalControlOpsTests {
         if (f?.Type == FrameType.ConsentResolveV2)
             await FrameCodec.WriteAsync(s, LocalFrame.ConsentJson(FrameType.ConsentAck, json), ct);
     };
+    static ConnScript PermissionAckThen(string json, Action<string>? capture = null) => async (_, s, ct) => {
+        var f = await FrameCodec.ReadAsync(s, ct);
+        if (f?.Type == FrameType.PermissionResolve) {
+            capture?.Invoke(f.Text);
+            await FrameCodec.WriteAsync(s, LocalFrame.PermissionJson(FrameType.PermissionAck, json), ct);
+        }
+    };
     /// Same as <see cref="ConsentResolveV2Ack"/> but hands the request's raw Text to the caller
     /// before replying, so a test can assert what was actually written on the wire (the
     /// prompt_id echo) rather than just the parsed reply.
@@ -450,6 +457,42 @@ public class LocalControlOpsTests {
             cts.Cancel();
             await Assert.ThrowsAsync<OperationCanceledException>(async () => await task);
         }, configure: ops => ops.ConsentReplyTimeout = TimeSpan.FromSeconds(30));
+    }
+
+    // ---- ResolvePermissionAsync ----
+
+    [Test]
+    [Arguments("""{"ok":true,"error":null}""", true, null)]
+    [Arguments("""{"ok":false,"error":"no pending permission request with that id"}""", false, "no pending permission request with that id")]
+    public async Task Permission_resolve_ack_shapes(string json, bool ok, string? error) {
+        if (OperatingSystem.IsWindows()) return;
+        string? sent = null;
+        await WithOpsAsync([PermissionAckThen(json, t => sent = t)], async ops => {
+            var ack = await ops.ResolvePermissionAsync(new PermissionResolveDto("r1", "allow", null, null), CancellationToken.None);
+            await Assert.That(ack.Ok).IsEqualTo(ok);
+            await Assert.That(ack.Error).IsEqualTo(error);
+        });
+        await Assert.That(sent).Contains("\"request_id\":\"r1\"");
+    }
+
+    [Test]
+    public async Task Permission_resolve_maps_error_frame_to_daemon_rejected() {
+        if (OperatingSystem.IsWindows()) return;
+        await WithOpsAsync([ErrorThen("nope")], async ops => {
+            var ex = await Assert.ThrowsAsync<LocalControlOpsException>(
+                async () => await ops.ResolvePermissionAsync(new PermissionResolveDto("r1", "deny", null, null), CancellationToken.None));
+            await Assert.That(ex!.Reason).IsEqualTo("daemon_rejected");
+        });
+    }
+
+    [Test]
+    public async Task Permission_resolve_against_a_down_level_codec_is_unexpected_reply() {
+        if (OperatingSystem.IsWindows()) return;
+        await WithOpsAsync([V1CodecReject()], async ops => {
+            var ex = await Assert.ThrowsAsync<LocalControlOpsException>(
+                async () => await ops.ResolvePermissionAsync(new PermissionResolveDto("r1", "allow", null, null), CancellationToken.None));
+            await Assert.That(ex!.Reason).IsEqualTo("unexpected_reply");
+        });
     }
 
     // ---- shared transport classification (exercised via StopAgentAsync) ----
