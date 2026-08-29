@@ -54,6 +54,9 @@ internal sealed partial class LocalPermissionBridge(
     internal bool AdmittingForTest { get { lock (_admission) return _admitting; } }
     internal Func<Task>? BeforeHandlerRunsForTest { get; set; }
 
+    internal PermissionPromptBroker BrokerForTest => _broker;
+    internal PermissionDecisionLog? DecisionLogForTest => _decisionLog;
+
     /// Assigned by the orchestrator after construction (it takes this bridge in its own
     /// constructor, so the dependency cannot point the other way). Null = every request is
     /// unattributed and takes the server-only path.

@@ -9,6 +9,8 @@ namespace Capacitor.Cli.Daemon.Services;
 /// Local-socket handlers for the permission frames. Trust model: anything on the daemon's own
 /// 0600 socket is the owner — no further auth.
 internal sealed class PermissionIpc(PermissionPromptBroker broker, ILogger<PermissionIpc> logger) {
+    internal PermissionPromptBroker BrokerForTest => broker;
+
     public async Task HandleSubscribeAsync(Stream stream, CancellationToken ct) {
         var (id, reader) = broker.Subscribe();
         try {
