@@ -333,7 +333,7 @@ public partial class App : Application {
                 service, _config, actions, notifier, ticker, _shutdown.Token, activity, lifecycle.StartActionAsync,
                 lifecycleStatus, launch, _navigation, _workspaceTeardown.Track, BuildWorkspace,
                 // The tenant slug the rail footer shows — profiles are named after it at sign-in.
-                tenantName: profiles?.Resolution?.ProfileName),
+                tenantName: profiles?.Resolution?.ProfileName, agentsWithPending: permissions.AgentsWithPending),
             // Both close paths release the workspace: hide-to-tray keeps the window (and its
             // attach) alive, a real close discards the window the next Show() would rebuild.
             releaseWorkspace: window => (window.DataContext as MainWindowViewModel)?.CloseWorkspace());
@@ -356,7 +356,7 @@ public partial class App : Application {
             service, _pause, actions, consent, openMainWindow: _coordinator.ShowMainWindow,
             quit: () => desktop.TryShutdown(), openReviewPrompts: _promptCoordinator.ShowPromptWindow,
             lifecycleAttention: lifecycleAttention, shimOfferable: shimOffer.Offerable,
-            installShim: shimOffer.RunManualInstallAsync);
+            installShim: shimOffer.RunManualInstallAsync, permissions: permissions);
         _tray = new TrayIconManager(this, _trayVm);
     }
 
@@ -648,7 +648,8 @@ public partial class App : Application {
             CancellationToken shutdownToken, ActivityViewModel activity, Func<CancellationToken, Task>? startAction = null,
             IObservable<string?>? lifecycleStatus = null, ILaunchClient? launch = null,
             NavigationGate? navigation = null, Action<Func<Task>>? trackWorkspaceTeardown = null,
-            Func<string, WorkspaceViewModel>? workspaceFactory = null, string? tenantName = null) {
+            Func<string, WorkspaceViewModel>? workspaceFactory = null, string? tenantName = null,
+            IObservable<IReadOnlySet<string>>? agentsWithPending = null) {
         // Notifier is set on the WINDOW (spec §11 toast overlay), not the ViewModel — the toast
         // is a View-level concern (WindowNotificationManager lives on MainWindow) independent of
         // the VM's WhenActivated-scoped projections.
@@ -674,7 +675,8 @@ public partial class App : Application {
             openSessionIfCurrent: (agentId, generation) => vm?.OpenSessionIfCurrent(agentId, generation));
         // Same knot as home above, over the SAME `service` instance — its own openSession
         // callback closes over `vm`, not a local, so no two-step forward-declaration is needed.
-        var rail = new SessionRailViewModel(service, openSession: agentId => vm?.OpenSession(agentId));
+        var rail = new SessionRailViewModel(
+            service, openSession: agentId => vm?.OpenSession(agentId), agentsWithPending: agentsWithPending);
         vm = new MainWindowViewModel(
             service, shutdownToken, activity, startAction, lifecycleStatus, home: home,
             navigation: navigation, trackWorkspaceTeardown: trackWorkspaceTeardown, workspaceFactory: workspaceFactory,
