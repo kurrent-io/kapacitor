@@ -73,7 +73,7 @@ public sealed class TrayViewModel : ReactiveObject, IDisposable {
             IDaemonClientService service, IPauseController pause, AgentActionService actions, IConsentService consent,
             Action? openMainWindow = null, Action? quit = null, Action? openReviewPrompts = null,
             IObservable<string?>? lifecycleAttention = null, IObservable<bool>? shimOfferable = null,
-            Func<Task>? installShim = null) {
+            Func<Task>? installShim = null, IPermissionService? permissions = null) {
         _pause = pause;
 
         TogglePauseCommand = ReactiveCommand.Create<bool>(pause.RequestToggle);
@@ -91,17 +91,21 @@ public sealed class TrayViewModel : ReactiveObject, IDisposable {
             .Select(s => (DaemonStatusDto?)s)
             .StartWith((DaemonStatusDto?)null);
 
-        // consent.PendingCount is DynamicData's CountChanged, which seeds the current count on
-        // subscribe (decompile-verified) — deliberately NOT StartWith(0)'d, which would inject a
-        // spurious extra 0 ahead of that seed and could flicker Attention at startup. A null
-        // lifecycleAttention (no live lifecycle controller) becomes Observable.Return(null): it
-        // emits synchronously on subscribe and then completes, which is exactly the seed
-        // CombineLatest needs — Rx.CombineLatest only completes once EVERY source has, so a
-        // completed source just freezes at its last (here: only) value forever.
+        // consent.PendingCount and IPermissionService.PendingCount are DynamicData's CountChanged,
+        // which seeds the current count on subscribe (decompile-verified) — deliberately NOT
+        // StartWith(0)'d, which would inject a spurious extra 0 ahead of that seed and could
+        // flicker Attention at startup. A null lifecycleAttention (no live lifecycle controller)
+        // becomes Observable.Return(null): it emits synchronously on subscribe and then completes,
+        // which is exactly the seed CombineLatest needs — Rx.CombineLatest only completes once
+        // EVERY source has, so a completed source just freezes at its last (here: only) value
+        // forever. A null permissions service (no live IPermissionService) uses the same
+        // Observable.Return shape for its count.
         var attention = lifecycleAttention ?? Observable.Return((string?)null);
         var shim = shimOfferable ?? Observable.Return(false);
-        var projected = service.Status.CombineLatest(snapshots, pause.State, actions.StopsInFlight, consent.PendingCount, attention,
-            (status, snap, pauseState, inFlight, pending, lifecycleMsg) => Build(service.DaemonName, status, snap, pauseState, inFlight, pending, lifecycleMsg));
+        var permissionCount = permissions?.PendingCount ?? Observable.Return(0);
+        var projected = service.Status.CombineLatest(snapshots, pause.State, actions.StopsInFlight, consent.PendingCount, attention, permissionCount,
+            (status, snap, pauseState, inFlight, pending, lifecycleMsg, permissionPending) =>
+                Build(service.DaemonName, status, snap, pauseState, inFlight, pending, lifecycleMsg, permissionPending));
 
         // A second, narrower CombineLatest rather than folding `shim` into the six-source one
         // above: it keeps Build's signature untouched (Build already reads awkwardly with six
@@ -110,21 +114,22 @@ public sealed class TrayViewModel : ReactiveObject, IDisposable {
         // the sources above applies to `shim`.
         var withShim = projected.CombineLatest(shim, (model, visible) => model with { ShimInstallVisible = visible });
 
-        // Status, snapshots (seeded above), pause.State, consent.PendingCount, attention, and shim
-        // are all replay-1-shaped (seed on subscribe), so CombineLatest emits synchronously on
-        // subscribe — captured here as the OAPH's initial value so MenuModel is never
-        // default(TrayMenuModel) (null) before RxSchedulers.MainThreadScheduler delivers the
-        // ObserveOn'd copy below. The synchronous-emission assumption rests on
-        // IPauseController.State's and IConsentService.PendingCount's documented
-        // replay-on-subscribe contracts, which a future implementation could violate — defended
-        // below rather than left to surface as an unexplained NRE on first MenuModel access.
+        // Status, snapshots (seeded above), pause.State, consent.PendingCount, attention,
+        // permissionCount, and shim are all replay-1-shaped (seed on subscribe), so CombineLatest
+        // emits synchronously on subscribe — captured here as the OAPH's initial value so
+        // MenuModel is never default(TrayMenuModel) (null) before RxSchedulers.MainThreadScheduler
+        // delivers the ObserveOn'd copy below. The synchronous-emission assumption rests on
+        // IPauseController.State's, IConsentService.PendingCount's, and
+        // IPermissionService.PendingCount's documented replay-on-subscribe contracts, which a
+        // future implementation could violate — defended below rather than left to surface as an
+        // unexplained NRE on first MenuModel access.
         TrayMenuModel? seed = null;
         using (withShim.Subscribe(v => seed = v)) { }
 
         _menuModel = withShim
             .ObserveOn(RxSchedulers.MainThreadScheduler)
             .ToProperty(this, x => x.MenuModel, seed ?? throw new InvalidOperationException(
-                "IPauseController.State and IConsentService.PendingCount must replay a value on subscribe."))
+                "IPauseController.State, IConsentService.PendingCount, and IPermissionService.PendingCount must replay a value on subscribe."))
             .DisposeWith(_disposables);
 
         // Edge-triggered passive refresh (spec §6): fired once on the attach-state transition
@@ -149,16 +154,16 @@ public sealed class TrayViewModel : ReactiveObject, IDisposable {
 
     static TrayMenuModel Build(
             string daemonName, AttachStatus status, DaemonStatusDto? snap, PauseState pauseState,
-            IReadOnlySet<string> stopsInFlight, int pendingConsent, string? lifecycleAttention) {
+            IReadOnlySet<string> stopsInFlight, int pendingConsent, string? lifecycleAttention, int pendingPermissions) {
         var (state, count) = Project(status, snap);
         var baseState = state; // the row's own verdict (rows 1-10), before either upgrade below
 
-        // Row 11 (spec §8): pending consent asserts Attention only while Connected — a launch is
-        // awaiting the owner. Judged against baseState (not state) so a later independent upgrade
-        // can never make this fire retroactively; connection-trouble rows above already left
-        // baseState at something other than Idle/Running, so they keep precedence for free, and
-        // the running-count badge (count) keeps the agent count regardless.
-        var pendingAttention = status.State == AttachState.Connected && pendingConsent > 0
+        // Row 11 (spec §8): pending consent or a pending permission request asserts Attention only
+        // while Connected — the owner has something waiting. Judged against baseState (not state)
+        // so a later independent upgrade can never make this fire retroactively; connection-trouble
+        // rows above already left baseState at something other than Idle/Running, so they keep
+        // precedence for free, and the running-count badge (count) keeps the agent count regardless.
+        var pendingAttention = status.State == AttachState.Connected && (pendingConsent > 0 || pendingPermissions > 0)
             && baseState is TrayState.Idle or TrayState.Running;
         if (pendingAttention) state = TrayState.Attention;
 
@@ -178,7 +183,7 @@ public sealed class TrayViewModel : ReactiveObject, IDisposable {
         return new TrayMenuModel(
             state, count,
             HeaderText(daemonName, status, snap, state, count, pendingAttention, pendingConsent,
-                lifecycleAttentionActive ? lifecycleAttention : null),
+                lifecycleAttentionActive ? lifecycleAttention : null, pendingPermissions),
             BuildEntries(status, snap, stopsInFlight), BuildPause(status, pauseState), pendingConsent);
     }
 
@@ -213,14 +218,14 @@ public sealed class TrayViewModel : ReactiveObject, IDisposable {
 
     static string HeaderText(
             string daemonName, AttachStatus status, DaemonStatusDto? snap, TrayState state, int count,
-            bool pendingAttention, int pendingConsent, string? lifecycleAttentionText) {
+            bool pendingAttention, int pendingConsent, string? lifecycleAttentionText, int pendingPermissions) {
         if (state == TrayState.Attention && status.State == AttachState.Unreachable && status.Reason == IncompatibleReason)
             return SkewMessage; // no daemon-name prefix
 
         if (lifecycleAttentionText is not null) return $"{daemonName}: {lifecycleAttentionText}";
 
         var body = pendingAttention
-            ? $"{pendingConsent} launch{(pendingConsent == 1 ? "" : "es")} awaiting approval"
+            ? PendingBody(pendingPermissions, pendingConsent)
             : state switch {
                 TrayState.Stopped    => "not running",
                 TrayState.Connecting => "connecting…",
@@ -230,6 +235,13 @@ public sealed class TrayViewModel : ReactiveObject, IDisposable {
                 _                    => "needs attention",
             };
         return $"{daemonName}: {body}";
+    }
+
+    static string PendingBody(int permissions, int consent) {
+        var parts = new List<string>(2);
+        if (permissions > 0) parts.Add($"{permissions} permission request{(permissions == 1 ? "" : "s")} waiting");
+        if (consent > 0) parts.Add($"{consent} launch{(consent == 1 ? "" : "es")} awaiting approval");
+        return string.Join(", ", parts);
     }
 
     // Rows 6 and 9 (connected, malformed count / unrecognized connection) and row 10 (unreachable,
