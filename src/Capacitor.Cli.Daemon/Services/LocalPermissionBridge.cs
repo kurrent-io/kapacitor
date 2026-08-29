@@ -37,6 +37,7 @@ internal sealed partial class LocalPermissionBridge(
     const string PathSuffix      = "/permission-request";
 
     internal static readonly TimeSpan ResponseWriteTimeout = TimeSpan.FromSeconds(2);
+    internal static readonly TimeSpan RequestReadTimeout   = TimeSpan.FromSeconds(2);
     internal static readonly TimeSpan ShutdownDrain        = TimeSpan.FromSeconds(2);
 
     readonly PermissionPromptBroker _broker      = broker ?? new();
@@ -516,10 +517,11 @@ internal sealed partial class LocalPermissionBridge(
                 return;
             }
 
-            // Not bound to ct: the request already arrived, so this read is brief regardless of
-            // shutdown, and a drained handler must still reach its own claim below.
-            using var reader = new StreamReader(context.Request.InputStream, Encoding.UTF8);
-            var       body   = await reader.ReadToEndAsync(CancellationToken.None);
+            // Not bound to ct: a handler admitted before shutdown must still reach its own claim
+            // below, so this reads under its own bounded RequestReadTimeout instead.
+            using var reader   = new StreamReader(context.Request.InputStream, Encoding.UTF8);
+            using var readCts  = new CancellationTokenSource(RequestReadTimeout);
+            var       body     = await reader.ReadToEndAsync(readCts.Token);
 
             JsonNode? node;
 
