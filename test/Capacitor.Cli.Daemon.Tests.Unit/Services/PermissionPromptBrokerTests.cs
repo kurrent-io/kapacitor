@@ -114,6 +114,17 @@ public class PermissionPromptBrokerTests {
     }
 
     [Test]
+    public async Task Registering_the_same_request_id_twice_throws_and_leaves_the_first_pending() {
+        var broker = new PermissionPromptBroker();
+        var first = broker.Register(Dto("r1"));
+        await Assert.That(() => broker.Register(Dto("r1"))).Throws<InvalidOperationException>();
+        await Assert.That(first.IsCompleted).IsFalse();
+        await Assert.That(broker.PendingSnapshot().Count).IsEqualTo(1);
+        await Assert.That(broker.TrySettle("r1", Allow, "allow", "app")).IsTrue();
+        await Assert.That((await WaitBounded(first, "first still settles")).Source).IsEqualTo("app");
+    }
+
+    [Test]
     public async Task Unsubscribe_completes_the_channel() {
         var broker = new PermissionPromptBroker();
         var (id, reader) = broker.Subscribe();

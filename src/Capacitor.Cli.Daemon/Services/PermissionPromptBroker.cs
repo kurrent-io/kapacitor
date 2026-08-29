@@ -42,7 +42,8 @@ internal sealed class PermissionPromptBroker {
 
             // Completed while the gate is held: a continuation running inline would re-enter it.
             var entry = new Entry(dto, new(TaskCreationOptions.RunContinuationsAsynchronously));
-            _pending[dto.RequestId] = entry;
+            if (!_pending.TryAdd(dto.RequestId, entry))
+                throw new InvalidOperationException($"permission request {dto.RequestId} is already pending");
             Broadcast(new PermissionStreamItem.Pending(dto));
             return entry.Tcs.Task;
         }
