@@ -380,6 +380,11 @@ public static partial class DaemonRunner {
         // a subscriber connected via ConsentSubscribe sees the gate's own pending requests.
         builder.Services.AddSingleton<LaunchConsentIpc>();
 
+        builder.Services.AddSingleton<PermissionPromptBroker>();
+        builder.Services.AddSingleton<PermissionIpc>();
+        builder.Services.AddSingleton(sp => new PermissionDecisionLog(
+            coverageStateDir, sp.GetRequiredService<ILogger<PermissionDecisionLog>>()));
+
         // The DaemonStatus push: ONE notifier singleton shared by ServerConnection (pulses on hub
         // state transitions) and AgentOrchestrator (pulses on agent mutation) via their optional
         // ctor params, so a StatusSubscribe waiter sees both kinds of change. This depends on the
