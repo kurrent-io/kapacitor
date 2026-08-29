@@ -490,6 +490,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     readonly IPtyProcessFactory                                _ptyFactory;
     readonly IHttpClientFactory                                _httpClientFactory;
     readonly LocalPermissionBridge                             _permissionBridge;
+    readonly PermissionPromptBroker                            _permissionBroker;
     readonly IReadOnlyDictionary<string, IHostedAgentLauncher> _launchers;
     readonly IReadOnlyDictionary<string, IHostedAgentRuntimeFactory> _runtimeFactories;
     readonly ILogger<AgentOrchestrator>                        _logger;
@@ -606,7 +607,11 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             // Null in every pre-existing construction site — those daemons just get a private
             // notifier nobody subscribes to. DaemonRunner passes the DI-registered singleton so a
             // StatusSubscribe waiter sees every mutation this orchestrator makes.
-            DaemonStatusNotifier?                             statusNotifier = null
+            DaemonStatusNotifier?                             statusNotifier = null,
+            // Null in every pre-existing construction site — those get a private broker nobody else
+            // reaches. DaemonRunner passes the DI-registered singleton so the permission bridge and
+            // local IPC attribute against the same pending-request set this orchestrator withdraws from.
+            PermissionPromptBroker?                           permissionBroker = null
         ) {
         _shutdownCts       = CancellationTokenSource.CreateLinkedTokenSource(lifetime.ApplicationStopping);
         _config            = config;
@@ -618,6 +623,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         _ptyFactory        = ptyFactory;
         _httpClientFactory = httpClientFactory;
         _permissionBridge  = permissionBridge;
+        _permissionBroker  = permissionBroker ?? new();
         _launchers         = launchers;
         _runtimeFactories  = runtimeFactories;
         _logger            = logger;
@@ -672,6 +678,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         // them. Fires on every (re)connect + heartbeat re-register.
         _server.OnRegisteredHook              =  () => { Processor?.RedeliverUnretiredProcessedAcks(); return Task.CompletedTask; };
         _server.FindRepoForRemoteHandler      =  HandleFindRepoForRemote;
+        _permissionBridge.AttributeHandler    =  HandleAttributePermission;
         _server.ProbeBorrowSourceHandler      =  HandleProbeBorrowSource;
         // Task 8: the side-effect-free reviewer-model preflight. Pure resolution over the
         // advertised resolvers — no subprocess/worktree/config side effects.
@@ -816,6 +823,45 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     internal void UnpublishAgent(string agentId) {
         _agents.TryRemove(agentId, out _);
         _statusNotifier.Pulse();
+    }
+
+    /// The attribution ladder: the payload's agent id (raw, then canonical GUID), the resolved
+    /// vendor session id, the worktree path — each rung only on exactly one live match. Live is
+    /// "present in _agents"; teardown withdraws whatever was attributed during that window.
+    internal AttributedAgent? HandleAttributePermission(PermissionAttribution query) {
+        var canonicalSession = PermissionWire.Canonical(query.SessionId);
+        if (canonicalSession is null) return null;
+
+        var live = _agents.Values.ToList();
+
+        if (query.AgentId is { Length: > 0 } rawId) {
+            var raw = live.Where(a => string.Equals(a.Id, rawId, StringComparison.Ordinal)).ToList();
+            if (raw.Count == 1) return new AttributedAgent(raw[0].Id);
+            if (PermissionWire.Canonical(rawId) is { } canonicalId) {
+                var canon = live.Where(a => PermissionWire.Canonical(a.Id) == canonicalId).ToList();
+                if (canon.Count == 1) return new AttributedAgent(canon[0].Id);
+            }
+        }
+
+        var bySession = live.Where(a => a.SessionId is { } s && PermissionWire.Canonical(s) == canonicalSession).ToList();
+        if (bySession.Count == 1) return new AttributedAgent(bySession[0].Id);
+
+        if (query.Cwd is { Length: > 0 } cwd) {
+            var wanted = Path.TrimEndingDirectorySeparator(cwd);
+            var byCwd = live.Where(a => string.Equals(
+                Path.TrimEndingDirectorySeparator(a.Worktree.Path), wanted, RepoPathStore.PathComparison)).ToList();
+            if (byCwd.Count == 1) return new AttributedAgent(byCwd[0].Id);
+        }
+
+        return null;
+    }
+
+    internal PermissionPromptBroker PermissionBrokerForTest => _permissionBroker;
+    internal void UnpublishAgentForTest(string agentId) => WithdrawAndUnpublish(agentId);
+
+    void WithdrawAndUnpublish(string agentId) {
+        _permissionBroker.WithdrawForAgent(agentId);
+        UnpublishAgent(agentId);
     }
 
     /// <summary>Phase B (D3): clock seam so the reviewer-TTL heartbeat check is testable with a
@@ -4619,7 +4665,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
         // Now drop the agent from the live registry — after a surviving child is already in quarantine,
         // so a concurrent launch never sees EffectiveCount transiently under-count this agent.
-        UnpublishAgent(agentId);
+        WithdrawAndUnpublish(agentId);
 
         // Skip server unregister during shutdown — _ct is cancelled and the call
         // would throw TaskCanceledException. The server detects the daemon
