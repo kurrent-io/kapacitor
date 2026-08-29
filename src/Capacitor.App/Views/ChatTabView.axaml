@@ -4,7 +4,7 @@
              xmlns:views="clr-namespace:Capacitor.App.Views"
              x:Class="Capacitor.App.Views.ChatTabView"
              x:DataType="vm:ChatTabViewModel">
-    <Grid RowDefinitions="*,Auto">
+    <Grid RowDefinitions="*,Auto,Auto">
         <!-- The template owns the ScrollViewer: that is the shape Avalonia virtualizes. An
              ItemsControl inside an external ScrollViewer is measured at infinite height. -->
         <ItemsControl x:Name="ChatItems" Grid.Row="0" ItemsSource="{Binding Items}">
@@ -60,7 +60,36 @@
                    Foreground="{StaticResource KcapMutedBrush}" FontSize="12.5"
                    HorizontalAlignment="Center" VerticalAlignment="Center" />
 
-        <Border Grid.Row="1" Margin="22,8,22,18"
+        <Border x:Name="PermissionRow" Grid.Row="1" Margin="22,0,22,4" IsVisible="{Binding HasPendingPermissions}">
+            <StackPanel Spacing="6">
+                <TextBlock Text="NEEDS YOU" FontSize="10" FontWeight="SemiBold" Foreground="{StaticResource KcapMutedBrush}" />
+                <ItemsControl ItemsSource="{Binding PendingPermissions}">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate x:DataType="vm:PermissionCardViewModel">
+                            <Border Background="{StaticResource KcapSurfaceRaisedBrush}" BorderBrush="{StaticResource KcapAccentBrush}"
+                                    BorderThickness="1" CornerRadius="10" Padding="13,10" Margin="0,0,0,6">
+                                <StackPanel Spacing="6">
+                                    <TextBlock Text="{Binding ToolName}" FontWeight="SemiBold" FontSize="13" Foreground="{StaticResource KcapTextBrush}" />
+                                    <TextBlock Text="{Binding Detail}" FontSize="11.5" Foreground="{StaticResource KcapMutedBrush}" TextTrimming="CharacterEllipsis" />
+                                    <TextBlock Text="{Binding ErrorText}" FontSize="11" Foreground="{StaticResource KcapDangerBrush}"
+                                               IsVisible="{Binding ErrorText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                                    <StackPanel Orientation="Horizontal" Spacing="6" HorizontalAlignment="Right">
+                                        <Button Content="Deny" Command="{Binding DenyCommand}" Background="Transparent" BorderBrush="Transparent"
+                                                Foreground="{StaticResource KcapDangerBrush}" Padding="10,4" FontSize="12" CornerRadius="7" />
+                                        <Button Content="Allow always" Command="{Binding AllowAlwaysCommand}" IsVisible="{Binding ShowsAllowAlways}"
+                                                Background="Transparent" BorderBrush="Transparent" Foreground="{StaticResource KcapMutedBrush}" Padding="10,4" FontSize="12" CornerRadius="7" />
+                                        <Button Content="Allow" Command="{Binding AllowCommand}" Padding="12,4" FontSize="12" FontWeight="SemiBold" CornerRadius="7"
+                                                Background="{StaticResource KcapAccentBrush}" Foreground="#07120E" />
+                                    </StackPanel>
+                                </StackPanel>
+                            </Border>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </StackPanel>
+        </Border>
+
+        <Border Grid.Row="2" Margin="22,8,22,18"
                 Background="{StaticResource KcapSurfaceBrush}" BorderBrush="{StaticResource KcapBorderBrush}"
                 BorderThickness="1" CornerRadius="10" Padding="13,12">
             <StackPanel Spacing="6">

@@ -1,8 +1,11 @@
 using System.Collections.Concurrent;
+using System.Collections.ObjectModel;
+using System.Collections.Specialized;
 using System.Reactive;
 using System.Reactive.Disposables;
 using System.Reactive.Disposables.Fluent;
 using System.Reactive.Linq;
+using System.Reactive.Subjects;
 using Avalonia.Collections;
 using Avalonia.Media;
 using Avalonia.Threading;
@@ -47,8 +50,15 @@ public sealed class ChatTabViewModel : ReactiveObject {
     volatile TailLease? _lease;
     ITimer? _timer;
     volatile Task? _pendingRead;
+    readonly BehaviorSubject<string?> _rootSubject = new(null);
 
     public IAvaloniaReadOnlyList<ChatItemViewModel> Items => _items;
+
+    public ReadOnlyObservableCollection<PermissionCardViewModel> PendingPermissions { get; }
+    public IObservable<string?> Root => _rootSubject;
+
+    readonly ObservableAsPropertyHelper<bool> _hasPendingPermissions;
+    public bool HasPendingPermissions => _hasPendingPermissions.Value;
 
     ChatTabPhase _phase;
     public ChatTabPhase Phase {
@@ -114,13 +124,39 @@ public sealed class ChatTabViewModel : ReactiveObject {
 
     public ChatTabViewModel(
             string agentId, IDaemonClientService daemon, TerminalTabViewModel terminal,
-            ITranscriptProjection? projection, IUrlOpener opener, TimeProvider time) {
+            ITranscriptProjection? projection, IUrlOpener opener, TimeProvider time, IPermissionService permissions) {
         _agentId = agentId;
         _terminal = terminal;
         _projection = projection;
         _opener = opener;
         _time = time;
         _phase = projection is null ? ChatTabPhase.Unavailable : ChatTabPhase.Waiting;
+
+        // ObserveOn BEFORE the binding operator: the cache is mutated on the service's
+        // background continuations (IPermissionService.Pending's own doc comment).
+        permissions.Pending
+            .ObserveOn(RxSchedulers.MainThreadScheduler)
+            .Filter(p => p.AgentId == agentId)
+            .Transform(p => new PermissionCardViewModel(p, permissions, _rootSubject))
+            .DisposeMany()
+            .SortAndBind(out var pendingPermissions, Comparer<PermissionCardViewModel>.Create((a, b) => {
+                var byTime = string.CompareOrdinal(a.RequestedAtKey, b.RequestedAtKey);
+                return byTime != 0 ? byTime : string.CompareOrdinal(a.RequestId, b.RequestId);
+            }))
+            .Subscribe()
+            .DisposeWith(_disposables);
+        PendingPermissions = pendingPermissions;
+
+        // The delegate-based overload, not the reflection one: ReadOnlyObservableCollection's
+        // CollectionChanged is only reachable through this interface, and the reflection overload
+        // (Observable.FromEventPattern(target, eventName)) looks up public events only.
+        var notifications = (INotifyCollectionChanged)pendingPermissions;
+        _hasPendingPermissions = Observable
+            .FromEventPattern<NotifyCollectionChangedEventHandler, NotifyCollectionChangedEventArgs>(
+                h => notifications.CollectionChanged += h, h => notifications.CollectionChanged -= h)
+            .Select(_ => pendingPermissions.Count > 0)
+            .ToProperty(this, x => x.HasPendingPermissions, initialValue: false)
+            .DisposeWith(_disposables);
 
         daemon.Agents.Connect()
             .ObserveOn(RxSchedulers.MainThreadScheduler)
@@ -172,6 +208,7 @@ public sealed class ChatTabViewModel : ReactiveObject {
     void OnDto(AgentStatusDto dto) {
         _vendor = dto.Vendor;
         _root = dto.RepoPath;
+        _rootSubject.OnNext(dto.RepoPath);
         VendorLabel = HostedHarnessCatalog.LabelFor(_options, dto.Vendor);
         ModelLabel = HostedHarnessCatalog.ModelLabelFor(dto.Vendor, dto.Model ?? "");
         StatusText = dto.Status;
@@ -274,6 +311,7 @@ public sealed class ChatTabViewModel : ReactiveObject {
         _timer?.Dispose();
         _timer = null;
         _disposables.Dispose();
+        _rootSubject.Dispose();
         return Task.CompletedTask;
     }
 }

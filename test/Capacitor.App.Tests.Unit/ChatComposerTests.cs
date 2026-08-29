@@ -19,7 +19,7 @@ public class ChatComposerTests {
         var time = new FakeTimeProvider();
         var opener = new RecordingOpener();
         var terminal = new TerminalTabViewModel("a1", daemon, factory.Factory, () => new FakeTerminalSurface(), time);
-        var chat = new ChatTabViewModel("a1", daemon, terminal, TranscriptProjection.For("claude"), opener, time);
+        var chat = new ChatTabViewModel("a1", daemon, terminal, TranscriptProjection.For("claude"), opener, time, new FakePermissionService());
         daemon.SnapshotsSubject.OnNext(FakeDaemonClientService.Snap(supportedVendors: ["claude", "codex"]));
         daemon.Agents.AddOrUpdate(Agent("a1", "claude", hasTerminal: true, repoPath: "/repo", model: "claude-opus-5") with { Status = "Running" });
         await (terminal.PendingResolveWorkForTesting ?? Task.CompletedTask);

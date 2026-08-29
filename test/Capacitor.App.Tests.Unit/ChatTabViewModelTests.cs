@@ -31,12 +31,13 @@ public class ChatTabViewModelTests {
         public FakeTerminalAttachClientFactory Factory { get; } = new();
         public FakeTimeProvider Time { get; } = new();
         public RecordingOpener Opener { get; } = new();
+        public FakePermissionService Permissions { get; } = new();
         public TerminalTabViewModel Terminal { get; }
         public ChatTabViewModel Chat { get; }
 
         public Harness(ITranscriptProjection? projection) {
             Terminal = new TerminalTabViewModel("a1", Daemon, Factory.Factory, () => new FakeTerminalSurface(), Time);
-            Chat = new ChatTabViewModel("a1", Daemon, Terminal, projection, Opener, Time);
+            Chat = new ChatTabViewModel("a1", Daemon, Terminal, projection, Opener, Time, Permissions);
         }
 
         public async Task PushAsync(AgentStatusDto dto) {
@@ -248,6 +249,39 @@ public class ChatTabViewModelTests {
 
             await Assert.That(h.Chat.Items.Select(i => i.GetType().Name)).IsEquivalentTo(new[] { nameof(SystemNoteItem) });
             await Assert.That(((SystemNoteItem)h.Chat.Items[0]).Text).IsEqualTo("**Agent finished**\n\nAll good.");
+            await h.TeardownAsync();
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Cards_are_filtered_to_the_agent_ordered_by_request_time_and_removed_on_resolve() {
+        await RunOnUiAsync(async () => {
+            var h = Claude();
+            h.Permissions.Add(PermissionEntries.Entry("r2", "a1", requestedAt: "2026-08-28T10:00:02.0000000+00:00"));
+            h.Permissions.Add(PermissionEntries.Entry("r1", "a1", requestedAt: "2026-08-28T10:00:01.0000000+00:00"));
+            h.Permissions.Add(PermissionEntries.Entry("rX", "other", requestedAt: "2026-08-28T10:00:00.0000000+00:00"));
+            await WaitUntilAsync(() => h.Chat.PendingPermissions.Count == 2, what: "two cards");
+            await Assert.That(h.Chat.PendingPermissions.Select(c => c.RequestId).ToArray()).IsEquivalentTo(new[] { "r1", "r2" }, CollectionOrdering.Matching);
+            await Assert.That(h.Chat.HasPendingPermissions).IsTrue();
+
+            h.Permissions.Remove("r1");
+            await WaitUntilAsync(() => h.Chat.PendingPermissions.Count == 1, what: "one card left");
+            await Assert.That(h.Chat.PendingPermissions[0].RequestId).IsEqualTo("r2");
+            await h.TeardownAsync();
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task A_permission_replayed_before_the_agent_dto_ends_up_with_a_relative_detail() {
+        await RunOnUiAsync(async () => {
+            var h = Claude();
+            h.Permissions.Add(PermissionEntries.Entry("r1", "a1", toolName: "Read", toolInputJson: """{"file_path":"/repo/x/src/a.cs"}"""));
+            await WaitUntilAsync(() => h.Chat.PendingPermissions.Count == 1, what: "the card");
+            await Assert.That(h.Chat.PendingPermissions[0].Detail).IsEqualTo("/repo/x/src/a.cs");
+            await h.PushAsync(Dto(transcriptPath: null));
+            await WaitUntilAsync(() => h.Chat.PendingPermissions[0].Detail == "src/a.cs", what: "relative once the root lands");
             await h.TeardownAsync();
         });
     }

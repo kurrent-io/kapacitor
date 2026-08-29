@@ -42,7 +42,7 @@ public class WorkspaceViewSmokeTests {
         var attach = new FakeTerminalAttachClientFactory();
         var vm = new WorkspaceViewModel(
             agentId, daemon, NewActions(), attach.Factory, surface ?? (() => new FakeTerminalSurface()),
-            new FakeTimeProvider(), new RecordingOpener());
+            new FakeTimeProvider(), new RecordingOpener(), new FakePermissionService());
         return (new WorkspaceView { DataContext = vm }, vm, daemon, attach);
     }
 

@@ -76,6 +76,7 @@ public partial class App : Application {
     MainWindowCoordinator? _coordinator;
     PauseController? _pause;
     ConsentService? _consent;
+    PermissionService? _permissions;
     ConsentPromptCoordinator? _promptCoordinator;
     // Disposed with the other UI services below: it holds a constructor-scoped subscription to
     // the shared ticker, which is RefCount'd — an undisposed subscriber keeps the Interval (and
@@ -197,7 +198,7 @@ public partial class App : Application {
             Console.Error.WriteLine($"kcap app failed to start: {ex}");
             await _workspaceTeardown.DrainAsync();
             await HandleStartupFailureAsync(
-                desktop, ex, _service, _shutdown, [_tray, _trayVm, _promptCoordinator, _consent, _activity, _home, _rail, _pause], _lifecycle, _lane);
+                desktop, ex, _service, _shutdown, [_tray, _trayVm, _promptCoordinator, _consent, _permissions, _activity, _home, _rail, _pause], _lifecycle, _lane);
             await DisposeLaunchClientAsync(); // after _home above — its only caller
             // all already disposed above — never let a later OnShutdownRequested (e.g. Cmd+Q
             // while the error window is up) dispose any of them a second time
@@ -210,6 +211,7 @@ public partial class App : Application {
             _trayVm = null;
             _promptCoordinator = null;
             _consent = null;
+            _permissions = null;
             _pause = null;
             _activity = null;
             _home = null;
@@ -302,6 +304,12 @@ public partial class App : Application {
             service, ops, ticker, ct => ConsentSubscription.RunAsync(_daemonStore, service.DaemonName, ct),
             TimeProvider.System, _shutdown.Token);
         _consent = consent;
+
+        var permissions = new PermissionService(
+            service, ops, ct => PermissionSubscription.RunAsync(_daemonStore, service.DaemonName, ct),
+            TimeProvider.System, _shutdown.Token);
+        _permissions = permissions;
+
         _promptCoordinator = new ConsentPromptCoordinator(consent, () => new ConsentPromptWindow {
             DataContext = new ConsentPromptViewModel(
                 consent, notifier, ticker, TimeProvider.System, _shutdown.Token, activity.RequestRefresh),
@@ -318,7 +326,7 @@ public partial class App : Application {
         // attached to the visual tree (WorkspaceView's own header comment).
         var attachFactory = CoreTerminalAttachClient.Factory(() => _daemonStore.SocketPath(service.DaemonName));
         WorkspaceViewModel BuildWorkspace(string agentId) => new(
-            agentId, service, actions, attachFactory, () => new XtermTerminalSurface(80, 24, PtyDumpPath), TimeProvider.System, opener);
+            agentId, service, actions, attachFactory, () => new XtermTerminalSurface(80, 24, PtyDumpPath), TimeProvider.System, opener, permissions);
 
         _coordinator = new MainWindowCoordinator(
             () => BuildAndShowMainWindow(
@@ -1123,7 +1131,7 @@ public partial class App : Application {
             // disposed one. A resolve already in flight was cancelled by _shutdown at the top of
             // OnShutdownRequested and settles on the ViewModel's silent-abort path.
             await DisposeUiThenConfirmShutdownAsync(
-                [_tray, _trayVm, _promptCoordinator, _consent, _activity, _home, _rail, _pause],
+                [_tray, _trayVm, _promptCoordinator, _consent, _permissions, _activity, _home, _rail, _pause],
                 DisposeLifecycleAndServiceAsync, () => _shutdownConfirmed = true, desktop, _exitCode);
         } else {
             await DisposeLifecycleAndServiceAsync();
