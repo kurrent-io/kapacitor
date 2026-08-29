@@ -74,6 +74,12 @@ internal sealed partial class LocalPermissionBridge(
     /// unbounded read is a memory-exhaustion lever.</summary>
     internal const int MaxSubmitBodyBytes = 1024 * 1024;
 
+    /// <summary>Cap on a permission-request body posted by the local hook. Tool input and
+    /// suggestions are each already bounded to <see cref="PermissionWire.MaxElementBytes"/> on the
+    /// wire, so a well-formed request never approaches this; the extra bytes cover the surrounding
+    /// envelope (session_id, tool_name, agent_id, cwd).</summary>
+    internal const int MaxPermissionRequestBodyBytes = PermissionWire.MaxElementBytes * 2 + 4096;
+
     static readonly object       PortClaimsLock = new();
     static readonly HashSet<int>  ClaimedPorts   = [];
 
@@ -450,7 +456,7 @@ internal sealed partial class LocalPermissionBridge(
                         // A reviewer mid-delivery is alive; reaping it here would discard the result.
                         submitGrant.ActivityClock?.Advance();
 
-                        var submitBody = await ReadCappedBodyAsync(context.Request.InputStream, ct);
+                        var submitBody = await ReadCappedBodyAsync(context.Request.InputStream, MaxSubmitBodyBytes, ct);
                         if (submitBody is null) {
                             context.Response.StatusCode = 413;
                             context.Response.Close();
@@ -521,10 +527,18 @@ internal sealed partial class LocalPermissionBridge(
             }
 
             // Not bound to ct: a handler admitted before shutdown must still reach its own claim
-            // below, so this reads under its own bounded RequestReadTimeout instead.
-            using var reader   = new StreamReader(context.Request.InputStream, Encoding.UTF8);
-            using var readCts  = new CancellationTokenSource(RequestReadTimeout);
-            var       body     = await reader.ReadToEndAsync(readCts.Token);
+            // below, so this reads under its own bounded RequestReadTimeout instead. Capped at
+            // MaxPermissionRequestBodyBytes so an unbounded read from the local hook can't exhaust
+            // the daemon's memory.
+            using var readCts = new CancellationTokenSource(RequestReadTimeout);
+            var       body    = await ReadCappedBodyAsync(context.Request.InputStream, MaxPermissionRequestBodyBytes, readCts.Token);
+
+            if (body is null) {
+                context.Response.StatusCode = 413;
+                context.Response.Close();
+
+                return;
+            }
 
             JsonNode? node;
 
@@ -832,12 +846,12 @@ internal sealed partial class LocalPermissionBridge(
         return false;
     }
 
-    /// <summary>Reads at most <see cref="MaxSubmitBodyBytes"/>, returning null when the body exceeds
+    /// <summary>Reads at most <paramref name="maxBytes"/>, returning null when the body exceeds
     /// it. Bounded on BYTES ACTUALLY READ rather than Content-Length, which a chunked or hostile
     /// client need not send truthfully — checking the header alone would be a guard the attacker
     /// controls. One byte past the cap is enough to reject, so an oversized body is never fully
     /// buffered.</summary>
-    static async Task<string?> ReadCappedBodyAsync(Stream input, CancellationToken ct) {
+    static async Task<string?> ReadCappedBodyAsync(Stream input, int maxBytes, CancellationToken ct) {
         var buffer = new byte[8192];
         using var accumulated = new MemoryStream();
 
@@ -845,7 +859,7 @@ internal sealed partial class LocalPermissionBridge(
             var read = await input.ReadAsync(buffer, ct);
             if (read == 0) break;
 
-            if (accumulated.Length + read > MaxSubmitBodyBytes) return null;
+            if (accumulated.Length + read > maxBytes) return null;
 
             accumulated.Write(buffer, 0, read);
         }

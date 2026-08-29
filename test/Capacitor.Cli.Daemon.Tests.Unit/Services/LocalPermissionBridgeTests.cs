@@ -205,6 +205,26 @@ public class LocalPermissionBridgeTests {
         }
     }
 
+    /// <summary>The permission-request body is capped like the flow-result submission body: an
+    /// oversized POST from the local hook must 413 before JSON parsing, never buffer unbounded.</summary>
+    [Test, NotInParallel(nameof(LocalPermissionBridgeTests))]
+    public async Task OversizedPermissionRequestBodyReturns413() {
+        var (bridge, _) = CreateBridge();
+
+        try {
+            await bridge.StartAsync(CancellationToken.None);
+
+            using var client   = CreateClient();
+            var       oversized = new string('x', LocalPermissionBridge.MaxPermissionRequestBodyBytes + 1024);
+            using var content   = new StringContent(oversized, Encoding.UTF8, "application/json");
+            using var response  = await client.PostAsync($"{bridge.BaseUrl}/claude/permission-request", content);
+
+            await Assert.That((int)response.StatusCode).IsEqualTo(413);
+        } finally {
+            await bridge.DisposeAsync();
+        }
+    }
+
     [Test, NotInParallel(nameof(LocalPermissionBridgeTests))]
     public async Task ValidRequestStripsDashesAndForwardsArgsToServer() {
         var (bridge, server) = CreateBridge((sid, tool, input, suggestions, _) =>
