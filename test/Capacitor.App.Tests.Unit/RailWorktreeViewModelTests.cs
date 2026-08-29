@@ -18,9 +18,10 @@ public class RailWorktreeViewModelTests {
     static RailWorktreeViewModel Build(
             SourceCache<AgentStatusDto, string> cache, RailCollapseState? collapse = null,
             string path = "/repo/.claude/worktrees/wt-a", string root = "/repo", bool showHeader = true,
-            IObservable<string?>? selected = null) =>
+            IObservable<string?>? selected = null, IObservable<IReadOnlySet<string>>? pending = null) =>
         new(path, root, showHeader, cache.AsObservableCache(),
-            collapse ?? new RailCollapseState(), selected ?? new BehaviorSubject<string?>(null), _ => { });
+            collapse ?? new RailCollapseState(), selected ?? new BehaviorSubject<string?>(null),
+            pending ?? new BehaviorSubject<IReadOnlySet<string>>(new HashSet<string>()), _ => { });
 
     [Test]
     [NotInParallel("AvaloniaSession")]
@@ -113,6 +114,24 @@ public class RailWorktreeViewModelTests {
             cache.AddOrUpdate(Dto("a2"));
             await Assert.That(wt.CountText).IsEqualTo("1");
             await Assert.That(wt.Sessions.Count).IsEqualTo(1);
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Collapsed_worktree_shows_a_permission_only_alert() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var cache = new SourceCache<AgentStatusDto, string>(a => a.Id);
+            var pending = new BehaviorSubject<IReadOnlySet<string>>(new HashSet<string>());
+            var collapse = new RailCollapseState();
+            collapse.Set("/repo/.claude/worktrees/wt-a", collapsed: true);
+            using var wt = Build(cache, collapse, pending: pending);
+            cache.AddOrUpdate(Dto("a1"));
+            await Assert.That(wt.NeedsYou).IsFalse();
+            pending.OnNext(new HashSet<string> { "a1" });
+            await Assert.That(wt.NeedsYou).IsTrue();
+            pending.OnNext(new HashSet<string> { "somebody-else" });
+            await Assert.That(wt.NeedsYou).IsFalse();
         });
     }
 }

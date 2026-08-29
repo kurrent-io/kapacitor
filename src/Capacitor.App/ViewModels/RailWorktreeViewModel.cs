@@ -51,7 +51,8 @@ public sealed class RailWorktreeViewModel : ReactiveObject, IDisposable {
     public RailWorktreeViewModel(
             string path, string repoRoot, bool showHeader,
             IObservableCache<AgentStatusDto, string> sessionsCache, RailCollapseState collapse,
-            IObservable<string?> selectedAgentId, Action<string> open) {
+            IObservable<string?> selectedAgentId, IObservable<IReadOnlySet<string>> agentsWithPending,
+            Action<string> open) {
         Path = path;
         IsMainCheckout = PathEquals(path, repoRoot);
         Label = LabelFor(path, IsMainCheckout);
@@ -80,8 +81,9 @@ public sealed class RailWorktreeViewModel : ReactiveObject, IDisposable {
             .ToProperty(this, x => x.CountText, initialValue: sessionsCache.Count.ToString(CultureInfo.InvariantCulture))
             .DisposeWith(_disposables);
 
-        _needsYou = sessionsCache.Connect()
-            .QueryWhenChanged(q => q.Items.Any(d => SessionStatusDots.NeedsAttention(d.Status)))
+        _needsYou = sessionsCache.Connect().QueryWhenChanged()
+            .CombineLatest(agentsWithPending, (q, set) =>
+                q.Items.Any(d => SessionStatusDots.NeedsAttention(d.Status)) || q.Keys.Any(set.Contains))
             .ToProperty(this, x => x.NeedsYou, initialValue: false)
             .DisposeWith(_disposables);
 
@@ -94,7 +96,7 @@ public sealed class RailWorktreeViewModel : ReactiveObject, IDisposable {
 
         Sessions = new ReadOnlyObservableCollection<RailSessionViewModel>(_sessionsSource);
         sessionsCache.Connect()
-            .Transform(dto => new RailSessionViewModel(dto, selectedAgentId, open))
+            .Transform(dto => new RailSessionViewModel(dto, selectedAgentId, agentsWithPending, open))
             .DisposeMany()
             .SortAndBind(_sessionsSource, SessionComparer)
             .Subscribe()

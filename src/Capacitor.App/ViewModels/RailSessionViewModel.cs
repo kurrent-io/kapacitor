@@ -16,7 +16,6 @@ public sealed class RailSessionViewModel : ReactiveObject, IDisposable {
     public string Primary { get; }
     public string Sub { get; }
     public IBrush StatusDot { get; }
-    public bool NeedsYou { get; }
     public string Tooltip { get; }
     public ReactiveCommand<Unit, Unit> OpenCommand { get; }
 
@@ -25,9 +24,14 @@ public sealed class RailSessionViewModel : ReactiveObject, IDisposable {
     readonly ObservableAsPropertyHelper<bool> _isSelected;
     public bool IsSelected => _isSelected.Value;
 
+    readonly ObservableAsPropertyHelper<bool> _needsYou;
+    public bool NeedsYou => _needsYou.Value;
+
     readonly CompositeDisposable _disposables = new();
 
-    public RailSessionViewModel(AgentStatusDto dto, IObservable<string?> selectedAgentId, Action<string> open) {
+    public RailSessionViewModel(
+            AgentStatusDto dto, IObservable<string?> selectedAgentId,
+            IObservable<IReadOnlySet<string>> agentsWithPending, Action<string> open) {
         Id = dto.Id;
         CreatedAt = dto.CreatedAt;
         var vendorLine = dto.Kind == "agent" ? dto.Vendor : $"{dto.Vendor} · {dto.Kind}";
@@ -38,12 +42,17 @@ public sealed class RailSessionViewModel : ReactiveObject, IDisposable {
             ? Join(dto.Model, age)
             : Join(vendorLine, dto.Model, age);
         StatusDot = SessionStatusDots.For(dto.Status);
-        NeedsYou = SessionStatusDots.NeedsAttention(dto.Status);
         Tooltip = Join(dto.Id, dto.Status, dto.RequesterDisplay);
 
         _isSelected = selectedAgentId.Select(sel => sel == dto.Id)
             .ToProperty(this, x => x.IsSelected, initialValue: false)
             .DisposeWith(_disposables);
+
+        var byStatus = SessionStatusDots.NeedsAttention(dto.Status);
+        _needsYou = agentsWithPending.Select(set => byStatus || set.Contains(dto.Id))
+            .ToProperty(this, x => x.NeedsYou, initialValue: byStatus)
+            .DisposeWith(_disposables);
+
         OpenCommand = ReactiveCommand.Create(() => open(dto.Id));
         _disposables.Add(OpenCommand);
     }

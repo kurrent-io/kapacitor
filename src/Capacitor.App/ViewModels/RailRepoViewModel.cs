@@ -36,7 +36,8 @@ public sealed class RailRepoViewModel : ReactiveObject, IDisposable {
 
     public RailRepoViewModel(
             IGroup<AgentStatusDto, string, string> group, RailCollapseState collapse,
-            IObservable<string?> selectedAgentId, Action<string> open) {
+            IObservable<string?> selectedAgentId, IObservable<IReadOnlySet<string>> agentsWithPending,
+            Action<string> open) {
         RootPath = group.Key;
         IsNoRepository = group.Key.Length == 0;
         // RepoLabel.Leaf, not the raw leaf: group.Key is a resolved main root, where the two agree —
@@ -52,7 +53,8 @@ public sealed class RailRepoViewModel : ReactiveObject, IDisposable {
         group.Cache.Connect()
             .Group(dto => dto.RepoPath ?? "")
             .Transform(wt => new RailWorktreeViewModel(
-                wt.Key, RootPath, showHeader: !IsNoRepository, wt.Cache, collapse, selectedAgentId, open))
+                wt.Key, RootPath, showHeader: !IsNoRepository, wt.Cache, collapse, selectedAgentId,
+                agentsWithPending, open))
             .DisposeMany()
             .SortAndBind(_worktreesSource, WorktreeComparer)
             .Subscribe()
