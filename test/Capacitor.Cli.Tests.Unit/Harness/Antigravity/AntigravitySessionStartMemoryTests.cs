@@ -259,9 +259,10 @@ public class AntigravitySessionStartMemoryTests {
         await Assert.That(AntigravityHookCommand.IsFirstInvocation(Payload("""{"invocationNum":97}"""))).IsFalse();
     }
 
-    // Fail-open: a payload that cannot distinguish callbacks must still emit.
+    // Fail-open: a payload without a usable counter (missing, non-numeric, or non-positive)
+    // cannot distinguish callbacks and must still emit.
     [Test]
-    public async Task A_missing_or_non_numeric_counter_reads_as_the_first_invocation() {
+    public async Task A_missing_or_unusable_counter_reads_as_the_first_invocation() {
         await Assert.That(AntigravityHookCommand.IsFirstInvocation(Payload("{}"))).IsTrue();
         await Assert.That(AntigravityHookCommand.IsFirstInvocation(Payload("""{"invocationNum":"2"}"""))).IsTrue();
         await Assert.That(AntigravityHookCommand.IsFirstInvocation(Payload("""{"invocationNum":0}"""))).IsTrue();
