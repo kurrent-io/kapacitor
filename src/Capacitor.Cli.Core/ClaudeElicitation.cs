@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
@@ -132,11 +133,17 @@ public static class ClaudeElicitation {
             answersObj[question.Question] = ComposeValue(question, answer);
         }
 
-        var payload = new JsonObject {
-            ["questions"] = JsonNode.Parse(questions.QuestionsJson.GetRawText()),
-            ["answers"] = answersObj,
-        };
-        using var doc = JsonDocument.Parse(payload.ToJsonString());
+        using var buffer = new MemoryStream();
+        var options = new JsonWriterOptions { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
+        using (var writer = new Utf8JsonWriter(buffer, options)) {
+            writer.WriteStartObject();
+            writer.WritePropertyName("questions");
+            questions.QuestionsJson.WriteTo(writer);
+            writer.WritePropertyName("answers");
+            answersObj.WriteTo(writer);
+            writer.WriteEndObject();
+        }
+        using var doc = JsonDocument.Parse(buffer.ToArray());
         return doc.RootElement.Clone();
     }
 
@@ -144,18 +151,18 @@ public static class ClaudeElicitation {
         var selected = new List<string>();
         foreach (var label in answer.SelectedLabels) {
             if (!question.Options.Any(o => string.Equals(o.Label, label, StringComparison.Ordinal)))
-                throw new ArgumentException($"\"{label}\" is not an option of \"{question.Question}\"", nameof(answer));
+                throw new ArgumentException($"\"{label}\" is not an option of \"{question.Question}\"");
             if (selected.Contains(label))
-                throw new ArgumentException($"\"{label}\" selected twice for \"{question.Question}\"", nameof(answer));
+                throw new ArgumentException($"\"{label}\" selected twice for \"{question.Question}\"");
             selected.Add(label);
         }
 
         var other = answer.OtherText?.Trim();
         if (other is not null) {
             if (other.Length == 0)
-                throw new ArgumentException($"blank Other text for \"{question.Question}\"", nameof(answer));
+                throw new ArgumentException($"blank Other text for \"{question.Question}\"");
             if (other.Length > MaxOtherTextChars)
-                throw new ArgumentException($"Other text over {MaxOtherTextChars} chars for \"{question.Question}\"", nameof(answer));
+                throw new ArgumentException($"Other text over {MaxOtherTextChars} chars for \"{question.Question}\"");
             // An option label typed as Other IS that option — never a duplicate wire value.
             if (question.Options.Any(o => string.Equals(o.Label, other, StringComparison.Ordinal))) {
                 if (!selected.Contains(other)) selected.Add(other);
@@ -165,12 +172,12 @@ public static class ClaudeElicitation {
 
         if (!question.MultiSelect) {
             if (selected.Count + (other is null ? 0 : 1) != 1)
-                throw new ArgumentException($"single-select \"{question.Question}\" needs exactly one value", nameof(answer));
+                throw new ArgumentException($"single-select \"{question.Question}\" needs exactly one value");
             return JsonValue.Create(other ?? selected[0]);
         }
 
         if (selected.Count == 0 && other is null)
-            throw new ArgumentException($"multi-select \"{question.Question}\" needs at least one value", nameof(answer));
+            throw new ArgumentException($"multi-select \"{question.Question}\" needs at least one value");
 
         var array = new JsonArray();
         foreach (var option in question.Options)

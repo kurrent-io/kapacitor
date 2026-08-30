@@ -138,6 +138,15 @@ public class ClaudeElicitationTests {
     }
 
     [Test]
+    public async Task Preserves_the_questions_bytes_with_non_ascii_content() {
+        var q = Parsed("""{"questions":[{"question":"Café — décider?","options":[{"label":"Oui"},{"label":"Non"}]}]}""");
+        var composed = ClaudeElicitation.ComposeAnswers(q, [
+            new ElicitationAnswer("Café — décider?", ["Oui"], null),
+        ]);
+        await Assert.That(composed.Prop("questions")!.Value.GetRawText()).IsEqualTo(q.QuestionsJson.GetRawText());
+    }
+
+    [Test]
     public async Task Single_select_accepts_other_text_as_the_one_value() {
         var q = Parsed("""{"questions":[{"question":"Q","options":[{"label":"A"}]}]}""");
         var composed = ClaudeElicitation.ComposeAnswers(q, [new ElicitationAnswer("Q", [], "  my own  ")]);
