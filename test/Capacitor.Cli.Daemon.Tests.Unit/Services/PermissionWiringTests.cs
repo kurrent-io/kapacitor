@@ -44,14 +44,15 @@ public class PermissionWiringTests {
 
     [Test]
     public async Task Permission_graph_resolved_via_DI_shares_the_one_registered_broker_and_decision_log() {
-        using var daemons = new TempDaemonStore();
+        using var daemons   = new TempDaemonStore();
+        using var worktrees = new TempDir();
 
         var services = new ServiceCollection();
         services.AddSingleton(new DaemonConfig {
             Name         = "wiring-permission-test",
             ServerUrl    = "http://127.0.0.1:1",
             Store        = daemons.Store,
-            WorktreeRoot = Path.Combine(Path.GetTempPath(), "kcap-wiring-perm-wt-" + Guid.NewGuid().ToString("N")[..8]),
+            WorktreeRoot = worktrees.PathTo("wt"),
         });
         services.AddSingleton<ILoggerFactory>(NullLoggerFactory.Instance);
         services.AddSingleton(typeof(ILogger<>), typeof(NullLogger<>));
