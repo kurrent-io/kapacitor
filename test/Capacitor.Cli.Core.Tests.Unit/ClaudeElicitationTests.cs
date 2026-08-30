@@ -219,7 +219,7 @@ public class ClaudeElicitationTests {
 
     [Test]
     public async Task Maximal_composed_payload_fits_the_frame_codec() {
-        var esc = new string('', 1);
+        var esc = new string('\u0001', 1);
         string Chars(int n) => string.Concat(Enumerable.Repeat(esc, n));
         var questions = string.Join(",", Enumerable.Range(0, ClaudeElicitation.MaxQuestions).Select(i => {
             var text = System.Text.Json.JsonEncodedText.Encode(Chars(ClaudeElicitation.MaxQuestionTextChars - 2) + i.ToString("00", System.Globalization.CultureInfo.InvariantCulture));

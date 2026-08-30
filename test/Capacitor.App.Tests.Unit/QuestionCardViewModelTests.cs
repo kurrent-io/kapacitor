@@ -62,8 +62,10 @@ public class QuestionCardViewModelTests {
                 await Assert.That(card.ShowsSubmit).IsTrue();
                 card.Questions[0].OtherText = "   ";
                 await Assert.That(card.Questions[0].IsAnswered).IsFalse();
+                await Assert.That(card.Questions[0].ShowsOtherAnswer).IsFalse();
                 card.Questions[0].OtherText = "hello";
                 await Assert.That(card.Questions[0].IsAnswered).IsTrue();
+                await Assert.That(card.Questions[0].ShowsOtherAnswer).IsFalse();
             }
         });
     }

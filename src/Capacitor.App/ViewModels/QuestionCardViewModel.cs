@@ -42,6 +42,7 @@ public sealed class QuestionOptionViewModel : ReactiveObject {
 public sealed class QuestionGroupViewModel : ReactiveObject {
     readonly BehaviorSubject<bool> _answered = new(false);
     string _otherText = "";
+    bool _inFastPath;
 
     public string? Header { get; }
     public string Text { get; }
@@ -50,6 +51,10 @@ public sealed class QuestionGroupViewModel : ReactiveObject {
     public int MaxOtherLength => ClaudeElicitation.MaxOtherTextChars;
     public ReactiveCommand<Unit, Unit> EnterCommand { get; }
     internal IObservable<bool> Answered => _answered;
+    internal bool InFastPath {
+        get => _inFastPath;
+        set => this.RaiseAndSetIfChanged(ref _inFastPath, value);
+    }
 
     public string OtherText {
         get => _otherText;
@@ -63,7 +68,7 @@ public sealed class QuestionGroupViewModel : ReactiveObject {
     }
 
     public bool IsAnswered => Options.Any(o => o.IsSelected) || !string.IsNullOrWhiteSpace(OtherText);
-    public bool ShowsOtherAnswer => !string.IsNullOrWhiteSpace(OtherText);
+    public bool ShowsOtherAnswer => InFastPath && !string.IsNullOrWhiteSpace(OtherText);
 
     internal QuestionGroupViewModel(ElicitationQuestion question, Func<QuestionOptionViewModel, QuestionGroupViewModel, Task> pick,
             Func<QuestionGroupViewModel, Task> enter, IObservable<bool> idle) {
@@ -112,6 +117,7 @@ public sealed class QuestionCardViewModel : PendingCardViewModel {
         var idle = Busy.Select(b => !b);
         Questions = parsed.Questions.Select(q => new QuestionGroupViewModel(q, PickAsync, EnterAsync, idle)).ToList();
         IsFastPath = Questions.Count == 1 && !Questions[0].MultiSelect && Questions[0].Options.Count > 0;
+        foreach (var q in Questions) q.InFastPath = IsFastPath;
 
         var allAnswered = Questions.Select(q => q.Answered).CombineLatest(states => states.All(x => x));
         SubmitCommand = ReactiveCommand.CreateFromTask(SubmitAsync, allAnswered.CombineLatest(idle, (a, i) => a && i));
