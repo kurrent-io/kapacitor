@@ -31,7 +31,7 @@ public sealed class ElicitationQuestions {
 }
 
 /// The Claude AskUserQuestion contract: parsing the hook's tool_input and composing the
-/// updatedInput answer. Caps bound the composed resolve payload (spec decision 6); a payload
+/// updatedInput answer. Caps bound the composed resolve payload; a payload
 /// over any cap is unparseable and falls back to the plain permission card.
 public static class ClaudeElicitation {
     public const string ToolName = "AskUserQuestion";
