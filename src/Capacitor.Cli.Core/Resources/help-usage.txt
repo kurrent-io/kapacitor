@@ -75,7 +75,7 @@ MCP servers (stdio):
   mcp sessions                       Search/inspect past sessions from agents
   mcp flows                          Start and manage review flows from agents
   mcp memory                         Team memory tools (search, get, save, update, rescope, archive)
-  mcp workitems                      Declare/list a session's work-item attachments (Claude Code only)
+  mcp workitems                      Declare/list a session's work-item attachments
   mcp analytics                      Governed SQL over org coding-agent analytics (schema + query)
 
 Plugin:
