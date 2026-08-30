@@ -476,4 +476,27 @@ public class ChatTabViewSmokeTests {
             await Assert.That(row.IsVisible).IsFalse();
         });
     }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Question_card_renders_options_other_and_coexists_with_a_permission_card() {
+        await RunOnUiAsync(async () => {
+            var host = new Host();
+            host.Permissions.Add(PermissionEntries.Entry("r1"));
+            host.Permissions.Add(PermissionEntries.Question("q1"));
+            host.Settle();
+
+            // A plain-text button (Allow, Deny, Submit…) yields its Content directly; an option
+            // button's Content is the Label/Description StackPanel, so its first TextBlock stands in.
+            var buttons = host.View.GetVisualDescendants().OfType<Button>()
+                .Select(b => b.Content as string ?? b.GetVisualDescendants().OfType<TextBlock>().FirstOrDefault()?.Text)
+                .ToList();
+            await Assert.That(buttons).Contains("Allow");           // the permission card
+            await Assert.That(buttons).Contains("A");               // a question option button
+            var otherBoxes = host.View.GetVisualDescendants().OfType<TextBox>()
+                .Where(t => t.PlaceholderText == "Other…").ToList();
+            await Assert.That(otherBoxes.Count).IsEqualTo(1);
+            await Assert.That(host.View.GetVisualDescendants().OfType<TextBlock>().Any(t => t.Text == "Pick")).IsTrue();
+        });
+    }
 }

@@ -54,7 +54,7 @@ public sealed class ChatTabViewModel : ReactiveObject {
 
     public IAvaloniaReadOnlyList<ChatItemViewModel> Items => _items;
 
-    public ReadOnlyObservableCollection<PermissionCardViewModel> PendingPermissions { get; }
+    public ReadOnlyObservableCollection<PendingCardViewModel> PendingPermissions { get; }
     public IObservable<string?> Root => _rootSubject;
 
     readonly ObservableAsPropertyHelper<bool> _hasPendingPermissions;
@@ -137,9 +137,11 @@ public sealed class ChatTabViewModel : ReactiveObject {
         var cards = permissions.Pending
             .ObserveOn(RxSchedulers.MainThreadScheduler)
             .Filter(p => p.AgentId == agentId)
-            .Transform(p => new PermissionCardViewModel(p, permissions, _rootSubject))
+            .Transform(p => p.Questions is null
+                ? (PendingCardViewModel)new PermissionCardViewModel(p, permissions, _rootSubject)
+                : new QuestionCardViewModel(p, permissions))
             .DisposeMany()
-            .SortAndBind(out var pendingPermissions, Comparer<PermissionCardViewModel>.Create((a, b) => {
+            .SortAndBind(out var pendingPermissions, Comparer<PendingCardViewModel>.Create((a, b) => {
                 var byTime = a.RequestedAt.CompareTo(b.RequestedAt);
                 return byTime != 0 ? byTime : string.CompareOrdinal(a.RequestId, b.RequestId);
             }));

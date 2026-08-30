@@ -291,9 +291,28 @@ public class ChatTabViewModelTests {
             var h = Claude();
             h.Permissions.Add(PermissionEntries.Entry("r1", "a1", toolName: "Read", toolInputJson: """{"file_path":"/repo/x/src/a.cs"}"""));
             await WaitUntilAsync(() => h.Chat.PendingPermissions.Count == 1, what: "the card");
-            await Assert.That(h.Chat.PendingPermissions[0].Detail).IsEqualTo("/repo/x/src/a.cs");
+            await Assert.That(((PermissionCardViewModel)h.Chat.PendingPermissions[0]).Detail).IsEqualTo("/repo/x/src/a.cs");
             await h.PushAsync(Dto(transcriptPath: null));
-            await WaitUntilAsync(() => h.Chat.PendingPermissions[0].Detail == "src/a.cs", what: "relative once the root lands");
+            await WaitUntilAsync(() => ((PermissionCardViewModel)h.Chat.PendingPermissions[0]).Detail == "src/a.cs", what: "relative once the root lands");
+            await h.TeardownAsync();
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Question_entries_become_question_cards_beside_permission_cards() {
+        await RunOnUiAsync(async () => {
+            var h = Claude(p => {
+                p.Add(PermissionEntries.Entry("r1", requestedAt: "2026-08-28T10:00:00.0000000+00:00"));
+                p.Add(PermissionEntries.Question("q1", requestedAt: "2026-08-28T10:00:01.0000000+00:00"));
+            });
+            await WaitUntilAsync(() => h.Chat.PendingPermissions.Count == 2, what: "both cards");
+            await Assert.That(h.Chat.PendingPermissions[0]).IsTypeOf<PermissionCardViewModel>();
+            await Assert.That(h.Chat.PendingPermissions[1]).IsTypeOf<QuestionCardViewModel>();
+
+            h.Permissions.Remove("q1");
+            await WaitUntilAsync(() => h.Chat.PendingPermissions.Count == 1, what: "question card removed");
+            await Assert.That(h.Chat.PendingPermissions[0].RequestId).IsEqualTo("r1");
             await h.TeardownAsync();
         });
     }
