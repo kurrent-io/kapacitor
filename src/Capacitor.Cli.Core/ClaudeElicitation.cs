@@ -1,0 +1,110 @@
+using System.Collections.Immutable;
+using System.Text.Json;
+
+namespace Capacitor.Cli.Core;
+
+public sealed class ElicitationOption {
+    internal ElicitationOption(string label, string? description) { Label = label; Description = description; }
+    public string Label { get; }
+    public string? Description { get; }
+}
+
+public sealed class ElicitationQuestion {
+    internal ElicitationQuestion(string question, string? header, bool multiSelect, ImmutableArray<ElicitationOption> options) {
+        Question = question; Header = header; MultiSelect = multiSelect; Options = options;
+    }
+    public string Question { get; }
+    public string? Header { get; }
+    public bool MultiSelect { get; }
+    public ImmutableArray<ElicitationOption> Options { get; }
+}
+
+/// Parser-created only: internal ctor + immutable collections ground ComposeAnswers' validation
+/// in parse output, so no caller can hand it a fabricated or mutated model.
+public sealed class ElicitationQuestions {
+    internal ElicitationQuestions(JsonElement questionsJson, ImmutableArray<ElicitationQuestion> questions) {
+        QuestionsJson = questionsJson; Questions = questions;
+    }
+    /// Detached clone of the payload's questions array, replayed verbatim into the answer.
+    public JsonElement QuestionsJson { get; }
+    public ImmutableArray<ElicitationQuestion> Questions { get; }
+}
+
+/// The Claude AskUserQuestion contract: parsing the hook's tool_input and composing the
+/// updatedInput answer. Caps bound the composed resolve payload (spec decision 6); a payload
+/// over any cap is unparseable and falls back to the plain permission card.
+public static class ClaudeElicitation {
+    public const string ToolName = "AskUserQuestion";
+    public const int MaxQuestions = 8;
+    public const int MaxOptionsPerQuestion = 16;
+    public const int MaxQuestionTextChars = 4096;
+    public const int MaxOptionLabelChars = 1024;
+    public const int MaxOtherTextChars = 8192;
+
+    public static ElicitationQuestions? TryParse(string? toolInputJson) {
+        if (string.IsNullOrEmpty(toolInputJson)) return null;
+        JsonDocument doc;
+        try { doc = JsonDocument.Parse(toolInputJson); } catch (JsonException) { return null; }
+        using (doc) {
+            var root = doc.RootElement;
+            if (!root.IsObject || root.Prop("questions") is not { } arr || !arr.IsArray) return null;
+            var count = arr.GetArrayLength();
+            if (count is 0 or > MaxQuestions) return null;
+
+            var parsed = ImmutableArray.CreateBuilder<ElicitationQuestion>(count);
+            var texts = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var q in arr.EnumerateArray()) {
+                if (!q.IsObject) return null;
+                var text = ProtocolString(q, "question", MaxQuestionTextChars);
+                if (text is null || !texts.Add(text)) return null;
+                if (!TryReadFlag(q, out var multi)) return null;
+                if (!TryReadOptions(q, out var options)) return null;
+                parsed.Add(new ElicitationQuestion(text, DisplayString(q, "header"), multi, options));
+            }
+            return new ElicitationQuestions(arr.Clone(), parsed.MoveToImmutable());
+        }
+    }
+
+    // Protocol field: must be a non-blank string within the cap; anything else is null → fatal.
+    static string? ProtocolString(JsonElement obj, string name, int maxChars) {
+        if (obj.Prop(name) is null) return null;
+        var s = obj.Str(name)?.Trim();
+        return s is { Length: > 0 } && s.Length <= maxChars ? s : null;
+    }
+
+    // Display field: a non-blank string is used; wrong type or whitespace reads as absent.
+    static string? DisplayString(JsonElement obj, string name) {
+        var s = obj.Str(name)?.Trim();
+        return s is { Length: > 0 } ? s : null;
+    }
+
+    // Both spellings accepted; a present non-boolean or a disagreement is fatal — the flag
+    // decides string-versus-array in the answer, so guessing changes the answer type.
+    static bool TryReadFlag(JsonElement q, out bool multi) {
+        multi = false;
+        bool? camel = null, snake = null;
+        if (q.Prop("multiSelect") is not null && (camel = q.Bool("multiSelect")) is null) return false;
+        if (q.Prop("multi_select") is not null && (snake = q.Bool("multi_select")) is null) return false;
+        if (camel is not null && snake is not null && camel != snake) return false;
+        multi = camel ?? snake ?? false;
+        return true;
+    }
+
+    static bool TryReadOptions(JsonElement q, out ImmutableArray<ElicitationOption> options) {
+        options = ImmutableArray<ElicitationOption>.Empty;
+        if (q.Prop("options") is not { } el) return true;
+        if (!el.IsArray || el.GetArrayLength() > MaxOptionsPerQuestion) return false;
+
+        var builder = ImmutableArray.CreateBuilder<ElicitationOption>();
+        var labels = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var o in el.EnumerateArray()) {
+            if (!o.IsObject) return false;
+            var label = ProtocolString(o, "label", MaxOptionLabelChars);
+            if (label is null) return false;
+            // Duplicate labels collapse to the first: the label IS the answer value.
+            if (labels.Add(label)) builder.Add(new ElicitationOption(label, DisplayString(o, "description")));
+        }
+        options = builder.ToImmutable();
+        return true;
+    }
+}
