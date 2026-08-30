@@ -1,5 +1,6 @@
 using System.Collections.Immutable;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace Capacitor.Cli.Core;
 
@@ -29,6 +30,8 @@ public sealed class ElicitationQuestions {
     public JsonElement QuestionsJson { get; }
     public ImmutableArray<ElicitationQuestion> Questions { get; }
 }
+
+public sealed record ElicitationAnswer(string Question, IReadOnlyList<string> SelectedLabels, string? OtherText);
 
 /// The Claude AskUserQuestion contract: parsing the hook's tool_input and composing the
 /// updatedInput answer. Caps bound the composed resolve payload; a payload
@@ -106,5 +109,73 @@ public static class ClaudeElicitation {
         }
         options = builder.ToImmutable();
         return true;
+    }
+
+    /// Validates against the parsed questions — every question answered, labels from the parsed
+    /// options only, Other text bounded — and builds the answer updatedInput. ArgumentException
+    /// here is a programming error in the caller, never a user state.
+    public static JsonElement ComposeAnswers(ElicitationQuestions questions, IReadOnlyList<ElicitationAnswer> answers) {
+        ArgumentNullException.ThrowIfNull(questions);
+        ArgumentNullException.ThrowIfNull(answers);
+        if (answers.Count != questions.Questions.Length)
+            throw new ArgumentException($"expected {questions.Questions.Length} answer(s), got {answers.Count}", nameof(answers));
+
+        var byQuestion = new Dictionary<string, ElicitationAnswer>(StringComparer.Ordinal);
+        foreach (var answer in answers)
+            if (!byQuestion.TryAdd(answer.Question, answer))
+                throw new ArgumentException($"duplicate answer for \"{answer.Question}\"", nameof(answers));
+
+        var answersObj = new JsonObject();
+        foreach (var question in questions.Questions) {
+            if (!byQuestion.TryGetValue(question.Question, out var answer))
+                throw new ArgumentException($"missing answer for \"{question.Question}\"", nameof(answers));
+            answersObj[question.Question] = ComposeValue(question, answer);
+        }
+
+        var payload = new JsonObject {
+            ["questions"] = JsonNode.Parse(questions.QuestionsJson.GetRawText()),
+            ["answers"] = answersObj,
+        };
+        using var doc = JsonDocument.Parse(payload.ToJsonString());
+        return doc.RootElement.Clone();
+    }
+
+    static JsonNode ComposeValue(ElicitationQuestion question, ElicitationAnswer answer) {
+        var selected = new List<string>();
+        foreach (var label in answer.SelectedLabels) {
+            if (!question.Options.Any(o => string.Equals(o.Label, label, StringComparison.Ordinal)))
+                throw new ArgumentException($"\"{label}\" is not an option of \"{question.Question}\"", nameof(answer));
+            if (selected.Contains(label))
+                throw new ArgumentException($"\"{label}\" selected twice for \"{question.Question}\"", nameof(answer));
+            selected.Add(label);
+        }
+
+        var other = answer.OtherText?.Trim();
+        if (other is not null) {
+            if (other.Length == 0)
+                throw new ArgumentException($"blank Other text for \"{question.Question}\"", nameof(answer));
+            if (other.Length > MaxOtherTextChars)
+                throw new ArgumentException($"Other text over {MaxOtherTextChars} chars for \"{question.Question}\"", nameof(answer));
+            // An option label typed as Other IS that option — never a duplicate wire value.
+            if (question.Options.Any(o => string.Equals(o.Label, other, StringComparison.Ordinal))) {
+                if (!selected.Contains(other)) selected.Add(other);
+                other = null;
+            }
+        }
+
+        if (!question.MultiSelect) {
+            if (selected.Count + (other is null ? 0 : 1) != 1)
+                throw new ArgumentException($"single-select \"{question.Question}\" needs exactly one value", nameof(answer));
+            return JsonValue.Create(other ?? selected[0]);
+        }
+
+        if (selected.Count == 0 && other is null)
+            throw new ArgumentException($"multi-select \"{question.Question}\" needs at least one value", nameof(answer));
+
+        var array = new JsonArray();
+        foreach (var option in question.Options)
+            if (selected.Contains(option.Label)) array.Add((JsonNode)JsonValue.Create(option.Label));
+        if (other is not null) array.Add((JsonNode)JsonValue.Create(other));
+        return array;
     }
 }

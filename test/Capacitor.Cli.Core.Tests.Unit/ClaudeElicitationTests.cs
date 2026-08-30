@@ -1,4 +1,6 @@
 using System.Collections.Immutable;
+using Capacitor.Cli.Core.LocalIpc;
+using TUnit.Assertions.Enums;
 
 namespace Capacitor.Cli.Core.Tests.Unit;
 
@@ -112,5 +114,110 @@ public class ClaudeElicitationTests {
         await Assert.That(parsed!.Questions is ImmutableArray<ElicitationQuestion>).IsTrue();
         await Assert.That(parsed.Questions[0].Options is ImmutableArray<ElicitationOption>).IsTrue();
 #pragma warning restore CS0183
+    }
+
+    static ElicitationQuestions Parsed(string json) => ClaudeElicitation.TryParse(json)!;
+
+    const string MixedPayload =
+        """{"questions":[{"question":"Q1","options":[{"label":"A"},{"label":"B"}]},{"question":"Q2","multiSelect":true,"options":[{"label":"X"},{"label":"Y"},{"label":"Z"}]}]}""";
+
+    [Test]
+    public async Task Composes_the_documented_shape_with_passthrough_and_ordered_values() {
+        var q = Parsed(MixedPayload);
+        var composed = ClaudeElicitation.ComposeAnswers(q, [
+            new ElicitationAnswer("Q1", ["B"], null),
+            new ElicitationAnswer("Q2", ["Z", "X"], "custom"),
+        ]);
+        await Assert.That(composed.Prop("questions")!.Value.GetRawText()).IsEqualTo(q.QuestionsJson.GetRawText());
+        var answers = composed.Prop("answers")!.Value;
+        await Assert.That(answers.Str("Q1")).IsEqualTo("B");
+        // Multi-select: option order first, the genuine Other text last. Ordering.Matching —
+        // the default equivalence ignores order and would let the ordering rule regress.
+        await Assert.That(answers.Prop("Q2")!.Value.EnumerateArray().Select(v => v.GetString()!))
+            .IsEquivalentTo(["X", "Z", "custom"], CollectionOrdering.Matching);
+    }
+
+    [Test]
+    public async Task Single_select_accepts_other_text_as_the_one_value() {
+        var q = Parsed("""{"questions":[{"question":"Q","options":[{"label":"A"}]}]}""");
+        var composed = ClaudeElicitation.ComposeAnswers(q, [new ElicitationAnswer("Q", [], "  my own  ")]);
+        await Assert.That(composed.Prop("answers")!.Value.Str("Q")).IsEqualTo("my own");
+    }
+
+    [Test]
+    public async Task Other_text_equal_to_a_label_normalizes_into_the_selection() {
+        var q = Parsed("""{"questions":[{"question":"Q","multiSelect":true,"options":[{"label":"A"},{"label":"B"}]}]}""");
+        var fresh = ClaudeElicitation.ComposeAnswers(q, [new ElicitationAnswer("Q", ["B"], "A")]);
+        await Assert.That(fresh.Prop("answers")!.Value.Prop("Q")!.Value.EnumerateArray().Select(v => v.GetString()!))
+            .IsEquivalentTo(["A", "B"], CollectionOrdering.Matching);
+        var already = ClaudeElicitation.ComposeAnswers(q, [new ElicitationAnswer("Q", ["A"], "A")]);
+        await Assert.That(already.Prop("answers")!.Value.Prop("Q")!.Value.EnumerateArray().Select(v => v.GetString()!))
+            .IsEquivalentTo(["A"]);
+        // Single-select: the normalized pair collapses to one value instead of throwing.
+        var single = Parsed("""{"questions":[{"question":"S","options":[{"label":"A"}]}]}""");
+        var collapsed = ClaudeElicitation.ComposeAnswers(single, [new ElicitationAnswer("S", ["A"], "A")]);
+        await Assert.That(collapsed.Prop("answers")!.Value.Str("S")).IsEqualTo("A");
+    }
+
+    [Test]
+    public async Task Invalid_answer_sets_throw() {
+        var q = Parsed(MixedPayload);
+        List<IReadOnlyList<ElicitationAnswer>> bad = [
+            [new ElicitationAnswer("Q1", ["A"], null)],                                                 // missing Q2
+            [new ElicitationAnswer("Q1", ["A"], null), new ElicitationAnswer("Q1", ["B"], null)],       // duplicate key
+            [new ElicitationAnswer("Q1", ["A"], null), new ElicitationAnswer("Nope", ["X"], null)],     // unknown key
+            [new ElicitationAnswer("Q1", ["C"], null), new ElicitationAnswer("Q2", ["X"], null)],       // label not an option
+            [new ElicitationAnswer("Q1", ["A"], null), new ElicitationAnswer("Q2", ["X", "X"], null)],  // label twice
+            [new ElicitationAnswer("Q1", ["A", "B"], null), new ElicitationAnswer("Q2", ["X"], null)],  // two for single-select
+            [new ElicitationAnswer("Q1", ["A"], "extra"), new ElicitationAnswer("Q2", ["X"], null)],    // label AND other for single-select
+            [new ElicitationAnswer("Q1", [], null), new ElicitationAnswer("Q2", ["X"], null)],          // neither for single-select
+            [new ElicitationAnswer("Q1", ["A"], null), new ElicitationAnswer("Q2", [], null)],          // empty multi-select
+            [new ElicitationAnswer("Q1", ["A"], null), new ElicitationAnswer("Q2", [], "   ")],         // blank other
+            [new ElicitationAnswer("Q1", ["A"], null),
+             new ElicitationAnswer("Q2", [], new string('x', ClaudeElicitation.MaxOtherTextChars + 1))], // over-cap other
+        ];
+        foreach (var answers in bad)
+            await Assert.That(() => ClaudeElicitation.ComposeAnswers(q, answers)).Throws<ArgumentException>();
+    }
+
+    [Test]
+    public async Task Composed_element_outlives_every_composer_local_owner() {
+        var composed = ClaudeElicitation.ComposeAnswers(
+            Parsed("""{"questions":[{"question":"Q","options":[{"label":"A"}]}]}"""),
+            [new ElicitationAnswer("Q", ["A"], null)]);
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        await Assert.That(composed.GetRawText()).Contains("\"answers\"");
+    }
+
+    [Test]
+    public async Task Maximal_composed_payload_fits_the_frame_codec() {
+        var esc = new string('', 1);
+        string Chars(int n) => string.Concat(Enumerable.Repeat(esc, n));
+        var questions = string.Join(",", Enumerable.Range(0, ClaudeElicitation.MaxQuestions).Select(i => {
+            var text = System.Text.Json.JsonEncodedText.Encode(Chars(ClaudeElicitation.MaxQuestionTextChars - 2) + i.ToString("00", System.Globalization.CultureInfo.InvariantCulture));
+            var options = string.Join(",", Enumerable.Range(0, ClaudeElicitation.MaxOptionsPerQuestion).Select(j => {
+                var label = System.Text.Json.JsonEncodedText.Encode(Chars(ClaudeElicitation.MaxOptionLabelChars - 2) + j.ToString("00", System.Globalization.CultureInfo.InvariantCulture));
+                return $$"""{"label":"{{label}}"}""";
+            }));
+            return $$"""{"question":"{{text}}","multiSelect":true,"options":[{{options}}]}""";
+        }));
+        var parsed = ClaudeElicitation.TryParse($$"""{"questions":[{{questions}}]}""");
+        await Assert.That(parsed).IsNotNull();
+
+        var answers = parsed!.Questions
+            .Select(q => new ElicitationAnswer(q.Question, q.Options.Select(o => o.Label).ToList(),
+                Chars(ClaudeElicitation.MaxOtherTextChars)))
+            .ToList();
+        var updated = ClaudeElicitation.ComposeAnswers(parsed, answers);
+
+        var dto = new PermissionResolveDto("r", "allow", null, updated);
+        var json = System.Text.Json.JsonSerializer.Serialize(dto, PermissionIpcJsonContext.Default.PermissionResolveDto);
+        var frame = LocalFrame.PermissionJson(FrameType.PermissionResolve, json);
+        using var stream = new MemoryStream();
+        await FrameCodec.WriteAsync(stream, frame, CancellationToken.None);
+        stream.Position = 0;
+        var read = await FrameCodec.ReadAsync(stream, CancellationToken.None);
+        await Assert.That(read!.Type).IsEqualTo(FrameType.PermissionResolve);
     }
 }
