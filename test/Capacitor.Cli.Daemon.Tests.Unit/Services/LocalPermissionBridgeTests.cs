@@ -1384,7 +1384,7 @@ sealed class FakeServerConnection(Func<string, string?, JsonElement?, JsonElemen
     public List<Call> Calls { get; } = [];
     public List<(string SessionId, string RequestId, PermissionDecision Decision)> Responds { get; } = [];
 
-    /// Scripted legs. Null = the legacy composition (RequestPermissionAsync via `respond`).
+    /// Scripted legs. Null = compose through RequestPermissionAsync via `respond`.
     public Func<CancellationToken, Func<bool>, Task<string>>? BeginScript { get; set; }
     public Func<string, CancellationToken, Task<PermissionDecision>>? AwaitScript { get; set; }
     public Func<RespondOutcome> RespondScript = () => new RespondOutcome(RespondOutcomeKind.Applied, null);

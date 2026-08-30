@@ -42,8 +42,7 @@ public class AgentOrchestratorLocalAttachTests {
     static DaemonStatusIpc TestStatusIpc(DaemonConfig config, AgentOrchestrator orch, ServerConnection connection) =>
         new(config, orch, connection, new DaemonStatusNotifier());
 
-    // Permission: a fresh, throwaway broker — these pre-existing LocalControlServer tests don't
-    // exercise permission prompts at all, so the wiring only needs to satisfy the ctor.
+    // A throwaway broker: these LocalControlServer tests never exercise permission prompts.
     static PermissionIpc TestPermissionIpc() =>
         new(new PermissionPromptBroker(), NullLogger<PermissionIpc>.Instance);
 

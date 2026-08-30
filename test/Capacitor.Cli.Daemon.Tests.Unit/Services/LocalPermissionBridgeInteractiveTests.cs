@@ -196,7 +196,7 @@ public class LocalPermissionBridgeInteractiveTests {
         await using var h = new Harness(attributeTo: null);
         await h.StartAsync();
         var response = await h.PostAsync();
-        await Assert.That(await Harness.BehaviorOf(response)).IsEqualTo("allow"); // the fake's legacy composition
+        await Assert.That(await Harness.BehaviorOf(response)).IsEqualTo("allow"); // the unscripted fake answers allow
         await Assert.That(h.Broker.PendingSnapshot().Count).IsEqualTo(0);
         await Assert.That(h.LogLines().Length).IsEqualTo(0);
     }
