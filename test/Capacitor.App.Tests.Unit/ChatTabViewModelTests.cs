@@ -35,7 +35,8 @@ public class ChatTabViewModelTests {
         public TerminalTabViewModel Terminal { get; }
         public ChatTabViewModel Chat { get; }
 
-        public Harness(ITranscriptProjection? projection) {
+        public Harness(ITranscriptProjection? projection, Action<FakePermissionService>? seed = null) {
+            seed?.Invoke(Permissions);
             Terminal = new TerminalTabViewModel("a1", Daemon, Factory.Factory, () => new FakeTerminalSurface(), Time);
             Chat = new ChatTabViewModel("a1", Daemon, Terminal, projection, Opener, Time, Permissions);
         }
@@ -57,7 +58,18 @@ public class ChatTabViewModelTests {
         }
     }
 
-    static Harness Claude() => new(TranscriptProjection.For("claude"));
+    static Harness Claude(Action<FakePermissionService>? seed = null) => new(TranscriptProjection.For("claude"), seed);
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task A_request_already_cached_when_the_tab_opens_lights_the_row_at_once() {
+        await RunOnUiAsync(async () => {
+            var h = Claude(seed: p => p.Add(PermissionEntries.Entry("r1", "a1")));
+            await WaitUntilAsync(() => h.Chat.PendingPermissions.Count == 1, what: "the replayed card");
+            await Assert.That(h.Chat.HasPendingPermissions).IsTrue();
+            await h.TeardownAsync();
+        });
+    }
 
     [Test]
     [NotInParallel("AvaloniaSession")]

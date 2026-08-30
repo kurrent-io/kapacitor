@@ -134,7 +134,7 @@ public sealed class ChatTabViewModel : ReactiveObject {
 
         // ObserveOn BEFORE the binding operator: the cache is mutated on the service's
         // background continuations (IPermissionService.Pending's own doc comment).
-        permissions.Pending
+        var cards = permissions.Pending
             .ObserveOn(RxSchedulers.MainThreadScheduler)
             .Filter(p => p.AgentId == agentId)
             .Transform(p => new PermissionCardViewModel(p, permissions, _rootSubject))
@@ -142,11 +142,11 @@ public sealed class ChatTabViewModel : ReactiveObject {
             .SortAndBind(out var pendingPermissions, Comparer<PermissionCardViewModel>.Create((a, b) => {
                 var byTime = a.RequestedAt.CompareTo(b.RequestedAt);
                 return byTime != 0 ? byTime : string.CompareOrdinal(a.RequestId, b.RequestId);
-            }))
-            .Subscribe()
-            .DisposeWith(_disposables);
+            }));
         PendingPermissions = pendingPermissions;
 
+        // Hooked before the pipeline subscribes: on the UI thread the scheduler delivers an
+        // already-populated cache inline, so a hook installed afterwards would miss the first fill.
         // The delegate-based overload, not the reflection one: ReadOnlyObservableCollection's
         // CollectionChanged is only reachable through this interface, and the reflection overload
         // (Observable.FromEventPattern(target, eventName)) looks up public events only.
@@ -155,8 +155,10 @@ public sealed class ChatTabViewModel : ReactiveObject {
             .FromEventPattern<NotifyCollectionChangedEventHandler, NotifyCollectionChangedEventArgs>(
                 h => notifications.CollectionChanged += h, h => notifications.CollectionChanged -= h)
             .Select(_ => pendingPermissions.Count > 0)
-            .ToProperty(this, x => x.HasPendingPermissions, initialValue: false)
+            .ToProperty(this, x => x.HasPendingPermissions, initialValue: pendingPermissions.Count > 0)
             .DisposeWith(_disposables);
+
+        cards.Subscribe().DisposeWith(_disposables);
 
         daemon.Agents.Connect()
             .ObserveOn(RxSchedulers.MainThreadScheduler)
