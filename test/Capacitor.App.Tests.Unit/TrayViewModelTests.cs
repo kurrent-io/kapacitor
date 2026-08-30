@@ -1036,4 +1036,30 @@ public class TrayViewModelTests {
             await Assert.That(calls).IsEqualTo(1);
         });
     }
+
+    // ---- pending-permission Attention row ----
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Pending_permissions_assert_attention_while_connected_with_their_own_header() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var service = new FakeDaemonClientService();
+            var pause = new FakePauseController();
+            var actions = NewActions(service);
+            var consent = new FakeConsentService();
+            using var permissions = new FakePermissionService();
+            using var vm = new TrayViewModel(service, pause, actions, consent, permissions: permissions);
+
+            service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, ["permission/1"]));
+            service.SnapshotsSubject.OnNext(FakeDaemonClientService.Snap(active: 1));
+            await Assert.That(vm.MenuModel.State).IsEqualTo(TrayState.Running);
+
+            permissions.Add(PermissionEntries.Entry("r1"));
+            await Assert.That(vm.MenuModel.State).IsEqualTo(TrayState.Attention);
+            await Assert.That(vm.MenuModel.Header).IsEqualTo("daemon-a: 1 permission request waiting");
+
+            permissions.Remove("r1");
+            await Assert.That(vm.MenuModel.State).IsEqualTo(TrayState.Running);
+        });
+    }
 }

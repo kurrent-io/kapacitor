@@ -82,7 +82,8 @@ class PermissionRequestCommand(ConfigRoot config, ProfileContext profiles) {
         // auth, so an accidentally / maliciously set non-loopback value would leak the
         // hook payload (tool name, raw tool input) to an arbitrary endpoint.
         if (TryGetLoopbackDaemonUrl(out var daemonUrl)) {
-            return await PostAsync(daemonUrl + "/claude/permission-request", payload, authenticatedBase: null, stdout);
+            var bridgePayload = BuildBridgePayload(node, sessionId, HookAgentId.FromEnvironment());
+            return await PostAsync(daemonUrl + "/claude/permission-request", bridgePayload, authenticatedBase: null, stdout);
         }
 
         return await PostAsync(Url + "/hooks/permission-request", payload, Url, stdout);
@@ -132,6 +133,21 @@ class PermissionRequestCommand(ConfigRoot config, ProfileContext profiles) {
 
         Console.Error.WriteLine($"[kcap] Ignoring non-loopback KCAP_DAEMON_URL: {raw}");
         return false;
+    }
+
+    /// The server payload plus what the daemon's attribution ladder reads: agent_id when this
+    /// process runs inside a hosted agent, and the hook's cwd. The server-bound payload never
+    /// carries either.
+    internal static JsonObject BuildBridgePayload(JsonNode node, string sessionId, string? agentId) {
+        var payload = new JsonObject {
+            ["session_id"]             = sessionId,
+            ["tool_name"]              = node["tool_name"]?.GetValue<string>() ?? "Unknown",
+            ["tool_input"]             = node["tool_input"]?.DeepClone(),
+            ["permission_suggestions"] = node["permission_suggestions"]?.DeepClone(),
+        };
+        if (agentId is not null) payload["agent_id"] = agentId;
+        if (node["cwd"] is JsonValue cwd && cwd.TryGetValue<string>(out var c)) payload["cwd"] = c;
+        return payload;
     }
 
     async Task<int> PostAsync(string url, JsonObject payload, string? authenticatedBase, TextWriter? stdout = null) {

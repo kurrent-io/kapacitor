@@ -58,14 +58,22 @@ public sealed class SessionRailViewModel : ReactiveObject, IDisposable {
         });
 
     /// resolveRepoRoot defaults to the real .git-reading heuristic; tests inject a pure one.
+    /// agentsWithPending defaults to an always-empty set so callers that don't wire the
+    /// permission service still compile and render.
     public SessionRailViewModel(
             IDaemonClientService daemon, Action<string> openSession,
-            Func<string, string>? resolveRepoRoot = null) {
+            Func<string, string>? resolveRepoRoot = null,
+            IObservable<IReadOnlySet<string>>? agentsWithPending = null) {
         _daemon = daemon;
         _resolveRepoRoot = resolveRepoRoot ?? GitRepository.ResolveMainRepoRoot;
         // Not disposed with the rest: same as RailCollapseState's Changes subject, a bare
         // signaling Subject the class never tears down, so a post-Dispose set never throws.
         IObservable<string?> selected = _selectedAgentIdChanges;
+        // PermissionService.AgentsWithPending emits from background continuations; marshal once
+        // here so every nested OAPH downstream (RailSessionViewModel, RailWorktreeViewModel) sees
+        // it on the UI thread without adding its own ObserveOn.
+        var pending = (agentsWithPending ?? Observable.Return((IReadOnlySet<string>)new HashSet<string>()))
+            .ObserveOn(RxSchedulers.MainThreadScheduler);
 
         _isEmpty = daemon.Agents.CountChanged
             .Select(c => c == 0)
@@ -82,7 +90,7 @@ public sealed class SessionRailViewModel : ReactiveObject, IDisposable {
         daemon.Agents.Connect()
             .ObserveOn(RxSchedulers.MainThreadScheduler)
             .Group(RepoRootFor)
-            .Transform(g => new RailRepoViewModel(g, _collapse, selected, openSession))
+            .Transform(g => new RailRepoViewModel(g, _collapse, selected, pending, openSession))
             .DisposeMany()
             .SortAndBind(_reposSource, RepoComparer)
             .Subscribe()

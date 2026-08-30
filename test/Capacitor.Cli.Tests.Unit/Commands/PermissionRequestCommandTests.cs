@@ -81,4 +81,18 @@ public class PermissionRequestCommandTests {
         await Assert.That(ok).IsFalse();
         await Assert.That(url).IsEqualTo("");
     }
+
+    [Test]
+    public async Task Bridge_payload_adds_agent_id_and_cwd_and_leaves_the_server_shape_alone() {
+        var node = System.Text.Json.Nodes.JsonNode.Parse("""{"session_id":"abc","tool_name":"Bash","tool_input":{"command":"ls"},"permission_suggestions":null,"cwd":"/repo","transcript_path":"/t"}""")!;
+        var bridge = PermissionRequestCommand.BuildBridgePayload(node, "abc", "agent-1");
+        await Assert.That(bridge["agent_id"]!.GetValue<string>()).IsEqualTo("agent-1");
+        await Assert.That(bridge["cwd"]!.GetValue<string>()).IsEqualTo("/repo");
+        await Assert.That(bridge["tool_name"]!.GetValue<string>()).IsEqualTo("Bash");
+        await Assert.That(bridge["transcript_path"]).IsNull();
+
+        var withoutAgent = PermissionRequestCommand.BuildBridgePayload(node, "abc", null);
+        await Assert.That(withoutAgent["agent_id"]).IsNull();
+        await Assert.That(withoutAgent["cwd"]!.GetValue<string>()).IsEqualTo("/repo");
+    }
 }

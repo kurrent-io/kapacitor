@@ -187,4 +187,14 @@ public class ConnectionRetryTests {
 
         await Assert.That(calls).IsEqualTo(1);
     }
+
+    [Test]
+    public async Task An_abandonment_exception_propagates_on_the_first_attempt_without_cancellation() {
+        var attempts = 0;
+        await Assert.ThrowsAsync<PermissionRequestAbandonedException>(async () =>
+            await ConnectionRetry.InvokeWithConnectionRetryAsync<string>(
+                () => { attempts++; throw new PermissionRequestAbandonedException(); },
+                isReady: () => true, TimeSpan.FromMilliseconds(1), _ => { }, CancellationToken.None));
+        await Assert.That(attempts).IsEqualTo(1);
+    }
 }

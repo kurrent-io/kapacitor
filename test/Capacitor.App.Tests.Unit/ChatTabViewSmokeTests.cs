@@ -42,6 +42,7 @@ public class ChatTabViewSmokeTests {
         public FakeTimeProvider Time { get; } = new();
         public FakeTerminalAttachClientFactory Attach { get; } = new();
         public RecordingOpener Opener { get; } = new();
+        public FakePermissionService Permissions { get; } = new();
         public TerminalTabViewModel Terminal { get; }
         public ChatTabViewModel Chat { get; }
         public ChatTabView View { get; }
@@ -55,7 +56,7 @@ public class ChatTabViewSmokeTests {
         /// first read starts before the workspace view exists.
         public Host(bool show = true) {
             Terminal = new TerminalTabViewModel("a1", Daemon, Attach.Factory, () => new FakeTerminalSurface(), Time);
-            Chat = new ChatTabViewModel("a1", Daemon, Terminal, TranscriptProjection.For("claude"), Opener, Time);
+            Chat = new ChatTabViewModel("a1", Daemon, Terminal, TranscriptProjection.For("claude"), Opener, Time, Permissions);
             View = new ChatTabView { DataContext = Chat };
             Window = new Window { Content = View, Width = 800, Height = 600 };
             if (!show) return;
@@ -451,6 +452,28 @@ public class ChatTabViewSmokeTests {
             var text = card.GetVisualDescendants().OfType<SelectableTextBlock>().ToList();
             await Assert.That(text.Select(t => t.Inlines?.Text ?? t.Text ?? "")).IsEquivalentTo(new[] { "Agent finished", "All good." }, CollectionOrdering.Matching);
             await host.CloseAsync();
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Card_renders_with_its_buttons_and_the_row_collapses_when_empty() {
+        await RunOnUiAsync(async () => {
+            var host = new Host();
+            var row = host.View.FindControl<Border>("PermissionRow")!;
+            await Assert.That(row.IsVisible).IsFalse();
+
+            host.Permissions.Add(PermissionEntries.Entry("r1", "a1", toolName: "Bash"));
+            await WaitUntilAsync(() => host.Chat.PendingPermissions.Count == 1, what: "the card");
+            Dispatcher.UIThread.RunJobs();
+            await Assert.That(row.IsVisible).IsTrue();
+            var buttons = row.GetVisualDescendants().OfType<Button>().Select(b => b.Content?.ToString() ?? "").ToArray();
+            await Assert.That(buttons).IsEquivalentTo(new[] { "Deny", "Allow always", "Allow" });
+
+            host.Permissions.Remove("r1");
+            await WaitUntilAsync(() => host.Chat.PendingPermissions.Count == 0, what: "cleared");
+            Dispatcher.UIThread.RunJobs();
+            await Assert.That(row.IsVisible).IsFalse();
         });
     }
 }

@@ -12,7 +12,7 @@ namespace Capacitor.Cli.Daemon.Services;
 /// the same trust boundary as the daemon PID/lock files.
 internal sealed partial class LocalControlServer(
         DaemonConfig config, AgentOrchestrator orchestrator,
-        RestartCoordinator restart, LaunchConsentIpc consentIpc, DaemonStatusIpc statusIpc,
+        RestartCoordinator restart, LaunchConsentIpc consentIpc, PermissionIpc permissionIpc, DaemonStatusIpc statusIpc,
         ILogger<LocalControlServer> logger
     ) : BackgroundService {
     protected override async Task ExecuteAsync(CancellationToken ct) {
@@ -60,9 +60,11 @@ internal sealed partial class LocalControlServer(
                 case FrameType.ConsentSubscribeV2: await consentIpc.HandleSubscribeAsync(stream, ct); break;
                 case FrameType.ConsentResolveV2:   await consentIpc.HandleResolveAsync(first.Text, stream, ct, requireEcho: true); break;
                 case FrameType.ConsentRulesPutV2:  await consentIpc.HandleRulesPutV2Async(first.Text, stream, ct); break;
+                case FrameType.PermissionSubscribe: await permissionIpc.HandleSubscribeAsync(stream, ct); break;
+                case FrameType.PermissionResolve:   await permissionIpc.HandleResolveAsync(first.Text, stream, ct); break;
                 case FrameType.Hello: await HandleHelloAsync(first.Text, stream, ct); break;
                 case FrameType.StatusSubscribe: await statusIpc.HandleSubscribeAsync(stream, ct); break;
-                default: await FrameCodec.WriteAsync(stream, LocalFrame.Error($"expected Spawn/Attach/List/Stop/StopV2/Restart/ConsentSubscribe/ConsentResolve/ConsentRulesGet/ConsentRulesPut/ConsentSubscribeV2/ConsentResolveV2/ConsentRulesPutV2/Hello/StatusSubscribe, got {first.Type}"), ct); break;
+                default: await FrameCodec.WriteAsync(stream, LocalFrame.Error($"expected Spawn/Attach/List/Stop/StopV2/Restart/ConsentSubscribe/ConsentResolve/ConsentRulesGet/ConsentRulesPut/ConsentSubscribeV2/ConsentResolveV2/ConsentRulesPutV2/PermissionSubscribe/PermissionResolve/Hello/StatusSubscribe, got {first.Type}"), ct); break;
             }
         } catch (Exception ex) when (ex is not OperationCanceledException) {
             LogConnectionError(ex);

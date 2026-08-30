@@ -364,6 +364,27 @@ height-unconstrained parent (any `StackPanel` or `ScrollViewer`), so a soft brea
 hard break splits the paragraph into stacked text blocks; the pipeline carries precise source
 locations only so an unmapped inline can degrade to its own source text rather than a type name.
 
+## Permission prompts in the desktop app
+
+**AI-2308** (spec: `docs/superpowers/specs/2026-08-28-ai2308-permission-prompts-daemon-bridge-design.md`)
+surfaces a PTY-hosted Claude/Codex session's permission prompt as a card on the Chat tab, with the
+rail pip and tray Attention derived from the same cache. The local control socket gains the
+append-only frames `PermissionSubscribe = 20` / `PermissionResolve = 21` and `PermissionPending = 77` /
+`PermissionResolved = 78` / `PermissionAck = 79`, advertised as `permission/1`. **The daemon's
+`PermissionPromptBroker` is the one claim point**: the app's resolve, the server's push, an agent's
+withdrawal, the no-UI deny and the shutdown claim all settle a request through `TrySettle`, and the
+hook's answer, the ack, the log record and the `Resolved` push all derive from the claimed
+settlement — so `Ok=true` is the decision the hook receives. The bridge registers the request
+locally BEFORE the server leg dials; the leg feeds the server's decision into the same claim, and a
+local win is relayed through the hub's own `RespondToPermission` so the web card clears. A settled
+request's server invoke is kept off the wire by a predicate the invoke lambda reads synchronously
+(`PermissionRequestAbandonedException`, deliberately not one of the exception types
+`ConnectionRetry` retries). The bridge drains admitted handlers before closing its listener; the
+tracked wrapper is scheduled with no cancellation token, because a delegate cancelled before it
+starts never runs its `finally`. Every caller-controlled wire string is bounded (`PermissionWire`),
+ids are canonicalized by GUID parse, and a request kept for a subscriber that then leaves has no
+clock — it lives until the agent exits, the same stale card a TUI answer leaves.
+
 ## Launch and stop command routing
 
 The receive pump no longer awaits launch/stop EXECUTION for either command format: arrival order is
