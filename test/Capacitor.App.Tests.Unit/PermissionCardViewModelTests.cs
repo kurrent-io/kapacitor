@@ -68,4 +68,17 @@ public class PermissionCardViewModelTests {
             await Assert.That(svc.Cache.Count).IsEqualTo(0);
         });
     }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Allow_always_hides_for_the_ask_user_question_fallback_card() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            using var svc = new FakePermissionService();
+            // Oversized questions payload: still ToolName AskUserQuestion, but unclassified.
+            using var fallback = new PermissionCardViewModel(
+                PermissionEntries.Entry(toolName: Capacitor.Cli.Core.ClaudeElicitation.ToolName, toolInputJson: null, omitted: true),
+                svc, new System.Reactive.Subjects.BehaviorSubject<string?>(null));
+            await Assert.That(fallback.ShowsAllowAlways).IsFalse();
+        });
+    }
 }
