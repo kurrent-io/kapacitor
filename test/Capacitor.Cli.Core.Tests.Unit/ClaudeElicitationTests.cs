@@ -147,6 +147,24 @@ public class ClaudeElicitationTests {
     }
 
     [Test]
+    public async Task Preserves_pre_escaped_sequences_in_questions() {
+        var q = Parsed("""{"questions":[{"question":"café","options":[{"label":"A"}]}]}""");
+        var composed = ClaudeElicitation.ComposeAnswers(q, [
+            new ElicitationAnswer("café", ["A"], null),
+        ]);
+        await Assert.That(composed.Prop("questions")!.Value.GetRawText()).IsEqualTo(q.QuestionsJson.GetRawText());
+    }
+
+    [Test]
+    public async Task Preserves_astral_characters_in_questions() {
+        var q = Parsed("""{"questions":[{"question":"😀","options":[{"label":"B"}]}]}""");
+        var composed = ClaudeElicitation.ComposeAnswers(q, [
+            new ElicitationAnswer("😀", ["B"], null),
+        ]);
+        await Assert.That(composed.Prop("questions")!.Value.GetRawText()).IsEqualTo(q.QuestionsJson.GetRawText());
+    }
+
+    [Test]
     public async Task Single_select_accepts_other_text_as_the_one_value() {
         var q = Parsed("""{"questions":[{"question":"Q","options":[{"label":"A"}]}]}""");
         var composed = ClaudeElicitation.ComposeAnswers(q, [new ElicitationAnswer("Q", [], "  my own  ")]);

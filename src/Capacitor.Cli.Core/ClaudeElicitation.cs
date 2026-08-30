@@ -1,5 +1,4 @@
 using System.Collections.Immutable;
-using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
@@ -134,11 +133,10 @@ public static class ClaudeElicitation {
         }
 
         using var buffer = new MemoryStream();
-        var options = new JsonWriterOptions { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
-        using (var writer = new Utf8JsonWriter(buffer, options)) {
+        using (var writer = new Utf8JsonWriter(buffer)) {
             writer.WriteStartObject();
             writer.WritePropertyName("questions");
-            questions.QuestionsJson.WriteTo(writer);
+            writer.WriteRawValue(questions.QuestionsJson.GetRawText(), skipInputValidation: true);
             writer.WritePropertyName("answers");
             answersObj.WriteTo(writer);
             writer.WriteEndObject();
