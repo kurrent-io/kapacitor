@@ -53,7 +53,11 @@ Settled with the owner during brainstorming, 2026-08-30:
    "Other"). Every question is answered — partial answers are undocumented and
    never sent — and the composer enforces that, not just the card (§1). The
    web omits the `questions` passthrough and works; this app composes the
-   documented form.
+   documented form. "Verbatim" is semantic, not byte-level: the composer
+   splices the retained array's raw bytes unchanged, but the local-IPC
+   serializer re-escapes strings with its default encoder on the wire — a
+   representation change every JSON consumer decodes identically, accepted
+   because changing wire serialization is out of this slice's scope.
 3. **One fast path**: a payload with exactly one single-select question *that
    has options* submits on option click. A free-text-only payload always has a
    visible submit affordance (§3). Any multi-select or multi-question payload
