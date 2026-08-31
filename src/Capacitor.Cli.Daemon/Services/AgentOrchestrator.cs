@@ -1960,7 +1960,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 return new CommandOutcome(CommandOutcomeKind.LaunchRejected, agentId, RejectReason: CommandRejectedReason.Semantic);
             }
 
-            LogLaunching(agentId, repoPath, effort ?? "default", effectiveModel);
+            LogLaunching(agentId, repoPath, cmd.Vendor, effort ?? "default", effectiveModel);
 
             // Review launches base the worktree on the PR head ref so the agent
             // works against the PR's actual state, not the local HEAD.
@@ -4808,8 +4808,11 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
     // ── LoggerMessage source-generated methods ────────────────────────────
 
-    [LoggerMessage(Level = LogLevel.Information, Message = "Launching agent {AgentId} for {Repo} (effort={Effort}, model={Model})")]
-    partial void LogLaunching(string agentId, string repo, string effort, string? model);
+    // Vendor belongs on the same line as the model: without it, a model that does not belong to the
+    // launched vendor is only visible by correlating with a later runtime line, and PTY vendors emit
+    // no such line at all.
+    [LoggerMessage(Level = LogLevel.Information, Message = "Launching agent {AgentId} for {Repo} (vendor={Vendor}, effort={Effort}, model={Model})")]
+    partial void LogLaunching(string agentId, string repo, string vendor, string effort, string? model);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Vendor '{Vendor}' cannot apply a requested model; launching with its default and reporting no model instead of '{RequestedModel}', so the dashboard and analytics are not told a model is live that isn't.")]
     partial void LogModelSelectionUnsupported(string vendor, string requestedModel);

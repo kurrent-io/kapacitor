@@ -332,7 +332,8 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
                 ctx.Prompt,
                 launchDeadline?.Token ?? ct,
                 ResolveRequestedModel(descriptor, config, ctx),
-                mcpServers
+                mcpServers,
+                LaunchPickedTheModel(ctx)
             ).ConfigureAwait(false);
         } catch (OperationCanceledException ex) when (launchDeadline is { IsCancellationRequested: true }
                                                 && !ct.IsCancellationRequested) {
@@ -690,21 +691,26 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
     internal static bool UsesMcpNameAllowlistArgv(AcpVendorDescriptor descriptor) =>
         descriptor.Vendor == AcpVendorDescriptors.Gemini.Vendor;
 
+    /// <summary>Whether the model reaching the runtime is the launch's own pick rather than the
+    /// daemon-wide default. Only the pick is worth telling the user about when the vendor drops it —
+    /// a default the vendor does not publish would otherwise nag on every launch. The UI dispatches
+    /// the literal string <c>"default"</c>, not an empty one, when the user picked nothing (the same
+    /// sentinel convention <c>CodexLauncher.AddModelArg</c> reads).</summary>
+    static bool LaunchPickedTheModel(RuntimeStartContext ctx) =>
+        !string.IsNullOrEmpty(ctx.Model) && !string.Equals(ctx.Model, "default", StringComparison.OrdinalIgnoreCase);
+
     /// <summary>
     /// Merges the per-launch model override with the daemon-wide default —
-    /// <paramref name="ctx"/>'s own <c>Model</c> takes precedence when the launch specifies one,
-    /// else falls back to <paramref name="descriptor"/>'s <c>ResolveDefaultModel</c>. Mirrors the
-    /// existing <c>"default"</c>-sentinel convention <c>CodexLauncher.AddModelArg</c> already uses
-    /// for "no override requested" (the UI dispatches the literal string <c>"default"</c>, not an
-    /// empty string, when the user hasn't picked a model). The merged value is still a bare family
-    /// prefix or an exact <c>modelId</c> — final resolution against the session's
+    /// <paramref name="ctx"/>'s own <c>Model</c> takes precedence when the launch picked one, else
+    /// <paramref name="descriptor"/>'s <c>ResolveDefaultModel</c>. Shares
+    /// <see cref="LaunchPickedTheModel"/> with the fallback notice, so which value won here and
+    /// whether the user is told it was dropped cannot disagree. The merged value is still a bare
+    /// family prefix or an exact <c>modelId</c> — final resolution against the session's
     /// <c>availableModels</c> happens in <see cref="AcpHostedAgentRuntime"/> via
     /// <see cref="Capacitor.Cli.Core.Acp.AcpModelResolver"/>.
     /// </summary>
     static string? ResolveRequestedModel(AcpVendorDescriptor descriptor, DaemonConfig config, RuntimeStartContext ctx) =>
-        !string.IsNullOrEmpty(ctx.Model) && !string.Equals(ctx.Model, "default", StringComparison.OrdinalIgnoreCase)
-            ? ctx.Model
-            : descriptor.ResolveDefaultModel(config);
+        LaunchPickedTheModel(ctx) ? ctx.Model : descriptor.ResolveDefaultModel(config);
 
     /// <summary>
     /// PURE builder for a real launch's spawn shape — no process side effects. StartRealProcess is
