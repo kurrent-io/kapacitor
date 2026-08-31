@@ -162,4 +162,18 @@ public class QuestionCardViewModelTests {
             }
         });
     }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task A_cancellation_not_from_disposal_shows_the_generic_line() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var (svc, card) = Make(SingleSelect);
+            using (svc) using (card) {
+                svc.Arm().SetException(new OperationCanceledException());
+                await card.Questions[0].Options[0].PickCommand.Execute().ToTask();
+                await Assert.That(card.IsBusy).IsFalse();
+                await Assert.That(card.ErrorText).IsEqualTo("Something went wrong — try again");
+            }
+        });
+    }
 }

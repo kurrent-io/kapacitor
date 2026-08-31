@@ -149,7 +149,7 @@ public sealed class QuestionCardViewModel : PendingCardViewModel {
             var outcome = await _permissions.AnswerAsync(_entry, answers, _lifetime.Token);
             if (outcome.Kind == PermissionResolveKind.TransportFailure)
                 ErrorText = outcome.Error == "daemon_unreachable" ? "Daemon unreachable — try again" : $"Could not answer ({outcome.Error}) — try again";
-        } catch (OperationCanceledException) {
+        } catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) {
         } catch (Exception ex) {
             Console.Error.WriteLine($"kcap: question submit failed unexpectedly: {ex.Message}");
             ErrorText = "Something went wrong — try again";
