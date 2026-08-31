@@ -4,6 +4,7 @@ using Capacitor.Cli.Harness.Copilot;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
 using WireMock.Server;
+using Capacitor.Cli.Core.Harness.Copilot;
 
 namespace Capacitor.Cli.Tests.Integration;
 
@@ -15,11 +16,18 @@ namespace Capacitor.Cli.Tests.Integration;
 /// suppressed so it doesn't double-count on top of the classify-time AlreadyLoaded bucket.
 /// </summary>
 public class CopilotImportSourceImportTests : IDisposable {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+    [TempHome] public required TempHome Home { get; init; }
+
     readonly WireMockServer _server  = WireMockServer.Start();
     readonly TempDir        _tmp     = new();
     readonly string         _tempDir;
 
     public CopilotImportSourceImportTests() => _tempDir = _tmp.Path;
+
+    /// <summary>Copilot's layout rooted at the throwaway dir, so the session lands under the real
+    /// <c>session-state/</c> name discovery walks.</summary>
+    CopilotPaths CopilotLayout => new(new UserHome(_tempDir), copilotHome: _tempDir);
 
     const string DashedSid = "11111111-2222-3333-4444-555555555555";
 
@@ -29,7 +37,7 @@ public class CopilotImportSourceImportTests : IDisposable {
     }
 
     string WriteSession() {
-        var dir = Path.Combine(_tempDir, DashedSid);
+        var dir = Path.Combine(CopilotLayout.SessionStateDir, DashedSid);
         Directory.CreateDirectory(dir);
         File.WriteAllLines(Path.Combine(dir, "events.jsonl"), new[] {
             $$"""{"type":"session.start","data":{"sessionId":"{{DashedSid}}"},"id":"e1","timestamp":"2026-06-10T20:23:49.371Z","parentId":null}""",
@@ -53,8 +61,7 @@ public class CopilotImportSourceImportTests : IDisposable {
         }
 
         using var client = new HttpClient();
-        var source = new CopilotImportSource(
-            sessionStateDirOverride: root,
+        var source = new CopilotImportSource(Config.Root, CopilotLayout,
             repoDetector: _ => Task.FromResult<RepositoryPayload?>(null));
 
         var discovered = await source.DiscoverAsync(new DiscoveryFilters(null, null, null, 0), CancellationToken.None);
@@ -62,7 +69,7 @@ public class CopilotImportSourceImportTests : IDisposable {
 
         var classified = await source.ClassifyAsync(
             discovered,
-            new ClassifyContext(client, _server.Url!, MinLines: 0, ExcludedRepos: null, ExcludedPaths: null),
+            new ClassifyContext(client, _server.Url!, MinLines: 0, ExcludedRepos: null, ExcludedPaths: null, Home: Home),
             CancellationToken.None);
         await Assert.That(classified[0].Status).IsEqualTo(ImportCommand.ClassificationStatus.AlreadyLoaded);
 

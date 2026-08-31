@@ -20,5 +20,7 @@
     </PropertyGroup>
     <ItemGroup>
         <PackageReference Include="MinVer" PrivateAssets="All" />
+        <PackageReference Include="Microsoft.CodeAnalysis.BannedApiAnalyzers" PrivateAssets="All" />
+        <AdditionalFiles Include="$(MSBuildThisFileDirectory)BannedSymbols.txt" Visible="false" />
     </ItemGroup>
 </Project>

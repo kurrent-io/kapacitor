@@ -1,31 +1,33 @@
 using System.Text.Json.Nodes;
-using Capacitor.Cli.Commands.Harness;
 using Capacitor.Cli.SessionStartMemory;
 
 namespace Capacitor.Cli.Tests.Unit;
 
 public class MemoryIndexUrlTests {
+    static string Url(string? repoHash, string? machineTag) =>
+        SessionStartMemoryContextProvider.BuildUrl("http://srv", new SessionStartMemoryScope(repoHash, machineTag));
+
     [Test]
     public async Task No_repo_or_machine_omits_query() {
-        var url = ClaudeHookCommand.BuildMemoryIndexUrl("http://srv", repoHash: null, machineId: null);
+        var url = Url(repoHash: null, machineTag: null);
         await Assert.That(url).IsEqualTo("http://srv/api/memories/index");
     }
 
     [Test]
     public async Task Includes_repo_and_machine_when_present() {
-        var url = ClaudeHookCommand.BuildMemoryIndexUrl("http://srv", "abcd1234", "mach-01");
+        var url = Url("abcd1234", "mach-01");
         await Assert.That(url).IsEqualTo("http://srv/api/memories/index?repo=abcd1234&machine=mach-01");
     }
 
     [Test]
     public async Task Repo_only_omits_machine_param() {
-        var url = ClaudeHookCommand.BuildMemoryIndexUrl("http://srv", "abcd1234", machineId: null);
+        var url = Url("abcd1234", machineTag: null);
         await Assert.That(url).IsEqualTo("http://srv/api/memories/index?repo=abcd1234");
     }
 
     [Test]
     public async Task Url_encodes_parameter_values() {
-        var url = ClaudeHookCommand.BuildMemoryIndexUrl("http://srv", "a b", "m/1");
+        var url = Url("a b", "m/1");
         await Assert.That(url).Contains("repo=a%20b");
         await Assert.That(url).Contains("machine=m%2F1");
     }

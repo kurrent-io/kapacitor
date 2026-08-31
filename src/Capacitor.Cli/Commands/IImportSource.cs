@@ -1,3 +1,6 @@
+using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Harness;
+
 namespace Capacitor.Cli.Commands;
 
 /// <summary>
@@ -17,14 +20,15 @@ internal sealed record DiscoveryFilters(
 /// </summary>
 internal sealed record DiscoveredSession(
     string                                  SessionId,
-    string                                  Vendor,
+    HarnessId                               Vendor,
     string?                                 Cwd,
     DateTimeOffset?                         FirstTimestamp,
     IReadOnlyDictionary<string, object?>    SourceMeta);
 
 /// <summary>
 /// Dependencies passed to ClassifyAsync. ExcludedRepos / ExcludedPaths are
-/// the user's profile-level exclusions, applied identically across sources.
+/// the user's profile-level exclusions, applied identically across sources, and Home is what a
+/// <c>~</c> in one of those paths expands to.
 /// Reimport carries the effective <c>--reimport</c> flag: when true, a source
 /// that skips already-loaded sessions via a local completeness ledger must
 /// bypass that ledger so the selected sessions re-classify as New/Partial and
@@ -37,21 +41,36 @@ internal sealed record ClassifyContext(
     int                         MinLines,
     IReadOnlyList<string>?      ExcludedRepos,
     IReadOnlyList<string>?      ExcludedPaths,
+    UserHome                    Home,
     bool                        Reimport = false);
 
 /// <summary>
 /// Dependencies passed to ImportSessionAsync. ForcePrivate carries the
-/// effective --private flag from the orchestrator (so each source can
-/// stamp visibility consistently). DefaultVisibility carries the Step 3
-/// setup visibility choice (or null for standalone `kcap import`) — sources
-/// stamp it onto New sessions only, guarded by !ForcePrivate (see the
-/// unified-agent-install-and-import spec's Visibility section).
+/// effective --private flag from the orchestrator; DefaultVisibility carries
+/// the Step 3 setup visibility choice, or null for standalone `kcap import`.
+/// Neither is read directly by a source — <see cref="VisibilityStampFor"/> is.
 /// </summary>
 internal sealed record ImportContext(
     HttpClient HttpClient,
     string     BaseUrl,
     bool       ForcePrivate,
-    string?    DefaultVisibility = null);
+    string?    DefaultVisibility = null) {
+    /// <summary>
+    /// The <c>default_visibility</c> to stamp on a session-start, or null to leave the field off.
+    /// <b>An omitted stamp is not "no default"</b> — the server coalesces an absent one to
+    /// <c>org_public</c> — so force-private must say <c>private</c> out loud.
+    ///
+    /// <para>Asymmetric on purpose, and neither half narrows a session that already exists: the read
+    /// model's import-overlap branch omits this column, so a stamp is a creation-time value only. The
+    /// Step 3 default therefore lands on New alone, while <c>private</c> is sent on every status
+    /// because it costs nothing and the one status it can still reach is worth reaching. Privatising
+    /// an existing session is <c>HandleImport</c>'s closing pass, not this.</para>
+    /// </summary>
+    public string? VisibilityStampFor(ImportCommand.ClassificationStatus status) =>
+        ForcePrivate                                        ? "private"
+      : status is ImportCommand.ClassificationStatus.New    ? DefaultVisibility
+      :                                                       null;
+}
 
 internal enum ImportOutcome { Loaded, Resumed, Skipped, Failed }
 
@@ -88,8 +107,8 @@ internal readonly record struct ImportSessionResult(ImportOutcome Outcome, bool 
 /// CodexImportSource, CursorImportSource.
 /// </summary>
 internal interface IImportSource {
-    /// <summary>"claude" | "codex" | "cursor". Stamped onto every produced classification.</summary>
-    string Vendor { get; }
+    /// <summary>Stamped onto every produced classification.</summary>
+    HarnessId Vendor { get; }
 
     /// <summary>True when the source's root data dir / DB is present on this machine.</summary>
     bool IsAvailable { get; }

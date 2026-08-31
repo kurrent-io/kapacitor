@@ -5,7 +5,7 @@ namespace Capacitor.Cli.Core.Tests.Unit.Mcp;
 
 public class McpMarkerTests {
     static (McpMarker marker, string cfg, string markerFile) NewMarker(TempDir tmp) =>
-        (new McpMarker("test", _ => tmp.PathTo("marker.json")), tmp.PathTo("mcp.json"), tmp.PathTo("marker.json"));
+        (new McpMarker("test", new(tmp.Path), _ => tmp.PathTo("marker.json")), tmp.PathTo("mcp.json"), tmp.PathTo("marker.json"));
 
     [Test]
     public async Task Record_then_Owned_roundtrips_names() {
@@ -75,11 +75,11 @@ public class McpMarkerTests {
 
     [Test]
     public async Task Owned_ignores_marker_recorded_for_a_different_config() {
-        using var tmp = new TempDir();
-        var shared = tmp.PathTo(".kcap-mcp-version");
-        var m = new McpMarker("test", _ => shared); // both configs resolve to the SAME sidecar (simulates per-dir collision)
-        var cfgA = tmp.PathTo("a.json");
-        var cfgB = tmp.PathTo("b.json");
+        using var tmp    = new TempDir();
+        var       shared = tmp.PathTo(".kcap-mcp-version");
+        var       m      = new McpMarker("test", new(tmp.Path), _ => shared); // both configs resolve to the SAME sidecar (simulates per-dir collision)
+        var       cfgA   = tmp.PathTo("a.json");
+        var       cfgB   = tmp.PathTo("b.json");
         m.Record(cfgA, ["kcap-review"]);
         await Assert.That(m.Owned(cfgA)).Contains("kcap-review");   // A owns it
         await Assert.That(m.Owned(cfgB)).IsEmpty();                 // B must NOT inherit A's marker
@@ -88,11 +88,11 @@ public class McpMarkerTests {
 
     [Test]
     public async Task Owned_matches_across_equivalent_path_forms() {
-        using var tmp = new TempDir();
-        var shared = tmp.PathTo(".kcap-mcp-version");
-        var m = new McpMarker("test", _ => shared);
-        var abs   = tmp.PathTo("mcp.json");
-        var equiv = tmp.PathTo(".", "mcp.json"); // same file, non-canonical form
+        using var tmp    = new TempDir();
+        var       shared = tmp.PathTo(".kcap-mcp-version");
+        var       m      = new McpMarker("test", new(tmp.Path), _ => shared);
+        var       abs    = tmp.PathTo("mcp.json");
+        var       equiv  = tmp.PathTo(".", "mcp.json"); // same file, non-canonical form
         m.Record(abs, ["kcap-review"]);
         await Assert.That(m.Owned(equiv)).Contains("kcap-review"); // equivalent path form still recognized
     }
@@ -130,7 +130,7 @@ public class McpMarkerTests {
         using var tmp = new TempDir();
         var cfg = tmp.PathTo("mcp.json");
         var markerFile = tmp.PathTo("marker.json");
-        var marker = new McpMarker("test", _ => markerFile);
+        var marker = new McpMarker("test", new(tmp.Path), _ => markerFile);
 
         // The exact on-disk v1 format an older kcap wrote: servers as a bare name array.
         File.WriteAllText(markerFile, $$"""
@@ -167,16 +167,17 @@ public class McpMarkerTests {
                 .IsEqualTo(UnixFileMode.UserRead | UnixFileMode.UserWrite);
     }
 
-    // Exercises the REAL central-path resolution (no per-config markerPathFor override). The central
-    // root is the assembly-pinned throwaway temp dir (McpMarkerGlobalSetup), never the real
-    // ~/.kcap/mcp-markers, so this touches no shared real state — no cleanup or serialization needed
-    // (a/b resolve to distinct config-hash files).
+    // Exercises the REAL central-path resolution (no per-config markerPathFor override). The configs
+    // sit OUTSIDE the home handed to the marker, which is what sends both to the central store rather
+    // than to a sidecar — put them under it and this silently becomes a sidecar test. The central root
+    // is `.kcap` under that throwaway home, so nothing touches the real ~/.kcap/mcp-markers.
     [Test]
     public async Task Two_configs_in_same_dir_have_independent_ownership() {
-        using var tmp = new TempDir();
-        var m = new McpMarker("test"); // real MarkerPath resolution → central root under the pinned temp
-        var a = tmp.PathTo("a.json");
-        var b = tmp.PathTo("b.json");
+        using var tmp     = new TempDir();
+        using var homeDir = new TempDir("home");
+        var       m       = new McpMarker("test", new(homeDir.Path));
+        var       a       = tmp.PathTo("a.json");
+        var       b       = tmp.PathTo("b.json");
         m.Record(a, ["kcap-review"]);
         await Assert.That(m.Owned(a)).Contains("kcap-review"); // a owns it
         await Assert.That(m.Owned(b)).IsEmpty();               // b is independent of a

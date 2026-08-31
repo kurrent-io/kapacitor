@@ -1,0 +1,116 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="clr-namespace:Capacitor.App.ViewModels"
+             xmlns:views="clr-namespace:Capacitor.App.Views"
+             x:Class="Capacitor.App.Views.ChatTabView"
+             x:DataType="vm:ChatTabViewModel">
+    <Grid RowDefinitions="*,Auto,Auto">
+        <!-- The template owns the ScrollViewer: that is the shape Avalonia virtualizes. An
+             ItemsControl inside an external ScrollViewer is measured at infinite height. -->
+        <ItemsControl x:Name="ChatItems" Grid.Row="0" ItemsSource="{Binding Items}">
+            <ItemsControl.Template>
+                <ControlTemplate>
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <!-- ItemsPanel does not reach the presenter on its own: without this
+                             template binding it falls back to its own default StackPanel and
+                             every row is realized. -->
+                        <ItemsPresenter Name="PART_ItemsPresenter" ItemsPanel="{TemplateBinding ItemsPanel}" Margin="22,18,22,8" />
+                    </ScrollViewer>
+                </ControlTemplate>
+            </ItemsControl.Template>
+            <ItemsControl.ItemsPanel>
+                <ItemsPanelTemplate>
+                    <VirtualizingStackPanel />
+                </ItemsPanelTemplate>
+            </ItemsControl.ItemsPanel>
+            <ItemsControl.DataTemplates>
+                <DataTemplate x:DataType="vm:UserTurnItem">
+                    <Border HorizontalAlignment="Right" MaxWidth="520" Margin="0,8,0,12" Padding="14,11" CornerRadius="10"
+                            Background="{StaticResource KcapSurfaceRaisedBrush}">
+                        <SelectableTextBlock Text="{Binding Text}" TextWrapping="Wrap" FontSize="13.5" LineHeight="20"
+                                             Foreground="{StaticResource KcapTextBrush}" />
+                    </Border>
+                </DataTemplate>
+                <DataTemplate x:DataType="vm:AssistantTextItem">
+                    <views:MarkdownView Text="{Binding Text}" MaxWidth="660" HorizontalAlignment="Left" Margin="0,8,0,12"
+                                        OpenLink="{Binding $parent[ItemsControl].((vm:ChatTabViewModel)DataContext).OpenLinkCommand}" />
+                </DataTemplate>
+                <DataTemplate x:DataType="vm:SystemNoteItem">
+                    <Border Classes="systemNote" MaxWidth="660" HorizontalAlignment="Left" Margin="0,8,0,12" Padding="14,10" CornerRadius="10"
+                            Background="{StaticResource KcapSurfaceBrush}" BorderBrush="{StaticResource KcapBorderBrush}" BorderThickness="1">
+                        <views:MarkdownView Text="{Binding Text}"
+                                            OpenLink="{Binding $parent[ItemsControl].((vm:ChatTabViewModel)DataContext).OpenLinkCommand}" />
+                    </Border>
+                </DataTemplate>
+                <DataTemplate x:DataType="vm:ToolCallItem">
+                    <StackPanel Orientation="Horizontal" Spacing="9" Margin="0,0,0,6">
+                        <TextBlock Text="›" FontSize="13" Foreground="{StaticResource KcapFaintBrush}" VerticalAlignment="Center" />
+                        <TextBlock Text="{Binding Name}" FontSize="11.5" Foreground="{StaticResource KcapMutedBrush}" VerticalAlignment="Center" />
+                        <TextBlock Text="{Binding Detail}" FontSize="11" Foreground="{StaticResource KcapFaintBrush}"
+                                   TextTrimming="CharacterEllipsis" MaxWidth="480" VerticalAlignment="Center" />
+                        <TextBlock Text="{Binding OutcomeGlyph}" FontSize="11" VerticalAlignment="Center"
+                                   Foreground="{Binding IsError, Converter={x:Static views:ToolOutcomeBrushConverter.Instance}}" />
+                    </StackPanel>
+                </DataTemplate>
+            </ItemsControl.DataTemplates>
+        </ItemsControl>
+
+        <TextBlock x:Name="ChatPhaseNote" Grid.Row="0" Text="{Binding PhaseNote}"
+                   IsVisible="{Binding PhaseNote, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
+                   Foreground="{StaticResource KcapMutedBrush}" FontSize="12.5"
+                   HorizontalAlignment="Center" VerticalAlignment="Center" />
+
+        <Border x:Name="PermissionRow" Grid.Row="1" Margin="22,0,22,4" IsVisible="{Binding HasPendingPermissions}">
+            <StackPanel Spacing="6">
+                <TextBlock Text="NEEDS YOU" FontSize="10" FontWeight="SemiBold" Foreground="{StaticResource KcapMutedBrush}" />
+                <ScrollViewer MaxHeight="260" VerticalScrollBarVisibility="Auto">
+                    <ItemsControl ItemsSource="{Binding PendingPermissions}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="vm:PermissionCardViewModel">
+                                <Border Background="{StaticResource KcapSurfaceRaisedBrush}" BorderBrush="{StaticResource KcapAccentBrush}"
+                                        BorderThickness="1" CornerRadius="10" Padding="13,10" Margin="0,0,0,6">
+                                    <StackPanel Spacing="6">
+                                        <TextBlock Text="{Binding ToolName}" FontWeight="SemiBold" FontSize="13" Foreground="{StaticResource KcapTextBrush}" />
+                                        <TextBlock Text="{Binding Detail}" FontSize="11.5" Foreground="{StaticResource KcapMutedBrush}" TextTrimming="CharacterEllipsis" />
+                                        <TextBlock Text="{Binding ErrorText}" FontSize="11" Foreground="{StaticResource KcapDangerBrush}"
+                                                   IsVisible="{Binding ErrorText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                                        <StackPanel Orientation="Horizontal" Spacing="6" HorizontalAlignment="Right">
+                                            <Button Content="Deny" Command="{Binding DenyCommand}" Background="Transparent" BorderBrush="Transparent"
+                                                    Foreground="{StaticResource KcapDangerBrush}" Padding="10,4" FontSize="12" CornerRadius="7" />
+                                            <Button Content="Allow always" Command="{Binding AllowAlwaysCommand}" IsVisible="{Binding ShowsAllowAlways}"
+                                                    Background="Transparent" BorderBrush="Transparent" Foreground="{StaticResource KcapMutedBrush}" Padding="10,4" FontSize="12" CornerRadius="7" />
+                                            <Button Content="Allow" Command="{Binding AllowCommand}" Padding="12,4" FontSize="12" FontWeight="SemiBold" CornerRadius="7"
+                                                    Background="{StaticResource KcapAccentBrush}" Foreground="#07120E" />
+                                        </StackPanel>
+                                    </StackPanel>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </ScrollViewer>
+            </StackPanel>
+        </Border>
+
+        <Border Grid.Row="2" Margin="22,8,22,18"
+                Background="{StaticResource KcapSurfaceBrush}" BorderBrush="{StaticResource KcapBorderBrush}"
+                BorderThickness="1" CornerRadius="10" Padding="13,12">
+            <StackPanel Spacing="6">
+                <TextBox x:Name="ComposerInput" Classes="kcapEmbedded" Text="{Binding ComposerText}" AcceptsReturn="True" TextWrapping="Wrap"
+                         MinHeight="38" MaxHeight="160" Background="Transparent" BorderThickness="0"
+                         PlaceholderText="Write a message" />
+                <Grid ColumnDefinitions="*,Auto,Auto,Auto,Auto">
+                    <TextBlock Text="{Binding ComposerHint}" FontSize="11" Foreground="{StaticResource KcapFaintBrush}"
+                               VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                    <TextBlock Grid.Column="1" Text="{Binding ModelLabel}" FontSize="11" Foreground="{StaticResource KcapFaintBrush}"
+                               VerticalAlignment="Center" Margin="12,0,0,0" />
+                    <Ellipse Grid.Column="2" Width="7" Height="7" Fill="{Binding StatusDot}" VerticalAlignment="Center" Margin="12,0,6,0" />
+                    <TextBlock Grid.Column="3" Text="{Binding StatusText}" FontSize="11" Foreground="{StaticResource KcapMutedBrush}"
+                               VerticalAlignment="Center" />
+                    <Button x:Name="SendButton" Grid.Column="4" Content="Send" Command="{Binding SendCommand}" Margin="12,0,0,0"
+                            Padding="12,4" FontSize="12" FontWeight="SemiBold" CornerRadius="7"
+                            Background="{StaticResource KcapAccentBrush}" Foreground="#07120E" />
+                </Grid>
+            </StackPanel>
+        </Border>
+    </Grid>
+</UserControl>

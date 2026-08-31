@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Capacitor.Cli.Daemon.Harness.Claude;
 
 namespace Capacitor.Cli.Daemon.Tests.Unit.Harness.Claude;
@@ -249,5 +250,56 @@ public class SessionTranscriptLocatorTests {
         var tooOld = SpawnedAt.AddSeconds(-6);
 
         await Assert.That(SessionTranscriptLocator.IsNewEnough(tooOld, tooOld, SpawnedAt)).IsFalse();
+    }
+
+    // ── TryLocateWinner: the matched file, link-resolved ────────────────
+
+    // Encoded, not interpolated: a Windows path's backslashes are JSON escapes.
+    static string TranscriptLine(string cwd) => $$$"""{"type":"user","cwd":"{{{JsonEncodedText.Encode(cwd)}}}","sessionId":"abc","message":{"content":"hi"}}""";
+
+    [Test]
+    public async Task TryLocateWinner_returns_id_and_the_matched_path() {
+        using var tmp = new TempDir();
+        var projectDir = tmp.CreateDir("projects", "-repo").Path;
+        var worktree = tmp.PathTo("wt");
+        var file = tmp.CreateFile(["projects", "-repo", "0123456789abcdef0123456789abcdef.jsonl"], TranscriptLine(worktree) + "\n");
+
+        var winner = SessionTranscriptLocator.TryLocateWinner(projectDir, worktree, DateTime.UtcNow.AddMinutes(-1));
+
+        await Assert.That(winner?.SessionId).IsEqualTo("0123456789abcdef0123456789abcdef");
+        await Assert.That(winner?.Path).IsEqualTo(file);
+    }
+
+    [Test]
+    public async Task Winner_through_a_symlinked_project_dir_survives_the_symlink_going_away() {
+        using var tmp = new TempDir();
+        var real = tmp.CreateDir("projects", "-source").Path;
+        var link = tmp.PathTo("projects", "-worktree");
+        Directory.CreateSymbolicLink(link, real);
+        var worktree = tmp.PathTo("wt");
+        tmp.CreateFile(["projects", "-source", "0123456789abcdef0123456789abcdef.jsonl"], TranscriptLine(worktree) + "\n");
+
+        var winner = SessionTranscriptLocator.TryLocateWinner(link, worktree, DateTime.UtcNow.AddMinutes(-1));
+
+        await Assert.That(winner?.Path).IsEqualTo(Path.Combine(real, "0123456789abcdef0123456789abcdef.jsonl"));
+
+        Directory.Delete(link);
+        File.AppendAllText(winner!.Value.Path, TranscriptLine(worktree) + "\n");
+        await Assert.That(File.ReadLines(winner.Value.Path).Count()).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task A_freshly_appended_transcript_with_a_foreign_cwd_is_never_a_winner() {
+        // The boundary a Claude --resume into a new worktree hits: the resumed transcript's
+        // early records keep their original cwd, and no amount of fresh writes changes that.
+        using var tmp = new TempDir();
+        var projectDir = tmp.CreateDir("projects", "-repo").Path;
+        tmp.CreateFile(["projects", "-repo", "0123456789abcdef0123456789abcdef.jsonl"], TranscriptLine(tmp.PathTo("original-cwd")) + "\n");
+        var ruledOut = new HashSet<string>();
+
+        var winner = SessionTranscriptLocator.TryLocateWinner(projectDir, tmp.PathTo("new-worktree"), DateTime.UtcNow.AddMinutes(-1), ruledOut);
+
+        await Assert.That(winner).IsNull();
+        await Assert.That(ruledOut).Count().IsEqualTo(1);
     }
 }

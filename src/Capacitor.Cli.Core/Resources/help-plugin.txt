@@ -162,7 +162,7 @@ Notes:
   nothing, because that session started with the integration.
 
   Skills install to ~/.agents/skills/kcap-{recap,errors,hide,disable,
-  validate-plan,review-flows,agent-flows,work-items,guided-tour}/.
+  validate-plan,review-flows,agent-flows,work-items,guided-tour,suggest-review-flow}/.
   Codex, Cursor, and any other agent that honors the .agents/skills convention
   will pick them up automatically. Every install of a vendor that reads that tree
   writes them, so `install --cursor` alone leaves nothing missing. Kiro and
@@ -172,8 +172,11 @@ Notes:
   --skills` stays removed until you install a vendor again explicitly.
 
   --codex also writes hooks to ~/.codex/hooks.json (or <repo>/.codex/hooks.json
-  with --project). MCP server registration is handled separately by the Codex
-  plugin manifest and is not affected by this command.
+  with --project). Codex runs only hooks you have trusted: the next `codex`
+  CLI launch prompts to trust the new entries (accept once, or use /hooks to
+  trust them individually); the Codex desktop app never prompts — trust the
+  kcap hooks in Settings → Hooks there. MCP server registration is handled
+  separately by the Codex plugin manifest and is not affected by this command.
 
   --cursor writes all 8 supported hooks to ~/.cursor/hooks.json (merged with
   any existing entries) and then registers all 6 kcap MCP servers in
@@ -230,7 +233,7 @@ Notes:
 
   --antigravity installs the kcap plugin to ~/.gemini/config/plugins/kcap/ — a
   plugin.json manifest (which the GUI requires to load the dir) plus a hooks.json
-  kcap block (preserving any hook blocks you authored). It also registers the 4 kcap
+  kcap block (preserving any hook blocks you authored). It also registers the 6 kcap
   MCP servers in ~/.gemini/config/mcp_config.json (Antigravity's OWN MCP file, not the
   Gemini CLI's settings.json — see --skip-antigravity-mcp), installs a steering block
   into the shared ~/.gemini/GEMINI.md (see --skip-antigravity-instructions), and copies

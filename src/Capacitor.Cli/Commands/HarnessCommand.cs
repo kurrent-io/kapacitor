@@ -1,3 +1,5 @@
+using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Core.Setup;
 
 namespace Capacitor.Cli.Commands;
@@ -8,45 +10,42 @@ namespace Capacitor.Cli.Commands;
 /// nudge; <c>reset</c> undoes a dismissal. All three run their own detection pass and neither read
 /// nor claim the shared 6-hour evaluation throttle (the nudge surfaces' concern, not the commands').
 /// </summary>
-public static class HarnessCommand {
-    public static Task<int> HandleAsync(string[] args) {
+public sealed class HarnessCommand(ConfigRoot config, HarnessRegistry harnesses) {
+    public Task<int> HandleAsync(string[] args) {
         if (args.Length < 2) { PrintUsage(); return Task.FromResult(1); }
 
-        var store    = HarnessOfferStore.Default();
-        var inputs   = AgentDetection.FromEnvironment();
-        var detected = AgentDetection.Detect(inputs);
+        var store = new HarnessOfferStore(config);
 
         return Task.FromResult(args[1] switch {
-            "list"                    => List(detected, inputs, store),
-            "dismiss"                 => Dismiss(args, detected, inputs, store),
+            "list"                    => List(harnesses, store),
+            "dismiss"                 => Dismiss(args, harnesses, store),
             "reset"                   => Reset(args, store),
             "--help" or "-h" or "help" => Help(),
             _                         => Unknown(args[1]),
         });
     }
 
-    static int List(AgentDetectionResult detected, AgentDetectionInputs inputs, HarnessOfferStore store) {
+    static int List(HarnessRegistry harnesses, HarnessOfferStore store) {
         var ledger = store.Load();
         Console.WriteLine($"  {"Harness",-14}{"Installed",-11}{"kcap wired",-12}Dismissed");
-        foreach (var h in HarnessCatalog.All) {
-            var isDetected = h.Select(detected).Detected;
-            var isWired    = HarnessIntegrationProbe.IsWired(h.VendorId, inputs);
-            var isDismissed = ledger.Entry(h.VendorId) is { Declined: true };
-            Console.WriteLine($"  {h.Label,-14}{YesNo(isDetected),-11}{YesNo(isWired),-12}{YesNo(isDismissed)}");
+        foreach (var h in harnesses) {
+            var isDismissed = ledger.Entry(h.Id) is { Declined: true };
+            Console.WriteLine(
+                $"  {h.Label,-14}{YesNo(harnesses.Detected(h.Id)),-11}{YesNo(h.Signals.IsWired),-12}{YesNo(isDismissed)}");
         }
         return 0;
     }
 
-    static int Dismiss(string[] args, AgentDetectionResult detected, AgentDetectionInputs inputs, HarnessOfferStore store) {
+    static int Dismiss(string[] args, HarnessRegistry harnesses, HarnessOfferStore store) {
         var rest = args.Skip(2).ToArray();
-        List<KnownHarness> targets;
+        List<IHarness> targets;
 
         if (rest.Contains("--all")) {
             // Exactly the currently detected-and-unwired set — deliberately NOT all nine: a harness
             // installed after this dismiss is a new event and nudges once. The "never ask about any
             // harness" switch is the `disable_harness_nudge` profile setting, not `--all`.
-            targets = HarnessCatalog.All
-                .Where(h => h.Select(detected).Detected && !HarnessIntegrationProbe.IsWired(h.VendorId, inputs))
+            targets = harnesses
+                .Where(h => harnesses.Detected(h.Id) && !h.Signals.IsWired)
                 .ToList();
             if (targets.Count == 0) {
                 Console.WriteLine("No detected-but-unconfigured harnesses to dismiss.");
@@ -58,15 +57,15 @@ public static class HarnessCommand {
                 Console.Error.WriteLine("kcap harness dismiss requires a vendor id (e.g. antigravity) or --all.");
                 return 1;
             }
-            targets = new List<KnownHarness>();
+            targets = [];
             foreach (var id in ids) {
-                if (HarnessCatalog.ById(id) is { } h) targets.Add(h);
+                if (HarnessId.From(id) is { } known && harnesses.ById(known) is { } h) targets.Add(h);
                 else { Console.Error.WriteLine(UnknownVendor(id)); return 1; }
             }
         }
 
         var now = DateTimeOffset.UtcNow;
-        if (!store.Update(l => l with { Vendors = WithDismissed(l, targets, now) })) {
+        if (!store.Update(l => l.WithDismissed(targets.Select(t => t.Id), now))) {
             Console.Error.WriteLine("kcap: could not persist the dismissal (failed to write the offer ledger).");
             return 1;
         }
@@ -88,36 +87,17 @@ public static class HarnessCommand {
                 return 1;
             }
             foreach (var id in ids)
-                if (HarnessCatalog.ById(id) is null) { Console.Error.WriteLine(UnknownVendor(id)); return 1; }
+                if (HarnessId.From(id) is null) { Console.Error.WriteLine(UnknownVendor(id)); return 1; }
         }
 
         // Removing the entry clears both the dismissal and the last-offered stamp, so the vendor is
         // treated as freshly seen and nudges again on the next eligible evaluation.
-        if (!store.Update(l => l with { Vendors = Without(l, ids) })) {
+        if (!store.Update(l => l.Without(ids))) {
             Console.Error.WriteLine("kcap: could not persist the reset (failed to write the offer ledger).");
             return 1;
         }
         Console.WriteLine($"Reset: {string.Join(", ", ids)}. These will be offered again.");
         return 0;
-    }
-
-    static Dictionary<string, HarnessOfferEntry> WithDismissed(HarnessOfferLedger l, IEnumerable<KnownHarness> targets, DateTimeOffset now) {
-        var vendors = new Dictionary<string, HarnessOfferEntry>(l.Vendors);
-        foreach (var h in targets) {
-            var prior = l.Entry(h.VendorId);
-            vendors[h.VendorId] = new HarnessOfferEntry {
-                FirstSeen   = prior?.FirstSeen ?? now,
-                LastOffered = prior?.LastOffered,
-                Declined    = true,
-            };
-        }
-        return vendors;
-    }
-
-    static Dictionary<string, HarnessOfferEntry> Without(HarnessOfferLedger l, IEnumerable<string> ids) {
-        var vendors = new Dictionary<string, HarnessOfferEntry>(l.Vendors);
-        foreach (var id in ids) vendors.Remove(id);
-        return vendors;
     }
 
     static int Help() {
@@ -134,7 +114,7 @@ public static class HarnessCommand {
     static string YesNo(bool b) => b ? "yes" : "no";
 
     static string UnknownVendor(string id) =>
-        $"Unknown harness: {id}. Known: {string.Join(", ", HarnessCatalog.All.Select(h => h.VendorId))}.";
+        $"Unknown harness: {id}. Known: {HarnessId.KnownIds}.";
 
     static void PrintUsage() {
         Console.Error.WriteLine("Usage: kcap harness <list|dismiss|reset>");

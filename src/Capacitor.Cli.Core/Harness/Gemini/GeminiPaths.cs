@@ -10,16 +10,13 @@ namespace Capacitor.Cli.Core.Harness.Gemini;
 /// under a <c>hooks</c> key, so the installer must MERGE (see
 /// <see cref="GeminiHooksParser"/>).
 /// </summary>
-public static class GeminiPaths {
-    public static string Root(string? home = null, string? geminiCliHome = null) {
-        geminiCliHome ??= Environment.GetEnvironmentVariable("GEMINI_CLI_HOME");
+public sealed class GeminiPaths {
+    public GeminiPaths(UserHome home, string? geminiCliHome) =>
+        Root = Path.Combine(
+            !string.IsNullOrWhiteSpace(geminiCliHome) ? geminiCliHome : home.Path, ".gemini");
 
-        var baseDir = !string.IsNullOrWhiteSpace(geminiCliHome)
-            ? geminiCliHome
-            : home ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
 
-        return Path.Combine(baseDir, ".gemini");   // GEMINI_CLI_HOME is the PARENT of .gemini
-    }
+    public string Root { get; }
 
     /// <summary>
     /// Detection by a Gemini-CLI-specific marker under <c>~/.gemini</c>. The bare
@@ -30,71 +27,37 @@ public static class GeminiPaths {
     /// markers Gemini CLI creates that Antigravity does not: <c>settings.json</c>,
     /// <c>projects.json</c>, or the <c>tmp/</c> chat-recording dir. The binary name
     /// <c>gemini</c> is too generic to be the only signal, so callers that want a
-    /// PATH probe OR this with <c>AgentDetection.BinaryOnPath("gemini")</c>
+    /// PATH probe OR this with <c>BinaryProbe.OnPath("gemini")</c>
     /// (a fresh install whose markers aren't written yet is still caught there).
     /// </summary>
-    public static bool IsInstalled(string? home = null, string? geminiCliHome = null) {
-        var root = Root(home, geminiCliHome);
-        if (!Directory.Exists(root)) return false;
-
-        return File.Exists(Path.Combine(root, "settings.json"))
-            || File.Exists(Path.Combine(root, "projects.json"))
-            || Directory.Exists(Path.Combine(root, "tmp"));
-    }
-
-    /// <summary>Pure variant of <see cref="Root"/> for fully-injected callers (e.g.
-    /// <see cref="Setup.AgentDetection"/>, and <see cref="Antigravity.AntigravityPaths"/>'s own
-    /// pure arm, which shares this root) — <paramref name="geminiCliHome"/> null means "not set",
-    /// never falls back to a real <c>GEMINI_CLI_HOME</c> process-env read; <paramref name="home"/>
-    /// is taken as-is, never falling back to a real user-profile read either — the caller is
-    /// expected to have already resolved a concrete value
-    /// (<see cref="Setup.AgentDetectionInputs.Home"/>).</summary>
-    public static string RootPure(string? home, string? geminiCliHome) {
-        var baseDir = !string.IsNullOrWhiteSpace(geminiCliHome) ? geminiCliHome : home ?? "";
-        return Path.Combine(baseDir, ".gemini");
-    }
-
-    /// <summary>Pure variant of <see cref="IsInstalled"/> — never falls back to the real process
-    /// environment for <c>GEMINI_CLI_HOME</c>.</summary>
-    public static bool IsInstalledPure(string? home, string? geminiCliHome) {
-        var root = RootPure(home, geminiCliHome);
-        if (!Directory.Exists(root)) return false;
-
-        return File.Exists(Path.Combine(root, "settings.json"))
-            || File.Exists(Path.Combine(root, "projects.json"))
-            || Directory.Exists(Path.Combine(root, "tmp"));
-    }
+    public bool IsInstalled =>
+        Directory.Exists(Root)
+     && (File.Exists(SettingsJson)
+      || File.Exists(Path.Combine(Root, "projects.json"))
+      || Directory.Exists(TmpDir));
 
     /// <summary>
     /// Shared settings file (<c>~/.gemini/settings.json</c>) — holds user config
     /// plus the <c>hooks</c> block kcap merges into. NEVER overwrite wholesale.
     /// </summary>
-    public static string SettingsJson(string? home = null, string? geminiCliHome = null)
-        => Path.Combine(Root(home, geminiCliHome), "settings.json");
-
-    /// <summary>Pure settings path for fully-injected callers (nudge wiring-probe): built from
-    /// <see cref="RootPure"/>, so a null <paramref name="geminiCliHome"/> means "unset → home
-    /// default", never a real <c>GEMINI_CLI_HOME</c> read.</summary>
-    public static string SettingsJsonPure(string? home, string? geminiCliHome)
-        => Path.Combine(RootPure(home, geminiCliHome), "settings.json");
+    public string SettingsJson => Path.Combine(Root, "settings.json");
 
     /// <summary>
     /// Global context/memory file (<c>~/.gemini/GEMINI.md</c>) — Gemini CLI loads it for
     /// every project (top of the hierarchical GEMINI.md chain), so it is where kcap installs
-    /// its steering-instructions block. A separate file from <see cref="SettingsJson"/>; honors
-    /// <c>GEMINI_CLI_HOME</c> like the rest of the layout.
+    /// its steering-instructions block. A separate file from <see cref="SettingsJson"/>.
     /// </summary>
-    public static string GeminiMd(string? home = null, string? geminiCliHome = null)
-        => Path.Combine(Root(home, geminiCliHome), "GEMINI.md");
+    public string GeminiMd => Path.Combine(Root, "GEMINI.md");
 
     /// <summary>
     /// Per-project temporary state root: <c>~/.gemini/tmp/&lt;project&gt;/</c>.
     /// Chat recordings live under <c>chats/</c> within each project dir.
     /// </summary>
-    public static string TmpDir(string? home = null, string? geminiCliHome = null)
-        => Path.Combine(Root(home, geminiCliHome), "tmp");
+    public string TmpDir => Path.Combine(Root, "tmp");
 
-    /// <summary>Chat-recording directory for a project tmp dir: <c>&lt;tmp&gt;/&lt;project&gt;/chats</c>.</summary>
+    /// <summary>Chat-recording directory for a project tmp dir: <c>&lt;tmp&gt;/&lt;project&gt;/chats</c>.
+    /// Static because the caller reaches it from a transcript path rather than from this layout —
+    /// subagent discovery walks a dir it was handed, with no root to compose from.</summary>
     public static string ChatsDir(string projectTmpDir)
         => Path.Combine(projectTmpDir, "chats");
 

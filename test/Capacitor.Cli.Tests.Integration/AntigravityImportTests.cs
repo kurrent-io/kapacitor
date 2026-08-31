@@ -16,6 +16,8 @@ namespace Capacitor.Cli.Tests.Integration;
 /// by agent_id) → subagent-stop → session-end/antigravity, all tagged vendor=antigravity.
 /// </summary>
 public class AntigravityImportTests : IDisposable {
+    [TempHome] public required TempHome Home { get; init; }
+
     readonly WireMockServer _server = WireMockServer.Start();
     readonly TempDir        _tmp    = new();
     readonly string         _home;
@@ -80,7 +82,7 @@ public class AntigravityImportTests : IDisposable {
         }
 
         using var client = new HttpClient();
-        var source = new AntigravityImportSource(home: _home, geminiCliHome: "");
+        var source = new AntigravityImportSource(new(new(_home), ""));
 
         var discovered = await source.DiscoverAsync(new DiscoveryFilters(null, null, null, 0), CancellationToken.None);
         // The subagent conversation must NOT be discovered as its own top-level session.
@@ -89,7 +91,7 @@ public class AntigravityImportTests : IDisposable {
 
         var classified = await source.ClassifyAsync(
             discovered,
-            new ClassifyContext(client, _server.Url!, MinLines: 0, ExcludedRepos: null, ExcludedPaths: null),
+            new ClassifyContext(client, _server.Url!, MinLines: 0, ExcludedRepos: null, ExcludedPaths: null, Home: Home),
             CancellationToken.None);
         await Assert.That(classified[0].Status).IsEqualTo(ImportCommand.ClassificationStatus.New);
 
@@ -152,7 +154,7 @@ public class AntigravityImportTests : IDisposable {
         }
 
         using var client = new HttpClient();
-        var source = new AntigravityImportSource(home: _home, geminiCliHome: "");
+        var source = new AntigravityImportSource(new(new(_home), ""));
 
         var discovered = await source.DiscoverAsync(new DiscoveryFilters(null, null, null, 0), CancellationToken.None);
         await Assert.That(discovered.Count).IsEqualTo(1);
@@ -160,7 +162,7 @@ public class AntigravityImportTests : IDisposable {
 
         var classified = await source.ClassifyAsync(
             discovered,
-            new ClassifyContext(client, _server.Url!, MinLines: 0, ExcludedRepos: null, ExcludedPaths: null),
+            new ClassifyContext(client, _server.Url!, MinLines: 0, ExcludedRepos: null, ExcludedPaths: null, Home: Home),
             CancellationToken.None);
         await Assert.That(classified[0].Status).IsEqualTo(ImportCommand.ClassificationStatus.New);
 
@@ -209,11 +211,11 @@ public class AntigravityImportTests : IDisposable {
         }
 
         using var client = new HttpClient();
-        var source = new AntigravityImportSource(home: _home, geminiCliHome: "");
+        var source = new AntigravityImportSource(new(new(_home), ""));
 
         var discovered = await source.DiscoverAsync(new DiscoveryFilters(null, null, null, 0), CancellationToken.None);
         var classified = await source.ClassifyAsync(
-            discovered, new ClassifyContext(client, _server.Url!, MinLines: 0, ExcludedRepos: null, ExcludedPaths: null),
+            discovered, new ClassifyContext(client, _server.Url!, MinLines: 0, ExcludedRepos: null, ExcludedPaths: null, Home: Home),
             CancellationToken.None);
         await Assert.That(classified[0].Status).IsEqualTo(ImportCommand.ClassificationStatus.AlreadyLoaded);
 
@@ -271,11 +273,11 @@ public class AntigravityImportTests : IDisposable {
             .RespondWith(Response.Create().WithStatusCode(500));
 
         using var client = new HttpClient();
-        var source = new AntigravityImportSource(home: _home, geminiCliHome: "");
+        var source = new AntigravityImportSource(new(new(_home), ""));
 
         var discovered = await source.DiscoverAsync(new DiscoveryFilters(null, null, null, 0), CancellationToken.None);
         var classified = await source.ClassifyAsync(
-            discovered, new ClassifyContext(client, _server.Url!, MinLines: 0, ExcludedRepos: null, ExcludedPaths: null),
+            discovered, new ClassifyContext(client, _server.Url!, MinLines: 0, ExcludedRepos: null, ExcludedPaths: null, Home: Home),
             CancellationToken.None);
         await Assert.That(classified[0].Status).IsEqualTo(ImportCommand.ClassificationStatus.AlreadyLoaded);
 
@@ -331,11 +333,11 @@ public class AntigravityImportTests : IDisposable {
         }
 
         using var client = new HttpClient();
-        var source = new AntigravityImportSource(home: _home, geminiCliHome: "");
+        var source = new AntigravityImportSource(new(new(_home), ""));
 
         var discovered = await source.DiscoverAsync(new DiscoveryFilters(null, null, null, 0), CancellationToken.None);
         var classified = await source.ClassifyAsync(
-            discovered, new ClassifyContext(client, _server.Url!, MinLines: 0, ExcludedRepos: null, ExcludedPaths: null),
+            discovered, new ClassifyContext(client, _server.Url!, MinLines: 0, ExcludedRepos: null, ExcludedPaths: null, Home: Home),
             CancellationToken.None);
         await Assert.That(classified[0].Status).IsEqualTo(ImportCommand.ClassificationStatus.AlreadyLoaded);
 
@@ -397,11 +399,11 @@ public class AntigravityImportTests : IDisposable {
         }
 
         using var client = new HttpClient();
-        var source = new AntigravityImportSource(home: _home, geminiCliHome: "");
+        var source = new AntigravityImportSource(new(new(_home), ""));
 
         var discovered = await source.DiscoverAsync(new DiscoveryFilters(null, null, null, 0), CancellationToken.None);
         var classified = await source.ClassifyAsync(
-            discovered, new ClassifyContext(client, _server.Url!, MinLines: 0, ExcludedRepos: null, ExcludedPaths: null),
+            discovered, new ClassifyContext(client, _server.Url!, MinLines: 0, ExcludedRepos: null, ExcludedPaths: null, Home: Home),
             CancellationToken.None);
 
         await source.ImportSessionAsync(
@@ -430,12 +432,12 @@ public class AntigravityImportTests : IDisposable {
         }
 
         using var client = new HttpClient();
-        var source = new AntigravityImportSource(home: _home, geminiCliHome: "");
+        var source = new AntigravityImportSource(new(new(_home), ""));
 
         var discovered = await source.DiscoverAsync(new DiscoveryFilters(null, null, null, 0), CancellationToken.None);
         var classified = await source.ClassifyAsync(
             discovered,
-            new ClassifyContext(client, _server.Url!, MinLines: 0, ExcludedRepos: null, ExcludedPaths: null),
+            new ClassifyContext(client, _server.Url!, MinLines: 0, ExcludedRepos: null, ExcludedPaths: null, Home: Home),
             CancellationToken.None);
 
         await Assert.That(classified[0].Status).IsEqualTo(ImportCommand.ClassificationStatus.AlreadyLoaded);

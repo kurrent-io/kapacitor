@@ -15,6 +15,9 @@ namespace Capacitor.Cli.Tests.Integration;
 /// so it doesn't double-count on top of the classify-time AlreadyLoaded bucket.
 /// </summary>
 public class KiroImportSourceImportTests : IDisposable {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+    [TempHome] public required TempHome Home { get; init; }
+
     readonly WireMockServer _server = WireMockServer.Start();
     readonly TempDir        _tmp    = new();
     readonly string         _tempDir;
@@ -51,8 +54,8 @@ public class KiroImportSourceImportTests : IDisposable {
         }
 
         using var client = new HttpClient();
-        var source = new KiroImportSource(
-            sessionsDirOverride: root,
+        var source = new KiroImportSource(Config.Root,
+            root,
             repoDetector: _ => Task.FromResult<RepositoryPayload?>(null));
 
         var discovered = await source.DiscoverAsync(new DiscoveryFilters(null, null, null, 0), CancellationToken.None);
@@ -60,7 +63,7 @@ public class KiroImportSourceImportTests : IDisposable {
 
         var classified = await source.ClassifyAsync(
             discovered,
-            new ClassifyContext(client, _server.Url!, MinLines: 0, ExcludedRepos: null, ExcludedPaths: null),
+            new ClassifyContext(client, _server.Url!, MinLines: 0, ExcludedRepos: null, ExcludedPaths: null, Home: Home),
             CancellationToken.None);
         await Assert.That(classified[0].Status).IsEqualTo(ImportCommand.ClassificationStatus.AlreadyLoaded);
 

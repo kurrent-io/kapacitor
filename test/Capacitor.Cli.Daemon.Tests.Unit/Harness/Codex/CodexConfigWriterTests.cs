@@ -6,10 +6,9 @@ using Tomlyn.Model;
 
 namespace Capacitor.Cli.Daemon.Tests.Unit.Harness.Codex;
 
-// Every test redirects HOME, which every spawned child inherits and every path helper reads, so
-// the exclusion has to be assembly-wide rather than keyed.
-[NotInParallel]
 public class CodexConfigWriterTests {
+    [TempHome] public required TempHome Home { get; init; }
+
     static TomlTable ReadToml(string path) =>
         TomlSerializer.Deserialize<TomlTable>(File.ReadAllText(path))!;
 
@@ -23,13 +22,10 @@ public class CodexConfigWriterTests {
 
     [Test]
     public async Task Writes_initial_projects_table_when_config_toml_missing() {
-        using var tmp  = new TempDir("codex");
-        using var home = EnvScope.Exclusive("HOME", tmp.GetResolvedPath());
+        Home.CreateDir(".codex");
+        CodexConfigWriter.TrustWorktree("/tmp/some-worktree", new CodexPaths(Home, codexHome: null), NullLogger.Instance);
 
-        tmp.CreateDir(".codex");
-        CodexConfigWriter.TrustWorktree("/tmp/some-worktree", NullLogger.Instance);
-
-        var configPath = tmp.PathTo(".codex", "config.toml");
+        var configPath = Home.PathTo(".codex", "config.toml");
         await Assert.That(File.Exists(configPath)).IsTrue();
 
         var root     = ReadToml(configPath);
@@ -40,23 +36,17 @@ public class CodexConfigWriterTests {
 
     [Test]
     public async Task Writes_to_fresh_home_creates_codex_directory() {
-        using var tmp  = new TempDir("codex");
-        using var home = EnvScope.Exclusive("HOME", tmp.GetResolvedPath());
-
         // Explicitly NOT pre-creating .codex
-        CodexConfigWriter.TrustWorktree("/tmp/wt", NullLogger.Instance);
+        CodexConfigWriter.TrustWorktree("/tmp/wt", new CodexPaths(Home, codexHome: null), NullLogger.Instance);
 
-        var codexDir = tmp.PathTo(".codex");
+        var codexDir = Home.PathTo(".codex");
         await Assert.That(Directory.Exists(codexDir)).IsTrue();
-        await Assert.That(File.Exists(tmp.PathTo(".codex", "config.toml"))).IsTrue();
+        await Assert.That(File.Exists(Home.PathTo(".codex", "config.toml"))).IsTrue();
     }
 
     [Test]
     public async Task Adds_entry_to_existing_config_preserving_other_tables() {
-        using var tmp  = new TempDir("codex");
-        using var home = EnvScope.Exclusive("HOME", tmp.GetResolvedPath());
-
-        var codexDir = tmp.CreateDir(".codex");
+        var codexDir = Home.CreateDir(".codex");
 
         codexDir.CreateFile("config.toml",
             """
@@ -70,9 +60,9 @@ public class CodexConfigWriterTests {
             """
         );
 
-        CodexConfigWriter.TrustWorktree("/tmp/new-wt", NullLogger.Instance);
+        CodexConfigWriter.TrustWorktree("/tmp/new-wt", new CodexPaths(Home, codexHome: null), NullLogger.Instance);
 
-        var root = ReadToml(tmp.PathTo(".codex", "config.toml"));
+        var root = ReadToml(Home.PathTo(".codex", "config.toml"));
         await Assert.That((string)root["model"]).IsEqualTo("gpt-5.5");
         var mcp = (TomlTable)((TomlTable)root["mcp_servers"])["linear"];
         await Assert.That((string)mcp["url"]).IsEqualTo("https://mcp.linear.app/mcp");
@@ -84,10 +74,7 @@ public class CodexConfigWriterTests {
 
     [Test]
     public async Task Updates_trust_level_if_present_but_not_trusted() {
-        using var tmp  = new TempDir("codex");
-        using var home = EnvScope.Exclusive("HOME", tmp.GetResolvedPath());
-
-        var codexDir = tmp.CreateDir(".codex");
+        var codexDir = Home.CreateDir(".codex");
 
         codexDir.CreateFile("config.toml",
             $"""
@@ -96,20 +83,17 @@ public class CodexConfigWriterTests {
              """
         );
 
-        CodexConfigWriter.TrustWorktree("/tmp/wt", NullLogger.Instance);
+        CodexConfigWriter.TrustWorktree("/tmp/wt", new CodexPaths(Home, codexHome: null), NullLogger.Instance);
 
-        var root  = ReadToml(tmp.PathTo(".codex", "config.toml"));
+        var root  = ReadToml(Home.PathTo(".codex", "config.toml"));
         var entry = (TomlTable)((TomlTable)root["projects"])[Key("/tmp/wt")];
         await Assert.That((string)entry["trust_level"]).IsEqualTo("trusted");
     }
 
     [Test]
     public async Task No_op_when_trust_level_already_trusted() {
-        using var tmp  = new TempDir("codex");
-        using var home = EnvScope.Exclusive("HOME", tmp.GetResolvedPath());
-
-        var codexDir   = tmp.CreateDir(".codex");
-        var configPath = tmp.PathTo(".codex", "config.toml");
+        var codexDir   = Home.CreateDir(".codex");
+        var configPath = Home.PathTo(".codex", "config.toml");
 
         codexDir.CreateFile("config.toml",
             $"""
@@ -120,35 +104,29 @@ public class CodexConfigWriterTests {
         var originalMtime = File.GetLastWriteTimeUtc(configPath);
 
         await Task.Delay(20); // ensure mtime resolution gap
-        CodexConfigWriter.TrustWorktree("/tmp/wt", NullLogger.Instance);
+        CodexConfigWriter.TrustWorktree("/tmp/wt", new CodexPaths(Home, codexHome: null), NullLogger.Instance);
 
         await Assert.That(File.GetLastWriteTimeUtc(configPath)).IsEqualTo(originalMtime);
     }
 
     [Test]
     public async Task Atomic_rename_leaves_no_tmp_files() {
-        using var tmp  = new TempDir("codex");
-        using var home = EnvScope.Exclusive("HOME", tmp.GetResolvedPath());
+        CodexConfigWriter.TrustWorktree("/tmp/wt-1", new CodexPaths(Home, codexHome: null), NullLogger.Instance);
+        CodexConfigWriter.TrustWorktree("/tmp/wt-2", new CodexPaths(Home, codexHome: null), NullLogger.Instance);
 
-        CodexConfigWriter.TrustWorktree("/tmp/wt-1", NullLogger.Instance);
-        CodexConfigWriter.TrustWorktree("/tmp/wt-2", NullLogger.Instance);
-
-        var codexDir = tmp.PathTo(".codex");
+        var codexDir = Home.PathTo(".codex");
         var leftover = Directory.GetFiles(codexDir).Where(f => Path.GetFileName(f).Contains(".tmp-")).ToList();
         await Assert.That(leftover).IsEmpty();
     }
 
     [Test]
     public async Task Concurrent_writers_serialise_safely() {
-        using var tmp  = new TempDir("codex");
-        using var home = EnvScope.Exclusive("HOME", tmp.GetResolvedPath());
-
         var tasks = Enumerable.Range(0, 20)
-            .Select(i => Task.Run(() => CodexConfigWriter.TrustWorktree($"/tmp/wt-{i}", NullLogger.Instance)))
+            .Select(i => Task.Run(() => CodexConfigWriter.TrustWorktree($"/tmp/wt-{i}", new CodexPaths(Home, codexHome: null), NullLogger.Instance)))
             .ToArray();
         await Task.WhenAll(tasks);
 
-        var configPath = tmp.PathTo(".codex", "config.toml");
+        var configPath = Home.PathTo(".codex", "config.toml");
         var root       = ReadToml(configPath);
         var projects   = (TomlTable)root["projects"];
 
@@ -160,15 +138,12 @@ public class CodexConfigWriterTests {
 
     [Test]
     public async Task Malformed_existing_config_is_skipped_not_overwritten() {
-        using var tmp  = new TempDir("codex");
-        using var home = EnvScope.Exclusive("HOME", tmp.GetResolvedPath());
-
-        var          codexDir   = tmp.CreateDir(".codex");
-        var          configPath = tmp.PathTo(".codex", "config.toml");
+        var          codexDir   = Home.CreateDir(".codex");
+        var          configPath = Home.PathTo(".codex", "config.toml");
         const string garbage    = "{{{ not valid TOML";
         codexDir.CreateFile("config.toml", garbage);
 
-        CodexConfigWriter.TrustWorktree("/tmp/wt", NullLogger.Instance);
+        CodexConfigWriter.TrustWorktree("/tmp/wt", new CodexPaths(Home, codexHome: null), NullLogger.Instance);
 
         // File untouched, no throw
         await Assert.That(File.ReadAllText(configPath)).IsEqualTo(garbage);

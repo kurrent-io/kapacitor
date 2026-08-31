@@ -60,8 +60,7 @@ public class SignInStepViewModelTests {
     }
 
     sealed class Harness : IDisposable {
-        readonly TempDir                        _tmp = new();
-        public string                           TempDir => _tmp.Path;
+        readonly TempConfigRoot                 _config = new();
         public readonly ConnectStepViewModel    Connect = new();
         public readonly WizardTenantPicker      Picker;
         public readonly ScriptedSignupHandler   Signup  = new();
@@ -80,7 +79,7 @@ public class SignInStepViewModelTests {
             (_, _) => Task.FromResult<AuthResult>(Committed());
 
         public Harness() {
-            Claims = new ConsentFlipClaims(ClaimsPath, Path.Combine(TempDir, "config.json"));
+            Claims = new ConsentFlipClaims(_config.Root);
 
             var bridges = new WizardBridges(
                 action => action(),
@@ -98,11 +97,11 @@ public class SignInStepViewModelTests {
             Vm = new SignInStepViewModel(Service, Connect, bridges, Claims, AppState, Opener);
         }
 
-        public string ClaimsPath => Path.Combine(TempDir, "consent-flip-claims.json");
+        public string ClaimsPath => _config.PathTo("consent-flip-claims.json");
 
         public Task<System.Reactive.Unit> SignIn() => Vm.SignInCommand.Execute().ToTask();
 
-        public void Dispose() => _tmp.Dispose();
+        public void Dispose() => _config.Dispose();
     }
 
     // ── committed outcomes ───────────────────────────────────────────────────
@@ -346,7 +345,7 @@ public class SignInStepViewModelTests {
             using var h = new Harness();
             h.Connect.Choice = ConnectChoice.Discover;
             h.Operation = async (_, ct) => {
-                var picked = await h.Picker.PickAsync([Tenant("acme"), Tenant("globex")], ct);
+                var picked = await h.Picker.PickAsync([Tenant("acme"), Tenant("globex")], TenantPickContext.None, ct);
 
                 return picked is null
                     ? new AuthResult.Failed("No tenant selected.")
@@ -377,7 +376,7 @@ public class SignInStepViewModelTests {
             using var h = new Harness();
             h.Connect.Choice = ConnectChoice.Discover;
             h.Operation = async (_, ct) => {
-                var picked = await h.Picker.PickAsync([Tenant("acme"), Tenant("globex")], ct);
+                var picked = await h.Picker.PickAsync([Tenant("acme"), Tenant("globex")], TenantPickContext.None, ct);
 
                 return picked is null ? new AuthResult.Failed("No tenant selected.") : Committed();
             };

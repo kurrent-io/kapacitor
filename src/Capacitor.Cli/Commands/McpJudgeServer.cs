@@ -7,14 +7,17 @@ using System.Text.Json.Serialization.Metadata;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.Telemetry;
+using Capacitor.Cli.Core.Config;
 
 namespace Capacitor.Cli.Commands;
 
-static class McpJudgeServer {
+sealed class McpJudgeServer(ConfigRoot config, ProfileContext profiles) {
     /// <summary>
     /// Run as a session-scoped MCP server. All tool calls must use <paramref name="expectedSessionId"/>.
     /// </summary>
-    public static async Task<int> RunAsync(string baseUrl, string expectedSessionId) {
+    public async Task<int> RunAsync(string expectedSessionId) {
+        var baseUrl = profiles.Resolution.ServerUrl!;
+
         // Validate the shape locally, then defer client construction to the first tools/call —
         // the shape every sibling MCP server already uses. Judge was the only one building its
         // client up front, so an unusable URL reached EnsureAbsolute and killed the process
@@ -27,8 +30,8 @@ static class McpJudgeServer {
         // "mcp-server" so per-tool-call events actually leave. Best-effort: a stale token on
         // disk must never block the server from starting.
         var loggedIn = false;
-        try { loggedIn = await TokenStore.LoadAsync() is not null; } catch { }
-        CliTelemetry.Initialize("mcp-server", baseUrl, loggedIn);
+        try { loggedIn = await new TokenStore(config).LoadForProfileAsync(profiles.Name) is not null; } catch { }
+        CliTelemetry.Initialize("mcp-server", baseUrl, loggedIn, config);
 
         var tools = BuildToolsList();
 
@@ -80,7 +83,7 @@ static class McpJudgeServer {
         async Task<string> DispatchToolCallAsync(JsonNode callId, JsonObject callRequest) {
             if (!urlOk) return BuildToolResult(callId, HttpClientExtensions.SchemeMissingHint, isError: true);
 
-            client ??= await HttpClientExtensions.CreateAuthenticatedClientAsync(baseUrl);
+            client ??= await HttpClientExtensions.CreateAuthenticatedClientAsync(config, profiles, baseUrl);
             return await HandleToolCallAsync(callId, callRequest, client, baseUrl, expectedSessionId);
         }
 

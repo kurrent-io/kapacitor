@@ -22,7 +22,7 @@ namespace Capacitor.Cli.Commands;
 /// provisioning a new machine — which is why the output says so at the point of printing rather than
 /// burying it in documentation.</para>
 /// </summary>
-public static class MachineCommand {
+public sealed class MachineCommand(ConfigRoot config, ProfileContext profiles) {
     /// <summary>
     /// Visibility values a machine may record with — the same set a human's profile accepts, because a
     /// machine is just another principal running this CLI. Kept in sync with the server's own list by
@@ -31,13 +31,15 @@ public static class MachineCommand {
     static readonly string[] Visibilities = ["private", "org_public", "public"];
 
     /// <summary>
-    /// Takes <paramref name="baseUrl"/> because <c>CreateAuthenticatedClientAsync</c> does NOT set a
-    /// BaseAddress — every other command in this CLI builds absolute URLs from the resolved server URL,
-    /// and a relative URI here throws <see cref="InvalidOperationException"/> before a request is even
-    /// sent. An earlier revision used relative paths and would have failed on every tenant call.
-    /// Raised by Qodo. `machine` is not in Program.cs's offlineCommands, so baseUrl is non-null here.
+    /// Every request here builds an absolute URL from the resolved server URL:
+    /// <c>CreateAuthenticatedClientAsync</c> sets no BaseAddress, so a relative URI throws
+    /// <see cref="InvalidOperationException"/> before a request is even sent.
     /// </summary>
-    public static async Task<int> HandleAsync(string baseUrl, string[] args) {
+    public async Task<int> HandleAsync(string[] args) {
+        // `machine` is not in Program.cs's offlineCommands, so the URL is non-null by the time the
+        // dispatch reaches here.
+        var baseUrl = profiles.Resolution.ServerUrl!;
+
         if (args.Length < 2 || IsHelp(args[1])) return await PrintUsage();
 
         return args[1] switch {
@@ -52,7 +54,7 @@ public static class MachineCommand {
 
     // ── create ──────────────────────────────────────────────────────────────────────────────────
 
-    static async Task<int> CreateAsync(string baseUrl, string[] args) {
+    async Task<int> CreateAsync(string baseUrl, string[] args) {
         if (args.Length < 3 || IsHelp(args[2])) return await PrintCreateUsage();
 
         var name = args[2].Trim();
@@ -60,7 +62,7 @@ public static class MachineCommand {
         // configuration, not steered to private: an explicit flag wins, else this machine records
         // with whatever default_visibility the active profile carries (what `kcap setup` wrote),
         // else the product default a profile-less runner would use anyway.
-        var profile = await AppConfig.GetActiveProfileAsync();
+        var profile = profiles.Effective;
         var (visibility, visibilityProvenance) =
             ResolveCreateVisibility(GetArg(args, "--visibility"), profile?.DefaultVisibility);
         var role = GetArg(args, "--role");
@@ -87,7 +89,7 @@ public static class MachineCommand {
         // The operator's own WorkOS access token is what the proxy scopes on: it reads org_id and role
         // from the token's signed claims, so this CLI cannot ask for another organization even if it
         // wanted to. Nothing about the request names an org.
-        var tokens = await TokenStore.GetValidTokensAsync();
+        var tokens = await new TokenStore(config).GetValidTokensForProfileAsync(profiles.Name);
 
         if (tokens is null || string.IsNullOrEmpty(tokens.AccessToken)) {
             await Console.Error.WriteLineAsync("Not authenticated. Run `kcap login` first.");
@@ -210,10 +212,10 @@ public static class MachineCommand {
         return 0;
     }
 
-    static async Task<RegisterMachineResponse?> RegisterAsync(
+    async Task<RegisterMachineResponse?> RegisterAsync(
             string baseUrl, string clientId, string name, string? role) {
         try {
-            using var client = await HttpClientExtensions.CreateAuthenticatedClientAsync();
+            using var client = await HttpClientExtensions.CreateAuthenticatedClientAsync(config, profiles, baseUrl);
 
             // DELIBERATELY NOT PostWithRetryAsync — this is the one call here that must not auto-retry.
             //
@@ -380,9 +382,9 @@ public static class MachineCommand {
 
     // ── list ────────────────────────────────────────────────────────────────────────────────────
 
-    static async Task<int> ListAsync(string baseUrl) {
+    async Task<int> ListAsync(string baseUrl) {
         try {
-            using var client = await HttpClientExtensions.CreateAuthenticatedClientAsync();
+            using var client = await HttpClientExtensions.CreateAuthenticatedClientAsync(config, profiles, baseUrl);
 
             using var response = await client.GetWithRetryAsync($"{baseUrl}/api/admin/machines");
 
@@ -430,7 +432,7 @@ public static class MachineCommand {
 
     // ── revoke ──────────────────────────────────────────────────────────────────────────────────
 
-    static async Task<int> RevokeAsync(string baseUrl, string[] args) {
+    async Task<int> RevokeAsync(string baseUrl, string[] args) {
         if (args.Length < 3 || IsHelp(args[2])) {
             await Console.Error.WriteLineAsync("Usage: kcap machine revoke <service-id>");
             await Console.Error.WriteLineAsync();
@@ -442,7 +444,7 @@ public static class MachineCommand {
         var serviceId = args[2];
 
         try {
-            using var client = await HttpClientExtensions.CreateAuthenticatedClientAsync();
+            using var client = await HttpClientExtensions.CreateAuthenticatedClientAsync(config, profiles, baseUrl);
 
             // An empty StringContent would send `Content-Type: text/plain`, which a strict endpoint can
             // reject with a 415. The endpoint binds no body at all, so the content is inert either way —

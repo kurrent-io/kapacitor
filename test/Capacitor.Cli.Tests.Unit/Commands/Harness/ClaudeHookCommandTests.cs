@@ -1,35 +1,63 @@
 using System.Net;
 using System.Text.Json.Nodes;
+using Capacitor.Cli.Commands;
 using Capacitor.Cli.Commands.Harness;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Tests.Unit.SessionStartMemory;
+using Capacitor.Cli.Core.Setup;
 using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.Config;
-using Capacitor.Cli.SessionStartMemory;
+using Microsoft.Extensions.Time.Testing;
+using WireMock.RequestBuilders;
+using WireMock.ResponseBuilders;
+using WireMock.Server;
 
 namespace Capacitor.Cli.Tests.Unit.Commands.Harness;
 
-// TokenStoreProfileTests too: these read the shared config.json, and a concurrent writer there
-// DELETES it to republish — which a plain read handle blocks on Windows.
-[NotInParallel(["HomeEnvVarMutation", "TokenStoreProfileTests"])]
+// AuthProviderDiscoveryCache: HttpClientExtensions caches the first successful /auth/config
+// discovery for the whole process, so a stub here decides what a concurrent test's stub returns.
+[NotInParallel("AuthProviderDiscoveryCache")]
 public class ClaudeHookCommandTests {
+    [TempHome] public required TempHome Home { get; init; }
+
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     const string Sid = "9dc2775376454e4691ecc2d69973c152";
+
+    /// <summary>A hook clock that has notionally been running for <paramref name="elapsed"/>. The
+    /// waits themselves still run on the real timer — only the budget arithmetic comes off the wall
+    /// clock, which is what lets a near-exhausted ceiling be asserted without sleeping into it.</summary>
+    static HookClock Aged(TimeSpan elapsed) {
+        var time  = new FakeTimeProvider();
+        var clock = new HookClock(time);
+        time.Advance(elapsed);
+        return clock;
+    }
+
+    // The harness nudge fires unless an on-disk stamp throttles it, and a private root starts with
+    // none — these tests assert on the memory fragment alone. Claim the window explicitly instead of
+    // relying on whichever sibling test happened to claim it in the shared config dir first.
+    static void ThrottleHarnessNudge(ConfigRoot root) =>
+        new HarnessOfferStore(root).TryClaimCheck(HarnessNudgeEmitter.CheckThrottle);
+
+    [Before(Test)]
+    public void ThrottleNudgeForThisRoot() => ThrottleHarnessNudge(Config.Root);
 
     [Test]
     public async Task session_start_posts_to_session_start_route() {
-        using var fx = new Fixture();
+        using var fx = new Fixture(Config.Root);
         await fx.HandleAsync($$"""{"hook_event_name":"SessionStart","session_id":"{{Sid}}","cwd":"/tmp"}""");
         await Assert.That(fx.RouteOrder).Contains("session-start");
     }
 
     [Test]
     public async Task memory_store_initialization_failure_does_not_suppress_session_start_capture() {
-        using var fx = new Fixture();
+        using var fx = new Fixture(Config.Root);
+        MemoryStoreProbe.Poison(Config.Root);
 
-        var exit = await ClaudeHookCommand.HandleCore(
-            fx.Client, AuthStatus.Ok, fx.Spool, System.Diagnostics.Stopwatch.GetTimestamp(),
-            "http://localhost", new StringReader(
-                $$"""{"hook_event_name":"SessionStart","session_id":"{{Sid}}","cwd":"/tmp"}"""),
-            memoryStoreFactory: () => throw new UnauthorizedAccessException("read-only store"));
+        var exit = await new ClaudeHookCommand(Config.Root, Resolutions.At("http://localhost", Config.Root), new HookClock(TimeProvider.System), Home).HandleCore(
+            fx.Client, AuthStatus.Ok, fx.Spool, new StringReader(
+                $$"""{"hook_event_name":"SessionStart","session_id":"{{Sid}}","cwd":"/tmp"}"""));
 
         await Assert.That(exit).IsEqualTo(0);
         await Assert.That(fx.RouteOrder).Contains("session-start");
@@ -37,22 +65,19 @@ public class ClaudeHookCommandTests {
 
     [Test, NotInParallel]
     public async Task disabled_memory_index_does_not_construct_the_lease_store() {
-        using var fx = new Fixture();
+        using var fx = new Fixture(Config.Root);
         fx.MemoryIndexBody = """[{"memory_id":"m1","slug":"s","audience":"org","description":"d","kind":"preference"}]"""; // decoy — must never be fetched
-        var storeConstructed = false;
+        var hook = new ClaudeHookCommand(
+            Config.Root, Resolutions.Of(new Profile { DisableMemoryIndex = true }, serverUrl: "http://localhost"), new HookClock(TimeProvider.System), Home);
 
-        var exit = await WithProfileAsync(new Profile { DisableMemoryIndex = true }, () =>
-            ClaudeHookCommand.HandleCore(
-                fx.Client, AuthStatus.Ok, fx.Spool, System.Diagnostics.Stopwatch.GetTimestamp(),
-                "http://localhost", new StringReader(
-                    $$"""{"hook_event_name":"SessionStart","session_id":"{{Sid}}","cwd":"/tmp"}"""),
-                memoryStoreFactory: () => {
-                    storeConstructed = true;
-                    return new SessionStartMemoryLeaseStore(Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N")));
-                }));
+        var exit = await hook.HandleCore(
+            fx.Client, AuthStatus.Ok, fx.Spool, new StringReader(
+                $$"""{"hook_event_name":"SessionStart","session_id":"{{Sid}}","cwd":"/tmp"}"""));
 
         await Assert.That(exit).IsEqualTo(0);
-        await Assert.That(storeConstructed).IsFalse();
+        // The store creates its root on construction, so an absent directory is the guard having
+        // returned before it was built — the provider would also decline, but only later.
+        await Assert.That(MemoryStoreProbe.WasBuilt(Config.Root)).IsFalse();
         await Assert.That(fx.MemoryIndexRequested).IsFalse();
         await Assert.That(fx.RouteOrder).Contains("session-start");
     }
@@ -61,17 +86,17 @@ public class ClaudeHookCommandTests {
 
     [Test, NotInParallel]
     public async Task update_check_off_suppresses_the_in_agent_nudge_even_when_server_reports_a_newer_version() {
-        using var fx = new Fixture { RespondJson = """{"version": "999.0.0"}""" };
+        using var fx = new Fixture(Config.Root) { RespondJson = """{"version": "999.0.0"}""" };
         var stdout = new StringWriter();
 
-        var exit = await WithProfileAsync(new Profile { UpdateCheck = false }, () =>
-            ClaudeHookCommand.HandleCore(
-                fx.Client, AuthStatus.Ok, fx.Spool, System.Diagnostics.Stopwatch.GetTimestamp(),
-                "http://localhost", new StringReader(
-                    $$"""{"hook_event_name":"SessionStart","session_id":"{{Sid}}","cwd":"/tmp"}"""),
-                memoryStoreFactory: () => new SessionStartMemoryLeaseStore(
-                    Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"))),
-                stdout: stdout));
+        var hook = new ClaudeHookCommand(
+            Config.Root, Resolutions.Of(new Profile { UpdateCheck = false }, serverUrl: fx.MemoryServerUrl), new HookClock(TimeProvider.System), Home);
+
+        var exit = await hook.HandleCore(
+            fx.Client, AuthStatus.Ok, fx.Spool, new StringReader(
+                $$"""{"hook_event_name":"SessionStart","session_id":"{{Sid}}","cwd":"/tmp"}"""),
+
+            stdout: stdout);
 
         await Assert.That(exit).IsEqualTo(0);
         var ctx = stdout.ToString();
@@ -85,17 +110,17 @@ public class ClaudeHookCommandTests {
     /// never produces one.</summary>
     [Test, NotInParallel]
     public async Task update_check_on_still_emits_the_in_agent_nudge_for_a_newer_server_version() {
-        using var fx = new Fixture { RespondJson = """{"version": "999.0.0"}""" };
+        using var fx = new Fixture(Config.Root) { RespondJson = """{"version": "999.0.0"}""" };
         var stdout = new StringWriter();
 
-        var exit = await WithProfileAsync(new Profile { UpdateCheck = true }, () =>
-            ClaudeHookCommand.HandleCore(
-                fx.Client, AuthStatus.Ok, fx.Spool, System.Diagnostics.Stopwatch.GetTimestamp(),
-                "http://localhost", new StringReader(
-                    $$"""{"hook_event_name":"SessionStart","session_id":"{{Sid}}","cwd":"/tmp"}"""),
-                memoryStoreFactory: () => new SessionStartMemoryLeaseStore(
-                    Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"))),
-                stdout: stdout));
+        var hook = new ClaudeHookCommand(
+            Config.Root, Resolutions.Of(new Profile { UpdateCheck = true }, serverUrl: fx.MemoryServerUrl), new HookClock(TimeProvider.System), Home);
+
+        var exit = await hook.HandleCore(
+            fx.Client, AuthStatus.Ok, fx.Spool, new StringReader(
+                $$"""{"hook_event_name":"SessionStart","session_id":"{{Sid}}","cwd":"/tmp"}"""),
+
+            stdout: stdout);
 
         await Assert.That(exit).IsEqualTo(0);
         var ctx = stdout.ToString();
@@ -112,15 +137,15 @@ public class ClaudeHookCommandTests {
 
     [Test, NotInParallel]
     public async Task session_start_joins_lessons_nudge_and_memory_fragments_in_order() {
-        using var fx = new Fixture();
+        using var fx = new Fixture(Config.Root);
         const string responseJson =
             """{"top_clusters":[{"text":"seal secrets","category":"safety"},{"text":"run tests first","category":"agent_guidance"}],"version":"999.999.999"}""";
         fx.RespondJson = responseJson;
         fx.MemoryIndexBody = """[{"memory_id":"m1","slug":"s","audience":"org","description":"d","kind":"preference"}]""";
 
         var sid = Guid.NewGuid().ToString("N");
-        var (exit, stdout) = await WithProfileAsync(new Profile(), () => RunCapturingStdoutAsync(() =>
-            fx.HandleAsync($$"""{"hook_event_name":"SessionStart","session_id":"{{sid}}","cwd":"/tmp","source":"startup"}""")));
+        var (exit, stdout) = await RunCapturingStdoutAsync(() =>
+            fx.HandleAsync($$"""{"hook_event_name":"SessionStart","session_id":"{{sid}}","cwd":"/tmp","source":"startup"}"""));
         await Assert.That(exit).IsEqualTo(0);
 
         var responseNode     = JsonNode.Parse(responseJson);
@@ -148,13 +173,13 @@ public class ClaudeHookCommandTests {
     // can't silently route Claude through the composite and double-fetch/reorder its envelope.
     [Test, NotInParallel]
     public async Task session_start_never_issues_a_guidelines_get() {
-        using var fx = new Fixture();
+        using var fx = new Fixture(Config.Root);
         fx.RespondJson = """{"top_clusters":[{"text":"seal secrets","category":"safety"}],"version":"1.0.0"}""";
         fx.MemoryIndexBody = """[{"memory_id":"m1","slug":"s","audience":"org","description":"d","kind":"preference"}]""";
 
         var sid = Guid.NewGuid().ToString("N");
-        var (exit, _) = await WithProfileAsync(new Profile(), () => RunCapturingStdoutAsync(() =>
-            fx.HandleAsync($$"""{"hook_event_name":"SessionStart","session_id":"{{sid}}","cwd":"/tmp","source":"startup"}""")));
+        var (exit, _) = await RunCapturingStdoutAsync(() =>
+            fx.HandleAsync($$"""{"hook_event_name":"SessionStart","session_id":"{{sid}}","cwd":"/tmp","source":"startup"}"""));
 
         await Assert.That(exit).IsEqualTo(0);
         await Assert.That(fx.MemoryIndexRequested).IsTrue();
@@ -165,13 +190,13 @@ public class ClaudeHookCommandTests {
 
     [Test, NotInParallel]
     public async Task session_start_with_only_a_ready_memory_index_emits_just_the_memory_fragment() {
-        using var fx = new Fixture();
+        using var fx = new Fixture(Config.Root);
         fx.RespondJson = "{}"; // no top_clusters/version — lessons and nudge fragments are both null
         fx.MemoryIndexBody = """[{"memory_id":"m1","slug":"s","audience":"org","description":"d","kind":"preference"}]""";
 
         var sid = Guid.NewGuid().ToString("N");
-        var (exit, stdout) = await WithProfileAsync(new Profile(), () => RunCapturingStdoutAsync(() =>
-            fx.HandleAsync($$"""{"hook_event_name":"SessionStart","session_id":"{{sid}}","cwd":"/tmp","source":"startup"}""")));
+        var (exit, stdout) = await RunCapturingStdoutAsync(() =>
+            fx.HandleAsync($$"""{"hook_event_name":"SessionStart","session_id":"{{sid}}","cwd":"/tmp","source":"startup"}"""));
         await Assert.That(exit).IsEqualTo(0);
 
         var expectedMemory   = MemoryIndexEmitter.BuildFragment(JsonNode.Parse(fx.MemoryIndexBody), disabled: false);
@@ -184,13 +209,13 @@ public class ClaudeHookCommandTests {
     public async Task session_start_with_an_empty_memory_index_array_emits_nothing() {
         // CompleteWithoutContext disposition (a successful, empty fetch) — with no lessons/nudge
         // either, BuildEnvelope collapses to null and NOTHING is written to stdout at all.
-        using var fx = new Fixture();
+        using var fx = new Fixture(Config.Root);
         fx.RespondJson = "{}";
         fx.MemoryIndexBody = "[]";
 
         var sid = Guid.NewGuid().ToString("N");
-        var (exit, stdout) = await WithProfileAsync(new Profile(), () => RunCapturingStdoutAsync(() =>
-            fx.HandleAsync($$"""{"hook_event_name":"SessionStart","session_id":"{{sid}}","cwd":"/tmp","source":"startup"}""")));
+        var (exit, stdout) = await RunCapturingStdoutAsync(() =>
+            fx.HandleAsync($$"""{"hook_event_name":"SessionStart","session_id":"{{sid}}","cwd":"/tmp","source":"startup"}"""));
         await Assert.That(exit).IsEqualTo(0);
         await Assert.That(fx.MemoryIndexRequested).IsTrue();
         await Assert.That(stdout).IsEqualTo("");
@@ -200,14 +225,14 @@ public class ClaudeHookCommandTests {
     public async Task session_start_with_a_204_memory_index_response_emits_nothing() {
         // The provider special-cases 204 NoContent as CompleteWithoutContext without even
         // reading a body.
-        using var fx = new Fixture();
+        using var fx = new Fixture(Config.Root);
         fx.RespondJson = "{}";
         fx.MemoryIndexStatus = HttpStatusCode.NoContent;
         fx.MemoryIndexBody = "";
 
         var sid = Guid.NewGuid().ToString("N");
-        var (exit, stdout) = await WithProfileAsync(new Profile(), () => RunCapturingStdoutAsync(() =>
-            fx.HandleAsync($$"""{"hook_event_name":"SessionStart","session_id":"{{sid}}","cwd":"/tmp","source":"startup"}""")));
+        var (exit, stdout) = await RunCapturingStdoutAsync(() =>
+            fx.HandleAsync($$"""{"hook_event_name":"SessionStart","session_id":"{{sid}}","cwd":"/tmp","source":"startup"}"""));
         await Assert.That(exit).IsEqualTo(0);
         await Assert.That(fx.MemoryIndexRequested).IsTrue();
         await Assert.That(stdout).IsEqualTo("");
@@ -218,14 +243,14 @@ public class ClaudeHookCommandTests {
         // RetryableFailure disposition — fail-open: the hook still succeeds and nothing about
         // the memory fetch surfaces in the envelope (there is none, since lessons/nudge are
         // absent here too).
-        using var fx = new Fixture();
+        using var fx = new Fixture(Config.Root);
         fx.RespondJson = "{}";
         fx.MemoryIndexStatus = HttpStatusCode.InternalServerError;
         fx.MemoryIndexBody = "";
 
         var sid = Guid.NewGuid().ToString("N");
-        var (exit, stdout) = await WithProfileAsync(new Profile(), () => RunCapturingStdoutAsync(() =>
-            fx.HandleAsync($$"""{"hook_event_name":"SessionStart","session_id":"{{sid}}","cwd":"/tmp","source":"startup"}""")));
+        var (exit, stdout) = await RunCapturingStdoutAsync(() =>
+            fx.HandleAsync($$"""{"hook_event_name":"SessionStart","session_id":"{{sid}}","cwd":"/tmp","source":"startup"}"""));
         await Assert.That(exit).IsEqualTo(0);
         await Assert.That(fx.MemoryIndexRequested).IsTrue();
         await Assert.That(stdout).IsEqualTo("");
@@ -236,13 +261,13 @@ public class ClaudeHookCommandTests {
         // Once the shared lease store commits a disposition — Ready OR CompleteWithoutContext —
         // for a session_id, a later SessionStart for that SAME session never re-fetches: a
         // resolved, non-repeating lifecycle is exactly-once, not "repeat until non-empty".
-        using var fx = new Fixture();
+        using var fx = new Fixture(Config.Root);
         fx.RespondJson = "{}";
         fx.MemoryIndexBody = "[]"; // CompleteWithoutContext on the first call
         var sid = Guid.NewGuid().ToString("N");
         var payload = $$"""{"hook_event_name":"SessionStart","session_id":"{{sid}}","cwd":"/tmp","source":"startup"}""";
 
-        var (exit1, stdout1) = await WithProfileAsync(new Profile(), () => RunCapturingStdoutAsync(() => fx.HandleAsync(payload)));
+        var (exit1, stdout1) = await RunCapturingStdoutAsync(() => fx.HandleAsync(payload));
         await Assert.That(exit1).IsEqualTo(0);
         await Assert.That(stdout1).IsEqualTo("");
         await Assert.That(fx.MemoryIndexRequestCount).IsEqualTo(1);
@@ -250,7 +275,7 @@ public class ClaudeHookCommandTests {
         // A decoy non-empty index — if the second call re-fetched, this WOULD surface.
         fx.MemoryIndexBody = """[{"memory_id":"m1","slug":"s","audience":"org","description":"d","kind":"preference"}]""";
 
-        var (exit2, stdout2) = await WithProfileAsync(new Profile(), () => RunCapturingStdoutAsync(() => fx.HandleAsync(payload)));
+        var (exit2, stdout2) = await RunCapturingStdoutAsync(() => fx.HandleAsync(payload));
         await Assert.That(exit2).IsEqualTo(0);
         await Assert.That(stdout2).IsEqualTo("");
         await Assert.That(fx.MemoryIndexRequestCount).IsEqualTo(1); // NOT re-fetched
@@ -262,20 +287,20 @@ public class ClaudeHookCommandTests {
         // remaining hook budget: a GET that outlives that budget yields a null fragment
         // (fail-open) without delaying — or breaking — the lessons fragment the same response
         // already carries.
-        using var fx = new Fixture();
+        using var fx = new Fixture(Config.Root);
         fx.MemoryIndexDelay = TimeSpan.FromSeconds(30); // never resolves inside the session-start budget
         fx.RespondJson = """{"top_clusters":[{"text":"seal secrets","category":"safety"}]}""";
 
-        // Default (near-"now") processStart, exactly like this file's other hung-server tests
+        // A fresh budget, exactly like this file's other hung-server tests
         // (e.g. subagent_stop_against_hung_server_is_spooled_within_budget) — the full ~3.5s of
         // session-start's usable budget (5s ceiling minus the 1.5s safety margin) is comfortably
         // enough for watcher-start + repo enrichment + the fast, undelayed POST, but far short of
         // the 30s memory-index delay above.
         var sid = Guid.NewGuid().ToString("N");
         var sw  = System.Diagnostics.Stopwatch.StartNew();
-        var (exit, stdout) = await WithProfileAsync(new Profile(), () => RunCapturingStdoutAsync(() =>
+        var (exit, stdout) = await RunCapturingStdoutAsync(() =>
             fx.HandleAsync(
-                $$"""{"hook_event_name":"SessionStart","session_id":"{{sid}}","cwd":"/tmp","source":"startup"}""")));
+                $$"""{"hook_event_name":"SessionStart","session_id":"{{sid}}","cwd":"/tmp","source":"startup"}"""));
         sw.Stop();
 
         await Assert.That(exit).IsEqualTo(0);
@@ -290,17 +315,14 @@ public class ClaudeHookCommandTests {
         // StartMemoryIndexTask is reached, the memory subsystem must never touch the network at
         // all (same short-circuit as the `disabled` guard) — and, at that point, neither can the
         // session-start POST itself, which the ordering/spool path below already covers.
-        using var fx = new Fixture();
+        using var fx = new Fixture(Config.Root);
         fx.MemoryIndexBody = """[{"memory_id":"m1","slug":"s","audience":"org","description":"d","kind":"preference"}]"""; // decoy
         fx.RespondJson = """{"top_clusters":[{"text":"seal secrets","category":"safety"}]}""";
-
-        var processStart = System.Diagnostics.Stopwatch.GetTimestamp()
-                         - (long)(4 * System.Diagnostics.Stopwatch.Frequency);
 
         var sid = Guid.NewGuid().ToString("N");
         var exit = await fx.HandleAsync(
             $$"""{"hook_event_name":"SessionStart","session_id":"{{sid}}","cwd":"/tmp","source":"startup"}""",
-            processStart);
+            elapsed: TimeSpan.FromSeconds(4));
 
         await Assert.That(exit).IsEqualTo(0);
         await Assert.That(fx.MemoryIndexRequested).IsFalse();
@@ -311,12 +333,12 @@ public class ClaudeHookCommandTests {
         // GET-succeeds-but-POST-fails: the POST failure short-circuits BEFORE the response is
         // ever read, so no envelope is built at all — even a Ready memory fragment never
         // surfaces. The memory task may be left running in the background (abandoned).
-        using var fx = new Fixture(HttpStatusCode.InternalServerError);
+        using var fx = new Fixture(Config.Root, HttpStatusCode.InternalServerError);
         fx.MemoryIndexBody = """[{"memory_id":"m1","slug":"s","audience":"org","description":"d","kind":"preference"}]""";
 
         var sid = Guid.NewGuid().ToString("N");
-        var (exit, stdout) = await WithProfileAsync(new Profile(), () => RunCapturingStdoutAsync(() =>
-            fx.HandleAsync($$"""{"hook_event_name":"SessionStart","session_id":"{{sid}}","cwd":"/tmp","source":"startup"}""")));
+        var (exit, stdout) = await RunCapturingStdoutAsync(() =>
+            fx.HandleAsync($$"""{"hook_event_name":"SessionStart","session_id":"{{sid}}","cwd":"/tmp","source":"startup"}"""));
 
         await Assert.That(exit).IsEqualTo(0);
         await Assert.That(stdout).IsEqualTo("");
@@ -327,11 +349,11 @@ public class ClaudeHookCommandTests {
 
     [Test, NotInParallel]
     public async Task session_start_advertises_the_coordination_notices_capability_by_default() {
-        using var fx = new Fixture();
+        using var fx = new Fixture(Config.Root);
         var sid = Guid.NewGuid().ToString("N");
 
-        var (exit, _) = await WithProfileAsync(new Profile(), () => RunCapturingStdoutAsync(() =>
-            fx.HandleAsync($$"""{"hook_event_name":"SessionStart","session_id":"{{sid}}","cwd":"/tmp","source":"startup"}""")));
+        var (exit, _) = await RunCapturingStdoutAsync(() =>
+            fx.HandleAsync($$"""{"hook_event_name":"SessionStart","session_id":"{{sid}}","cwd":"/tmp","source":"startup"}"""));
         await Assert.That(exit).IsEqualTo(0);
 
         var posted = fx.Sent.Single(s => s.StartsWith("/hooks/session-start|", StringComparison.Ordinal));
@@ -341,11 +363,11 @@ public class ClaudeHookCommandTests {
 
     [Test, NotInParallel]
     public async Task disable_coordination_notices_omits_the_capability_from_the_post() {
-        using var fx = new Fixture();
+        using var fx = new Fixture(Config.Root, profile: new Profile { DisableCoordinationNotices = true });
         var sid = Guid.NewGuid().ToString("N");
 
-        var (exit, _) = await WithProfileAsync(new Profile { DisableCoordinationNotices = true }, () => RunCapturingStdoutAsync(() =>
-            fx.HandleAsync($$"""{"hook_event_name":"SessionStart","session_id":"{{sid}}","cwd":"/tmp","source":"startup"}""")));
+        var (exit, _) = await RunCapturingStdoutAsync(() =>
+            fx.HandleAsync($$"""{"hook_event_name":"SessionStart","session_id":"{{sid}}","cwd":"/tmp","source":"startup"}"""));
         await Assert.That(exit).IsEqualTo(0);
 
         var posted = fx.Sent.Single(s => s.StartsWith("/hooks/session-start|", StringComparison.Ordinal));
@@ -355,13 +377,13 @@ public class ClaudeHookCommandTests {
 
     [Test, NotInParallel]
     public async Task session_start_renders_coordination_notices_from_the_response() {
-        using var fx = new Fixture {
+        using var fx = new Fixture(Config.Root) {
             RespondJson = """{"coordination_notices":[{"text":"Sam is also on AUTH-12"},{"text":"+2 more in the notification centre"}]}"""
         };
         var sid = Guid.NewGuid().ToString("N");
 
-        var (exit, stdout) = await WithProfileAsync(new Profile(), () => RunCapturingStdoutAsync(() =>
-            fx.HandleAsync($$"""{"hook_event_name":"SessionStart","session_id":"{{sid}}","cwd":"/tmp","source":"startup"}""")));
+        var (exit, stdout) = await RunCapturingStdoutAsync(() =>
+            fx.HandleAsync($$"""{"hook_event_name":"SessionStart","session_id":"{{sid}}","cwd":"/tmp","source":"startup"}"""));
         await Assert.That(exit).IsEqualTo(0);
 
         var ctx = JsonNode.Parse(stdout)!["hookSpecificOutput"]!["additionalContext"]!.GetValue<string>();
@@ -375,13 +397,13 @@ public class ClaudeHookCommandTests {
     /// the block (and the capability), not that the fixture never produced one.</summary>
     [Test, NotInParallel]
     public async Task disable_coordination_notices_suppresses_both_the_capability_and_the_render() {
-        using var fx = new Fixture {
+        using var fx = new Fixture(Config.Root, profile: new Profile { DisableCoordinationNotices = true }) {
             RespondJson = """{"coordination_notices":[{"text":"Sam is also on AUTH-12"}]}"""
         };
         var sid = Guid.NewGuid().ToString("N");
 
-        var (exit, stdout) = await WithProfileAsync(new Profile { DisableCoordinationNotices = true }, () => RunCapturingStdoutAsync(() =>
-            fx.HandleAsync($$"""{"hook_event_name":"SessionStart","session_id":"{{sid}}","cwd":"/tmp","source":"startup"}""")));
+        var (exit, stdout) = await RunCapturingStdoutAsync(() =>
+            fx.HandleAsync($$"""{"hook_event_name":"SessionStart","session_id":"{{sid}}","cwd":"/tmp","source":"startup"}"""));
         await Assert.That(exit).IsEqualTo(0);
 
         // Capability never sent.
@@ -397,11 +419,11 @@ public class ClaudeHookCommandTests {
     [Test, NotInParallel]
     public async Task malformed_coordination_notices_field_does_not_fail_the_hook() {
         // Server echoes the capability token back as a bare string instead of the {text}[] array.
-        using var fx = new Fixture { RespondJson = """{"coordination_notices":"v1"}""" };
+        using var fx = new Fixture(Config.Root) { RespondJson = """{"coordination_notices":"v1"}""" };
         var sid = Guid.NewGuid().ToString("N");
 
-        var (exit, stdout) = await WithProfileAsync(new Profile(), () => RunCapturingStdoutAsync(() =>
-            fx.HandleAsync($$"""{"hook_event_name":"SessionStart","session_id":"{{sid}}","cwd":"/tmp","source":"startup"}""")));
+        var (exit, stdout) = await RunCapturingStdoutAsync(() =>
+            fx.HandleAsync($$"""{"hook_event_name":"SessionStart","session_id":"{{sid}}","cwd":"/tmp","source":"startup"}"""));
 
         await Assert.That(exit).IsEqualTo(0);
         await Assert.That(stdout).DoesNotContain("## Coordination notices");
@@ -412,11 +434,11 @@ public class ClaudeHookCommandTests {
     /// coordination notices delivered that the replay can't render into a live agent.</summary>
     [Test, NotInParallel]
     public async Task transient_post_failure_spools_a_body_without_the_coordination_notices_capability() {
-        using var fx = new Fixture(HttpStatusCode.InternalServerError); // 5xx → transient → spooled
+        using var fx = new Fixture(Config.Root, HttpStatusCode.InternalServerError); // 5xx → transient → spooled
         var sid = Guid.NewGuid().ToString("N");
 
-        var (exit, _) = await WithProfileAsync(new Profile(), () => RunCapturingStdoutAsync(() =>
-            fx.HandleAsync($$"""{"hook_event_name":"SessionStart","session_id":"{{sid}}","cwd":"/tmp","source":"startup"}""")));
+        var (exit, _) = await RunCapturingStdoutAsync(() =>
+            fx.HandleAsync($$"""{"hook_event_name":"SessionStart","session_id":"{{sid}}","cwd":"/tmp","source":"startup"}"""));
         await Assert.That(exit).IsEqualTo(0);
 
         // The live POST DID advertise the capability...
@@ -430,24 +452,6 @@ public class ClaudeHookCommandTests {
         var content     = await File.ReadAllTextAsync(files[0]);
         var spooledBody = JsonNode.Parse(JsonNode.Parse(content.Split('\n')[0])!["body"]!.GetValue<string>());
         await Assert.That(spooledBody!["coordination_notices"]).IsNull();
-    }
-
-    /// <summary>Runs <paramref name="action"/> with <see cref="AppConfig.ResolvedProfile"/> set to
-    /// <paramref name="profile"/>, restoring whatever was resolved before (or the closest
-    /// equivalent to "untouched" — see <c>AppConfig.SetResolvedState</c>'s lack of an "unset"
-    /// primitive) regardless of run order or a mid-test exception.</summary>
-    static async Task<T> WithProfileAsync<T>(Profile profile, Func<Task<T>> action) {
-        var originalServerUrl = AppConfig.ResolvedServerUrl;
-        var originalResolved  = AppConfig.ResolvedProfile;
-        AppConfig.SetResolvedState("http://localhost", "default", profile);
-        try {
-            return await action();
-        } finally {
-            AppConfig.SetResolvedState(
-                originalServerUrl ?? "http://localhost",
-                originalResolved?.ProfileName ?? "default",
-                originalResolved?.Profile ?? new Profile());
-        }
     }
 
     /// <summary>Redirects <see cref="Console.Out"/> to a buffer for the duration of
@@ -469,7 +473,7 @@ public class ClaudeHookCommandTests {
         tmp.CreateDir(".git");
         var nested = tmp.CreateDir("nested", "dir");
 
-        using var fx = new Fixture();
+        using var fx = new Fixture(Config.Root);
         await fx.HandleAsync($$"""{"hook_event_name":"SessionStart","session_id":"{{Sid}}","cwd":"{{nested.Path.Replace("\\", "\\\\")}}"}""");
 
         var posted = fx.Sent.Single(s => s.StartsWith("/hooks/session-start|", StringComparison.Ordinal));
@@ -479,7 +483,7 @@ public class ClaudeHookCommandTests {
 
     [Test]
     public async Task session_start_omits_workspace_root_when_cwd_has_no_git_repo() {
-        using var fx = new Fixture();
+        using var fx = new Fixture(Config.Root);
         await fx.HandleAsync($$"""{"hook_event_name":"SessionStart","session_id":"{{Sid}}","cwd":"/tmp"}""");
 
         var posted = fx.Sent.Single(s => s.StartsWith("/hooks/session-start|", StringComparison.Ordinal));
@@ -507,7 +511,7 @@ public class ClaudeHookCommandTests {
 
     [Test]
     public async Task session_end_on_5xx_is_spooled_and_returns_zero() {
-        using var fx = new Fixture(HttpStatusCode.InternalServerError);
+        using var fx = new Fixture(Config.Root, HttpStatusCode.InternalServerError);
         var exit = await fx.HandleAsync($$"""{"hook_event_name":"SessionEnd","session_id":"{{Sid}}","transcript_path":"/none","cwd":"/tmp","reason":"other"}""");
         await Assert.That(exit).IsEqualTo(0);
         var files = fx.SpoolFiles.ToList();
@@ -519,10 +523,9 @@ public class ClaudeHookCommandTests {
 
     [Test]
     public async Task session_end_against_hung_server_is_spooled_within_budget() {
-        using var fx = new Fixture();
+        using var fx = new Fixture(Config.Root);
         fx.HoldOnPost = TimeSpan.FromSeconds(30); // server hangs past the bounded attempt
         var sw = System.Diagnostics.Stopwatch.StartNew();
-        // processStart in the recent past leaves a small remaining budget.
         var exit = await fx.HandleAsync(
             $$"""{"hook_event_name":"SessionEnd","session_id":"{{Sid}}","transcript_path":"/none","cwd":"/tmp"}""");
         sw.Stop();
@@ -533,14 +536,14 @@ public class ClaudeHookCommandTests {
 
     [Test]
     public async Task session_end_on_4xx_is_not_spooled() {
-        using var fx = new Fixture(HttpStatusCode.BadRequest);
+        using var fx = new Fixture(Config.Root, HttpStatusCode.BadRequest);
         await fx.HandleAsync($$"""{"hook_event_name":"SessionEnd","session_id":"{{Sid}}","transcript_path":"/none","cwd":"/tmp"}""");
         await Assert.That(fx.SpoolFiles.Any()).IsFalse();
     }
 
     [Test]
     public async Task session_start_on_failure_is_spooled_with_minimal_body() {
-        using var fx = new Fixture(HttpStatusCode.InternalServerError);
+        using var fx = new Fixture(Config.Root, HttpStatusCode.InternalServerError);
         await fx.HandleAsync($$"""{"hook_event_name":"SessionStart","session_id":"{{Sid}}","transcript_path":"/none","cwd":"/tmp","source":"startup"}""");
         var files = fx.SpoolFiles.ToList();
         await Assert.That(files.Count).IsEqualTo(1);
@@ -552,15 +555,13 @@ public class ClaudeHookCommandTests {
 
     [Test, NotInParallel]
     public async Task session_start_on_401_exits_zero_and_nudges_the_user_to_log_in() {
-        using var fx = new Fixture(HttpStatusCode.Unauthorized);
+        using var fx = new Fixture(Config.Root, HttpStatusCode.Unauthorized);
         var stdout = new StringWriter { NewLine = "\n" };
 
-        var exit = await ClaudeHookCommand.HandleCore(
-            fx.Client, AuthStatus.Ok, fx.Spool, System.Diagnostics.Stopwatch.GetTimestamp(),
-            "http://localhost", new StringReader(
+        var exit = await new ClaudeHookCommand(Config.Root, Resolutions.At("http://localhost", Config.Root), new HookClock(TimeProvider.System), Home).HandleCore(
+            fx.Client, AuthStatus.Ok, fx.Spool, new StringReader(
                 $$"""{"hook_event_name":"SessionStart","session_id":"{{Sid}}","cwd":"/tmp"}"""),
-            memoryStoreFactory: () => new SessionStartMemoryLeaseStore(
-                Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"))),
+
             stdout: stdout);
 
         await Assert.That(exit).IsEqualTo(0);
@@ -571,7 +572,7 @@ public class ClaudeHookCommandTests {
 
     [Test]
     public async Task pending_backlog_is_drained_on_next_hook_when_server_up() {
-        using var fx = new Fixture(); // 200 OK
+        using var fx = new Fixture(Config.Root); // 200 OK
         fx.Spool.Append(Sid, "session-end", $$"""{"session_id":"{{Sid}}"}""");
         // A fresh, unrelated stop hook with the server up flushes the backlog.
         await fx.HandleAsync($$"""{"hook_event_name":"Stop","session_id":"{{Sid}}","transcript_path":"/none","cwd":"/tmp"}""");
@@ -581,7 +582,7 @@ public class ClaudeHookCommandTests {
 
     [Test]
     public async Task current_session_start_replays_before_its_session_end() {
-        using var fx = new Fixture();
+        using var fx = new Fixture(Config.Root);
         fx.Spool.Append(Sid, "session-start", $$"""{"session_id":"{{Sid}}"}""");
         await fx.HandleAsync($$"""{"hook_event_name":"SessionEnd","session_id":"{{Sid}}","transcript_path":"/none","cwd":"/tmp"}""");
         var startIdx = fx.RouteOrder.IndexOf("session-start");
@@ -595,20 +596,17 @@ public class ClaudeHookCommandTests {
     // event must still be spooled — spooling is a local disk write that needs no client.
     [Test]
     public async Task session_end_spooled_when_client_creation_exceeds_budget() {
-        using var fx = new Fixture();
+        using var fx = new Fixture(Config.Root);
         // Slow factory: never completes within the cap (30s) so the budget elapses first.
         Func<Task<(HttpClient, AuthStatus)>> slowFactory = () =>
             Task.Delay(TimeSpan.FromSeconds(30)).ContinueWith(_ => (new HttpClient(), AuthStatus.Ok), TaskScheduler.Default);
 
-        // processStart ~13.4s in the past → session-end remaining = 15 - 13.4 - 1.5 ≈ 0.1s cap.
-        var processStart = System.Diagnostics.Stopwatch.GetTimestamp()
-                         - (long)(13.4 * System.Diagnostics.Stopwatch.Frequency);
-
+        // 13.4s already elapsed → session-end remaining = 15 - 13.4 - 1.5 ≈ 0.1s cap.
         var sw   = System.Diagnostics.Stopwatch.StartNew();
-        var exit = await ClaudeHookCommand.HandleWithDeps(
-            fx.Spool, processStart, "http://localhost",
+        var exit = await new ClaudeHookCommand(Config.Root, Resolutions.At("http://localhost", Config.Root), Aged(TimeSpan.FromSeconds(13.4)), Home).HandleWithDeps(
+            fx.Spool,
             new StringReader($$"""{"hook_event_name":"SessionEnd","session_id":"{{Sid}}","transcript_path":"/none","cwd":"/tmp"}"""),
-            clientFactory: slowFactory);
+            slowFactory);
         sw.Stop();
 
         await Assert.That(exit).IsEqualTo(0);
@@ -643,7 +641,7 @@ public class ClaudeHookCommandTests {
 
     [Test]
     public async Task subagent_stop_on_5xx_is_spooled_and_returns_zero() {
-        using var fx = new Fixture(HttpStatusCode.InternalServerError);
+        using var fx = new Fixture(Config.Root, HttpStatusCode.InternalServerError);
         var exit = await fx.HandleAsync($$"""{"hook_event_name":"SubagentStop","session_id":"{{Sid}}","agent_id":"{{AgentId}}","transcript_path":"/none","cwd":"/tmp"}""");
         await Assert.That(exit).IsEqualTo(0);
         var files = fx.SpoolFiles.ToList();
@@ -654,19 +652,22 @@ public class ClaudeHookCommandTests {
 
     [Test]
     public async Task subagent_stop_against_hung_server_is_spooled_within_budget() {
-        using var fx = new Fixture();
+        using var fx = new Fixture(Config.Root);
         fx.HoldOnPost = TimeSpan.FromSeconds(30); // server hangs past the bounded attempt
         var sw = System.Diagnostics.Stopwatch.StartNew();
         var exit = await fx.HandleAsync($$"""{"hook_event_name":"SubagentStop","session_id":"{{Sid}}","agent_id":"{{AgentId}}","transcript_path":"/none","cwd":"/tmp"}""");
         sw.Stop();
         await Assert.That(exit).IsEqualTo(0);
-        await Assert.That(sw.Elapsed).IsLessThan(TimeSpan.FromSeconds(5)); // did not wait the full 30s
+        // Bounded well clear of the hook's own 5s budget rather than at it: the claim is that the
+        // attempt gave up instead of waiting the server's 30s hold, and a bound equal to the budget
+        // it is measuring has no headroom for a loaded runner (observed 5.24s on a Windows leg).
+        await Assert.That(sw.Elapsed).IsLessThan(TimeSpan.FromSeconds(10));
         await Assert.That(fx.SpoolFiles.Any()).IsTrue();
     }
 
     [Test]
     public async Task subagent_stop_on_4xx_is_not_spooled() {
-        using var fx = new Fixture(HttpStatusCode.BadRequest);
+        using var fx = new Fixture(Config.Root, HttpStatusCode.BadRequest);
         await fx.HandleAsync($$"""{"hook_event_name":"SubagentStop","session_id":"{{Sid}}","agent_id":"{{AgentId}}","transcript_path":"/none","cwd":"/tmp"}""");
         await Assert.That(fx.SpoolFiles.Any()).IsFalse();
     }
@@ -674,14 +675,14 @@ public class ClaudeHookCommandTests {
     [Test]
     public async Task subagent_stop_without_agent_id_is_not_spooled() {
         // No agent_id → no SubagentCompleted to deliver → unchanged shared-path behavior (no spool).
-        using var fx = new Fixture(); // OK
+        using var fx = new Fixture(Config.Root); // OK
         await fx.HandleAsync($$"""{"hook_event_name":"SubagentStop","session_id":"{{Sid}}","transcript_path":"/none","cwd":"/tmp"}""");
         await Assert.That(fx.SpoolFiles.Any()).IsFalse();
     }
 
     [Test]
     public async Task spooled_subagent_stop_is_replayed_on_next_hook() {
-        using var fx = new Fixture(); // server up
+        using var fx = new Fixture(Config.Root); // server up
         fx.Spool.Append(Sid, "subagent-stop", $$"""{"session_id":"{{Sid}}","agent_id":"{{AgentId}}"}""");
         await fx.HandleAsync($$"""{"hook_event_name":"Stop","session_id":"{{Sid}}","transcript_path":"/none","cwd":"/tmp"}""");
         await Assert.That(fx.RouteOrder).Contains("subagent-stop"); // drained + replayed
@@ -691,7 +692,7 @@ public class ClaudeHookCommandTests {
     [Test]
     public async Task replayed_session_end_with_generate_whats_done_is_handled() {
         // Server returns generate_whats_done:false for the replayed session-end (set false to avoid process spawn).
-        using var fx = new Fixture();
+        using var fx = new Fixture(Config.Root);
         fx.RespondJson = """{"generate_whats_done":false}""";
         fx.Spool.Append(Sid, "session-end", $$"""{"session_id":"{{Sid}}"}""");
         await fx.HandleAsync($$"""{"hook_event_name":"Stop","session_id":"{{Sid}}","transcript_path":"/none","cwd":"/tmp"}""");
@@ -700,17 +701,15 @@ public class ClaudeHookCommandTests {
 
     [Test]
     public async Task subagent_stop_spooled_when_client_creation_exceeds_budget() {
-        using var fx = new Fixture();
+        using var fx = new Fixture(Config.Root);
         Func<Task<(HttpClient, AuthStatus)>> slowFactory = () =>
             Task.Delay(TimeSpan.FromSeconds(30)).ContinueWith(_ => (new HttpClient(), AuthStatus.Ok), TaskScheduler.Default);
-        // processStart ~3.4s in the past → subagent-stop remaining = 5 - 3.4 - 1.5 ≈ 0.1s cap.
-        var processStart = System.Diagnostics.Stopwatch.GetTimestamp()
-                         - (long)(3.4 * System.Diagnostics.Stopwatch.Frequency);
+        // 3.4s already elapsed → subagent-stop remaining = 5 - 3.4 - 1.5 ≈ 0.1s cap.
         var sw   = System.Diagnostics.Stopwatch.StartNew();
-        var exit = await ClaudeHookCommand.HandleWithDeps(
-            fx.Spool, processStart, "http://localhost",
+        var exit = await new ClaudeHookCommand(Config.Root, Resolutions.At("http://localhost", Config.Root), Aged(TimeSpan.FromSeconds(3.4)), Home).HandleWithDeps(
+            fx.Spool,
             new StringReader($$"""{"hook_event_name":"SubagentStop","session_id":"{{Sid}}","agent_id":"{{AgentId}}","transcript_path":"/none","cwd":"/tmp"}"""),
-            clientFactory: slowFactory);
+            slowFactory);
         sw.Stop();
         await Assert.That(exit).IsEqualTo(0);
         await Assert.That(sw.Elapsed).IsLessThan(TimeSpan.FromSeconds(5));
@@ -722,7 +721,7 @@ public class ClaudeHookCommandTests {
 
     [Test]
     public async Task current_session_start_replays_before_subagent_stop() {
-        using var fx = new Fixture(); // server up
+        using var fx = new Fixture(Config.Root); // server up
         fx.Spool.Append(Sid, "session-start", $$"""{"session_id":"{{Sid}}"}""");
         await fx.HandleAsync($$"""{"hook_event_name":"SubagentStop","session_id":"{{Sid}}","agent_id":"{{AgentId}}","transcript_path":"/none","cwd":"/tmp"}""");
         var startIdx = fx.RouteOrder.IndexOf("session-start");
@@ -733,7 +732,7 @@ public class ClaudeHookCommandTests {
 
     [Test]
     public async Task subagent_stop_spooled_not_posted_when_current_session_backlog_remains() {
-        using var fx = new Fixture(HttpStatusCode.InternalServerError); // drain fails transiently → backlog remains
+        using var fx = new Fixture(Config.Root, HttpStatusCode.InternalServerError); // drain fails transiently → backlog remains
         fx.Spool.Append(Sid, "session-start", $$"""{"session_id":"{{Sid}}"}""");
 
         await fx.HandleAsync($$"""{"hook_event_name":"SubagentStop","session_id":"{{Sid}}","agent_id":"{{AgentId}}","transcript_path":"/none","cwd":"/tmp"}""");
@@ -757,7 +756,7 @@ public class ClaudeHookCommandTests {
     // the still-withheld session-end — the exact cross-spool ordering violation the blockers prevent.
     [Test]
     public async Task subagent_stop_spools_behind_a_session_end_withheld_in_the_ordered_namespace() {
-        using var fx = new Fixture(HttpStatusCode.OK); // server up — only the ordering guard can hold the post back
+        using var fx = new Fixture(Config.Root, HttpStatusCode.OK); // server up — only the ordering guard can hold the post back
         // A withheld ordered-drain remainder, exactly as LifecycleSpoolDrain/DrainRoutesAsync leaves it.
         fx.WriteOrderedTemp(Sid, """{"route":"session-end","body":"{\"session_id\":\"withheld\"}"}""");
 
@@ -777,15 +776,13 @@ public class ClaudeHookCommandTests {
 
     [Test]
     public async Task session_start_with_expired_auth_exits_zero_and_emits_the_expired_notice() {
-        using var fx = new Fixture();
+        using var fx = new Fixture(Config.Root);
         var stdout = new StringWriter { NewLine = "\n" };
 
-        var exit = await ClaudeHookCommand.HandleCore(
-            fx.Client, AuthStatus.Expired, fx.Spool, System.Diagnostics.Stopwatch.GetTimestamp(),
-            "http://localhost", new StringReader(
+        var exit = await new ClaudeHookCommand(Config.Root, Resolutions.At("http://localhost", Config.Root), new HookClock(TimeProvider.System), Home).HandleCore(
+            fx.Client, AuthStatus.Expired, fx.Spool, new StringReader(
                 $$"""{"hook_event_name":"SessionStart","session_id":"{{Sid}}","cwd":"/tmp"}"""),
-            memoryStoreFactory: () => new SessionStartMemoryLeaseStore(
-                Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"))),
+
             stdout: stdout);
 
         await Assert.That(exit).IsEqualTo(0);
@@ -795,15 +792,13 @@ public class ClaudeHookCommandTests {
 
     [Test]
     public async Task session_start_with_wrong_server_auth_exits_zero_and_emits_the_not_authenticated_notice() {
-        using var fx = new Fixture();
+        using var fx = new Fixture(Config.Root);
         var stdout = new StringWriter { NewLine = "\n" };
 
-        var exit = await ClaudeHookCommand.HandleCore(
-            fx.Client, AuthStatus.WrongServer, fx.Spool, System.Diagnostics.Stopwatch.GetTimestamp(),
-            "http://localhost", new StringReader(
+        var exit = await new ClaudeHookCommand(Config.Root, Resolutions.At("http://localhost", Config.Root), new HookClock(TimeProvider.System), Home).HandleCore(
+            fx.Client, AuthStatus.WrongServer, fx.Spool, new StringReader(
                 $$"""{"hook_event_name":"SessionStart","session_id":"{{Sid}}","cwd":"/tmp"}"""),
-            memoryStoreFactory: () => new SessionStartMemoryLeaseStore(
-                Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"))),
+
             stdout: stdout);
 
         await Assert.That(exit).IsEqualTo(0);
@@ -813,12 +808,11 @@ public class ClaudeHookCommandTests {
 
     [Test]
     public async Task stop_with_expired_auth_exits_zero_without_a_notice() {
-        using var fx = new Fixture();
+        using var fx = new Fixture(Config.Root);
         var stdout = new StringWriter { NewLine = "\n" };
 
-        var exit = await ClaudeHookCommand.HandleCore(
-            fx.Client, AuthStatus.Expired, fx.Spool, System.Diagnostics.Stopwatch.GetTimestamp(),
-            "http://localhost", new StringReader(
+        var exit = await new ClaudeHookCommand(Config.Root, Resolutions.At("http://localhost", Config.Root), new HookClock(TimeProvider.System), Home).HandleCore(
+            fx.Client, AuthStatus.Expired, fx.Spool, new StringReader(
                 $$"""{"hook_event_name":"Stop","session_id":"{{Sid}}","cwd":"/tmp"}"""),
             stdout: stdout);
 
@@ -835,12 +829,11 @@ public class ClaudeHookCommandTests {
 
     [Test]
     public async Task stop_on_401_exits_zero_and_nudges_the_user_to_log_in() {
-        using var fx = new Fixture(HttpStatusCode.Unauthorized);
+        using var fx = new Fixture(Config.Root, HttpStatusCode.Unauthorized);
         var stdout = new StringWriter { NewLine = "\n" };
 
-        var exit = await ClaudeHookCommand.HandleCore(
-            fx.Client, AuthStatus.Ok, fx.Spool, System.Diagnostics.Stopwatch.GetTimestamp(),
-            "http://localhost", new StringReader(
+        var exit = await new ClaudeHookCommand(Config.Root, Resolutions.At("http://localhost", Config.Root), new HookClock(TimeProvider.System), Home).HandleCore(
+            fx.Client, AuthStatus.Ok, fx.Spool, new StringReader(
                 $$"""{"hook_event_name":"Stop","session_id":"{{Sid}}","cwd":"/tmp"}"""),
             stdout: stdout);
 
@@ -852,12 +845,11 @@ public class ClaudeHookCommandTests {
 
     [Test]
     public async Task notification_on_401_exits_zero_without_a_notice() {
-        using var fx = new Fixture(HttpStatusCode.Unauthorized);
+        using var fx = new Fixture(Config.Root, HttpStatusCode.Unauthorized);
         var stdout = new StringWriter { NewLine = "\n" };
 
-        var exit = await ClaudeHookCommand.HandleCore(
-            fx.Client, AuthStatus.Ok, fx.Spool, System.Diagnostics.Stopwatch.GetTimestamp(),
-            "http://localhost", new StringReader(
+        var exit = await new ClaudeHookCommand(Config.Root, Resolutions.At("http://localhost", Config.Root), new HookClock(TimeProvider.System), Home).HandleCore(
+            fx.Client, AuthStatus.Ok, fx.Spool, new StringReader(
                 $$"""{"hook_event_name":"Notification","session_id":"{{Sid}}","cwd":"/tmp"}"""),
             stdout: stdout);
 
@@ -869,12 +861,11 @@ public class ClaudeHookCommandTests {
     /// its bare-status stderr line and its non-zero exit, so a 500 still reads as a failure.</summary>
     [Test]
     public async Task stop_on_500_still_exits_non_zero_without_a_notice() {
-        using var fx = new Fixture(HttpStatusCode.InternalServerError);
+        using var fx = new Fixture(Config.Root, HttpStatusCode.InternalServerError);
         var stdout = new StringWriter { NewLine = "\n" };
 
-        var exit = await ClaudeHookCommand.HandleCore(
-            fx.Client, AuthStatus.Ok, fx.Spool, System.Diagnostics.Stopwatch.GetTimestamp(),
-            "http://localhost", new StringReader(
+        var exit = await new ClaudeHookCommand(Config.Root, Resolutions.At("http://localhost", Config.Root), new HookClock(TimeProvider.System), Home).HandleCore(
+            fx.Client, AuthStatus.Ok, fx.Spool, new StringReader(
                 $$"""{"hook_event_name":"Stop","session_id":"{{Sid}}","cwd":"/tmp"}"""),
             stdout: stdout);
 
@@ -883,9 +874,9 @@ public class ClaudeHookCommandTests {
     }
 
     sealed class Fixture : IDisposable {
-        readonly TempDir        _tmp = new();
+        readonly TempHome      _home = new();
         readonly string         _tmpHome;
-        readonly string?        _originalClaudeConfigDir;
+        public   ConfigRoot     Config      { get; }
         readonly string         _spoolPath;
         public   List<string>   Sent        { get; } = [];
         public   List<string>   RouteOrder  { get; } = [];
@@ -895,38 +886,46 @@ public class ClaudeHookCommandTests {
         public   string?        RespondJson { get; set; }
         readonly HttpStatusCode _postStatus;
 
-        // Lets a test fake the shared SessionStart memory-index endpoint distinctly from the
-        // generic GET fallback below (which stays 404) — mirrors CursorHookCommandTests.Fixture.
-        public string         MemoryIndexBody         { get; set; } = "[]";
-        public HttpStatusCode MemoryIndexStatus        { get; set; } = HttpStatusCode.OK;
-        public TimeSpan       MemoryIndexDelay         { get; set; } = TimeSpan.Zero;
-        public bool           MemoryIndexRequested     => MemoryIndexRequestCount > 0;
-        public int            MemoryIndexRequestCount  { get; private set; }
+        // The memory-index endpoint is served over real HTTP, not by the stub handler above: the
+        // memory lane builds its own authenticated client rather than borrowing the hook's, so a
+        // handler stub could only ever test a wiring production does not have. The POST still goes
+        // through the stub client, which answers regardless of host.
+        readonly WireMockServer _memoryServer = WireMockServer.Start();
 
-        public Fixture(HttpStatusCode postStatus = HttpStatusCode.OK) {
-            // Isolate Claude's config dir (settings.json / plugins) to this temp home so ambient
-            // plugin state on the dev machine can't leak in — notably the work-items-nudge availability
-            // gate, which reads whether the kcap plugin is effectively installed. Safe under the class's
-            // [NotInParallel("HomeEnvVarMutation")] lock. The kcap profile and the HTTP-stubbed memory
-            // index are unaffected (they don't read CLAUDE_CONFIG_DIR).
-            _tmpHome                 = _tmp.Path;
-            _originalClaudeConfigDir = Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR");
-            Environment.SetEnvironmentVariable("CLAUDE_CONFIG_DIR", _tmpHome);
+        /// <summary>The URL the hook posts to — the stub client answers regardless of host, so a test
+        /// building its own resolution names this rather than a second literal.</summary>
+        public string MemoryServerUrl => _memoryServer.Url!;
+
+        public string         MemoryIndexBody   { get; set; } = "[]";
+        public HttpStatusCode MemoryIndexStatus { get; set; } = HttpStatusCode.OK;
+        public TimeSpan       MemoryIndexDelay  { get; set; } = TimeSpan.Zero;
+
+        public bool MemoryIndexRequested    => MemoryIndexRequestCount > 0;
+        public int  MemoryIndexRequestCount => _memoryServer.LogEntries
+            .Count(e => e.RequestMessage.Path == "/api/memories/index");
+
+        /// <summary>The resolution the hook reads its per-profile settings through. A test that
+        /// needs a setting honoured passes the profile here rather than steering process-global
+        /// state.</summary>
+        public ProfileContext Profiles { get; }
+
+        public Fixture(ConfigRoot config, HttpStatusCode postStatus = HttpStatusCode.OK, Profile? profile = null) {
+            // The ephemeral home is what keeps the dev machine's own plugin state out — notably the
+            // work-items-nudge availability gate, which reads whether the kcap plugin is effectively
+            // installed under it.
+            _tmpHome    = _home.Path;
             _spoolPath  = Path.Combine(_tmpHome, "spool");
             _postStatus = postStatus;
+            Config      = config;
+            Profiles    = profile is null
+                ? Resolutions.At(_memoryServer.Url!, config)
+                : Resolutions.Of(profile, serverUrl: _memoryServer.Url);
             Spool = new HookSpool(_spoolPath);
             Client = new HttpClient(new StubHandler(async (req, ct) => {
                 var body = req.Content is null ? "" : await req.Content.ReadAsStringAsync(ct);
                 var path = req.RequestUri!.AbsolutePath;
                 Sent.Add($"{path}|{body}");
                 if (path.StartsWith("/hooks/", StringComparison.Ordinal)) RouteOrder.Add(path.Replace("/hooks/", ""));
-                if (path == "/api/memories/index") {
-                    MemoryIndexRequestCount++;
-                    if (MemoryIndexDelay > TimeSpan.Zero) await Task.Delay(MemoryIndexDelay, ct);
-                    return new HttpResponseMessage(MemoryIndexStatus) {
-                        Content = new System.Net.Http.StringContent(MemoryIndexBody, System.Text.Encoding.UTF8, "application/json")
-                    };
-                }
                 if (req.Method == HttpMethod.Get) return new HttpResponseMessage(HttpStatusCode.NotFound);
                 if (HoldOnPost > TimeSpan.Zero) await Task.Delay(HoldOnPost, ct);
                 var resp = new HttpResponseMessage(_postStatus);
@@ -935,10 +934,28 @@ public class ClaudeHookCommandTests {
             }));
         }
 
-        public Task<int> HandleAsync(string stdin, long processStart = 0) =>
-            ClaudeHookCommand.HandleCore(Client, AuthStatus.Ok, Spool, processStart == 0 ? System.Diagnostics.Stopwatch.GetTimestamp() : processStart,
-                "http://localhost", new StringReader(stdin),
-                memoryStoreFactory: () => new SessionStartMemoryLeaseStore(Path.Combine(_tmpHome, "memory")));
+        public Task<int> HandleAsync(string stdin, TimeSpan elapsed = default) {
+            StubMemoryServer();
+
+            return new ClaudeHookCommand(Config, Profiles, Aged(elapsed), _home).HandleCore(
+                Client, AuthStatus.Ok, Spool, new StringReader(stdin));
+        }
+
+        /// <summary>Registered per call, not in the constructor, so a test can set the body, status
+        /// or delay after building the fixture. "None" auth keeps the real client construction off
+        /// the token store.</summary>
+        void StubMemoryServer() {
+            _memoryServer.ResetMappings();   // mappings only — MemoryIndexRequestCount counts across calls
+            _memoryServer.Given(Request.Create().WithPath("/auth/config").UsingGet())
+                .RespondWith(Response.Create().WithStatusCode(200)
+                    .WithHeader("Content-Type", "application/json").WithBody("""{"provider":"None"}"""));
+
+            var response = Response.Create().WithStatusCode((int) MemoryIndexStatus)
+                .WithHeader("Content-Type", "application/json").WithBody(MemoryIndexBody);
+            if (MemoryIndexDelay > TimeSpan.Zero) response = response.WithDelay(MemoryIndexDelay);
+
+            _memoryServer.Given(Request.Create().WithPath("/api/memories/index").UsingGet()).RespondWith(response);
+        }
 
         public IEnumerable<string> SpoolFiles =>
             Directory.Exists(_spoolPath) ? Directory.EnumerateFiles(_spoolPath) : [];
@@ -951,9 +968,9 @@ public class ClaudeHookCommandTests {
         }
 
         public void Dispose() {
-            Environment.SetEnvironmentVariable("CLAUDE_CONFIG_DIR", _originalClaudeConfigDir);
             Client.Dispose();
-            _tmp.Dispose();
+            _memoryServer.Stop();
+            _home.Dispose();
         }
     }
 

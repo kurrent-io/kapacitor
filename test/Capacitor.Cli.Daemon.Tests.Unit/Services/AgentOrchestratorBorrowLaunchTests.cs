@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.LocalIpc;
 using Capacitor.Cli.Daemon.Harness.Claude;
@@ -10,9 +9,9 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 
 /// <summary>
-/// Phase A (tasks A5 + A6): the borrowed-launch branch in
-/// <c>AgentOrchestrator.HandleLaunchAgent</c> and — the reason A5 and A6 ship together —
-/// the failed-launch cleanup guard.
+/// The borrowed-launch branch in <c>AgentOrchestrator.HandleLaunchAgent</c>, and the failed-launch
+/// cleanup guard alongside it — a launch failure must not undo what the borrowed path deliberately
+/// left alone.
 ///
 /// THE TOP SAFETY INVARIANT: a borrowed cwd is the user's REAL checkout. It must NEVER be
 /// removed / <c>git worktree remove</c>d / branch-deleted on ANY path (normal stop, failed
@@ -25,6 +24,8 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 /// </summary>
 [ParallelLimiter<SubprocessLimit>]
 public class AgentOrchestratorBorrowLaunchTests {
+    [TempHome] public required TempHome Home { get; init; }
+
     // The bridge's loopback listener can still refuse a connection while coming up, so the manifest
     // is fetched with a bound rather than once.
     static async Task<string> FetchAsync(HttpClient client, string url) {
@@ -37,41 +38,39 @@ public class AgentOrchestratorBorrowLaunchTests {
 
     [Test]
     public async Task Borrowed_Claude_review_flow_fails_at_runtime_boundary_without_spawning() {
-        var (cwd, cleanup) = GitRepoHarness.CreateGitRepo();
-        try {
-            var server = new CaptureServerConnection();
-            var ptyFactory = new SpyPtyProcessFactory();
-            var launcher = new ClaudeLauncher(
-                new DaemonConfig { ClaudePath = "spy-claude", ServerUrl = "http://127.0.0.1:1" },
-                NullLogger<ClaudeLauncher>.Instance);
-            await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, ptyFactory,
-                new Dictionary<string, IHostedAgentLauncher> { ["claude"] = launcher });
-            var cmd = new LaunchAgentCommand(
-                "agent-borrowed-review", "review", "default", null, cwd, null, null,
-                Vendor: "claude", Kind: LaunchKind.ReviewFlow, Borrowed: true, BorrowCwd: cwd);
+        using var cwd = GitRepo.CreateWithCommit();
+        var server = new CaptureServerConnection();
+        var ptyFactory = new SpyPtyProcessFactory();
+        var launcher = new ClaudeLauncher(
+            new DaemonConfig { ClaudePath = "spy-claude", ServerUrl = "http://127.0.0.1:1" },
+            Home,
+            NullLogger<ClaudeLauncher>.Instance);
+        await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, ptyFactory,
+            new Dictionary<string, IHostedAgentLauncher> { ["claude"] = launcher });
+        var cmd = new LaunchAgentCommand(
+            "agent-borrowed-review", "review", "default", null, cwd, null, null,
+            Vendor: "claude", Kind: LaunchKind.ReviewFlow, Borrowed: true, BorrowCwd: cwd);
 
-            await orch.HandleLaunchAgentForTest(cmd);
+        await orch.HandleLaunchAgentForTest(cmd);
 
-            await Assert.That(server.LaunchFailedCalls).Count().IsEqualTo(1);
-            await Assert.That(server.LaunchFailedCalls[0].Reason)
-                .Contains("not certified for 'claude'");
-            await Assert.That(ptyFactory.SpawnCalls).IsEqualTo(0);
-            await Assert.That(Directory.Exists(cwd)).IsTrue();
-        } finally {
-            cleanup();
-        }
+        await Assert.That(server.LaunchFailedCalls).Count().IsEqualTo(1);
+        await Assert.That(server.LaunchFailedCalls[0].Reason)
+            .Contains("not certified for 'claude'");
+        await Assert.That(ptyFactory.SpawnCalls).IsEqualTo(0);
+        await Assert.That(Directory.Exists(cwd)).IsTrue();
+
     }
 
     [Test]
     public async Task Borrowed_Cursor_review_flow_runs_in_owned_dirty_snapshot_and_refreshes_between_rounds() {
-        var (cwd, cleanup) = GitRepoHarness.CreateGitRepo();
+        using var cwd = GitRepo.CreateWithCommit();
         LocalPermissionBridge? bridge = null;
         try {
             File.WriteAllText(Path.Combine(cwd, "README.md"), "dirty-one");
             File.WriteAllText(Path.Combine(cwd, "untracked.txt"), "untracked-one");
             var firstContext = "{\"mcpServers\":{\"first\":{}}}";
             File.WriteAllText(Path.Combine(cwd, ".mcp.json"), firstContext);
-            GitRepoHarness.Git(cwd, "add", ".mcp.json");
+            cwd.Do("add", ".mcp.json");
             var server = new CaptureServerConnection();
             var factory = new SpyHostedAgentRuntimeFactory("cursor") {
                 SupportsUnattended = true,
@@ -119,7 +118,7 @@ public class AgentOrchestratorBorrowLaunchTests {
             File.WriteAllText(Path.Combine(cwd, "README.md"), "dirty-two");
             var secondContext = "{\"mcpServers\":{\"second\":{}}}";
             File.WriteAllText(Path.Combine(cwd, ".mcp.json"), secondContext);
-            GitRepoHarness.Git(cwd, "add", ".mcp.json");
+            cwd.Do("add", ".mcp.json");
             await orch.HandleSendInputForTest(new SendInputCommand(cmd.AgentId, "next", null));
             await Assert.That(File.ReadAllText(Path.Combine(ctx.Worktree.Path, "README.md")))
                 .IsEqualTo("dirty-two");
@@ -140,18 +139,17 @@ public class AgentOrchestratorBorrowLaunchTests {
             await Assert.That(bridge.ReviewerTokenCountForTest).IsEqualTo(0);
         } finally {
             if (bridge is not null) await bridge.DisposeAsync();
-            cleanup();
         }
     }
 
     [Test, NotInParallel("LocalPermissionBridgeTests")]
     public async Task Non_review_independent_snapshot_gets_context_grant_and_refreshes() {
-        var (cwd, cleanup) = GitRepoHarness.CreateGitRepo();
+        using var cwd = GitRepo.CreateWithCommit();
         LocalPermissionBridge? bridge = null;
         try {
             var firstContext = "{\"mcpServers\":{\"first\":{}}}";
             File.WriteAllText(Path.Combine(cwd, ".mcp.json"), firstContext);
-            GitRepoHarness.Git(cwd, "add", ".mcp.json");
+            cwd.Do("add", ".mcp.json");
             var server = new CaptureServerConnection();
             var factory = new SpyHostedAgentRuntimeFactory("cursor") {
                 SupportsBorrowedReviewFlow = true,
@@ -177,7 +175,7 @@ public class AgentOrchestratorBorrowLaunchTests {
 
             var secondContext = "{\"mcpServers\":{\"second\":{}}}";
             File.WriteAllText(Path.Combine(cwd, ".mcp.json"), secondContext);
-            GitRepoHarness.Git(cwd, "add", ".mcp.json");
+            cwd.Do("add", ".mcp.json");
             await orch.HandleSendInputForTest(new SendInputCommand(command.AgentId, "next", null));
 
             await Assert.That(runtime.HasExited).IsFalse();
@@ -192,13 +190,12 @@ public class AgentOrchestratorBorrowLaunchTests {
             await Assert.That(bridge.ReviewerTokenCountForTest).IsEqualTo(0);
         } finally {
             if (bridge is not null) await bridge.DisposeAsync();
-            cleanup();
         }
     }
 
     [Test, NotInParallel("LocalPermissionBridgeTests")]
     public async Task Snapshot_launch_failure_revokes_context_grant_and_removes_sidecar() {
-        var (cwd, cleanup) = GitRepoHarness.CreateGitRepo();
+        using var cwd = GitRepo.CreateWithCommit();
         LocalPermissionBridge? bridge = null;
         try {
             var server = new CaptureServerConnection();
@@ -228,13 +225,12 @@ public class AgentOrchestratorBorrowLaunchTests {
             await Assert.That(Directory.Exists(context.Worktree.ReviewContextRoot!)).IsFalse();
         } finally {
             if (bridge is not null) await bridge.DisposeAsync();
-            cleanup();
         }
     }
 
     [Test, NotInParallel("LocalPermissionBridgeTests")]
     public async Task Snapshot_refresh_context_failure_terminates_reviewer_and_cleans_capability() {
-        var (cwd, cleanup) = GitRepoHarness.CreateGitRepo();
+        using var cwd = GitRepo.CreateWithCommit();
         LocalPermissionBridge? bridge = null;
         try {
             var server = new CaptureServerConnection();
@@ -259,7 +255,7 @@ public class AgentOrchestratorBorrowLaunchTests {
 
             Directory.CreateDirectory(Path.Combine(cwd, ".mcp.json"));
             File.WriteAllText(Path.Combine(cwd, ".mcp.json", "child"), "unsafe");
-            GitRepoHarness.Git(cwd, "add", ".mcp.json/child");
+            cwd.Do("add", ".mcp.json/child");
             await orch.HandleSendInputForTest(new SendInputCommand(command.AgentId, "next", null));
 
             await Assert.That(runtime.HasExited).IsTrue();
@@ -272,7 +268,6 @@ public class AgentOrchestratorBorrowLaunchTests {
             await Assert.That(Directory.Exists(context.Worktree.ReviewContextRoot!)).IsFalse();
         } finally {
             if (bridge is not null) await bridge.DisposeAsync();
-            cleanup();
         }
     }
 
@@ -288,22 +283,22 @@ public class AgentOrchestratorBorrowLaunchTests {
 
     [Test]
     public async Task Borrowed_snapshot_is_built_from_the_requester_checkout_not_the_registered_repo() {
-        var (daemonRepo, cleanupDaemon)       = GitRepoHarness.CreateGitRepo();
-        var (requesterRepo, cleanupRequester) = GitRepoHarness.CreateGitRepo();
+        using var daemonRepo = GitRepo.CreateWithCommit();
+        using var requesterRepo = GitRepo.CreateWithCommit();
         LocalPermissionBridge? bridge = null;
         try {
             // The daemon-registered checkout is a decoy: everything in it is distinguishable from
             // the requester's, so any content leaking from it is caught by value, not by absence.
             File.WriteAllText(Path.Combine(daemonRepo, "README.md"), "daemon-checkout-decoy");
             File.WriteAllText(Path.Combine(daemonRepo, "daemon-only.txt"), "daemon-only");
-            GitRepoHarness.Git(daemonRepo, "add", "-A");
-            GitRepoHarness.Git(daemonRepo, "commit", "-q", "-m", "daemon decoy");
+            daemonRepo.Do("add", "-A");
+            daemonRepo.Do("commit", "-q", "-m", "daemon decoy");
 
             // The requester carries all four shapes the snapshot has to get right.
-            GitRepoHarness.Git(requesterRepo, "checkout", "-q", "-b", "feature");
+            requesterRepo.Do("checkout", "-q", "-b", "feature");
             File.WriteAllText(Path.Combine(requesterRepo, "branch-only.txt"), "branch-only-committed");
-            GitRepoHarness.Git(requesterRepo, "add", "-A");
-            GitRepoHarness.Git(requesterRepo, "commit", "-q", "-m", "branch-only commit");
+            requesterRepo.Do("add", "-A");
+            requesterRepo.Do("commit", "-q", "-m", "branch-only commit");
             File.WriteAllText(Path.Combine(requesterRepo, "README.md"), "requester-modified");
             File.WriteAllText(Path.Combine(requesterRepo, "untracked.txt"), "requester-untracked");
             File.WriteAllText(Path.Combine(requesterRepo, ".gitignore"), "ignored.txt\n");
@@ -412,18 +407,14 @@ public class AgentOrchestratorBorrowLaunchTests {
             await AssertBaselineUnchanged(canonicalRequester, refreshedBaseline, refreshedGitState, "after stop");
         } finally {
             if (bridge is not null) await bridge.DisposeAsync();
-            cleanupRequester();
-            cleanupDaemon();
         }
     }
 
     /// <summary>
     /// The Copilot mirror of the two-checkout snapshot test above.
     ///
-    /// <para>Carried from the borrowed-review readability amendment's §5, which required it and
-    /// recorded that it did not ship: both borrowed-launch cases above construct
-    /// <c>SpyHostedAgentRuntimeFactory("cursor")</c>,
-    /// so nothing pinned that a borrowed COPILOT launch materializes an owned snapshot from the
+    /// <para>Both other borrowed-launch cases construct <c>SpyHostedAgentRuntimeFactory("cursor")</c>,
+    /// so nothing else pins that a borrowed COPILOT launch materializes an owned snapshot from the
     /// REQUESTER's checkout and refreshes it between rounds. It is listed separately from the Cursor
     /// read probe on purpose: the two catch different regressions, so discharging one must not read as
     /// discharging both.</para>
@@ -435,22 +426,22 @@ public class AgentOrchestratorBorrowLaunchTests {
     /// </summary>
     [Test]
     public async Task Borrowed_Copilot_review_snapshots_the_requester_checkout_and_refreshes_between_rounds() {
-        var (daemonRepo, cleanupDaemon)       = GitRepoHarness.CreateGitRepo();
-        var (requesterRepo, cleanupRequester) = GitRepoHarness.CreateGitRepo();
+        using var daemonRepo = GitRepo.CreateWithCommit();
+        using var requesterRepo = GitRepo.CreateWithCommit();
         LocalPermissionBridge? bridge = null;
         try {
             // The registered checkout is a decoy: its content is distinguishable, so a leak is caught
             // by value rather than by absence.
             File.WriteAllText(Path.Combine(daemonRepo, "README.md"), "daemon-checkout-decoy");
             File.WriteAllText(Path.Combine(daemonRepo, "daemon-only.txt"), "daemon-only");
-            GitRepoHarness.Git(daemonRepo, "add", "-A");
-            GitRepoHarness.Git(daemonRepo, "commit", "-q", "-m", "daemon decoy");
+            daemonRepo.Do("add", "-A");
+            daemonRepo.Do("commit", "-q", "-m", "daemon decoy");
 
             // All three classes a borrowed reviewer has to be able to see.
-            GitRepoHarness.Git(requesterRepo, "checkout", "-q", "-b", "feature");
+            requesterRepo.Do("checkout", "-q", "-b", "feature");
             File.WriteAllText(Path.Combine(requesterRepo, "branch-only.txt"), "branch-only-committed");
-            GitRepoHarness.Git(requesterRepo, "add", "-A");
-            GitRepoHarness.Git(requesterRepo, "commit", "-q", "-m", "branch-only commit");
+            requesterRepo.Do("add", "-A");
+            requesterRepo.Do("commit", "-q", "-m", "branch-only commit");
             File.WriteAllText(Path.Combine(requesterRepo, "README.md"), "requester-modified");
             File.WriteAllText(Path.Combine(requesterRepo, "untracked.txt"), "requester-untracked");
 
@@ -542,220 +533,206 @@ public class AgentOrchestratorBorrowLaunchTests {
             await AssertBaselineUnchanged(canonicalRequester, refreshedBaseline, refreshedGitState, "after stop");
         } finally {
             if (bridge is not null) await bridge.DisposeAsync();
-            cleanupRequester();
-            cleanupDaemon();
         }
     }
 
-    // ── A5: borrowed launch runs in the user's cwd and creates no daemon worktree ─────────
+    // ── Borrowed launch runs in the user's cwd and creates no daemon worktree ─────────────
 
     [Test]
     public async Task Borrowed_launch_creates_no_worktree_and_runs_in_the_cwd() {
-        var (cwd, cleanup) = GitRepoHarness.CreateGitRepo();
+        using var cwd = GitRepo.CreateWithCommit();
 
-        try {
-            var server     = new CaptureServerConnection();
-            // A blocking PTY keeps the agent registered so we can inspect Work/Worktree before cleanup.
-            var ptyFactory = new FixedPtyProcessFactory(new OneChunkThenBlockPtyProcess());
-            var claudeSpy  = new SpyHostedAgentLauncher("claude", cliPath: "spy-claude");
-            var launchers  = new Dictionary<string, IHostedAgentLauncher> { ["claude"] = claudeSpy };
+        var server     = new CaptureServerConnection();
+        // A blocking PTY keeps the agent registered so we can inspect Work/Worktree before cleanup.
+        var ptyFactory = new FixedPtyProcessFactory(new OneChunkThenBlockPtyProcess());
+        var claudeSpy  = new SpyHostedAgentLauncher("claude", cliPath: "spy-claude");
+        var launchers  = new Dictionary<string, IHostedAgentLauncher> { ["claude"] = claudeSpy };
 
-            // Empty allowlist ⇒ BorrowAuthorizer authorizes any local git repo (allow-all-repos).
-            await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, ptyFactory, launchers);
+        // Empty allowlist ⇒ BorrowAuthorizer authorizes any local git repo (allow-all-repos).
+        await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, ptyFactory, launchers);
 
-            var before = SnapshotTree(cwd);
+        var before = SnapshotTree(cwd);
 
-            var cmd = new LaunchAgentCommand(
-                AgentId: "agent-borrow-1",
-                Prompt: "do work",
-                Model: "opus",
-                Effort: null,
-                RepoPath: cwd,
-                Tools: null,
-                AttachmentIds: ["would-be-attachment"], // set so we prove the attachment download-into-cwd is skipped
-                Vendor: "claude",
-                Borrowed: true,
-                BorrowCwd: cwd
-            );
+        var cmd = new LaunchAgentCommand(
+            AgentId: "agent-borrow-1",
+            Prompt: "do work",
+            Model: "opus",
+            Effort: null,
+            RepoPath: cwd,
+            Tools: null,
+            AttachmentIds: ["would-be-attachment"], // set so we prove the attachment download-into-cwd is skipped
+            Vendor: "claude",
+            Borrowed: true,
+            BorrowCwd: cwd
+        );
 
-            await orch.HandleLaunchAgentForTest(cmd);
+        await orch.HandleLaunchAgentForTest(cmd);
 
-            var canonicalCwd = BorrowAuthorizer.Canonicalize(cwd);
+        var canonicalCwd = BorrowAuthorizer.Canonicalize(cwd);
 
-            // No daemon-owned worktree was created under the user's checkout...
-            await Assert.That(Directory.Exists(Path.Combine(cwd, ".capacitor", "worktrees"))).IsFalse();
-            // ...no attachments were downloaded into it...
-            await Assert.That(Directory.Exists(Path.Combine(cwd, ".attached"))).IsFalse();
-            await Assert.That(Directory.Exists(Path.Combine(canonicalCwd, ".attached"))).IsFalse();
-            // ...and the cwd tree is byte-identical (no worktree add, no launch-time mirror, no attachment).
-            await Assert.That(SnapshotTree(cwd)).IsEquivalentTo(before);
+        // No daemon-owned worktree was created under the user's checkout...
+        await Assert.That(Directory.Exists(Path.Combine(cwd, ".capacitor", "worktrees"))).IsFalse();
+        // ...no attachments were downloaded into it...
+        await Assert.That(Directory.Exists(Path.Combine(cwd, ".attached"))).IsFalse();
+        await Assert.That(Directory.Exists(Path.Combine(canonicalCwd, ".attached"))).IsFalse();
+        // ...and the cwd tree is byte-identical (no worktree add, no launch-time mirror, no attachment).
+        await Assert.That(SnapshotTree(cwd)).IsEquivalentTo(before);
 
-            // The agent runs in the user's real (canonicalized) checkout, marked as a borrowed cwd.
-            var agent = orch.GetAgentForTest("agent-borrow-1");
-            await Assert.That(agent).IsNotNull();
-            await Assert.That(agent!.Work).IsEqualTo(WorkLocation.BorrowedCwd);
-            await Assert.That(agent.Worktree.Path).IsEqualTo(canonicalCwd);
+        // The agent runs in the user's real (canonicalized) checkout, marked as a borrowed cwd.
+        var agent = orch.GetAgentForTest("agent-borrow-1");
+        await Assert.That(agent).IsNotNull();
+        await Assert.That(agent!.Work).IsEqualTo(WorkLocation.BorrowedCwd);
+        await Assert.That(agent.Worktree.Path).IsEqualTo(canonicalCwd);
 
-            // Clean stop (also exercises the normal-stop cleanup guard for a borrowed agent).
-            await orch.HandleStopAgentForTest("agent-borrow-1");
-            await Assert.That(Directory.Exists(cwd)).IsTrue();
-        } finally {
-            cleanup();
-        }
+        // Clean stop (also exercises the normal-stop cleanup guard for a borrowed agent).
+        await orch.HandleStopAgentForTest("agent-borrow-1");
+        await Assert.That(Directory.Exists(cwd)).IsTrue();
+
     }
 
-    // ── A5: launch-time re-authorization fails loudly, leaving the cwd untouched ───────────
+    // ── Launch-time re-authorization fails loudly, leaving the cwd untouched ──────────────
 
     [Test]
     public async Task Borrowed_launch_reauth_failure_fails_loudly() {
         // RepoPath is an allowed git repo (passes the early repo-allowed/exists guards); the borrow
         // cwd is a NON-git directory, which the authorizer rejects under an empty allowlist.
-        var (repoPath, cleanupRepo) = GitRepoHarness.CreateGitRepo();
+        using var repoPath = GitRepo.CreateWithCommit();
         using var tmpBorrow = new TempDir();
         tmpBorrow.CreateFile("user-file.txt", "precious");
         var borrowCwd = tmpBorrow.Path;
 
-        try {
-            var server     = new CaptureServerConnection();
-            var ptyFactory = new SpyPtyProcessFactory();
-            var claudeSpy  = new SpyHostedAgentLauncher("claude", cliPath: "spy-claude");
-            var launchers  = new Dictionary<string, IHostedAgentLauncher> { ["claude"] = claudeSpy };
+        var server     = new CaptureServerConnection();
+        var ptyFactory = new SpyPtyProcessFactory();
+        var claudeSpy  = new SpyHostedAgentLauncher("claude", cliPath: "spy-claude");
+        var launchers  = new Dictionary<string, IHostedAgentLauncher> { ["claude"] = claudeSpy };
 
-            await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, ptyFactory, launchers);
+        await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, ptyFactory, launchers);
 
-            var before = SnapshotTree(borrowCwd);
+        var before = SnapshotTree(borrowCwd);
 
-            var cmd = new LaunchAgentCommand(
-                AgentId: "agent-borrow-auth",
-                Prompt: "do work",
-                Model: "opus",
-                Effort: null,
-                RepoPath: repoPath,
-                Tools: null,
-                AttachmentIds: null,
-                Vendor: "claude",
-                Borrowed: true,
-                BorrowCwd: borrowCwd
-            );
+        var cmd = new LaunchAgentCommand(
+            AgentId: "agent-borrow-auth",
+            Prompt: "do work",
+            Model: "opus",
+            Effort: null,
+            RepoPath: repoPath,
+            Tools: null,
+            AttachmentIds: null,
+            Vendor: "claude",
+            Borrowed: true,
+            BorrowCwd: borrowCwd
+        );
 
-            await orch.HandleLaunchAgentForTest(cmd);
+        await orch.HandleLaunchAgentForTest(cmd);
 
-            // Fails loudly with the machine-readable prefix Phase B (server) keys off.
-            await Assert.That(server.LaunchFailedCalls.Count).IsEqualTo(1);
-            await Assert.That(server.LaunchFailedCalls[0].AgentId).IsEqualTo("agent-borrow-auth");
-            await Assert.That(server.LaunchFailedCalls[0].Reason).Contains("borrow_auth_failed");
+        // Fails loudly with the machine-readable prefix the server keys off.
+        await Assert.That(server.LaunchFailedCalls.Count).IsEqualTo(1);
+        await Assert.That(server.LaunchFailedCalls[0].AgentId).IsEqualTo("agent-borrow-auth");
+        await Assert.That(server.LaunchFailedCalls[0].Reason).Contains("borrow_auth_failed");
 
-            // No PTY ever spawned, and the user's directory is byte-identical (nothing created/removed).
-            await Assert.That(ptyFactory.SpawnCalls).IsEqualTo(0);
-            await Assert.That(Directory.Exists(borrowCwd)).IsTrue();
-            await Assert.That(SnapshotTree(borrowCwd)).IsEquivalentTo(before);
-            await Assert.That(File.ReadAllText(Path.Combine(borrowCwd, "user-file.txt"))).IsEqualTo("precious");
-        } finally {
-            cleanupRepo();
-        }
+        // No PTY ever spawned, and the user's directory is byte-identical (nothing created/removed).
+        await Assert.That(ptyFactory.SpawnCalls).IsEqualTo(0);
+        await Assert.That(Directory.Exists(borrowCwd)).IsTrue();
+        await Assert.That(SnapshotTree(borrowCwd)).IsEquivalentTo(before);
+        await Assert.That(File.ReadAllText(Path.Combine(borrowCwd, "user-file.txt"))).IsEqualTo("precious");
+
     }
 
-    // ── A6 (SAFETY): a failed borrowed launch must NOT remove the user's checkout ──────────
+    // ── SAFETY: a failed borrowed launch must NOT remove the user's checkout ──────────────
 
     [Test]
     public async Task Failed_borrowed_launch_does_not_remove_the_cwd() {
         // The borrow cwd is a *linked* git worktree — the realistic danger: `git worktree remove`
         // succeeds on a linked worktree and would silently delete the user's checkout. The launch
         // fails AFTER the borrowed worktree is assigned (runtime StartAsync throws), reaching the
-        // failed-launch cleanup. Without the A6 guard that cleanup git-worktree-removes the cwd;
-        // this test fails there and passes once the removal is gated on OwnedWorktree.
+        // failed-launch cleanup, which must gate the removal on OwnedWorktree rather than
+        // git-worktree-removing whatever it was handed.
         var (_, linkedCwd, cleanup) = CreateLinkedWorktree();
 
-        try {
-            var server          = new CaptureServerConnection();
-            var ptyFactory      = new SpyPtyProcessFactory();
-            var throwingFactory = new ThrowingHostedAgentRuntimeFactory("boomvendor", "kaboom during start");
+        var server          = new CaptureServerConnection();
+        var ptyFactory      = new SpyPtyProcessFactory();
+        var throwingFactory = new ThrowingHostedAgentRuntimeFactory("boomvendor", "kaboom during start");
 
-            // No launcher for the vendor; the throwing runtime factory is injected directly.
-            await using var orch = AgentOrchestratorHarness.BuildOrchestrator(
-                server,
-                ptyFactory,
-                new Dictionary<string, IHostedAgentLauncher>(),
-                extraRuntimeFactories: [throwingFactory]
-            );
+        // No launcher for the vendor; the throwing runtime factory is injected directly.
+        await using var orch = AgentOrchestratorHarness.BuildOrchestrator(
+            server,
+            ptyFactory,
+            new Dictionary<string, IHostedAgentLauncher>(),
+            extraRuntimeFactories: [throwingFactory]
+        );
 
-            // Capture BEFORE the launch: Canonicalize falls back to the lexical path once the dir is
-            // gone, so a post-failure recompute would mask a deletion instead of exposing it.
-            var canonicalCwd = BorrowAuthorizer.Canonicalize(linkedCwd);
-            var before       = SnapshotTree(linkedCwd);
+        // Capture BEFORE the launch: Canonicalize falls back to the lexical path once the dir is
+        // gone, so a post-failure recompute would mask a deletion instead of exposing it.
+        var canonicalCwd = BorrowAuthorizer.Canonicalize(linkedCwd);
+        var before       = SnapshotTree(linkedCwd);
 
-            var cmd = new LaunchAgentCommand(
-                AgentId: "agent-borrow-fail",
-                Prompt: "do work",
-                Model: "opus",
-                Effort: null,
-                RepoPath: linkedCwd,
-                Tools: null,
-                AttachmentIds: null,
-                Vendor: "boomvendor",
-                Borrowed: true,
-                BorrowCwd: linkedCwd
-            );
+        var cmd = new LaunchAgentCommand(
+            AgentId: "agent-borrow-fail",
+            Prompt: "do work",
+            Model: "opus",
+            Effort: null,
+            RepoPath: linkedCwd,
+            Tools: null,
+            AttachmentIds: null,
+            Vendor: "boomvendor",
+            Borrowed: true,
+            BorrowCwd: linkedCwd
+        );
 
-            await orch.HandleLaunchAgentForTest(cmd);
+        await orch.HandleLaunchAgentForTest(cmd);
 
-            // SAFETY (asserted first, clearest): the user's REAL checkout SURVIVES, byte-identical.
-            // Pre-A6 guard the failed-launch cleanup `git worktree remove`d it and this is False —
-            // the whole reason A5 and A6 ship in one commit.
-            await Assert.That(Directory.Exists(linkedCwd)).IsTrue();
-            await Assert.That(SnapshotTree(linkedCwd)).IsEquivalentTo(before);
-            // The launch failed, and the runtime had received the borrowed (canonicalized) cwd.
-            await Assert.That(server.LaunchFailedCalls.Count).IsEqualTo(1);
-            await Assert.That(throwingFactory.LastWorktreePath).IsEqualTo(canonicalCwd);
-        } finally {
-            cleanup();
-        }
+        // SAFETY (asserted first, clearest): the user's REAL checkout SURVIVES, byte-identical.
+        // Without the OwnedWorktree gate, the failed-launch cleanup would `git worktree remove`
+        // it — a linked worktree accepts that removal silently.
+        await Assert.That(Directory.Exists(linkedCwd)).IsTrue();
+        await Assert.That(SnapshotTree(linkedCwd)).IsEquivalentTo(before);
+        // The launch failed, and the runtime had received the borrowed (canonicalized) cwd.
+        await Assert.That(server.LaunchFailedCalls.Count).IsEqualTo(1);
+        await Assert.That(throwingFactory.LastWorktreePath).IsEqualTo(canonicalCwd);
+
     }
 
     // ── Regression: the OWNED path still creates a worktree and removes it on failure ──────
 
     [Test]
     public async Task Owned_launch_still_creates_and_on_failure_removes_the_worktree() {
-        var (repoPath, cleanup) = GitRepoHarness.CreateGitRepo();
+        using var repoPath = GitRepo.CreateWithCommit();
 
-        try {
-            var server          = new CaptureServerConnection();
-            var ptyFactory      = new SpyPtyProcessFactory();
-            var throwingFactory = new ThrowingHostedAgentRuntimeFactory("boomvendor", "kaboom during start");
+        var server          = new CaptureServerConnection();
+        var ptyFactory      = new SpyPtyProcessFactory();
+        var throwingFactory = new ThrowingHostedAgentRuntimeFactory("boomvendor", "kaboom during start");
 
-            await using var orch = AgentOrchestratorHarness.BuildOrchestrator(
-                server,
-                ptyFactory,
-                new Dictionary<string, IHostedAgentLauncher>(),
-                allowedRepoPath: repoPath,
-                extraRuntimeFactories: [throwingFactory]
-            );
+        await using var orch = AgentOrchestratorHarness.BuildOrchestrator(
+            server,
+            ptyFactory,
+            new Dictionary<string, IHostedAgentLauncher>(),
+            allowedRepoPath: repoPath,
+            extraRuntimeFactories: [throwingFactory]
+        );
 
-            var cmd = new LaunchAgentCommand(
-                AgentId: "agent-owned-fail",
-                Prompt: "do work",
-                Model: "opus",
-                Effort: null,
-                RepoPath: repoPath,
-                Tools: null,
-                AttachmentIds: null,
-                Vendor: "boomvendor",
-                Borrowed: false
-            );
+        var cmd = new LaunchAgentCommand(
+            AgentId: "agent-owned-fail",
+            Prompt: "do work",
+            Model: "opus",
+            Effort: null,
+            RepoPath: repoPath,
+            Tools: null,
+            AttachmentIds: null,
+            Vendor: "boomvendor",
+            Borrowed: false
+        );
 
-            await orch.HandleLaunchAgentForTest(cmd);
+        await orch.HandleLaunchAgentForTest(cmd);
 
-            // The launch failed after a daemon-OWNED worktree was created...
-            await Assert.That(server.LaunchFailedCalls.Count).IsEqualTo(1);
-            await Assert.That(throwingFactory.LastWorktreePath).IsNotNull();
-            // ...under the repo's .capacitor/worktrees...
-            await Assert.That(throwingFactory.LastWorktreePath!)
-                .StartsWith(Path.Combine(repoPath, ".capacitor", "worktrees"));
-            // ...and the failed-launch cleanup removed it (owned behaviour unchanged).
-            await Assert.That(Directory.Exists(throwingFactory.LastWorktreePath!)).IsFalse();
-        } finally {
-            cleanup();
-        }
+        // The launch failed after a daemon-OWNED worktree was created...
+        await Assert.That(server.LaunchFailedCalls.Count).IsEqualTo(1);
+        await Assert.That(throwingFactory.LastWorktreePath).IsNotNull();
+        // ...under the repo's .capacitor/worktrees...
+        await Assert.That(throwingFactory.LastWorktreePath!)
+            .StartsWith(Path.Combine(repoPath, ".capacitor", "worktrees"));
+        // ...and the failed-launch cleanup removed it (owned behaviour unchanged).
+        await Assert.That(Directory.Exists(throwingFactory.LastWorktreePath!)).IsFalse();
+
     }
 
     // ── Helpers / test doubles ─────────────────────────────────────────────────────────────
@@ -801,20 +778,7 @@ public class AgentOrchestratorBorrowLaunchTests {
     /// content baseline (which skips <c>.git</c>) so a reviewer write into the source repository's
     /// git directory could not pass unnoticed.</summary>
     static string GitState(string repo) =>
-        GitCapture(repo, "rev-parse", "HEAD") + "\n" + GitCapture(repo, "status", "--porcelain");
-
-    static string GitCapture(string cwd, params string[] args) {
-        var psi = new ProcessStartInfo("git", args) {
-            WorkingDirectory       = cwd,
-            RedirectStandardOutput = true,
-            RedirectStandardError  = true
-        };
-        using var proc = Process.Start(psi)!;
-        var stdout = proc.StandardOutput.ReadToEnd();
-        proc.WaitForExit();
-
-        return stdout;
-    }
+        GitRepo.At(repo).Try("rev-parse", "HEAD").Text + "\n" + GitRepo.At(repo).Try("status", "--porcelain").Text;
 
     static async Task AssertBaselineUnchanged(
             string root, SortedDictionary<string, string> expected, string expectedGitState, string when) {
@@ -835,15 +799,16 @@ public class AgentOrchestratorBorrowLaunchTests {
     /// <summary>Creates a main git repo plus a linked worktree checked out from it, returning the
     /// linked worktree path — a realistic "borrow the user's git worktree" cwd.</summary>
     static (string mainRepo, string linkedCwd, Action cleanup) CreateLinkedWorktree() {
-        var (mainRepo, cleanupMain) = GitRepoHarness.CreateGitRepo();
+        // Ownership leaves with the returned cleanup, so this one is deliberately not a `using`.
+        var mainRepo  = GitRepo.CreateWithCommit();
         var tmp       = new TempDir();
         var linkedCwd = tmp.PathTo("linked");
 
-        GitRepoHarness.Git(mainRepo, "worktree", "add", linkedCwd);
+        mainRepo.AddWorktree(linkedCwd);
 
-        return (mainRepo, linkedCwd, () => {
+        return (mainRepo.Path, linkedCwd, () => {
             tmp.Dispose();
-            cleanupMain();
+            mainRepo.Dispose();
         });
     }
 

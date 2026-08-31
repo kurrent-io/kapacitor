@@ -1,4 +1,5 @@
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Harness.Kiro;
 
 namespace Capacitor.Cli.Tests.Unit.Harness.Kiro;
@@ -9,6 +10,8 @@ namespace Capacitor.Cli.Tests.Unit.Harness.Kiro;
 /// line filter that keeps the watermark in sync with the server normalizer.
 /// </summary>
 public class KiroImportSourceTests {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     const string Dashed = "5f6c2b1a-9e3d-4a7c-bb12-1c2d3e4f5a6b";
 
     [Test]
@@ -20,7 +23,7 @@ public class KiroImportSourceTests {
         tmp.CreateFile($"{Dashed}.json",
             """{"cwd":"/work","title":"Hi there","created_at":"2026-06-17T10:30:00Z","session_state":{"rts_model_state":{"model_info":{"model_id":"auto"}}}}""");
 
-        var src = new KiroImportSource(sessionsDirOverride: tmp.Path);
+        var src = new KiroImportSource(Config.Root, tmp.Path);
         await Assert.That(src.IsAvailable).IsTrue();
 
         var found = await src.DiscoverAsync(new DiscoveryFilters(null, null, null, 1), CancellationToken.None);
@@ -28,7 +31,7 @@ public class KiroImportSourceTests {
         await Assert.That(found.Count).IsEqualTo(1);
         var s = found[0];
         await Assert.That(s.SessionId).IsEqualTo(Dashed.Replace("-", ""));
-        await Assert.That(s.Vendor).IsEqualTo("kiro");
+        await Assert.That(s.Vendor).IsEqualTo(HarnessId.Kiro);
         await Assert.That(s.Cwd).IsEqualTo("/work");
         await Assert.That(s.SourceMeta!["DashedSessionId"]).IsEqualTo(Dashed);
         await Assert.That(s.SourceMeta!["Model"]).IsEqualTo("auto");
@@ -40,7 +43,7 @@ public class KiroImportSourceTests {
         using var tmp = new TempDir();
         tmp.CreateFile($"{Dashed}.jsonl", "{}\n");
 
-        var src = new KiroImportSource(sessionsDirOverride: tmp.Path);
+        var src = new KiroImportSource(Config.Root, tmp.Path);
 
         var match = await src.DiscoverAsync(new DiscoveryFilters(null, Dashed.Replace("-", ""), null, 1), CancellationToken.None);
         await Assert.That(match.Count).IsEqualTo(1);

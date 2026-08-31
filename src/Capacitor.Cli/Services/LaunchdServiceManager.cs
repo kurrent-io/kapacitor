@@ -1,9 +1,11 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using Capacitor.Cli.Core;
 
 namespace Capacitor.Cli.Services;
 
 sealed partial class LaunchdServiceManager(
+    UserHome home,
     UnitFileWriter? writeUnit = null,
     Func<string, string[], (int ExitCode, string StdOut, string StdErr)>? runProcess = null,
     Func<string, string[], TimeSpan, (int ExitCode, string StdOut, string StdErr, bool TimedOut)>? runBounded = null
@@ -21,11 +23,13 @@ sealed partial class LaunchdServiceManager(
         return (code, stdout, stderr, false);
     }
 
+    public string UnitPath(string serviceId) => LaunchdUnit.PlistPath(home, serviceId);
+
     /// <summary>The unit-writing half of <see cref="Install"/>, split out so it is testable without
     /// invoking launchctl.</summary>
     internal void WriteUnitFiles(ServiceSpec spec) {
-        Directory.CreateDirectory(LaunchdUnit.AgentsDir());
-        _writeUnit(LaunchdUnit.PlistPath(spec.ServiceId), LaunchdUnit.Plist(spec), null);
+        Directory.CreateDirectory(LaunchdUnit.AgentsDir(home));
+        _writeUnit(LaunchdUnit.PlistPath(home, spec.ServiceId), LaunchdUnit.Plist(spec), null);
     }
 
     [LibraryImport("libc", EntryPoint = "getuid")]
@@ -36,10 +40,10 @@ sealed partial class LaunchdServiceManager(
     public string Describe() => "launchd LaunchAgent";
 
     public IReadOnlyList<GeneratedFile> GenerateFiles(ServiceSpec spec) =>
-        [new GeneratedFile(LaunchdUnit.PlistPath(spec.ServiceId), LaunchdUnit.Plist(spec))];
+        [new GeneratedFile(LaunchdUnit.PlistPath(home, spec.ServiceId), LaunchdUnit.Plist(spec))];
 
     public IReadOnlyList<string> ListInstalled() {
-        var dir = LaunchdUnit.AgentsDir();
+        var dir = LaunchdUnit.AgentsDir(home);
         if (!Directory.Exists(dir)) return [];
         return [.. Directory.EnumerateFiles(dir, "io.kurrent.kcap.daemon.*.plist")
             .Select(f => LaunchdUnit.IdFromPlistFileName(Path.GetFileName(f)))
@@ -47,7 +51,7 @@ sealed partial class LaunchdServiceManager(
     }
 
     public ServiceStatus Status(string serviceId) {
-        var path = LaunchdUnit.PlistPath(serviceId);
+        var path = LaunchdUnit.PlistPath(home, serviceId);
         if (!File.Exists(path)) return new ServiceStatus(ServiceState.NotInstalled, null);
         var bin = ReadBinaryPathSafe(path); // ProgramArguments[0], not the Label
         var (code, stdout, _) = _runProcess("launchctl", LaunchdUnit.PrintArgs(Uid(), serviceId));
@@ -58,7 +62,7 @@ sealed partial class LaunchdServiceManager(
     public ServiceQuery Query(string serviceId, TimeSpan t)     => QueryCore(serviceId, t);
 
     ServiceQuery QueryCore(string serviceId, TimeSpan? timeout) {
-        var path = LaunchdUnit.PlistPath(serviceId);
+        var path = LaunchdUnit.PlistPath(home, serviceId);
         // File.Exists alone reads a DIRECTORY at the path (or an inaccessible ancestor) as
         // absent — open directly so presence and unreadable-but-present are never conflated.
         var unitPresent = LaunchdUnit.TryReadPlist(path, out _) != LaunchdUnit.PlistRead.Absent;
@@ -83,7 +87,7 @@ sealed partial class LaunchdServiceManager(
     }
 
     public void Install(ServiceSpec spec, bool startNow) {
-        var plistPath = LaunchdUnit.PlistPath(spec.ServiceId);
+        var plistPath = LaunchdUnit.PlistPath(home, spec.ServiceId);
         // idempotent: bootout an existing job (ignore failure), then rewrite + bootstrap.
         ServiceProcess.Run("launchctl", LaunchdUnit.BootoutArgs(Uid(), spec.ServiceId));
         WriteUnitFiles(spec);
@@ -98,7 +102,7 @@ sealed partial class LaunchdServiceManager(
 
     void WriteAndBootstrapCore(ServiceSpec spec, TimeSpan? timeout) {
         WriteUnitFiles(spec);
-        var (code, _, err, timedOut) = RunCtl(timeout, LaunchdUnit.BootstrapArgs(Uid(), LaunchdUnit.PlistPath(spec.ServiceId)));
+        var (code, _, err, timedOut) = RunCtl(timeout, LaunchdUnit.BootstrapArgs(Uid(), LaunchdUnit.PlistPath(home, spec.ServiceId)));
         if (timedOut)
             throw new TimeoutException("launchctl bootstrap timed out and was terminated");
         if (code != 0)
@@ -115,7 +119,7 @@ sealed partial class LaunchdServiceManager(
     public bool Uninstall(string serviceId, TimeSpan t, out string? error) => UninstallCore(serviceId, t, out error);
 
     bool UninstallCore(string serviceId, TimeSpan? timeout, out string? error) {
-        var path = LaunchdUnit.PlistPath(serviceId);
+        var path = LaunchdUnit.PlistPath(home, serviceId);
         var (bootoutExit, _, _, bootoutTimedOut) = RunCtl(timeout, LaunchdUnit.BootoutArgs(Uid(), serviceId));
 
         if (bootoutTimedOut) {
@@ -153,7 +157,7 @@ sealed partial class LaunchdServiceManager(
 
         switch (probe) {
             case LabelProbe.Absent:
-                var (bootstrapExit, _, bootstrapErr, bootstrapTimedOut) = RunCtl(timeout, LaunchdUnit.BootstrapArgs(Uid(), LaunchdUnit.PlistPath(serviceId)));
+                var (bootstrapExit, _, bootstrapErr, bootstrapTimedOut) = RunCtl(timeout, LaunchdUnit.BootstrapArgs(Uid(), LaunchdUnit.PlistPath(home, serviceId)));
                 if (bootstrapTimedOut) { error = "launchctl bootstrap timed out and was terminated"; return false; }
                 if (bootstrapExit != 0) {
                     error = $"launchctl bootstrap failed (exit {bootstrapExit}): {bootstrapErr.Trim()}";
@@ -198,7 +202,7 @@ sealed partial class LaunchdServiceManager(
             return false;
         }
 
-        var (bootstrapExit, _, bootstrapErr, bootstrapTimedOut) = RunCtl(remaining, LaunchdUnit.BootstrapArgs(Uid(), LaunchdUnit.PlistPath(serviceId)));
+        var (bootstrapExit, _, bootstrapErr, bootstrapTimedOut) = RunCtl(remaining, LaunchdUnit.BootstrapArgs(Uid(), LaunchdUnit.PlistPath(home, serviceId)));
         if (bootstrapTimedOut) { error = "launchctl bootstrap timed out and was terminated"; return false; }
         if (bootstrapExit != 0) {
             error = $"launchctl bootstrap failed (exit {bootstrapExit}): {bootstrapErr.Trim()}";

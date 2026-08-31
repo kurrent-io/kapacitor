@@ -56,6 +56,7 @@ public class McpRegistrationAuditTests {
     [Arguments("""{ "command": "kcap", "args": ["mcp","memory"] }""")]                                     // wrong args for name
     [Arguments("""{ "command": "kcap", "args": ["mcp","flows"], "custom": true }""")]                      // extra field
     [Arguments("""{ "command": "kcap", "args": ["mcp","flows","--extra"] }""")]                            // extra arg
+    [Arguments("""{ "command": "kcap", "args": ["mcp","flows","--driver","cursor"] }""")]                  // a --driver stamp lives in the harness's OWN config (owned via its marker), never in Claude's — if one appears here it is a customization to preserve, not a removable duplicate
     [Arguments("""{ "command": "kcap", "args": ["mcp","flows"], "cwd": "/some/other/repo" }""")]           // arbitrary cwd redirects execution context
     public async Task Divergent_same_name_entry_is_a_conflict_and_never_removed(string entryJson) {
         var json = $$"""{ "mcpServers": { "kcap-flows": {{entryJson}} } }""";

@@ -1,4 +1,8 @@
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.Core.Harness;
+using Capacitor.Cli.Core.Harness.Copilot;
+using Capacitor.Cli.Core.Harness.Kiro;
+using Capacitor.Cli.Core.Harness.Pi;
 using Capacitor.Cli.Harness.Antigravity;
 using Capacitor.Cli.Harness.Claude;
 using Capacitor.Cli.Harness.Codex;
@@ -27,6 +31,10 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 /// </para>
 /// </summary>
 public class ReplayChildContentCapabilityTests {
+    [TempHome] public required TempHome Home { get; init; }
+
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     /// <summary>
     /// The three sources whose child-import pass is reachable when the root is already fully
     /// ingested — the shape that can add content to a session that already exists.
@@ -66,36 +74,38 @@ public class ReplayChildContentCapabilityTests {
     [Test]
     public async Task every_import_source_is_covered_by_this_table() {
         var declared = new[] {
-            "cursor", "antigravity", "gemini", "claude", "codex", "copilot", "kiro", "pi", "opencode", "dsh",
+            HarnessId.Cursor, HarnessId.Antigravity, HarnessId.Gemini, HarnessId.Claude, HarnessId.Codex,
+            HarnessId.Copilot, HarnessId.Kiro, HarnessId.Pi, HarnessId.OpenCode, HarnessId.Dsh,
         };
 
         var actual = typeof(IImportSource).Assembly.GetTypes()
             .Where(t => t is { IsAbstract: false, IsInterface: false } && typeof(IImportSource).IsAssignableFrom(t))
             .Select(t => MakeSource(VendorOf(t)).Vendor)
-            .ToHashSet(StringComparer.Ordinal);
+            .ToHashSet();
 
-        await Assert.That(actual.Except(declared, StringComparer.Ordinal)).IsEmpty();
-        await Assert.That(declared.Except(actual, StringComparer.Ordinal)).IsEmpty();
+        await Assert.That(actual.Except(declared)).IsEmpty();
+        await Assert.That(declared.Except(actual)).IsEmpty();
     }
 
     static string VendorOf(Type t) => t.Name.Replace("ImportSource", "").ToLowerInvariant();
 
     // Constructed with throwaway paths: only the capability/vendor properties are read, and no
     // source touches disk in its constructor.
-    static IImportSource MakeSource(string vendor) {
-        var scratch = Path.Combine(Path.GetTempPath(), "kcap-capability-probe");
+    IImportSource MakeSource(string vendor) {
+        using var tmp = new TempDir();
+        var scratch = tmp.PathTo("capability-probe");
 
         return vendor switch {
-            "claude"      => new ClaudeImportSource(scratch),
-            "codex"       => new CodexImportSource(scratch),
-            "copilot"     => new CopilotImportSource(),
-            "cursor"      => new CursorImportSource(scratch, scratch),
-            "gemini"      => new GeminiImportSource(tmpDirOverride: scratch),
-            "kiro"        => new KiroImportSource(),
-            "pi"          => new PiImportSource(),
+            "claude"      => new ClaudeImportSource(Config.Root, scratch),
+            "codex"       => new CodexImportSource(Config.Root, scratch),
+            "copilot"     => new CopilotImportSource(Config.Root, CopilotHarness.FromEnvironment(Home).Paths),
+            "cursor"      => new CursorImportSource(Config.Root, scratch, scratch),
+            "gemini"      => new GeminiImportSource(scratch),
+            "kiro"        => new KiroImportSource(Config.Root, KiroHarness.FromEnvironment(Home).Paths.SessionsDir),
+            "pi"          => new PiImportSource(Config.Root, PiHarness.FromEnvironment(Home).Paths.SessionsDir),
             "opencode"    => new OpenCodeImportSource(Path.Combine(scratch, "db"), Path.Combine(scratch, "ledger")),
-            "antigravity" => new AntigravityImportSource(home: scratch, geminiCliHome: ""),
-            "dsh"         => new DshImportSource(scratch),
+            "antigravity" => new AntigravityImportSource(new(new(scratch), "")),
+            "dsh"         => new DshImportSource(Config.Root, scratch),
             _             => throw new ArgumentOutOfRangeException(nameof(vendor), vendor, "unclassified import source"),
         };
     }

@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text.Json;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Config;
 using Spectre.Console;
 
 namespace Capacitor.Cli.Commands;
@@ -10,9 +11,10 @@ namespace Capacitor.Cli.Commands;
 /// <c>/api/projects</c> endpoints. Follows <see cref="ErrorsCommand"/> for client/auth/error handling.
 /// Every route 403s with <c>projects_not_in_plan</c> on the Free plan (see <see cref="CliProjectError"/>).
 /// </summary>
-static class ProjectsCommand {
-    public static async Task<int> HandleList(string baseUrl) {
-        using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync();
+class ProjectsCommand(ConfigRoot config, ProfileContext profiles) {
+    public async Task<int> HandleList() {
+        var       baseUrl    = profiles.Resolution.ServerUrl!;
+        using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync(config, profiles, baseUrl);
 
         HttpResponseMessage resp;
 
@@ -69,8 +71,9 @@ static class ProjectsCommand {
         return 0;
     }
 
-    public static async Task<int> HandleDetail(string baseUrl, string slug) {
-        using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync();
+    public async Task<int> HandleDetail(string slug) {
+        var       baseUrl    = profiles.Resolution.ServerUrl!;
+        using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync(config, profiles, baseUrl);
 
         HttpResponseMessage resp;
 

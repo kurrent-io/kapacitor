@@ -20,6 +20,11 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 public class AgentHookPosterTests : IDisposable {
     readonly WireMockServer _server = WireMockServer.Start();
 
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
+    // The poster targets the resolution's URL, so the stub server's is what the resolution names.
+    AgentHookPoster  Poster => field ??= new(Config.Root, Resolutions.At(_server.Url!, Config.Root));
+
     public void Dispose() => _server.Stop();
 
     static Func<Task<(HttpClient, AuthStatus)>> Factory(AuthStatus status)
@@ -30,8 +35,8 @@ public class AgentHookPosterTests : IDisposable {
         _server.Given(Request.Create().WithPath("/hooks/session-start/codex").UsingPost())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody("{}"));
 
-        var outcome = await AgentHookPoster.PostAsync(
-            Factory(AuthStatus.Expired), _server.Url!, "session-start/codex", "{}", "codex-hook");
+        var outcome = await Poster.PostAsync(
+            Factory(AuthStatus.Expired), "session-start/codex", "{}", "codex-hook");
 
         await Assert.That(outcome).IsEqualTo(HookPostOutcome.AuthLapsed);
 
@@ -45,8 +50,8 @@ public class AgentHookPosterTests : IDisposable {
         _server.Given(Request.Create().WithPath("/hooks/session-start/gemini").UsingPost())
             .RespondWith(Response.Create().WithStatusCode(200));
 
-        var outcome = await AgentHookPoster.PostAsync(
-            Factory(AuthStatus.NotAuthenticated), _server.Url!, "session-start/gemini", "{}", "gemini-hook");
+        var outcome = await Poster.PostAsync(
+            Factory(AuthStatus.NotAuthenticated), "session-start/gemini", "{}", "gemini-hook");
 
         await Assert.That(outcome).IsEqualTo(HookPostOutcome.AuthLapsed);
 
@@ -59,8 +64,8 @@ public class AgentHookPosterTests : IDisposable {
         _server.Given(Request.Create().WithPath("/hooks/session-start/pi").UsingPost())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody("{}"));
 
-        var outcome = await AgentHookPoster.PostAsync(
-            Factory(AuthStatus.Ok), _server.Url!, "session-start/pi", """{"hello":"world"}""", "pi-hook");
+        var outcome = await Poster.PostAsync(
+            Factory(AuthStatus.Ok), "session-start/pi", """{"hello":"world"}""", "pi-hook");
 
         await Assert.That(outcome).IsEqualTo(HookPostOutcome.Posted);
 
@@ -75,8 +80,8 @@ public class AgentHookPosterTests : IDisposable {
         _server.Given(Request.Create().WithPath("/hooks/session-start/opencode").UsingPost())
             .RespondWith(Response.Create().WithStatusCode(200));
 
-        var outcome = await AgentHookPoster.PostAsync(
-            Factory(AuthStatus.NoAuthRequired), _server.Url!, "session-start/opencode", "{}", "opencode-hook");
+        var outcome = await Poster.PostAsync(
+            Factory(AuthStatus.NoAuthRequired), "session-start/opencode", "{}", "opencode-hook");
 
         await Assert.That(outcome).IsEqualTo(HookPostOutcome.Posted);
 
@@ -89,8 +94,8 @@ public class AgentHookPosterTests : IDisposable {
         _server.Given(Request.Create().WithPath("/hooks/session-start/kiro").UsingPost())
             .RespondWith(Response.Create().WithStatusCode(500));
 
-        var outcome = await AgentHookPoster.PostAsync(
-            Factory(AuthStatus.Ok), _server.Url!, "session-start/kiro", "{}", "kiro-hook");
+        var outcome = await Poster.PostAsync(
+            Factory(AuthStatus.Ok), "session-start/kiro", "{}", "kiro-hook");
 
         await Assert.That(outcome).IsEqualTo(HookPostOutcome.Failed);
     }
@@ -115,8 +120,8 @@ public class AgentHookPosterTests : IDisposable {
         using var capture = ConsoleOutput.StartErrorCapture("\n");
         HookPostOutcome outcome;
 
-        outcome = await AgentHookPoster.PostAsync(
-            Factory(AuthStatus.Ok), _server.Url!, "stop/codex", "{}", "codex-hook");
+        outcome = await Poster.PostAsync(
+            Factory(AuthStatus.Ok), "stop/codex", "{}", "codex-hook");
 
         await Assert.That(outcome).IsEqualTo(HookPostOutcome.Failed);
         await Assert.That(capture.GetCapturedError().Trim()).IsEqualTo(
@@ -135,9 +140,8 @@ public class AgentHookPosterTests : IDisposable {
     public async Task PostOrSpool_on_auth_lapse_spools_and_returns_Spooled() {
         using var tmp = new TempDir();
         var spool = new HookSpool(tmp.Path);
-        var outcome = await AgentHookPoster.PostOrSpoolAsync(
-            () => Task.FromResult<(HttpClient, AuthStatus)>((new HttpClient(), AuthStatus.Expired)),
-            "http://localhost:1", "session-start/kiro", """{"session_id":"x"}""",
+        var outcome = await Poster.PostOrSpoolAsync(
+            () => Task.FromResult<(HttpClient, AuthStatus)>((new HttpClient(), AuthStatus.Expired)), "session-start/kiro", """{"session_id":"x"}""",
             "kiro-hook", spool, sessionId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", route: "session-start/kiro");
 
         await Assert.That(outcome).IsEqualTo(HookPostOutcome.Spooled);
@@ -149,9 +153,8 @@ public class AgentHookPosterTests : IDisposable {
         using var tmp = new TempDir();
         var spool = new HookSpool(tmp.Path);
         using var handler = new StubHandler(System.Net.HttpStatusCode.OK); // 200
-        var outcome = await AgentHookPoster.PostOrSpoolAsync(
-            () => Task.FromResult<(HttpClient, AuthStatus)>((new HttpClient(handler), AuthStatus.Ok)),
-            "http://server", "session-start/kiro", """{"session_id":"x"}""",
+        var outcome = await Poster.PostOrSpoolAsync(
+            () => Task.FromResult<(HttpClient, AuthStatus)>((new HttpClient(handler), AuthStatus.Ok)), "session-start/kiro", """{"session_id":"x"}""",
             "kiro-hook", spool, sessionId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", route: "session-start/kiro");
 
         await Assert.That(outcome).IsEqualTo(HookPostOutcome.Posted);

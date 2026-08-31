@@ -11,7 +11,11 @@ namespace Capacitor.Cli.Tests.Unit.Services;
 /// <see cref="BootRefusalMarker"/> the daemon writes through, so the read proves it can parse what
 /// the daemon actually writes.</summary>
 public class BootRefusalAttributionTests {
+    [TempHome] public required TempHome Home { get; init; }
+
     [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
+
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
 
     const string Id = "boot-refusal-svc";
 
@@ -81,7 +85,8 @@ public class BootRefusalAttributionTests {
 
     // ── FakeServiceManager-driven: end-to-end pre-clear + collection + attribution ──
 
-    sealed class FakeServiceManager : IVerifyServiceManager {
+    sealed class FakeServiceManager(UserHome home) : IVerifyServiceManager {
+        public string UnitPath(string serviceId) => LaunchdUnit.PlistPath(home, serviceId);
         public bool Started, Stopped;
         public int? RunningPid = 4242;
         public Action<string>? OnStart;
@@ -161,7 +166,7 @@ public class BootRefusalAttributionTests {
 
         // The observed job pid IS this test process's own pid, matching what BootRefusalMarker.TryWrite
         // stamps onto the marker — no need to fake a pid.
-        var manager = new FakeServiceManager { RunningPid = Environment.ProcessId };
+        var manager = new FakeServiceManager(Home) { RunningPid = Environment.ProcessId };
         manager.OnStart = id => {
             Directory.CreateDirectory(Daemons.Store.StateDirectory(id));
             BootRefusalMarker.TryWrite(
@@ -176,7 +181,7 @@ public class BootRefusalAttributionTests {
 
         // Ownership never matches (validated pid always disagrees with the observed job pid), so
         // readiness never settles and the forward budget genuinely rolls back to a timeout.
-        var sut = new ServiceVerify(Daemons.Store, manager, _ => -1, Hello, time,
+        var sut = new ServiceVerify(Daemons.Store, Config.Root, manager, _ => -1, Hello, time,
             forwardBudget: TimeSpan.FromSeconds(2),
             readPlist: _ => MinimalPlist("/bin/kcap-daemon", "prompt", "https://s.example"),
             gateEnv: GatedEnvWithIdentity("https://s.example"),
@@ -200,7 +205,7 @@ public class BootRefusalAttributionTests {
         // control socket never exists. IsReadyAsync's own Query call therefore never runs; the
         // job pid can only be observed via the direct per-iteration Query the readiness loop
         // now also issues when hello never resolves a pid.
-        var manager = new FakeServiceManager { RunningPid = Environment.ProcessId };
+        var manager = new FakeServiceManager(Home) { RunningPid = Environment.ProcessId };
         manager.OnStart = id => {
             Directory.CreateDirectory(Daemons.Store.StateDirectory(id));
             BootRefusalMarker.TryWrite(
@@ -213,7 +218,7 @@ public class BootRefusalAttributionTests {
         static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
             Task.FromResult(new HelloProbeResult(false, null, null, null)); // never well-formed
 
-        var sut = new ServiceVerify(Daemons.Store, manager, _ => -1, Hello, time,
+        var sut = new ServiceVerify(Daemons.Store, Config.Root, manager, _ => -1, Hello, time,
             forwardBudget: TimeSpan.FromSeconds(2),
             readPlist: _ => MinimalPlist("/bin/kcap-daemon", "prompt", "https://s.example"),
             gateEnv: GatedEnvWithIdentity("https://s.example"),
@@ -238,12 +243,12 @@ public class BootRefusalAttributionTests {
         // blocking the transaction itself.
         Directory.CreateDirectory(Daemons.Store.BootRefusalPath(Id));
 
-        var manager = new FakeServiceManager { RunningPid = 4242 };
+        var manager = new FakeServiceManager(Home) { RunningPid = 4242 };
 
         static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
             Task.FromResult(new HelloProbeResult(true, 1, "1.2.3", "kcap-daemon"));
 
-        var sut = new ServiceVerify(Daemons.Store, manager, _ => 4242, Hello, TimeProvider.System,
+        var sut = new ServiceVerify(Daemons.Store, Config.Root, manager, _ => 4242, Hello, TimeProvider.System,
             readPlist: _ => MinimalPlist("/bin/kcap-daemon", "prompt", "https://s.example"),
             gateEnv: GatedEnvWithIdentity("https://s.example"),
             digestMatches: _ => true);

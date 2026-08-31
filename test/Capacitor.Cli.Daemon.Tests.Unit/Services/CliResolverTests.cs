@@ -18,7 +18,9 @@ public class CliResolverTests {
     [Test]
     public async Task ReturnsTrue_WhenAbsolutePathIsExecutable() {
         using var tmp = new TempDir();
-        var tempFile = tmp.CreateFile("cli-resolver-test", "#!/bin/sh\necho hi\n");
+        // Launchable means "carries an extension PATHEXT names" on Windows and "carries the execute
+        // bit" on Unix; a configured path the OS cannot spawn must not be advertised as a CLI.
+        var tempFile = tmp.CreateFile(Launchable("cli-resolver-test"), "#!/bin/sh\necho hi\n");
         MakeExecutable(tempFile);
 
         await Assert.That(CliResolver.Exists(tempFile)).IsTrue();
@@ -43,7 +45,7 @@ public class CliResolverTests {
 
     [Test]
     public async Task ReturnsFalse_WhenAbsolutePathMissing() {
-        var missing = Path.Combine(Path.GetTempPath(), $"cli-resolver-missing-{Guid.NewGuid():N}");
+        using var missingDir = TempDir.WithPathTo("cli-resolver-missing", out var missing);
 
         await Assert.That(CliResolver.Exists(missing)).IsFalse();
     }
@@ -54,8 +56,7 @@ public class CliResolverTests {
         // mark it executable on POSIX, and prepend that dir to PATH.
         using var tmp = new TempDir();
         var name       = $"kcap-pathprobe-{Guid.NewGuid():N}";
-        var binaryName = OperatingSystem.IsWindows() ? name + ".exe" : name;
-        var binaryPath = tmp.CreateFile(binaryName, "");
+        var binaryPath = tmp.CreateFile(Launchable(name), "");
         MakeExecutable(binaryPath);
 
         var       savedPath = Environment.GetEnvironmentVariable("PATH");
@@ -89,6 +90,10 @@ public class CliResolverTests {
 
         await Assert.That(CliResolver.Exists(unlikely)).IsFalse();
     }
+
+    /// <summary>The name this host will launch <paramref name="stem"/> through: Windows spawns
+    /// through an extension PATHEXT names, Unix through the execute bit.</summary>
+    static string Launchable(string stem) => OperatingSystem.IsWindows() ? stem + ".exe" : stem;
 
     static void MakeExecutable(string path) {
         if (OperatingSystem.IsWindows()) return;

@@ -1,4 +1,5 @@
 using System.Net;
+using Capacitor.Cli.Commands;
 using Capacitor.Cli.Commands.Harness;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Harness.Cursor;
@@ -11,12 +12,20 @@ namespace Capacitor.Cli.Tests.Unit.Harness.Cursor;
 /// <see cref="CursorHookCommand.ShouldSpawnWatcher"/> is pure (no I/O); the
 /// <see cref="CursorHookCommand.MaybeSpawnWatcherAsync"/> tests use
 /// <see cref="WatcherManager.SpawnOverrideForTesting"/> so no real OS process is ever spawned.
-/// [NotInParallel] because the override and KCAP_CONFIG_DIR are process-wide. Tests in other
+/// [NotInParallel] because the spawn override is process-wide. Tests in other
 /// classes also mutate those values, so a class-specific constraint key is not sufficient.
 /// </summary>
 [NotInParallel]
 public class CursorWatcherSpawnTests {
+    [TempHome] public required TempHome Home { get; init; }
+
+    CursorMarkers Markers => new(Config.Root);
+
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     static string NewSessionId() => Guid.NewGuid().ToString("N");
+
+    CursorHookCommand Hook(ConfigRoot root) => new(root, Resolutions.At("http://s", root), new HookClock(TimeProvider.System), Home);
 
     [Test]
     public async Task SessionEnd_never_spawns() =>
@@ -43,10 +52,10 @@ public class CursorWatcherSpawnTests {
     public async Task Spawn_is_suppressed_when_session_is_quarantined() {
         var sid     = NewSessionId();
         var spawned = new List<string>();
-        CursorMarkers.Quarantine(sid, "test");
+        Markers.Quarantine(sid, "test");
         WatcherManager.SpawnOverrideForTesting = key => { spawned.Add(key); return Task.CompletedTask; };
         try {
-            await CursorHookCommand.MaybeSpawnWatcherAsync("http://s", sid, "/tmp/qsid.jsonl", cwd: null, eventName: "sessionStart", isSubagentChild: false);
+            await Hook(Config.Root).MaybeSpawnWatcherAsync(sid, "/tmp/qsid.jsonl", cwd: null, eventName: "sessionStart", isSubagentChild: false);
             await Assert.That(spawned).IsEmpty();
         } finally { WatcherManager.SpawnOverrideForTesting = null; }
     }
@@ -57,7 +66,7 @@ public class CursorWatcherSpawnTests {
         var spawned = new List<string>();
         WatcherManager.SpawnOverrideForTesting = key => { spawned.Add(key); return Task.CompletedTask; };
         try {
-            await CursorHookCommand.MaybeSpawnWatcherAsync("http://s", sid, "/tmp/x.jsonl", cwd: null, eventName: "sessionEnd", isSubagentChild: false);
+            await Hook(Config.Root).MaybeSpawnWatcherAsync(sid, "/tmp/x.jsonl", cwd: null, eventName: "sessionEnd", isSubagentChild: false);
             await Assert.That(spawned).IsEmpty();
         } finally { WatcherManager.SpawnOverrideForTesting = null; }
     }
@@ -68,7 +77,7 @@ public class CursorWatcherSpawnTests {
         var spawned = new List<string>();
         WatcherManager.SpawnOverrideForTesting = key => { spawned.Add(key); return Task.CompletedTask; };
         try {
-            await CursorHookCommand.MaybeSpawnWatcherAsync("http://s", sid, "/tmp/x.jsonl", cwd: null, eventName: "sessionStart", isSubagentChild: true);
+            await Hook(Config.Root).MaybeSpawnWatcherAsync(sid, "/tmp/x.jsonl", cwd: null, eventName: "sessionStart", isSubagentChild: true);
             await Assert.That(spawned).IsEmpty();
         } finally { WatcherManager.SpawnOverrideForTesting = null; }
     }
@@ -79,7 +88,7 @@ public class CursorWatcherSpawnTests {
         var spawned = new List<string>();
         WatcherManager.SpawnOverrideForTesting = key => { spawned.Add(key); return Task.CompletedTask; };
         try {
-            await CursorHookCommand.MaybeSpawnWatcherAsync("http://s", sid, "", cwd: null, eventName: "sessionStart", isSubagentChild: false);
+            await Hook(Config.Root).MaybeSpawnWatcherAsync(sid, "", cwd: null, eventName: "sessionStart", isSubagentChild: false);
             await Assert.That(spawned).IsEmpty();
         } finally { WatcherManager.SpawnOverrideForTesting = null; }
     }
@@ -90,7 +99,7 @@ public class CursorWatcherSpawnTests {
         var spawned = new List<string>();
         WatcherManager.SpawnOverrideForTesting = key => { spawned.Add(key); return Task.CompletedTask; };
         try {
-            await CursorHookCommand.MaybeSpawnWatcherAsync("http://s", sid, "/tmp/x.jsonl", cwd: null, eventName: "sessionStart", isSubagentChild: false);
+            await Hook(Config.Root).MaybeSpawnWatcherAsync(sid, "/tmp/x.jsonl", cwd: null, eventName: "sessionStart", isSubagentChild: false);
             await Assert.That(spawned).IsEquivalentTo([sid]);
         } finally { WatcherManager.SpawnOverrideForTesting = null; }
     }
@@ -111,7 +120,6 @@ public class CursorWatcherSpawnTests {
     [Test]
     public async Task Child_watcher_not_spawned_when_the_parent_session_is_quarantined() {
         using var tmp = new TempDir();
-        Environment.SetEnvironmentVariable("KCAP_CONFIG_DIR", tmp.Path);
         try {
             var spawned = new List<string>();
             WatcherManager.SpawnOverrideForTesting = key => { spawned.Add(key); return Task.CompletedTask; };
@@ -122,24 +130,23 @@ public class CursorWatcherSpawnTests {
             var parent = NewSessionId();
             var childFile = tmp.PathTo($"{child}.jsonl");
             await File.WriteAllTextAsync(childFile, """{"role":"assistant","message":{"content":[]}}""" + "\n");
-            CursorMarkers.Quarantine(parent, "test");
+            Markers.Quarantine(parent, "test");
 
             // Seed the ack so the no-ack gate cannot be what suppresses the spawn — otherwise
             // this test would pass for the wrong reason and prove nothing about quarantine. Then
             // drive a NON-lifecycle hook: the self-heal spawn path a real child actually reaches.
             // (This previously used a child `sessionStart`, an event a real Cursor subagent child
             // never fires.)
-            CursorMarkers.MarkSubagentStartAcked(child);
+            Markers.MarkSubagentStartAcked(child);
 
             var spool = new HookSpool(tmp.PathTo("spool"));
-            await CursorHookCommand.HandleSubagentChildEventAsync(
-                client, "http://s", spool, child, "afterAgentThought", childFile, parent, "task",
+            await Hook(Config.Root).HandleSubagentChildEventAsync(
+                client, spool, child, "afterAgentThought", childFile, parent, "task",
                 budgetExpired: () => false, ct: CancellationToken.None);
 
             await Assert.That(spawned).IsEmpty();
         } finally {
             WatcherManager.SpawnOverrideForTesting = null;
-            Environment.SetEnvironmentVariable("KCAP_CONFIG_DIR", null);
         }
     }
 
@@ -151,7 +158,6 @@ public class CursorWatcherSpawnTests {
     [Test]
     public async Task Deferred_spool_drain_delivering_a_spooled_subagent_start_spawns_the_child_watcher() {
         using var tmp = new TempDir();
-        Environment.SetEnvironmentVariable("KCAP_CONFIG_DIR", tmp.Path);
         try {
             var spawned = new List<string>();
             WatcherManager.SpawnOverrideForTesting = key => { spawned.Add(key); return Task.CompletedTask; };
@@ -164,7 +170,7 @@ public class CursorWatcherSpawnTests {
             // Seed the persisted link so TryLoadLink activates the divert without re-running the
             // correlator. This models a marker already on disk — NOT a marker produced by a child
             // sessionStart, which is an event a real Cursor subagent child never fires.
-            CursorLiveSubagentLinker.SaveLink(child, parent, "task");
+            CursorLiveSubagentLinker.SaveLink(Config.Root, child, parent, "task");
 
             var startFails    = false;
             var startAttempts = 0;
@@ -193,10 +199,10 @@ public class CursorWatcherSpawnTests {
             // — asserting it straight after Append (as this test previously did) could not fail,
             // since no production code had run yet.
             startFails = true;
-            await CursorHookCommand.HandleCore(
-                client, "http://s",
+            await new CursorHookCommand(Config.Root, Resolutions.At("http://s", Config.Root), new HookClock(TimeProvider.System), Home).HandleCore(
+                client,
                 new StringReader($$"""{"hook_event_name":"postToolUse","session_id":"{{child}}","tool_name":"Bash"}"""),
-                spool, TimeSpan.FromSeconds(2));
+                spool);
 
             await Assert.That(startAttempts).IsGreaterThan(0);   // the drain really tried...
             await Assert.That(spool.HasBacklog(child)).IsTrue(); // ...and the start is still queued
@@ -206,15 +212,14 @@ public class CursorWatcherSpawnTests {
             // (before the isSubagentChild divert even runs), and that success is what must
             // trigger the deferred spawn.
             startFails = false;
-            await CursorHookCommand.HandleCore(
-                client, "http://s",
+            await new CursorHookCommand(Config.Root, Resolutions.At("http://s", Config.Root), new HookClock(TimeProvider.System), Home).HandleCore(
+                client,
                 new StringReader($$"""{"hook_event_name":"postToolUse","session_id":"{{child}}","tool_name":"Bash"}"""),
-                spool, TimeSpan.FromSeconds(2));
+                spool);
 
             await Assert.That(spawned).IsEquivalentTo([$"{parent}-{child}"]);
         } finally {
             WatcherManager.SpawnOverrideForTesting = null;
-            Environment.SetEnvironmentVariable("KCAP_CONFIG_DIR", null);
         }
     }
 
@@ -228,7 +233,6 @@ public class CursorWatcherSpawnTests {
     [Test]
     public async Task Permanently_dropped_subagent_start_gates_all_child_transcript_delivery_forever() {
         using var tmp = new TempDir();
-        Environment.SetEnvironmentVariable("KCAP_CONFIG_DIR", tmp.Path);
         try {
             var spawned = new List<string>();
             WatcherManager.SpawnOverrideForTesting = key => { spawned.Add(key); return Task.CompletedTask; };
@@ -240,7 +244,7 @@ public class CursorWatcherSpawnTests {
 
             // Pre-link the child to its parent so every hook for `child` diverts through
             // HandleSubagentChildEventAsync without needing the correlator to re-run.
-            CursorLiveSubagentLinker.SaveLink(child, parent, "task");
+            CursorLiveSubagentLinker.SaveLink(Config.Root, child, parent, "task");
 
             var transcriptPosts = 0;
             using var handler = new StubHandler((req, _) => {
@@ -274,25 +278,24 @@ public class CursorWatcherSpawnTests {
             // 2nd invocation: any later hook for this child. HandleCore's generic top-of-method
             // spool drain retries the spooled subagent-start FIRST — this time it 400s, which
             // HookSpool treats as a permanent Drop (the entry is discarded, not re-queued).
-            await CursorHookCommand.HandleCore(
-                client, "http://s",
+            await new CursorHookCommand(Config.Root, Resolutions.At("http://s", Config.Root), new HookClock(TimeProvider.System), Home).HandleCore(
+                client,
                 new StringReader($$"""{"hook_event_name":"afterAgentThought","session_id":"{{child}}","generation_id":"g","text":"t","transcript_path":"{{childFileEscaped}}"}"""),
-                spool, TimeSpan.FromSeconds(2));
+                spool);
 
             // 3rd invocation: another content-less hook. Before the fix, the dropped start left
             // HasBacklog false and this would run the agent-routed transcript backfill despite
             // SubagentStarted never having been appended.
-            await CursorHookCommand.HandleCore(
-                client, "http://s",
+            await new CursorHookCommand(Config.Root, Resolutions.At("http://s", Config.Root), new HookClock(TimeProvider.System), Home).HandleCore(
+                client,
                 new StringReader($$"""{"hook_event_name":"postToolUse","session_id":"{{child}}","tool_name":"Bash","transcript_path":"{{childFileEscaped}}"}"""),
-                spool, TimeSpan.FromSeconds(2));
+                spool);
 
             await Assert.That(spawned).IsEmpty();      // never acked -> no child watcher ever
             await Assert.That(transcriptPosts).IsEqualTo(0); // never acked -> no child transcript ever
-            await Assert.That(CursorMarkers.HasSubagentStartAck(child)).IsFalse();
+            await Assert.That(Markers.HasSubagentStartAck(child)).IsFalse();
         } finally {
             WatcherManager.SpawnOverrideForTesting = null;
-            Environment.SetEnvironmentVariable("KCAP_CONFIG_DIR", null);
         }
     }
 
@@ -305,7 +308,6 @@ public class CursorWatcherSpawnTests {
     [Test]
     public async Task Later_nonterminal_child_hook_self_heals_a_dead_or_never_started_child_watcher_via_the_ack_marker() {
         using var tmp = new TempDir();
-        Environment.SetEnvironmentVariable("KCAP_CONFIG_DIR", tmp.Path);
         try {
             var spawned = new List<string>();
             WatcherManager.SpawnOverrideForTesting = key => { spawned.Add(key); return Task.CompletedTask; };
@@ -317,20 +319,19 @@ public class CursorWatcherSpawnTests {
 
             // Subagent-start was acked in an EARLIER process invocation (durable marker) — the
             // watcher spawned then may since have died; this is a LATER, separate hook call.
-            CursorMarkers.MarkSubagentStartAcked(child);
+            Markers.MarkSubagentStartAcked(child);
 
             using var handler = new StubHandler((_, _) => new HttpResponseMessage(HttpStatusCode.OK));
             using var client  = new HttpClient(handler);
             var spool = new HookSpool(tmp.PathTo("spool"));
 
-            await CursorHookCommand.HandleSubagentChildEventAsync(
-                client, "http://s", spool, child, "postToolUse", childFile, parent, "task",
+            await Hook(Config.Root).HandleSubagentChildEventAsync(
+                client, spool, child, "postToolUse", childFile, parent, "task",
                 budgetExpired: () => false, ct: CancellationToken.None);
 
             await Assert.That(spawned).IsEquivalentTo([$"{parent}-{child}"]);
         } finally {
             WatcherManager.SpawnOverrideForTesting = null;
-            Environment.SetEnvironmentVariable("KCAP_CONFIG_DIR", null);
         }
     }
 
@@ -340,7 +341,6 @@ public class CursorWatcherSpawnTests {
     [Test]
     public async Task Later_nonterminal_child_hook_does_not_spawn_when_never_acked() {
         using var tmp = new TempDir();
-        Environment.SetEnvironmentVariable("KCAP_CONFIG_DIR", tmp.Path);
         try {
             var spawned = new List<string>();
             WatcherManager.SpawnOverrideForTesting = key => { spawned.Add(key); return Task.CompletedTask; };
@@ -355,14 +355,13 @@ public class CursorWatcherSpawnTests {
             using var client  = new HttpClient(handler);
             var spool = new HookSpool(tmp.PathTo("spool"));
 
-            await CursorHookCommand.HandleSubagentChildEventAsync(
-                client, "http://s", spool, child, "postToolUse", childFile, parent, "task",
+            await Hook(Config.Root).HandleSubagentChildEventAsync(
+                client, spool, child, "postToolUse", childFile, parent, "task",
                 budgetExpired: () => false, ct: CancellationToken.None);
 
             await Assert.That(spawned).IsEmpty();
         } finally {
             WatcherManager.SpawnOverrideForTesting = null;
-            Environment.SetEnvironmentVariable("KCAP_CONFIG_DIR", null);
         }
     }
 

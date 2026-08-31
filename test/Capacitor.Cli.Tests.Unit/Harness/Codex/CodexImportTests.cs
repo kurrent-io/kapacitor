@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text.Json;
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Harness;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
 using WireMock.Server;
@@ -9,6 +10,9 @@ using WireMock.Server;
 namespace Capacitor.Cli.Tests.Unit.Harness.Codex;
 
 public class CodexImportTests {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+    [TempHome] public required TempHome Home { get; init; }
+
     [Test]
     public async Task ExtractCodexSessionMetadata_pulls_cwd_model_provider_and_first_timestamp() {
         using var tmp = TempDir.WithPathTo("rollout.tmp", out var path);
@@ -235,13 +239,15 @@ public class CodexImportTests {
         using var client = new HttpClient();
 
         var result = await TranscriptFileClassification.ClassifyAsync(
+            Config.Root,
+            Home,
             client,
             server.Url!,
             transcripts,
             minLines: 0,
             excludedRepos: null,
             CancellationToken.None,
-            vendor: "codex"
+            vendor: HarnessId.Codex
         );
 
         await Assert.That(result.Count).IsEqualTo(1);
@@ -272,13 +278,15 @@ public class CodexImportTests {
         using var client = new HttpClient();
 
         var result = await TranscriptFileClassification.ClassifyAsync(
+            Config.Root,
+            Home,
             client,
             server.Url!,
             transcripts,
             minLines: 0,
             excludedRepos: null,
             CancellationToken.None,
-            vendor: "codex"
+            vendor: HarnessId.Codex
         );
 
         await Assert.That(result.Count).IsEqualTo(1);

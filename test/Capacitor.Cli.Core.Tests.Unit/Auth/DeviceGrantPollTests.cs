@@ -42,7 +42,7 @@ public class DeviceGrantPollTests {
         var time = new FakeTimeProvider { AutoAdvanceAmount = TimeSpan.FromSeconds(1) };
 
         var token = await OAuthLoginFlow.RunDeviceFlowAsync(
-            http, "client_id", progress: new RecordingAuthProgress(), time: time);
+            http, "client_id", new RecordingBrowser(), progress: new RecordingAuthProgress(), time: time);
 
         await Assert.That(token).IsNull();
         await Assert.That(polls).IsLessThan(5);   // bounded, not forever
@@ -71,7 +71,7 @@ public class DeviceGrantPollTests {
         using var http = new HttpClient(handler);
 
         var token = await OAuthLoginFlow.RunDeviceFlowAsync(
-            http, "client_id", progress: new RecordingAuthProgress(),
+            http, "client_id", new RecordingBrowser(), progress: new RecordingAuthProgress(),
             time: new FakeTimeProvider { AutoAdvanceAmount = TimeSpan.FromSeconds(1) });
 
         await Assert.That(token).IsEqualTo("tok");
@@ -135,9 +135,8 @@ public class DeviceGrantPollTests {
         var       progress = new RecordingAuthProgress();
 
         var token = await OAuthLoginFlow.RunDeviceFlowAsync(
-            http, "client_id", progress: progress,
-            time: new FakeTimeProvider { AutoAdvanceAmount = TimeSpan.FromSeconds(1) },
-            openBrowser: _ => false);
+            http, "client_id", new RecordingBrowser(opens: false), progress: progress,
+            time: new FakeTimeProvider { AutoAdvanceAmount = TimeSpan.FromSeconds(1) });
 
         await Assert.That(token).IsEqualTo("tok");
         await Assert.That(polls).IsEqualTo(2);
@@ -155,9 +154,8 @@ public class DeviceGrantPollTests {
         var       progress = new RecordingAuthProgress();
 
         var token = await OAuthLoginFlow.RunDeviceFlowAsync(
-            http, "client_id", progress: progress,
-            time: new FakeTimeProvider { AutoAdvanceAmount = TimeSpan.FromSeconds(1) },
-            openBrowser: _ => false);
+            http, "client_id", new RecordingBrowser(opens: false), progress: progress,
+            time: new FakeTimeProvider { AutoAdvanceAmount = TimeSpan.FromSeconds(1) });
 
         await Assert.That(token).IsNull();
         await Assert.That(string.Join("\n", progress.Errors)).Contains("device_flow_disabled");

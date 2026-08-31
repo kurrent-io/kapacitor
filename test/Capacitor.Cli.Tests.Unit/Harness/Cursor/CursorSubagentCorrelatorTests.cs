@@ -145,9 +145,9 @@ public class CursorSubagentCorrelatorTests {
     }
 
     sealed class CorrelatorFixture : IDisposable {
-        public string Root { get; } = Path.Combine(Path.GetTempPath(), $"kcap-correlator-{Guid.NewGuid():N}");
+        readonly TempDir _root = new("correlator");
 
-        public CorrelatorFixture() => Directory.CreateDirectory(Root);
+        public string Root => _root.Path;
 
         public string Add(string sessionId, string jsonl) {
             var path = Path.Combine(Root, sessionId + ".jsonl");

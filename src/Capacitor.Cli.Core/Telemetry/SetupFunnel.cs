@@ -10,12 +10,18 @@ namespace Capacitor.Cli.Core.Telemetry;
 /// setup there and never runs kcap again, so a deferred event at that point is a lost event, not
 /// a delayed one.
 ///
-/// The two outcome events are the exception: by the time either fires, <see cref="WorkspaceRequested"/>
-/// has already fired, so the user is committed and will reach the process's normal exit flush
-/// either way. They use the batched <see cref="CliTelemetry.Capture"/> path instead — they don't
-/// need the eager flush, and eager flushing would block synchronously inside
-/// SpectreTenantProvisioner's interactive prompts and (for the poll outcomes) inside a Spectre
-/// live-display callback, which this codebase has prior form for garbling when work blocks there.
+/// The two outcome events are the exception: neither can be reached by walking away from a prompt,
+/// so both arrive at the process's normal exit flush. They use the batched
+/// <see cref="CliTelemetry.Capture"/> path instead — they don't need the eager flush, and eager
+/// flushing would block synchronously inside SpectreTenantProvisioner's interactive prompts and
+/// (for the poll outcomes) inside a Spectre live-display callback, neither of which tolerates
+/// blocking work without garbling what it is drawing.
+///
+/// <see cref="WorkspaceFailed"/> does NOT imply a preceding <see cref="WorkspaceRequested"/>: the
+/// flag-driven create rejects a bad or taken slug before asking the server for anything. Those
+/// carry the reason the check produced (<c>invalid</c>, <c>blocked</c>, <c>reserved</c>,
+/// <c>taken</c>, <c>unavailable</c>, <c>availability_unreachable</c>), so a funnel query can tell
+/// them from a failure that had a workspace on the way.
 ///
 /// Names deliberately avoid `cli_setup_completed`, which the SERVER already emits — a second
 /// producer of that name would double-count across two different persons (the CLI user and

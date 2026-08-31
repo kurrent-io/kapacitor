@@ -1,6 +1,5 @@
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
-using Capacitor.Cli.Core.Config;
 
 namespace Capacitor.Cli;
 
@@ -13,15 +12,12 @@ namespace Capacitor.Cli;
 internal readonly record struct UpdateAdvisory(string? Current, string? Target, bool Newer, bool ServerCapped);
 
 internal static class UpdateAdvisoryResolver {
-    /// <summary>Resolves the server URL the same way the authenticated HTTP choke point does
-    /// (<c>HttpClientExtensions.CreateClientCoreImplAsync</c>), so the cached server version is read
-    /// under the same key it was captured with.</summary>
-    internal static string ResolvedServerUrl() =>
-        AppConfig.ResolvedServerUrl ?? Environment.GetEnvironmentVariable("KCAP_URL") ?? "http://localhost:5108";
-
-    /// <summary>Production entry: caps against the cached version for the current server.</summary>
-    internal static UpdateAdvisory Resolve(UpdateCommand.UpdateCheckResult? result, string channel) =>
-        Resolve(result, channel, ServerVersionStore.Get(ResolvedServerUrl()));
+    /// <summary>Production entry: caps against the cached version for the current server.
+    /// <paramref name="serverUrl"/> must be the one the authenticated client was built with, or the
+    /// cached version is read under a different key than it was captured with.</summary>
+    internal static UpdateAdvisory Resolve(
+            UpdateCommand.UpdateCheckResult? result, string channel, string? serverUrl, ConfigRoot config) =>
+        Resolve(result, channel, serverUrl is null ? null : ServerVersionStore.Get(serverUrl, config));
 
     /// <summary>
     /// Pure, testable core. The cap engages ONLY on the stable <c>latest</c> channel (a beta user

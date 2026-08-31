@@ -5,18 +5,17 @@ namespace Capacitor.Cli.Core.Harness.Cursor;
 /// <summary>
 /// Per-session on-disk marker paths for the Cursor tailing watcher's runtime rewrite guard
 /// (quarantine), ordering-sensitive hook side-effect barrier, and hook heartbeat. One
-/// dot-namespaced directory per marker kind under the CLI's config dir (honouring
-/// <c>KCAP_CONFIG_DIR</c> via <see cref="PathHelpers.ConfigPath"/>), one file per session keyed
+/// dot-namespaced directory per marker kind under the config root it is handed, one file per session keyed
 /// by the dashless session id, so every process on this machine — hook, watcher, backfill,
 /// import — resolves the same path. The barrier and heartbeat markers wrap
 /// <see cref="WatcherHeartbeat"/>'s atomic timestamp read/write; the quarantine marker carries a
 /// small JSON payload (reason + timestamp) instead, as a permanent diagnostic record rather than
 /// a rolling liveness signal.
 /// </summary>
-public static class CursorMarkers {
-    public static string QuarantinePath(string sessionId) => Path.Combine(PathHelpers.ConfigPath("cursor-quarantine"), $"{sessionId}.json");
-    public static string BarrierPath(string sessionId)    => Path.Combine(PathHelpers.ConfigPath("cursor-barrier"), $"{sessionId}.json");
-    public static string HeartbeatPath(string sessionId)  => Path.Combine(PathHelpers.ConfigPath("cursor-heartbeat"), $"{sessionId}.json");
+public sealed class CursorMarkers(ConfigRoot config) {
+    public string QuarantinePath(string sessionId) => config.Path("cursor-quarantine", $"{sessionId}.json");
+    public string BarrierPath(string sessionId)    => config.Path("cursor-barrier", $"{sessionId}.json");
+    public string HeartbeatPath(string sessionId)  => config.Path("cursor-heartbeat", $"{sessionId}.json");
 
     /// <summary>
     /// Per-CHILD marker path recording that this subagent's <c>subagent-start</c> was durably
@@ -24,8 +23,8 @@ public static class CursorMarkers {
     /// the child's own dashless session id (not the parent) — mirrors
     /// <c>CursorLiveSubagentLinker</c>'s marker keying.
     /// </summary>
-    public static string SubagentStartAckPath(string childSessionId) =>
-        Path.Combine(PathHelpers.ConfigPath("cursor-subagent-start-ack"), $"{childSessionId}.json");
+    public string SubagentStartAckPath(string childSessionId) =>
+        config.Path("cursor-subagent-start-ack", $"{childSessionId}.json");
 
     /// <summary>
     /// The shared bound every <see cref="BarrierPending"/> caller (the backfill and the live
@@ -41,7 +40,7 @@ public static class CursorMarkers {
     /// never itself become the reason live capture stalls. Consulted by the backfill and import
     /// source in a later task.
     /// </summary>
-    public static bool IsQuarantined(string sessionId) {
+    public bool IsQuarantined(string sessionId) {
         try { return File.Exists(QuarantinePath(sessionId)); } catch { return false; }
     }
 
@@ -58,7 +57,7 @@ public static class CursorMarkers {
     /// Verify*/Reject return value is what actually stops delivery; a lost marker only means a
     /// later process can't see this session was already quarantined.
     /// </summary>
-    public static void Quarantine(string sessionId, string reason) {
+    public void Quarantine(string sessionId, string reason) {
         if (ReadMarker(sessionId) is not null) return; // already quarantined; keep the first reason
 
         try {
@@ -78,7 +77,7 @@ public static class CursorMarkers {
     }
 
     /// <summary>The persisted quarantine marker for this session, or null if absent/corrupt.</summary>
-    public static CursorQuarantineMarker? ReadMarker(string sessionId) {
+    public CursorQuarantineMarker? ReadMarker(string sessionId) {
         var path = QuarantinePath(sessionId);
         if (!File.Exists(path)) return null;
 
@@ -102,7 +101,7 @@ public static class CursorMarkers {
     /// Reuses <see cref="WatcherHeartbeat.Touch"/>'s atomic sibling-temp-then-rename write —
     /// the barrier is just a timestamp marker, same shape as a heartbeat.
     /// </summary>
-    public static void CreateBarrier(string sessionId, DateTimeOffset now) =>
+    public void CreateBarrier(string sessionId, DateTimeOffset now) =>
         WatcherHeartbeat.Touch(BarrierPath(sessionId), now);
 
     /// <summary>
@@ -115,7 +114,7 @@ public static class CursorMarkers {
     /// a hook that crashed before clearing its own barrier must not wedge delivery forever;
     /// past the bound, delivery proceeds (a bounded, deliberate attachment loss).
     /// </summary>
-    public static bool BarrierPending(string sessionId, DateTimeOffset now, TimeSpan bound) {
+    public bool BarrierPending(string sessionId, DateTimeOffset now, TimeSpan bound) {
         var stamp = WatcherHeartbeat.Read(BarrierPath(sessionId));
         return stamp is { } s && now - s < bound;
     }
@@ -125,7 +124,7 @@ public static class CursorMarkers {
     /// live POST, or when a later invocation's hook-spool drain delivers that same spooled
     /// entry. Best-effort: an absent marker (nothing to clear) is not an error.
     /// </summary>
-    public static void ClearBarrier(string sessionId) {
+    public void ClearBarrier(string sessionId) {
         try { File.Delete(BarrierPath(sessionId)); } catch { /* best-effort */ }
     }
 
@@ -136,7 +135,7 @@ public static class CursorMarkers {
     /// heartbeat reflects "Cursor is still firing hooks for this session" independent of
     /// whether the tailing watcher is itself alive. Reuses <see cref="WatcherHeartbeat.Touch"/>.
     /// </summary>
-    public static void TouchHeartbeat(string sessionId, DateTimeOffset now) =>
+    public void TouchHeartbeat(string sessionId, DateTimeOffset now) =>
         WatcherHeartbeat.Touch(HeartbeatPath(sessionId), now);
 
     /// <summary>
@@ -149,7 +148,7 @@ public static class CursorMarkers {
     /// <see cref="HookSpool"/>'s <c>DrainOutcome.Drop</c>) can never open an ungated transcript
     /// path for a subagent whose <c>SubagentStarted</c> was never appended server-side.
     /// </summary>
-    public static bool HasSubagentStartAck(string childSessionId) {
+    public bool HasSubagentStartAck(string childSessionId) {
         try { return File.Exists(SubagentStartAckPath(childSessionId)); } catch { return false; }
     }
 
@@ -162,7 +161,7 @@ public static class CursorMarkers {
     /// it. Reuses <see cref="WatcherHeartbeat.Touch"/>'s atomic write; the content is unused, only
     /// the marker's presence matters.
     /// </summary>
-    public static void MarkSubagentStartAcked(string childSessionId) {
+    public void MarkSubagentStartAcked(string childSessionId) {
         try { WatcherHeartbeat.Touch(SubagentStartAckPath(childSessionId), DateTimeOffset.UtcNow); }
         catch { /* best-effort — see HasSubagentStartAck's fail-open contract */ }
     }

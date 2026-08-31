@@ -4,6 +4,7 @@ using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.Harness.Copilot;
 using Capacitor.Cli.SessionStartMemory;
+using Capacitor.Cli.Core.Harness;
 
 namespace Capacitor.Cli.Commands.Harness;
 
@@ -39,7 +40,16 @@ namespace Capacitor.Cli.Commands.Harness;
 /// sessionStart, which writes a single {"additionalContext":"…"} document when — and only when —
 /// a team-memory fragment is available to inject.
 /// </remarks>
-static class CopilotHookCommand {
+sealed class CopilotHookCommand(ConfigRoot config, ProfileContext profiles, HookClock clock, UserHome home) {
+    readonly WatcherManager  _watchers = new(config, profiles);
+    readonly AgentHookPoster _poster   = new(config, profiles);
+
+    string Url => profiles.Resolution.ServerUrl!;
+
+    /// <summary>kcap's own cap: Copilot's hook config carries no timeout, so nothing but this stops a
+    /// slow start from being the user's wait.</summary>
+    internal static readonly TimeSpan Ceiling = TimeSpan.FromSeconds(5);
+
     /// <summary>
     /// Writes the SessionStart memory envelope — and ONLY when there is something to inject.
     ///
@@ -61,7 +71,7 @@ static class CopilotHookCommand {
         string payload;
 
         try {
-            payload = SessionStartMemoryOutputAdapters.Render(SessionStartHarness.Copilot, fragment, workItemsNudge);
+            payload = SessionStartMemoryOutputAdapters.Render(HarnessId.Copilot, fragment, workItemsNudge);
         } catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException) {
             return;
         }
@@ -84,33 +94,31 @@ static class CopilotHookCommand {
     /// reason is mapped from it rather than assumed; re-injection across a resume of the same session
     /// id is prevented by the shared lease keyed on (harness, session id).</para>
     /// </summary>
-    static Task<string?> StartMemoryIndexTask(
-            string     baseUrl,
+    Task<string?> StartMemoryIndexTask(
             string     sessionId,
             string?    scopeRoot,
             string?    source,
             bool       disabled,
             bool       guidelinesDisabled,
             TimeSpan   budget,
-            Func<CancellationToken, Task<bool>>?                commitGate,
-            Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory,
-            Func<SessionStartMemoryLeaseStore>?                 memoryStoreFactory) {
+            Func<CancellationToken, Task<bool>>? commitGate) {
         if ((disabled && guidelinesDisabled) || string.IsNullOrWhiteSpace(sessionId) || string.IsNullOrWhiteSpace(scopeRoot)
          || budget <= TimeSpan.Zero
-         || !SessionStartMemoryHookSupport.CanAttempt(baseUrl))
+         || !SessionStartMemoryHookSupport.CanAttempt(Url))
             return Task.FromResult<string?>(null);
 
         try {
-            var store    = memoryStoreFactory?.Invoke() ?? new SessionStartMemoryLeaseStore();
+            var store    = SessionStartMemoryLeaseStore.Create(config, clock.Time);
             var provider = SessionStartMemoryHookSupport.CompositeProvider(
-                memoryClientFactory ?? SessionStartMemoryHookSupport.ClientFactory(baseUrl),
-                disposeClients: memoryClientFactory is null);
+                config,
+                SessionStartMemoryHookSupport.ClientFactory(config, profiles, Url),
+                disposeClients: true);
 
             return new SessionStartMemoryOrchestrator(store, provider).GetFragmentAsync(
-                new SessionMemoryLifecycle(SessionStartHarness.Copilot, sessionId, LifecycleInstanceId: null,
+                new SessionMemoryLifecycle(HarnessId.Copilot, sessionId, LifecycleInstanceId: null,
                     IsTopLevel: true, ClassificationAuthoritative: true,
                     SessionStartMemoryHookSupport.ReasonFor(source), CallbackMayRepeat: false),
-                new SessionStartMemoryContextRequest(baseUrl, scopeRoot, disabled, budget, CancellationToken.None,
+                new SessionStartMemoryContextRequest(Url, scopeRoot, disabled, budget, CancellationToken.None,
                     GuidelinesDisabled: guidelinesDisabled),
                 commitGate);
         } catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException) {
@@ -128,13 +136,7 @@ static class CopilotHookCommand {
     // Copilot's turn loop. Single budget covers auth discovery + POST.
     static readonly TimeSpan NotificationPostBudget = TimeSpan.FromSeconds(2);
 
-    /// <param name="processStart">Monotonic hook-start stamp anchoring every budget computation;
-    /// defaults to now. Tests pass an older stamp to drive the budget-exhausted branch without sleeping.</param>
-    public static async Task<int> Handle(string baseUrl, TextReader stdin, string[] args,
-            long processStart = 0,
-            Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory = null,
-            Func<SessionStartMemoryLeaseStore>?                 memoryStoreFactory  = null) {
-        var ps        = processStart == 0 ? System.Diagnostics.Stopwatch.GetTimestamp() : processStart;
+    public async Task<int> Handle(TextReader stdin, string[] args) {
         var eventName = GetArg(args, "--event");
 
         if (string.IsNullOrWhiteSpace(eventName)) {
@@ -179,48 +181,44 @@ static class CopilotHookCommand {
 
         // Mirror the Claude/Codex disabled-session fast path: `kcap disable`
         // must stop every POST and watcher restart for the session.
-        if (DisabledSessions.IsDisabled(sessionId)) {
-            if (eventName == "sessionEnd") DisabledSessions.RemoveMarker(sessionId);
+        if (DisabledSessions.IsDisabled(sessionId, config)) {
+            if (eventName == "sessionEnd") DisabledSessions.RemoveMarker(sessionId, config);
             return 0;
         }
 
         // Task 12: the cross-vendor backlog drain now runs centrally in Program.cs's
         // `case "hook":` before dispatch — no longer wired here (removes the double-wire).
-        var spool = new HookSpool(PathHelpers.ConfigPath("spool"));
+        var spool = new HookSpool(config);
 
         var cwd           = TryGetString(node, "cwd");
-        var activeProfile = await AppConfig.GetActiveProfileAsync();
+        var activeProfile = profiles.Effective;
 
         // Path exclusion is a cheap string-prefix compare — safe on every
         // event (agentStop fires per turn). Repo exclusion runs once inside
         // sessionStart after enrichment, then marks the session disabled so
         // later events take the fast path above (same split as Codex).
         if (activeProfile?.ExcludedPaths is { Length: > 0 } excludedPaths
-         && PathExclusion.IsExcluded(cwd, excludedPaths)) {
+         && PathExclusion.IsExcluded(cwd, excludedPaths, home)) {
             return 0;
         }
 
         return eventName switch {
-            "sessionStart" => await HandleSessionStart(baseUrl, node, dashedSessionId, sessionId, cwd, activeProfile, spool,
-                                  ps, memoryClientFactory, memoryStoreFactory),
-            "sessionEnd"   => await HandleSessionEnd(baseUrl, node, dashedSessionId, sessionId, cwd),
-            "agentStop"    => await HandleAgentStop(baseUrl, node, dashedSessionId, sessionId, cwd),
-            "notification" => await HandleNotification(baseUrl, node, sessionId, cwd),
+            "sessionStart" => await HandleSessionStart(node, dashedSessionId, sessionId, cwd, activeProfile, spool, clock.Budget(Ceiling)),
+            "sessionEnd"   => await HandleSessionEnd(node, dashedSessionId, sessionId, cwd),
+            "agentStop"    => await HandleAgentStop(node, dashedSessionId, sessionId, cwd),
+            "notification" => await HandleNotification(node, sessionId, cwd),
             _              => 0   // unknown — silently ignore (fail-open like the other dispatchers)
         };
     }
 
-    static async Task<int> HandleSessionStart(
-            string    baseUrl,
-            JsonNode  node,
-            string    dashedSessionId,
-            string    sessionId,
-            string?   cwd,
-            Profile?  activeProfile,
-            HookSpool spool,
-            long                                                processStart        = 0,
-            Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory = null,
-            Func<SessionStartMemoryLeaseStore>?                 memoryStoreFactory  = null
+    async Task<int> HandleSessionStart(
+            JsonNode   node,
+            string     dashedSessionId,
+            string     sessionId,
+            string?    cwd,
+            Profile?   activeProfile,
+            HookSpool  spool,
+            HookBudget budget
         ) {
         var source = TryGetString(node, "source") is { Length: > 0 } s ? s : "startup";
 
@@ -228,7 +226,7 @@ static class CopilotHookCommand {
             ["hook_event_name"] = "sessionStart",
             ["session_id"]      = sessionId,
             ["source"]          = source,
-            ["home_dir"]        = PathHelpers.HomeDirectory
+            ["home_dir"]        = home.Path
         };
 
         if (cwd is not null) {
@@ -259,14 +257,14 @@ static class CopilotHookCommand {
             forwarded["default_visibility"] = visibility;
         }
 
-        SessionStartInventory.Stamp(forwarded);
-        var enriched = await RepositoryDetection.EnrichWithRepositoryInfo(forwarded.ToJsonString());
+        SessionStartInventory.Stamp(forwarded, config, home);
+        var enriched = await RepositoryDetection.EnrichWithRepositoryInfo(config, forwarded.ToJsonString());
 
         // Repo exclusion after enrichment (fast in-payload path) — mark the
         // session so per-turn agentStop events skip via DisabledSessions.
         if (activeProfile?.ExcludedRepos is { Length: > 0 } excludedRepos
-         && await RepoExclusion.IsExcludedAsync(enriched, excludedRepos)) {
-            DisabledSessions.Mark(sessionId);
+         && await RepoExclusion.IsExcludedAsync(config, enriched, excludedRepos)) {
+            DisabledSessions.Mark(sessionId, config);
             return 0;
         }
 
@@ -280,22 +278,20 @@ static class CopilotHookCommand {
         // the exclusion/disabled early-outs above so an excluded repo never reaches the memory
         // subsystem. The git root stamped onto the forwarded payload is the preferred scope; cwd is
         // the fallback (never a process-cwd fallback — see StartMemoryIndexTask).
-        var memoryTask = StartMemoryIndexTask(
-            baseUrl, sessionId,
+        var memoryTask = StartMemoryIndexTask(sessionId,
             TryGetString(JsonNode.Parse(enriched), "workspace_root") ?? cwd,
             source,
-            // The EFFECTIVE profile, not AppConfig.ResolvedProfile?.Profile: ProfileResolver returns a
-            // null Profile whenever --server-url or KCAP_URL wins, and GetActiveProfileAsync (which
-            // produced this parameter) is what falls back to the on-disk active profile. Reading the
-            // resolved one silently ignored `disable_memory_index: true` for every KCAP_URL user.
+            // The EFFECTIVE profile, not the resolution's: ProfileResolver returns a null Profile
+            // whenever --server-url or KCAP_URL wins, and the effective one falls back to the on-disk
+            // active profile. Reading the resolution silently ignored `disable_memory_index: true`
+            // for every KCAP_URL user.
             activeProfile?.DisableMemoryIndex is true,
             activeProfile?.DisableSessionGuidelines is true,
-            // Remaining() already reserves Safety — subtracting it again here halved the window.
-            HookBudget.Remaining(processStart, "session-start"),
+            // Remaining already reserves Safety — subtracting it again here halved the window.
+            budget.Remaining,
             // Deliverability gate: the lease is committed only once the lifecycle POST has proved the
             // output can actually be honoured. Resolved on EVERY path below, before the await.
-            _ => deliverable.Task,
-            memoryClientFactory, memoryStoreFactory);
+            _ => deliverable.Task);
 
         // Spawn-before-post: capture must start on Posted OR Spooled (auth lapse /
         // outage) — a doomed/delayed lifecycle POST must never withhold the watcher. Only a
@@ -303,8 +299,7 @@ static class CopilotHookCommand {
         HookPostOutcome outcome;
 
         try {
-            outcome = await AgentHookPoster.PostOrSpoolAsync(
-                baseUrl, "session-start/copilot", enriched, "copilot-hook",
+            outcome = await _poster.PostOrSpoolAsync("session-start/copilot", enriched, "copilot-hook",
                 spool, sessionId, route: "session-start/copilot");
         } catch {
             deliverable.TrySetResult(false);
@@ -318,25 +313,24 @@ static class CopilotHookCommand {
         deliverable.TrySetResult(outcome != HookPostOutcome.Failed);
 
         // Always awaited, on every outcome, so the fetch is never left dangling.
-        var fragment = await SessionStartMemoryHookSupport.AwaitBounded(memoryTask, processStart, "session-start");
+        var fragment = await SessionStartMemoryHookSupport.AwaitBounded(memoryTask, budget);
 
         if (outcome == HookPostOutcome.Failed) return 1;
 
         // Copilot parses this hook's stdout as its (optional) single JSON result document. Silent when
         // there is neither a fragment nor a nudge, which keeps all pre-existing paths byte-identical.
         var workItemsNudge = HarnessNudgeEmitter.Combine(
-            WorkItemsNudgeEmitter.Resolve(SessionStartHarness.Copilot, sessionId, activeProfile?.DisableWorkItemsNudge is true),
-            HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true));
+            WorkItemsNudgeEmitter.Resolve(HarnessId.Copilot, sessionId, activeProfile?.DisableWorkItemsNudge is true, home),
+            HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true, config, home));
         WriteSessionStartOutput(Console.Out, fragment, workItemsNudge);
 
-        if (!AgentHookPoster.ShouldSpawnAfter(outcome, baseUrl)) return 0;
+        if (!AgentHookPoster.ShouldSpawnAfter(outcome, Url)) return 0;
 
-        await EnsureWatcherAsync(baseUrl, dashedSessionId, sessionId, node, cwd);
+        await EnsureWatcherAsync(dashedSessionId, sessionId, node, cwd);
         return 0;
     }
 
-    static async Task<int> HandleSessionEnd(
-            string   baseUrl,
+    async Task<int> HandleSessionEnd(
             JsonNode node,
             string   dashedSessionId,
             string   sessionId,
@@ -356,7 +350,7 @@ static class CopilotHookCommand {
         // the hook being killed and still delivers the post-hook tail via one
         // idempotent inline-drain once `session.shutdown` lands (or it times out).
         // Its poll budget outlasts the worst-case hook lifetime for this reason.
-        WatcherManager.SpawnCopilotFinalizeDrain(baseUrl, sessionId, transcriptPath);
+        _watchers.SpawnCopilotFinalizeDrain(sessionId, transcriptPath);
 
         // Kill watcher + inline-drain BEFORE the POST so the server computes
         // stats over the full transcript — capped so a slow drain can't starve
@@ -364,8 +358,8 @@ static class CopilotHookCommand {
         try {
             var drained = await TimeBudget.RunCappedAsync(
                 async () => {
-                    await WatcherManager.KillWatcher(sessionId);
-                    await WatcherManager.InlineDrainAsync(baseUrl, sessionId, transcriptPath, agentId: null, vendor: "copilot");
+                    await _watchers.KillWatcher(sessionId);
+                    await _watchers.InlineDrainAsync(sessionId, transcriptPath, agentId: null, vendor: "copilot");
                 },
                 PreHookDrainCap
             );
@@ -384,7 +378,7 @@ static class CopilotHookCommand {
             ["hook_event_name"] = "sessionEnd",
             ["session_id"]      = sessionId,
             ["reason"]          = TryGetString(node, "reason") ?? "complete",
-            ["home_dir"]        = PathHelpers.HomeDirectory
+            ["home_dir"]        = home.Path
         };
 
         if (cwd is not null) forwarded["cwd"] = cwd;
@@ -398,19 +392,19 @@ static class CopilotHookCommand {
         }
 
         // AuthLapsed / Posted → clean exit (0); a real failure keeps the prior non-zero exit.
-        return await PostHookAsync(baseUrl, "session-end/copilot", forwarded.ToJsonString()) == HookPostOutcome.Failed ? 1 : 0;
+        return await PostHookAsync("session-end/copilot", forwarded.ToJsonString()) == HookPostOutcome.Failed ? 1 : 0;
     }
 
-    static async Task<int> HandleAgentStop(string baseUrl, JsonNode node, string dashedSessionId, string sessionId, string? cwd) {
+    async Task<int> HandleAgentStop(JsonNode node, string dashedSessionId, string sessionId, string? cwd) {
         // Fires at every turn end — no server POST (sessionEnd owns lifecycle;
         // turn content arrives via the transcript). Just keep the watcher
         // alive in case it crashed mid-session, mirroring Codex's Stop branch.
         _ = node;
-        await EnsureWatcherAsync(baseUrl, dashedSessionId, sessionId, node, cwd);
+        await EnsureWatcherAsync(dashedSessionId, sessionId, node, cwd);
         return 0;
     }
 
-    static async Task<int> HandleNotification(string baseUrl, JsonNode node, string sessionId, string? cwd) {
+    async Task<int> HandleNotification(JsonNode node, string sessionId, string? cwd) {
         // The server's NotificationHook requires message + notification_type.
         // Copilot's command-hook stdin ships the Claude-compatible snake_case
         // key today (verified against captured v1.0.61 payloads), but its
@@ -429,7 +423,7 @@ static class CopilotHookCommand {
             ["session_id"]        = sessionId,
             ["message"]           = message,
             ["notification_type"] = notificationType,
-            ["home_dir"]          = PathHelpers.HomeDirectory
+            ["home_dir"]          = home.Path
         };
 
         if (TryGetString(node, "title") is { } title) forwarded["title"] = title;
@@ -441,11 +435,11 @@ static class CopilotHookCommand {
         try {
             // Status-returning variant (not CreateAuthenticatedClientAsync, which writes a
             // per-turn "expired" line to stderr): on a lapse, stay quiet and skip the doomed POST.
-            var (client, status) = await HttpClientExtensions.CreateClientWithAuthStatusAsync(baseUrl, cts.Token);
+            var (client, status) = await HttpClientExtensions.CreateClientWithAuthStatusAsync(config, profiles, Url, cts.Token);
             using (client) {
                 if (AgentHookPoster.IsAuthLapsed(status)) return 0;
                 using var content = new StringContent(forwarded.ToJsonString(), Encoding.UTF8, "application/json");
-                using var _       = await client.PostAsync($"{baseUrl}/hooks/notification", content, cts.Token);
+                using var _       = await client.PostAsync($"{Url}/hooks/notification", content, cts.Token);
             }
         } catch {
             // Recording must never fail the hook.
@@ -454,7 +448,7 @@ static class CopilotHookCommand {
         return 0;
     }
 
-    static async Task EnsureWatcherAsync(string baseUrl, string dashedSessionId, string sessionId, JsonNode node, string? cwd) {
+    async Task EnsureWatcherAsync(string dashedSessionId, string sessionId, JsonNode node, string? cwd) {
         // agentStop payloads carry transcriptPath; sessionStart's don't —
         // derive it from the session-state layout in that case. Copilot also
         // ships transcriptPath as an EMPTY STRING on some firings, so treat
@@ -463,8 +457,7 @@ static class CopilotHookCommand {
             ? tp
             : TranscriptPathFor(dashedSessionId);
 
-        await WatcherManager.EnsureWatcherRunning(
-            baseUrl, sessionId, transcriptPath,
+        await _watchers.EnsureWatcherRunning(sessionId, transcriptPath,
             agentId: null, sessionIdOverride: null, cwd: cwd,
             skipTitle: false, vendor: "copilot"
         );
@@ -478,12 +471,13 @@ static class CopilotHookCommand {
     /// event write) returns the current-layout path — the watcher tolerates a
     /// not-yet-created file and picks it up on its next poll.
     /// </summary>
-    static string TranscriptPathFor(string dashedSessionId) {
-        var current = CopilotPaths.EventsJsonl(CopilotPaths.SessionStateDir(), dashedSessionId);
+    string TranscriptPathFor(string dashedSessionId) {
+        var paths   = CopilotHarness.FromEnvironment(home).Paths;
+        var current = paths.EventsJsonl(paths.SessionStateDir, dashedSessionId);
 
         if (File.Exists(current)) return current;
 
-        var legacy = CopilotPaths.EventsJsonl(CopilotPaths.LegacySessionStateDir(), dashedSessionId);
+        var legacy = paths.EventsJsonl(paths.LegacySessionStateDir, dashedSessionId);
 
         return File.Exists(legacy) ? legacy : current;
     }
@@ -491,8 +485,8 @@ static class CopilotHookCommand {
     // Shared auth-aware recording POST: skips the doomed POST (and the misleading per-turn
     // "HTTP 401" stderr line) when auth has lapsed, reporting AuthLapsed so the caller exits
     // cleanly instead of erroring. See AgentHookPoster.
-    static Task<HookPostOutcome> PostHookAsync(string baseUrl, string endpoint, string body)
-        => AgentHookPoster.PostAsync(baseUrl, endpoint, body, "copilot-hook");
+    Task<HookPostOutcome> PostHookAsync(string endpoint, string body)
+        => _poster.PostAsync(endpoint, body, "copilot-hook");
 
     static string? GetArg(string[] args, string flag) {
         var idx = Array.IndexOf(args, flag);

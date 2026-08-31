@@ -1,5 +1,6 @@
 using System.Globalization;
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Harness.Pi;
 
 namespace Capacitor.Cli.Tests.Unit.Harness.Pi;
@@ -11,6 +12,8 @@ namespace Capacitor.Cli.Tests.Unit.Harness.Pi;
 /// line for the id/cwd/timestamp and walks the tree recursively.
 /// </summary>
 public class PiImportSourceTests {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     const string Sid1 = "11111111-2222-3333-4444-555555555555";
     const string Sid2 = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
 
@@ -28,12 +31,12 @@ public class PiImportSourceTests {
         using var tmp = new TempDir();
         WriteSession(tmp.Path, Sid1, cwd: "/work/a");
 
-        var source   = new PiImportSource(tmp.Path);
+        var source   = new PiImportSource(Config.Root, tmp.Path);
         var sessions = await source.DiscoverAsync(new DiscoveryFilters(null, null, null, 0), CancellationToken.None);
 
         await Assert.That(sessions.Count).IsEqualTo(1);
         await Assert.That(sessions[0].SessionId).IsEqualTo(Sid1.Replace("-", ""));
-        await Assert.That(sessions[0].Vendor).IsEqualTo("pi");
+        await Assert.That(sessions[0].Vendor).IsEqualTo(HarnessId.Pi);
         await Assert.That(sessions[0].Cwd).IsEqualTo("/work/a");
         await Assert.That(sessions[0].FirstTimestamp).IsEqualTo(DateTimeOffset.Parse("2026-06-12T10:00:00.000Z", CultureInfo.InvariantCulture));
     }
@@ -44,7 +47,7 @@ public class PiImportSourceTests {
         WriteSession(tmp.PathTo("proj-a"), Sid1, cwd: "/work/a");
         WriteSession(tmp.PathTo("proj-b"), Sid2, cwd: "/work/b");
 
-        var source   = new PiImportSource(tmp.Path);
+        var source   = new PiImportSource(Config.Root, tmp.Path);
         var sessions = await source.DiscoverAsync(new DiscoveryFilters(null, null, null, 0), CancellationToken.None);
 
         await Assert.That(sessions.Count).IsEqualTo(2);
@@ -56,7 +59,7 @@ public class PiImportSourceTests {
         // A .jsonl whose first line is not a Pi session header.
         tmp.CreateFile("other.jsonl", "{\"type\":\"something\",\"x\":1}\n");
 
-        var source   = new PiImportSource(tmp.Path);
+        var source   = new PiImportSource(Config.Root, tmp.Path);
         var sessions = await source.DiscoverAsync(new DiscoveryFilters(null, null, null, 0), CancellationToken.None);
 
         await Assert.That(sessions.Count).IsEqualTo(0);
@@ -74,7 +77,7 @@ public class PiImportSourceTests {
             """{"type":"message","id":"a1","parentId":null,"message":{"role":"user","content":"hello"}}"""
         });
 
-        var source   = new PiImportSource(tmp.Path);
+        var source   = new PiImportSource(Config.Root, tmp.Path);
         var sessions = await source.DiscoverAsync(new DiscoveryFilters(null, null, null, 0), CancellationToken.None);
 
         await Assert.That(sessions.Count).IsEqualTo(0);
@@ -92,7 +95,7 @@ public class PiImportSourceTests {
                 """{"type":"message","id":"a1","parentId":null,"message":{"role":"user","content":"hi"}}"""
             });
 
-        var source   = new PiImportSource(tmp.Path);
+        var source   = new PiImportSource(Config.Root, tmp.Path);
         var sessions = await source.DiscoverAsync(new DiscoveryFilters(null, null, null, 0), CancellationToken.None);
 
         await Assert.That(sessions.Count).IsEqualTo(1);
@@ -105,7 +108,7 @@ public class PiImportSourceTests {
         WriteSession(tmp.Path, Sid1, cwd: "/work/a");
         WriteSession(tmp.Path, Sid2, cwd: "/work/b");
 
-        var source = new PiImportSource(tmp.Path);
+        var source = new PiImportSource(Config.Root, tmp.Path);
 
         var bySession = await source.DiscoverAsync(new DiscoveryFilters(null, Sid1, null, 0), CancellationToken.None);
         await Assert.That(bySession.Count).IsEqualTo(1);
@@ -119,7 +122,7 @@ public class PiImportSourceTests {
     [Test]
     public async Task is_available_false_when_dir_missing() {
         using var tmp = new TempDir();
-        var source = new PiImportSource(tmp.PathTo("nope"));
+        var source = new PiImportSource(Config.Root, tmp.PathTo("nope"));
         await Assert.That(source.IsAvailable).IsFalse();
     }
 
@@ -128,7 +131,7 @@ public class PiImportSourceTests {
         // Pi is a routed source (FilePath=""), so it never reaches the chain
         // title worker. Like Copilot/Cursor it relies on the server-side fallback
         // title; advertising true would be a no-op contract lie.
-        var source = new PiImportSource("/nonexistent");
+        var source = new PiImportSource(Config.Root, "/nonexistent");
         await Assert.That(source.SupportsTitleGeneration).IsFalse();
     }
 

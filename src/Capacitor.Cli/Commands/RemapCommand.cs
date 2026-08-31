@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using Capacitor.Cli.Core.Config;
+using Capacitor.Cli.Core;
 
 namespace Capacitor.Cli.Commands;
 
@@ -14,7 +15,7 @@ namespace Capacitor.Cli.Commands;
 /// import. <c>~</c> is kept literal in storage and expanded at apply time
 /// by <see cref="CwdRemapper"/>.
 /// </summary>
-public static class RemapCommand {
+public sealed class RemapCommand(ConfigRoot root) {
     /// <summary>
     /// Mirror <see cref="CwdRemapper"/>'s policy so a stored entry and the
     /// argument typed at the CLI compare with the same case sensitivity that
@@ -27,7 +28,7 @@ public static class RemapCommand {
             ? StringComparison.OrdinalIgnoreCase
             : StringComparison.Ordinal;
 
-    public static async Task<int> HandleAsync(string[] args) {
+    public async Task<int> HandleAsync(string[] args) {
         // args[0] == "remap"; --help / -h is handled by the dispatcher in Program.cs.
         if (args.Length < 2) return Usage();
 
@@ -47,7 +48,7 @@ public static class RemapCommand {
         }
     }
 
-    static async Task<int> Add(string from, string to) {
+    async Task<int> Add(string from, string to) {
         if (!TryNormalize(from, out var nFrom, out var fromError)) {
             await Console.Error.WriteLineAsync($"Invalid from path '{from}': {fromError}");
 
@@ -62,7 +63,7 @@ public static class RemapCommand {
 
         var replaced = false;
 
-        await ConfigMutator.MutateAsync(c => {
+        await ConfigMutator.MutateAsync(root, c => {
             (var next, replaced) = ApplyAdd(c.CwdRemap, nFrom, nTo);
 
             return c with { CwdRemap = next };
@@ -75,14 +76,14 @@ public static class RemapCommand {
         return 0;
     }
 
-    static async Task<int> Remove(string from) {
+    async Task<int> Remove(string from) {
         if (!TryNormalize(from, out var nFrom, out var error)) {
             await Console.Error.WriteLineAsync($"Invalid from path '{from}': {error}");
 
             return 1;
         }
 
-        var config = await AppConfig.LoadProfileConfig();
+        var config = await AppConfig.LoadProfileConfig(root);
         var next = ApplyRemove(config.CwdRemap, nFrom);
 
         if (next.Length == (config.CwdRemap?.Length ?? 0)) {
@@ -91,14 +92,14 @@ public static class RemapCommand {
             return 0;
         }
 
-        await ConfigMutator.MutateAsync(c => c with { CwdRemap = ApplyRemove(c.CwdRemap, nFrom) });
+        await ConfigMutator.MutateAsync(root, c => c with { CwdRemap = ApplyRemove(c.CwdRemap, nFrom) });
         await Console.Out.WriteLineAsync($"Removed remap: {nFrom}");
 
         return 0;
     }
 
-    static async Task<int> List() {
-        var config = await AppConfig.LoadProfileConfig();
+    async Task<int> List() {
+        var config = await AppConfig.LoadProfileConfig(root);
         var rules  = config.CwdRemap ?? [];
 
         if (rules.Length == 0) {

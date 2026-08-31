@@ -16,6 +16,11 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 public class OrphanReaperTests {
     [TempDir] public required TempDir Tmp { get; init; }
 
+    // Unique per test: the env-marker scan authorises a kill by KCAP_DAEMON_ID, so two
+    // tests sharing one id reap each other's marked children.
+    readonly string _daemonId = "did-" + Guid.NewGuid().ToString("N")[..8];
+
+
     AgentPidRecordStore NewStore() => new(Tmp.Path, NullLogger.Instance);
 
     static AgentPidRecord Rec(string agentId, int pid, string identity, string daemonId, string epoch) =>
@@ -28,9 +33,9 @@ public class OrphanReaperTests {
             30, new Dictionary<string, string> { ["KCAP_AGENT_ID"] = "orphan" });
         var identity = ProcessIdentity.Capture(dummy.Pid)!;
 
-        store.Write(Rec("orphan", dummy.Pid, identity, daemonId: "did", epoch: "old-epoch"));
+        store.Write(Rec("orphan", dummy.Pid, identity, daemonId: _daemonId, epoch: "old-epoch"));
 
-        var reaper = new OrphanReaper(store, daemonId: "did", currentEpoch: "new-epoch", NullLogger.Instance);
+        var reaper = new OrphanReaper(store, daemonId: _daemonId, currentEpoch: "new-epoch", NullLogger.Instance);
         await reaper.ReapOnceAsync();
 
         // Record-pass kills once ownership is provable: a proven exact (pid, start-identity) match is
@@ -60,10 +65,10 @@ public class OrphanReaperTests {
             30, new Dictionary<string, string> { ["KCAP_AGENT_ID"] = "live" });
         var identity = ProcessIdentity.Capture(dummy.Pid)!;
 
-        store.Write(Rec("live", dummy.Pid, identity, daemonId: "did", epoch: "cur-epoch"));
+        store.Write(Rec("live", dummy.Pid, identity, daemonId: _daemonId, epoch: "cur-epoch"));
 
         // Same currentEpoch as the record → must be skipped entirely (before any env read).
-        var reaper = new OrphanReaper(store, daemonId: "did", currentEpoch: "cur-epoch", NullLogger.Instance);
+        var reaper = new OrphanReaper(store, daemonId: _daemonId, currentEpoch: "cur-epoch", NullLogger.Instance);
         await reaper.ReapOnceAsync();
 
         await Assert.That(dummy.HasExited).IsFalse();
@@ -80,9 +85,9 @@ public class OrphanReaperTests {
         dummy.Kill();
         dummy.WaitForExit(TimeSpan.FromSeconds(5));
 
-        store.Write(Rec("gone", pid, identity, daemonId: "did", epoch: "old-epoch"));
+        store.Write(Rec("gone", pid, identity, daemonId: _daemonId, epoch: "old-epoch"));
 
-        var reaper = new OrphanReaper(store, daemonId: "did", currentEpoch: "new-epoch", NullLogger.Instance);
+        var reaper = new OrphanReaper(store, daemonId: _daemonId, currentEpoch: "new-epoch", NullLogger.Instance);
         await reaper.ReapOnceAsync();
 
         // Process gone (or PID reused → proven identity mismatch) → the stale record is deleted.
@@ -92,14 +97,14 @@ public class OrphanReaperTests {
     [Test]
     public async Task Env_marker_scan_reaps_a_stale_epoch_survivor_of_this_daemon_only() {
         using var stale = DummyProcess.StartSleep(30, new Dictionary<string, string> {
-            ["KCAP_AGENT_ID"] = "s", ["KCAP_DAEMON_ID"] = "did", ["KCAP_DAEMON_EPOCH"] = "old" });
+            ["KCAP_AGENT_ID"] = "s", ["KCAP_DAEMON_ID"] = _daemonId, ["KCAP_DAEMON_EPOCH"] = "old" });
         using var other = DummyProcess.StartSleep(30, new Dictionary<string, string> {
             ["KCAP_AGENT_ID"] = "o", ["KCAP_DAEMON_ID"] = "OTHER", ["KCAP_DAEMON_EPOCH"] = "old" });
         using var mine = DummyProcess.StartSleep(30, new Dictionary<string, string> {
-            ["KCAP_AGENT_ID"] = "m", ["KCAP_DAEMON_ID"] = "did", ["KCAP_DAEMON_EPOCH"] = "new" });
+            ["KCAP_AGENT_ID"] = "m", ["KCAP_DAEMON_ID"] = _daemonId, ["KCAP_DAEMON_EPOCH"] = "new" });
 
         // Empty store → the record pass is a no-op; only the env-marker scan runs.
-        var reaper = new OrphanReaper(NewStore(), daemonId: "did", currentEpoch: "new", NullLogger.Instance);
+        var reaper = new OrphanReaper(NewStore(), daemonId: _daemonId, currentEpoch: "new", NullLogger.Instance);
         await reaper.ReapOnceAsync();
 
         if (OperatingSystem.IsLinux()) {
@@ -130,12 +135,12 @@ public class OrphanReaperTests {
         // the live process's own KCAP_* triple, and must delete the record in the SAME operation.
         var store = NewStore();
         using var dummy = DummyProcess.StartSleep(30, new Dictionary<string, string> {
-            ["KCAP_AGENT_ID"] = "unresolved", ["KCAP_DAEMON_ID"] = "did", ["KCAP_DAEMON_EPOCH"] = "old-epoch" });
+            ["KCAP_AGENT_ID"] = "unresolved", ["KCAP_DAEMON_ID"] = _daemonId, ["KCAP_DAEMON_EPOCH"] = "old-epoch" });
 
         store.Write(new AgentPidRecord("unresolved", dummy.Pid, "", PidIdentityKind.IdentityUnavailable,
-            "ReviewFlow", "codex", "flow-1", "reviewer", "did", "old-epoch", DateTimeOffset.UtcNow));
+            "ReviewFlow", "codex", "flow-1", "reviewer", _daemonId, "old-epoch", DateTimeOffset.UtcNow));
 
-        var reaper = new OrphanReaper(store, daemonId: "did", currentEpoch: "new-epoch", NullLogger.Instance);
+        var reaper = new OrphanReaper(store, daemonId: _daemonId, currentEpoch: "new-epoch", NullLogger.Instance);
         await reaper.ReapOnceAsync();
 
         dummy.WaitForExit(TimeSpan.FromSeconds(8));
@@ -157,9 +162,9 @@ public class OrphanReaperTests {
         using var dummy = DummyProcess.StartSleep(30); // no KCAP_* env at all
 
         store.Write(new AgentPidRecord("unresolved2", dummy.Pid, "", PidIdentityKind.IdentityUnavailable,
-            "ReviewFlow", "codex", "flow-1", "reviewer", "did", "old-epoch", DateTimeOffset.UtcNow));
+            "ReviewFlow", "codex", "flow-1", "reviewer", _daemonId, "old-epoch", DateTimeOffset.UtcNow));
 
-        var reaper = new OrphanReaper(store, daemonId: "did", currentEpoch: "new-epoch", NullLogger.Instance);
+        var reaper = new OrphanReaper(store, daemonId: _daemonId, currentEpoch: "new-epoch", NullLogger.Instance);
         await reaper.ReapOnceAsync();
 
         await Assert.That(dummy.HasExited).IsFalse();
@@ -177,13 +182,13 @@ public class OrphanReaperTests {
         // recycled pid and confirming no record references it.
         var store = NewStore();
         using var dummy = DummyProcess.StartSleep(30, new Dictionary<string, string> {
-            ["KCAP_AGENT_ID"] = "reused", ["KCAP_DAEMON_ID"] = "did", ["KCAP_DAEMON_EPOCH"] = "old-epoch" });
+            ["KCAP_AGENT_ID"] = "reused", ["KCAP_DAEMON_ID"] = _daemonId, ["KCAP_DAEMON_EPOCH"] = "old-epoch" });
         var firstPid = dummy.Pid;
 
         store.Write(new AgentPidRecord("reused", firstPid, "", PidIdentityKind.IdentityUnavailable,
-            "ReviewFlow", "codex", "flow-1", "reviewer", "did", "old-epoch", DateTimeOffset.UtcNow));
+            "ReviewFlow", "codex", "flow-1", "reviewer", _daemonId, "old-epoch", DateTimeOffset.UtcNow));
 
-        var reaper = new OrphanReaper(store, daemonId: "did", currentEpoch: "new-epoch", NullLogger.Instance);
+        var reaper = new OrphanReaper(store, daemonId: _daemonId, currentEpoch: "new-epoch", NullLogger.Instance);
         await reaper.ReapOnceAsync();
         dummy.WaitForExit(TimeSpan.FromSeconds(8));
         await Assert.That(store.ReadAll().Any(r => r.AgentId == "reused")).IsFalse();
@@ -203,9 +208,9 @@ public class OrphanReaperTests {
         using var dummy = DummyProcess.StartSleep(30);
 
         store.Write(new AgentPidRecord("mac-unresolved", dummy.Pid, "", PidIdentityKind.IdentityUnavailable,
-            "ReviewFlow", "codex", "flow-1", "reviewer", "did", "old-epoch", DateTimeOffset.UtcNow));
+            "ReviewFlow", "codex", "flow-1", "reviewer", _daemonId, "old-epoch", DateTimeOffset.UtcNow));
 
-        var reaper = new OrphanReaper(store, daemonId: "did", currentEpoch: "new-epoch", NullLogger.Instance);
+        var reaper = new OrphanReaper(store, daemonId: _daemonId, currentEpoch: "new-epoch", NullLogger.Instance);
         await reaper.ReapOnceAsync(); // macOS has no marker scan — this can NEVER auto-resolve
 
         await Assert.That(dummy.HasExited).IsFalse();
@@ -232,9 +237,9 @@ public class OrphanReaperTests {
         using var dummy = DummyProcess.StartSleep(30);
 
         store.Write(new AgentPidRecord("legacy-live", dummy.Pid, "tk:1", PidIdentityKind.Present,
-            "ReviewFlow", "codex", "flow-1", "reviewer", "did", "old-epoch", DateTimeOffset.UtcNow));
+            "ReviewFlow", "codex", "flow-1", "reviewer", _daemonId, "old-epoch", DateTimeOffset.UtcNow));
 
-        var reaper = new OrphanReaper(store, daemonId: "did", currentEpoch: "new-epoch", NullLogger.Instance);
+        var reaper = new OrphanReaper(store, daemonId: _daemonId, currentEpoch: "new-epoch", NullLogger.Instance);
         await reaper.ReapOnceAsync();
 
         await Assert.That(dummy.HasExited).IsFalse();

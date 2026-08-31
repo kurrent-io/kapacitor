@@ -1,5 +1,6 @@
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Harness.Pi;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
@@ -17,6 +18,9 @@ namespace Capacitor.Cli.Tests.Integration;
 /// — the integration points most likely to drift from the lower-level helpers.
 /// </summary>
 public class PiImportSourceImportTests : IDisposable {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+    [TempHome] public required TempHome Home { get; init; }
+
     readonly WireMockServer _server = WireMockServer.Start();
     readonly TempDir        _tmp    = new();
     readonly string         _tempDir;
@@ -70,7 +74,7 @@ public class PiImportSourceImportTests : IDisposable {
 
         using var client = new HttpClient();
 
-        var source = new PiImportSource(
+        var source = new PiImportSource(Config.Root, 
             sessionsDir,
             repoDetector: _ => Task.FromResult<RepositoryPayload?>(null));
 
@@ -79,11 +83,11 @@ public class PiImportSourceImportTests : IDisposable {
 
         var classified = await source.ClassifyAsync(
             discovered,
-            new ClassifyContext(client, _server.Url!, MinLines: 0, ExcludedRepos: null, ExcludedPaths: null),
+            new ClassifyContext(client, _server.Url!, MinLines: 0, ExcludedRepos: null, ExcludedPaths: null, Home: Home),
             CancellationToken.None);
         await Assert.That(classified.Count).IsEqualTo(1);
         await Assert.That(classified[0].Status).IsEqualTo(ImportCommand.ClassificationStatus.New);
-        await Assert.That(classified[0].Vendor).IsEqualTo("pi");
+        await Assert.That(classified[0].Vendor).IsEqualTo(HarnessId.Pi);
 
         var outcome = await source.ImportSessionAsync(
             classified[0],
@@ -137,14 +141,14 @@ public class PiImportSourceImportTests : IDisposable {
 
         using var client = new HttpClient();
 
-        var source = new PiImportSource(
+        var source = new PiImportSource(Config.Root, 
             sessionsDir,
             repoDetector: _ => Task.FromResult<RepositoryPayload?>(null));
 
         var discovered = await source.DiscoverAsync(new DiscoveryFilters(null, null, null, 0), CancellationToken.None);
         var classified = await source.ClassifyAsync(
             discovered,
-            new ClassifyContext(client, _server.Url!, MinLines: 0, ExcludedRepos: null, ExcludedPaths: null),
+            new ClassifyContext(client, _server.Url!, MinLines: 0, ExcludedRepos: null, ExcludedPaths: null, Home: Home),
             CancellationToken.None);
 
         await Assert.That(classified[0].Status).IsEqualTo(ImportCommand.ClassificationStatus.Partial);
@@ -170,14 +174,14 @@ public class PiImportSourceImportTests : IDisposable {
 
         using var client = new HttpClient();
 
-        var source = new PiImportSource(
+        var source = new PiImportSource(Config.Root, 
             sessionsDir,
             repoDetector: _ => Task.FromResult<RepositoryPayload?>(null));
 
         var discovered = await source.DiscoverAsync(new DiscoveryFilters(null, null, null, 0), CancellationToken.None);
         var classified = await source.ClassifyAsync(
             discovered,
-            new ClassifyContext(client, _server.Url!, MinLines: 0, ExcludedRepos: null, ExcludedPaths: null),
+            new ClassifyContext(client, _server.Url!, MinLines: 0, ExcludedRepos: null, ExcludedPaths: null, Home: Home),
             CancellationToken.None);
 
         await Assert.That(classified.Count).IsEqualTo(1);
@@ -202,14 +206,14 @@ public class PiImportSourceImportTests : IDisposable {
 
         using var client = new HttpClient();
 
-        var source = new PiImportSource(
+        var source = new PiImportSource(Config.Root, 
             sessionsDir,
             repoDetector: _ => Task.FromResult<RepositoryPayload?>(null));
 
         var discovered = await source.DiscoverAsync(new DiscoveryFilters(null, null, null, 0), CancellationToken.None);
         var classified = await source.ClassifyAsync(
             discovered,
-            new ClassifyContext(client, _server.Url!, MinLines: 0, ExcludedRepos: null, ExcludedPaths: null),
+            new ClassifyContext(client, _server.Url!, MinLines: 0, ExcludedRepos: null, ExcludedPaths: null, Home: Home),
             CancellationToken.None);
         await Assert.That(classified[0].Status).IsEqualTo(ImportCommand.ClassificationStatus.AlreadyLoaded);
 

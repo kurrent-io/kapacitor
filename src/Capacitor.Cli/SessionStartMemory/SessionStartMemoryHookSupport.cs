@@ -1,5 +1,6 @@
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Config;
 
 namespace Capacitor.Cli.SessionStartMemory;
 
@@ -37,9 +38,10 @@ internal static class SessionStartMemoryHookSupport {
     /// anonymous on both the initial call and the refresh: the provider records a retryable failure
     /// and the harness silently never receives memory context on any authenticated deployment.</para>
     /// </summary>
-    public static Func<string?, CancellationToken, Task<HttpClient>> ClientFactory(string baseUrl)
-        => async (rejectedAccessToken, ct) => (await HttpClientExtensions.CreateClientWithAuthStatusAsync(
-            baseUrl, ct, allowAutoRedirect: false, rejectedAccessToken: rejectedAccessToken)).Client;
+    public static Func<string?, CancellationToken, Task<HttpClient>> ClientFactory(
+            ConfigRoot config, ProfileContext profiles, string baseUrl)
+        => async (rejectedAccessToken, ct) => (await HttpClientExtensions.CreateClientWithAuthStatusAsync(config,
+            profiles, baseUrl, ct, allowAutoRedirect: false, rejectedAccessToken: rejectedAccessToken)).Client;
 
     /// <summary>
     /// Builds the combined memory + guidelines SessionStart context provider. The memory
@@ -53,15 +55,16 @@ internal static class SessionStartMemoryHookSupport {
     /// guidelines from its own hook POST response.</para>
     ///
     /// <para>The caller resolves its own <paramref name="clientFactory"/> (each adapter keeps its
-    /// factory choice) and passes <paramref name="disposeClients"/>: true when the factory is one we
-    /// created (ours to dispose), false for a test/injected factory whose client belongs to its caller
-    /// and may be handed back on the 401-refresh call. Both lanes share the one factory.</para>
+    /// factory choice) and passes <paramref name="disposeClients"/>: true when the factory mints its
+    /// own clients (ours to dispose), false when it hands back one the caller owns and reuses — the
+    /// hook's own client, which outlives this fetch. Both lanes share the one factory.</para>
     /// </summary>
     public static ISessionStartContextProvider CompositeProvider(
+            ConfigRoot config,
             Func<string?, CancellationToken, Task<HttpClient>> clientFactory,
             bool disposeClients,
             ISessionStartMemoryScopeResolver? scopeResolver = null) {
-        var resolver = scopeResolver ?? new SessionStartMemoryScopeResolver();
+        var resolver = scopeResolver ?? new SessionStartMemoryScopeResolver(config);
 
         var memory     = new SessionStartMemoryContextProvider(resolver, clientFactory, disposeClients: disposeClients);
         var guidelines = new SessionStartGuidelinesLane(clientFactory, disposeClients: disposeClients);
@@ -79,14 +82,14 @@ internal static class SessionStartMemoryHookSupport {
     /// so cut the usable window from 3.5s to 2s at a fresh hook start and silently discarded healthy
     /// 2–3.5s responses that fit the intended ceiling.</para>
     /// </summary>
-    public static async Task<string?> AwaitBounded(Task<string?> task, long processStart, string command) {
+    public static async Task<string?> AwaitBounded(Task<string?> task, HookBudget budget) {
         try {
-            var budget = HookBudget.Remaining(processStart, command);
+            var remaining = budget.Remaining;
 
-            if (budget <= TimeSpan.Zero)
+            if (remaining <= TimeSpan.Zero)
                 return task.IsCompletedSuccessfully ? task.Result : null;
 
-            return await task.WaitAsync(budget);
+            return await task.WaitAsync(remaining);
         } catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException) {
             return null;
         }

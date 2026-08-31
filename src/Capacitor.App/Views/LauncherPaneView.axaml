@@ -1,0 +1,75 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="clr-namespace:Capacitor.App.ViewModels"
+             xmlns:views="clr-namespace:Capacitor.App.Views"
+             x:Class="Capacitor.App.Views.LauncherPaneView"
+             x:DataType="vm:HomeViewModel">
+    <!-- The Sessions surface's empty state: launching IS the pane, T3-style — a headline naming
+         the selected repository over one big composer. DataContext is a HomeViewModel supplied
+         externally (MainWindow binds Home), same contract as HomeView. -->
+    <StackPanel VerticalAlignment="Center" HorizontalAlignment="Stretch" MaxWidth="680"
+                Spacing="20" Margin="24,0">
+        <TextBlock FontSize="26" FontWeight="SemiBold" Foreground="{StaticResource KcapTextBrush}"
+                   HorizontalAlignment="Center" TextWrapping="Wrap" TextAlignment="Center"
+                   Text="{Binding SelectedRepoPath, Converter={x:Static views:LauncherHeadlineConverter.Instance}}" />
+
+        <Border Background="{StaticResource KcapSurfaceBrush}" BorderBrush="{StaticResource KcapBorderBrush}"
+                BorderThickness="1" CornerRadius="12" Padding="14">
+            <StackPanel Spacing="12">
+                <TextBox x:Name="GoalInput" Classes="kcapEmbedded" Text="{Binding Goal}"
+                         PlaceholderText="What should we build? Type a goal or paste an issue, PR, or work-item URL…"
+                         Background="Transparent" Foreground="{StaticResource KcapTextBrush}"
+                         BorderThickness="0" MinHeight="72" TextWrapping="Wrap" FontSize="14"
+                         VerticalContentAlignment="Top" AcceptsReturn="False" />
+
+                <WrapPanel ItemSpacing="8" LineSpacing="8" VerticalAlignment="Center">
+                    <Button x:Name="RepositoryChip" Click="OnRepositoryChipClick"
+                            Background="{StaticResource KcapSurfaceRaisedBrush}" BorderBrush="{StaticResource KcapBorderBrush}"
+                            Foreground="{StaticResource KcapTextBrush}" CornerRadius="999" Padding="11,5"
+                            Content="{Binding SelectedRepoPath, Converter={x:Static views:RepositoryLabelConverter.Instance}}"
+                            ToolTip.Tip="{Binding SelectedRepoPath}" />
+
+                    <!-- One picker for harness AND model (T3-style): searchable, grouped by
+                         vendor, with a per-vendor default row and a typed-custom escape hatch —
+                         built per open in code-behind, like the repository picker. -->
+                    <Button x:Name="AgentChip" Click="OnAgentChipClick"
+                            Background="{StaticResource KcapSurfaceRaisedBrush}" BorderBrush="{StaticResource KcapBorderBrush}"
+                            Foreground="{StaticResource KcapTextBrush}" CornerRadius="999" Padding="11,5"
+                            ToolTip.Tip="Harness and model">
+                        <StackPanel Orientation="Horizontal" Spacing="7">
+                            <ContentControl VerticalAlignment="Center"
+                                            Content="{Binding SelectedVendor, Converter={x:Static views:VendorGlyphConverter.Instance}, ConverterParameter=13}" />
+                            <TextBlock VerticalAlignment="Center">
+                                <TextBlock.Text>
+                                    <MultiBinding Converter="{x:Static views:AgentChipTextConverter.Instance}">
+                                        <Binding Path="Harnesses" />
+                                        <Binding Path="SelectedVendor" />
+                                        <Binding Path="SelectedModel" />
+                                    </MultiBinding>
+                                </TextBlock.Text>
+                            </TextBlock>
+                        </StackPanel>
+                    </Button>
+
+                    <Button x:Name="EffortChip" Click="OnEffortChipClick"
+                            Background="{StaticResource KcapSurfaceRaisedBrush}" BorderBrush="{StaticResource KcapBorderBrush}"
+                            Foreground="{StaticResource KcapTextBrush}" CornerRadius="999" Padding="11,5"
+                            Content="{Binding SelectedEffort, Converter={x:Static views:EffortChipTextConverter.Instance}}"
+                            ToolTip.Tip="Reasoning effort — Default lets the harness decide" />
+
+                    <CheckBox x:Name="RememberToggle" Content="Remember" IsChecked="{Binding RememberHarness}"
+                              Foreground="{StaticResource KcapMutedBrush}" />
+
+                    <Button x:Name="StartButton" Content="Start" Command="{Binding StartCommand}"
+                            Background="{StaticResource KcapAccentBrush}" Foreground="#07120E" FontWeight="SemiBold"
+                            CornerRadius="7" Padding="16,7"
+                            IsEnabled="{Binding SelectedRepoPath, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                </WrapPanel>
+
+                <TextBlock x:Name="StartErrorText" Text="{Binding StartError}" Foreground="{StaticResource KcapDangerBrush}"
+                           TextWrapping="Wrap"
+                           IsVisible="{Binding StartError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+            </StackPanel>
+        </Border>
+    </StackPanel>
+</UserControl>

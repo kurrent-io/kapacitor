@@ -1,4 +1,6 @@
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Config;
+using Capacitor.Cli.Core.Harness.Cursor;
 using Microsoft.Extensions.Logging;
 
 namespace Capacitor.Cli.Daemon.Services;
@@ -26,30 +28,36 @@ namespace Capacitor.Cli.Daemon.Services;
 /// <c>WatcherManager</c>, for the same decoupling reason).</para>
 /// </summary>
 internal sealed class SpoolDrainLoop {
+    readonly ConfigRoot                _configRoot;
+    readonly ProfileContext            _profiles;
     readonly string                    _baseUrl;
     readonly HookSpool                 _lifecycle;
     readonly TranscriptSpool           _transcript;
     readonly ILogger                   _logger;
-    readonly TimeSpan                  _budget;
     readonly Action<string>?           _onWhatsDoneRequested;
-    readonly Func<Task<(HttpClient Client, AuthStatus Status)>> _clientFactory;
+    readonly CursorMarkers            _markers;
+
+    // One tick's whole allowance: auth + every drain POST. Short because a tick that overruns the
+    // timer's period just queues the next one behind it.
+    static readonly TimeSpan Budget = TimeSpan.FromSeconds(3);
 
     public SpoolDrainLoop(
+            ConfigRoot         configRoot,
+            ProfileContext     profiles,
             string             baseUrl,
             HookSpool          lifecycle,
             TranscriptSpool    transcript,
             ILogger            logger,
-            Action<string>?    onWhatsDoneRequested = null,
-            TimeSpan?          budget                = null,
-            Func<Task<(HttpClient Client, AuthStatus Status)>>? clientFactory = null
+            Action<string>?    onWhatsDoneRequested = null
         ) {
+        _configRoot           = configRoot;
+        _profiles             = profiles;
+        _markers              = new CursorMarkers(configRoot);
         _baseUrl              = baseUrl;
         _lifecycle            = lifecycle;
         _transcript           = transcript;
         _logger               = logger;
-        _budget               = budget ?? TimeSpan.FromSeconds(3);
         _onWhatsDoneRequested = onWhatsDoneRequested;
-        _clientFactory        = clientFactory ?? (() => HttpClientExtensions.CreateClientWithAuthStatusAsync(_baseUrl));
     }
 
     /// <summary>
@@ -63,9 +71,9 @@ internal sealed class SpoolDrainLoop {
             _transcript.ReapOlderThan(TimeSpan.FromDays(30));
 
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            cts.CancelAfter(_budget);
+            cts.CancelAfter(Budget);
 
-            var (client, status) = await _clientFactory();
+            var (client, status) = await HttpClientExtensions.CreateClientWithAuthStatusAsync(_configRoot, _profiles, _baseUrl);
 
             using (client) {
                 if (status is AuthStatus.Expired or AuthStatus.NotAuthenticated or AuthStatus.WrongServer) {
@@ -75,7 +83,7 @@ internal sealed class SpoolDrainLoop {
                 }
 
                 await LifecycleSpoolDrain.RunAsync(
-                    client, _baseUrl, _lifecycle, _transcript, currentSessionId: null, _budget, cts.Token,
+                    _markers, client, _baseUrl, _lifecycle, _transcript, currentSessionId: null, Budget, cts.Token,
                     onWhatsDoneRequested: _onWhatsDoneRequested is null ? null : (sid, _) => _onWhatsDoneRequested(sid));
             }
         } catch (OperationCanceledException) when (ct.IsCancellationRequested) {

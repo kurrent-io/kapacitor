@@ -13,6 +13,8 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 
 public class LocalPermissionBridgeTests {
+    [TempDir] public required TempDir Tmp { get; init; }
+
     static (LocalPermissionBridge bridge, FakeServerConnection server) CreateBridge(
             Func<string, string?, JsonElement?, JsonElement?, CancellationToken, Task<PermissionDecision>>? respond = null,
             ILogger<LocalPermissionBridge>? logger = null
@@ -200,6 +202,26 @@ public class LocalPermissionBridgeTests {
             using var response = await client.PostAsync($"{bridge.BaseUrl}/claude/permission-request", JsonContent.Create(new { tool_name = "Bash" }));
 
             await Assert.That((int)response.StatusCode).IsEqualTo(400);
+        } finally {
+            await bridge.DisposeAsync();
+        }
+    }
+
+    /// <summary>The permission-request body is capped like the flow-result submission body: an
+    /// oversized POST from the local hook must 413 before JSON parsing, never buffer unbounded.</summary>
+    [Test, NotInParallel(nameof(LocalPermissionBridgeTests))]
+    public async Task OversizedPermissionRequestBodyReturns413() {
+        var (bridge, _) = CreateBridge();
+
+        try {
+            await bridge.StartAsync(CancellationToken.None);
+
+            using var client   = CreateClient();
+            var       oversized = new string('x', LocalPermissionBridge.MaxPermissionRequestBodyBytes + 1024);
+            using var content   = new StringContent(oversized, Encoding.UTF8, "application/json");
+            using var response  = await client.PostAsync($"{bridge.BaseUrl}/claude/permission-request", content);
+
+            await Assert.That((int)response.StatusCode).IsEqualTo(413);
         } finally {
             await bridge.DisposeAsync();
         }
@@ -1158,8 +1180,9 @@ public class LocalPermissionBridgeTests {
         } finally { await bridge.DisposeAsync(); }
     }
 
-    static BorrowedReviewContextGeneration ReviewGeneration(string value) =>
-        new(value, Path.Combine(Path.GetTempPath(), value), Encoding.UTF8.GetBytes($"{{\"value\":\"{value}\"}}"));
+    // The path is handed to a bridge that may write it, so it lives in a directory that gets cleaned.
+    BorrowedReviewContextGeneration ReviewGeneration(string value) =>
+        new(value, Tmp.PathTo(value), Encoding.UTF8.GetBytes($"{{\"value\":\"{value}\"}}"));
 
     /// <summary>A second bridge retries when its first probed port is already claimed in-process.</summary>
     [Test, NotInParallel(nameof(LocalPermissionBridgeTests))]
@@ -1360,25 +1383,35 @@ public class LocalPermissionBridgeTests {
 /// without a real server. RequestPermissionAsync is virtual on the base class.
 /// </summary>
 sealed class FakeServerConnection(Func<string, string?, JsonElement?, JsonElement?, CancellationToken, Task<PermissionDecision>>? respond)
-    : ServerConnection(
-        new() { Name = "test", ServerUrl = "http://127.0.0.1:1" },
-        NullLoggerFactory.Instance,
-        NullLogger<ServerConnection>.Instance
-    ) {
+    : ServerConnection(new() { Name = "test", ServerUrl = "http://127.0.0.1:1" }, NullLoggerFactory.Instance, NullLogger<ServerConnection>.Instance) {
     public List<Call> Calls { get; } = [];
+    public List<(string SessionId, string RequestId, PermissionDecision Decision)> Responds { get; } = [];
 
-    public override Task<PermissionDecision> RequestPermissionAsync(
-            string            sessionId,
-            string?           toolName,
-            JsonElement?      toolInput,
-            JsonElement?      suggestions,
-            CancellationToken ct = default
-        ) {
+    /// Scripted legs. Null = compose through RequestPermissionAsync via `respond`.
+    public Func<CancellationToken, Func<bool>, Task<string>>? BeginScript { get; set; }
+    public Func<string, CancellationToken, Task<PermissionDecision>>? AwaitScript { get; set; }
+    public Func<RespondOutcome> RespondScript = () => new RespondOutcome(RespondOutcomeKind.Applied, null);
+
+    public override Task<PermissionDecision> RequestPermissionAsync(string sessionId, string? toolName, JsonElement? toolInput, JsonElement? suggestions, CancellationToken ct = default) {
         Calls.Add(new Call(sessionId, toolName, toolInput, suggestions));
+        return respond is null ? Task.FromResult(new PermissionDecision("allow", null, null)) : respond(sessionId, toolName, toolInput, suggestions, ct);
+    }
 
-        return respond is null
-            ? Task.FromResult(new PermissionDecision("allow", null, null))
-            : respond(sessionId, toolName, toolInput, suggestions, ct);
+    public override Task<string> BeginPermissionRequestAsync(string sessionId, string? toolName, JsonElement? toolInput, JsonElement? suggestions, CancellationToken ct, Func<bool> abandoned) {
+        Calls.Add(new Call(sessionId, toolName, toolInput, suggestions));
+        if (BeginScript is not null) return BeginScript(ct, abandoned);
+        if (abandoned()) throw new PermissionRequestAbandonedException();
+        return Task.FromResult("srv-1");
+    }
+
+    public override Task<PermissionDecision> AwaitPermissionDecisionAsync(string serverRequestId, CancellationToken ct) =>
+        AwaitScript is not null ? AwaitScript(serverRequestId, ct)
+            : respond is not null ? respond("", null, null, null, ct)
+            : Task.FromResult(new PermissionDecision("allow", null, null));
+
+    public override Task<RespondOutcome> RespondToPermissionAsync(string sessionId, string serverRequestId, PermissionDecision decision) {
+        Responds.Add((sessionId, serverRequestId, decision));
+        return Task.FromResult(RespondScript());
     }
 
     public sealed record Call(string SessionId, string? ToolName, JsonElement? ToolInput, JsonElement? Suggestions);

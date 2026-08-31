@@ -2,7 +2,42 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              x:Class="Capacitor.App.App"
              RequestedThemeVariant="Default">
+    <Application.Resources>
+        <!-- The Home surface's design palette. Kcap-prefixed keys so these never
+             shadow a FluentTheme resource of the same short name — MainWindow's existing controls
+             stay on FluentTheme defaults untouched. -->
+        <ResourceDictionary>
+            <SolidColorBrush x:Key="KcapCanvasBrush" Color="#0B0D12" />
+            <SolidColorBrush x:Key="KcapSurfaceBrush" Color="#12151D" />
+            <SolidColorBrush x:Key="KcapSurfaceRaisedBrush" Color="#191D27" />
+            <SolidColorBrush x:Key="KcapBorderBrush" Color="#2A3040" />
+            <SolidColorBrush x:Key="KcapTextBrush" Color="#F1F3F7" />
+            <SolidColorBrush x:Key="KcapMutedBrush" Color="#9299AA" />
+            <SolidColorBrush x:Key="KcapFaintBrush" Color="#6F7687" />
+            <SolidColorBrush x:Key="KcapAccentBrush" Color="#5BE0B3" />
+            <SolidColorBrush x:Key="KcapAccentDimBrush" Color="#173F36" />
+            <SolidColorBrush x:Key="KcapWarningBrush" Color="#F4B860" />
+            <SolidColorBrush x:Key="KcapWarningDimBrush" Color="#45351E" />
+            <SolidColorBrush x:Key="KcapPurpleBrush" Color="#A994FF" />
+            <SolidColorBrush x:Key="KcapDangerBrush" Color="#FF7272" />
+        </ResourceDictionary>
+    </Application.Resources>
     <Application.Styles>
         <FluentTheme />
+        <!-- Popup panels drawn on our tokens: the flyout presenter IS the panel (no inner Border
+             fighting the theme's own chrome). Opted into per flyout via FlyoutPresenterClasses. -->
+        <Style Selector="FlyoutPresenter.kcapPanel">
+            <Setter Property="Background" Value="{StaticResource KcapSurfaceBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource KcapBorderBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="12" />
+            <Setter Property="Padding" Value="0" />
+        </Style>
+        <!-- A TextBox inside one of our cards: the card is its boundary, so the theme's focused
+             ring and fill would read as a second box. -->
+        <Style Selector="TextBox.kcapEmbedded:focus /template/ Border#PART_BorderElement, TextBox.kcapEmbedded:pointerover /template/ Border#PART_BorderElement">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+        </Style>
     </Application.Styles>
 </Application>

@@ -19,7 +19,8 @@ static class RepositoryDetection {
     internal static CommandRunner DefaultRunner => RunCommandAsync;
 
     public static async Task<string> EnrichWithRepositoryInfo(
-            string json, TimeSpan? budget = null, bool detectPullRequest = true, CommandRunner? run = null) {
+            ConfigRoot config, string json, TimeSpan? budget = null, bool detectPullRequest = true,
+            CommandRunner? run = null) {
         try {
             var node = JsonNode.Parse(json);
 
@@ -33,14 +34,14 @@ static class RepositoryDetection {
                 return json;
             }
 
-            var repo = await DetectRepositoryAsync(cwd, budget, detectPullRequest, run);
+            var repo = await DetectRepositoryAsync(config, cwd, budget, detectPullRequest, run);
 
             if (repo is null) {
                 return json;
             }
 
             // Skip enrichment if repo info hasn't changed since last emit for this cwd
-            var lastEmitted = LoadLastEmitted(cwd);
+            var lastEmitted = LoadLastEmitted(config, cwd);
 
             if (lastEmitted is not null && RepoPayloadEquals(repo, lastEmitted)) {
                 return json;
@@ -48,7 +49,7 @@ static class RepositoryDetection {
 
             obj["repository"] = BuildRepositoryNode(repo);
 
-            SaveLastEmitted(cwd, repo);
+            SaveLastEmitted(config, cwd, repo);
 
             return obj.ToJsonString();
         } catch {
@@ -64,12 +65,13 @@ static class RepositoryDetection {
     /// this for session-start, where each session needs its own RepositoryDetected event.
     /// Fail-open: forwards the original payload unchanged on any error or non-git dir.
     /// </summary>
-    public static async Task<string> EnrichWithRepositoryInfoFromCwd(string json, string cwd, TimeSpan? budget = null) {
+    public static async Task<string> EnrichWithRepositoryInfoFromCwd(
+            ConfigRoot config, string json, string cwd, TimeSpan? budget = null) {
         try {
             if (string.IsNullOrEmpty(cwd)) return json;
             if (JsonNode.Parse(json) is not JsonObject obj) return json;
 
-            var repo = await DetectRepositoryAsync(cwd, budget);
+            var repo = await DetectRepositoryAsync(config, cwd, budget);
             if (repo is null) return json;
 
             obj["repository"] = BuildRepositoryNode(repo);
@@ -122,7 +124,8 @@ static class RepositoryDetection {
     // `run` is an injectable command runner (defaults to the real process spawner) so the
     // git/provider spawns are unit-testable.
     public static async Task<RepositoryPayload?> DetectRepositoryAsync(
-            string cwd, TimeSpan? budget = null, bool detectPullRequest = true, CommandRunner? run = null) {
+            ConfigRoot config, string cwd, TimeSpan? budget = null, bool detectPullRequest = true,
+            CommandRunner? run = null) {
         if (budget is { } b0 && b0 <= TimeSpan.Zero) return null;
         run ??= DefaultRunner;
         try {
@@ -134,7 +137,7 @@ static class RepositoryDetection {
                 : TimeSpan.FromSeconds(5);
 
             // Try loading cached base info
-            var cache = LoadCache(cwd);
+            var cache = LoadCache(config, cwd);
 
             string? userName, userEmail, remoteUrl, owner, repoName, branch, host;
 
@@ -172,6 +175,7 @@ static class RepositoryDetection {
 
                 // Save to cache (without branch — it's always detected fresh)
                 SaveCache(
+                    config,
                     cwd,
                     new() {
                         UserName      = userName,
@@ -307,15 +311,15 @@ static class RepositoryDetection {
         }
     }
 
-    static string GetCachePath(string cwd) {
+    static string GetCachePath(ConfigRoot config, string cwd) {
         var hash = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(cwd)))[..16];
 
-        return Path.Combine(PathHelpers.ConfigPath("cache"), $"{hash}.json");
+        return Path.Combine(config.Path("cache"), $"{hash}.json");
     }
 
-    static GitCacheEntry? LoadCache(string cwd) {
+    static GitCacheEntry? LoadCache(ConfigRoot config, string cwd) {
         try {
-            var path = GetCachePath(cwd);
+            var path = GetCachePath(config, cwd);
 
             if (!File.Exists(path)) {
                 return null;
@@ -335,9 +339,9 @@ static class RepositoryDetection {
         }
     }
 
-    static void SaveCache(string cwd, GitCacheEntry entry) {
+    static void SaveCache(ConfigRoot config, string cwd, GitCacheEntry entry) {
         try {
-            var path = GetCachePath(cwd);
+            var path = GetCachePath(config, cwd);
             var dir  = Path.GetDirectoryName(path)!;
             Directory.CreateDirectory(dir);
             File.WriteAllText(path, JsonSerializer.Serialize(entry, CapacitorJsonContext.Default.GitCacheEntry));
@@ -346,15 +350,15 @@ static class RepositoryDetection {
         }
     }
 
-    static string GetLastEmittedPath(string cwd) {
+    static string GetLastEmittedPath(ConfigRoot config, string cwd) {
         var hash = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(cwd)))[..16];
 
-        return Path.Combine(PathHelpers.ConfigPath("cache"), $"{hash}.repo-emitted.json");
+        return Path.Combine(config.Path("cache"), $"{hash}.repo-emitted.json");
     }
 
-    static RepositoryPayload? LoadLastEmitted(string cwd) {
+    static RepositoryPayload? LoadLastEmitted(ConfigRoot config, string cwd) {
         try {
-            var path = GetLastEmittedPath(cwd);
+            var path = GetLastEmittedPath(config, cwd);
 
             if (!File.Exists(path)) {
                 return null;
@@ -372,9 +376,9 @@ static class RepositoryDetection {
     /// Clear the last-emitted cache for a cwd so the next enrichment always includes repo info.
     /// Must be called on session-start — each new session needs its own RepositoryDetected event.
     /// </summary>
-    public static void ClearLastEmitted(string cwd) {
+    public static void ClearLastEmitted(ConfigRoot config, string cwd) {
         try {
-            var path = GetLastEmittedPath(cwd);
+            var path = GetLastEmittedPath(config, cwd);
 
             if (File.Exists(path)) {
                 File.Delete(path);
@@ -384,9 +388,9 @@ static class RepositoryDetection {
         }
     }
 
-    static void SaveLastEmitted(string cwd, RepositoryPayload payload) {
+    static void SaveLastEmitted(ConfigRoot config, string cwd, RepositoryPayload payload) {
         try {
-            var path = GetLastEmittedPath(cwd);
+            var path = GetLastEmittedPath(config, cwd);
             var dir  = Path.GetDirectoryName(path)!;
             Directory.CreateDirectory(dir);
             File.WriteAllText(path, JsonSerializer.Serialize(payload, CapacitorJsonContext.Default.RepositoryPayload));

@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Dsh;
+using Capacitor.Cli.Core.Harness;
 
 namespace Capacitor.Cli.Commands;
 
@@ -19,9 +20,11 @@ namespace Capacitor.Cli.Commands;
 /// <c>KiroImportSource</c> (NOT the SQLite-backed OpenCode source).
 /// </summary>
 internal sealed class DshImportSource : IImportSource {
-    readonly string _sessionsDir;
+    readonly ConfigRoot _config;
+    readonly string     _sessionsDir;
 
-    public DshImportSource(string? sessionsDirOverride = null) {
+    public DshImportSource(ConfigRoot config, string? sessionsDirOverride = null) {
+        _config      = config;
         _sessionsDir = sessionsDirOverride ?? DshPaths.SessionsDir();
     }
 
@@ -38,7 +41,7 @@ internal sealed class DshImportSource : IImportSource {
         }
     }
 
-    public string Vendor => "dsh";
+    public HarnessId Vendor => HarnessId.Dsh;
 
     public bool IsAvailable => Directory.Exists(_sessionsDir);
 
@@ -227,7 +230,7 @@ internal sealed class DshImportSource : IImportSource {
         // Enrich with git repo info detected from the captured cwd (adds the "repository" field
         // the server records as RepositoryDetectedEvent), so imported dsh sessions group under
         // their repo — same path the live hook uses. Fail-open: no cwd/repo → payload unchanged.
-        var startJson = await RepositoryDetection.EnrichWithRepositoryInfo(startPayload.ToJsonString());
+        var startJson = await RepositoryDetection.EnrichWithRepositoryInfo(_config, startPayload.ToJsonString());
 
         var startOk = await PostSyntheticHookAsync(ctx.HttpClient, ctx.BaseUrl, "session-start/dsh", startJson, ct);
         if (!startOk) return ImportOutcome.Failed;
@@ -315,7 +318,7 @@ internal sealed class DshImportSource : IImportSource {
         EncodedCwd       = "",
         Meta             = meta,
         Status           = status,
-        Vendor           = "dsh",
+        Vendor           = HarnessId.Dsh,
         ProbeErrorReason = probeErrorReason,
         TotalLines       = totalLines,
         SourceMeta       = s.SourceMeta,
@@ -377,8 +380,8 @@ internal sealed class DshImportSource : IImportSource {
         string? excludedPathKey = null;
         if (cwd is not null && ctx.ExcludedPaths is { Count: > 0 } paths) {
             foreach (var entry in paths) {
-                if (PathExclusion.IsExcluded(cwd, [entry])) {
-                    excludedPathKey = PathExclusion.Normalize(entry);
+                if (PathExclusion.IsExcluded(cwd, [entry], ctx.Home)) {
+                    excludedPathKey = PathExclusion.Normalize(entry, ctx.Home);
                     break;
                 }
             }

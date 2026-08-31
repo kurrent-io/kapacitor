@@ -4,6 +4,7 @@ using System.Text.Json.Nodes;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.SessionStartMemory;
+using Capacitor.Cli.Core.Harness;
 
 namespace Capacitor.Cli.Commands.Harness;
 
@@ -31,24 +32,27 @@ namespace Capacitor.Cli.Commands.Harness;
 /// text, no envelope) for the extension to append to each turn's chained system prompt. Diagnostics go
 /// to stderr. Every other event keeps writing nothing at all.</para>
 /// </summary>
-static class PiHookCommand {
+sealed class PiHookCommand(ConfigRoot config, ProfileContext profiles, HookClock clock, UserHome home) {
+    readonly WatcherManager  _watchers = new(config, profiles);
+    readonly AgentHookPoster _poster   = new(config, profiles);
+
+    string Url => profiles.Resolution.ServerUrl!;
+
     // Pi's extension shells out with a 10s pi.exec timeout (see kcap.ts), so the
     // session-end drain must finish well inside that or the session-end POST is
     // starved and the session sticks "Active" (same drain-cap pattern as ClaudeHookCommand's).
     static readonly TimeSpan PreHookDrainCap = TimeSpan.FromSeconds(6);
 
-    public static Task<int> Handle(string baseUrl, string[] args) =>
-        Handle(baseUrl, args, Console.Out);
+    /// <summary>Inside the same 10s pi.exec timeout, with room to spare: kcap.ts documents the
+    /// ~3.5s of work this leaves once <see cref="HookBudget.Safety"/> is reserved.</summary>
+    static readonly TimeSpan Ceiling = TimeSpan.FromSeconds(5);
+
+    public Task<int> Handle(string[] args) => Handle(args, Console.Out);
 
     /// <param name="stdout">Injected so the fragment the extension consumes is assertable without
     /// capturing the process's real console — which is also the only way to test the no-fragment path,
     /// since "wrote nothing" is indistinguishable from "was never called" on a shared writer.</param>
-    internal static async Task<int> Handle(string baseUrl, string[] args, TextWriter stdout,
-            long processStart = 0,
-            Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory = null,
-            Func<SessionStartMemoryLeaseStore>?                 memoryStoreFactory  = null) {
-        if (processStart == 0) processStart = System.Diagnostics.Stopwatch.GetTimestamp();
-
+    internal async Task<int> Handle(string[] args, TextWriter stdout) {
         var eventName = GetArg(args, "--event");
 
         if (string.IsNullOrWhiteSpace(eventName)) {
@@ -74,33 +78,32 @@ static class PiHookCommand {
 
         // Mirror the Claude/Codex/Copilot disabled-session fast path: `kcap
         // disable` must stop every POST and watcher restart for the session.
-        if (DisabledSessions.IsDisabled(sessionId)) {
-            if (eventName == "session-end") DisabledSessions.RemoveMarker(sessionId);
+        if (DisabledSessions.IsDisabled(sessionId, config)) {
+            if (eventName == "session-end") DisabledSessions.RemoveMarker(sessionId, config);
             return 0;
         }
 
         // Task 12: the cross-vendor backlog drain now runs centrally in Program.cs's
         // `case "hook":` before dispatch — no longer wired here (removes the double-wire).
-        var spool = new HookSpool(PathHelpers.ConfigPath("spool"));
+        var spool = new HookSpool(config);
 
-        var activeProfile = await AppConfig.GetActiveProfileAsync();
+        var activeProfile = profiles.Effective;
 
         if (activeProfile?.ExcludedPaths is { Length: > 0 } excludedPaths
-         && PathExclusion.IsExcluded(cwd, excludedPaths)) {
+         && PathExclusion.IsExcluded(cwd, excludedPaths, home)) {
             return 0;
         }
 
         return eventName switch {
-            "session-start" => await HandleSessionStart(baseUrl, sessionId, file, cwd, reason, header?.Timestamp,
-                                                         activeProfile, spool, args, stdout, processStart,
-                                                         memoryClientFactory, memoryStoreFactory),
-            "session-end"   => await HandleSessionEnd(baseUrl, sessionId, file, cwd, reason),
+            "session-start" => await HandleSessionStart(sessionId, file, cwd, reason, header?.Timestamp,
+                                                         activeProfile, spool, args, stdout,
+                                                         clock.Budget(Ceiling)),
+            "session-end"   => await HandleSessionEnd(sessionId, file, cwd, reason),
             _               => 0   // unknown — fail-open like the other dispatchers
         };
     }
 
-    static async Task<int> HandleSessionStart(
-            string          baseUrl,
+    async Task<int> HandleSessionStart(
             string          sessionId,
             string          file,
             string?         cwd,
@@ -110,9 +113,7 @@ static class PiHookCommand {
             HookSpool       spool,
             string[]        args,
             TextWriter      stdout,
-            long            processStart,
-            Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory,
-            Func<SessionStartMemoryLeaseStore>?                 memoryStoreFactory
+            HookBudget      budget
         ) {
         var source = string.IsNullOrEmpty(reason) ? "startup" : reason;
 
@@ -120,7 +121,7 @@ static class PiHookCommand {
             ["hook_event_name"] = "sessionStart",
             ["session_id"]      = sessionId,
             ["source"]          = source,
-            ["home_dir"]        = PathHelpers.HomeDirectory
+            ["home_dir"]        = home.Path
         };
 
         if (cwd is not null) {
@@ -136,12 +137,12 @@ static class PiHookCommand {
         // JsonString round-trip (same rationale as the Codex/Copilot dispatchers).
         if (activeProfile?.DefaultVisibility is { } visibility) forwarded["default_visibility"] = visibility;
 
-        SessionStartInventory.Stamp(forwarded);
-        var enriched = await RepositoryDetection.EnrichWithRepositoryInfo(forwarded.ToJsonString());
+        SessionStartInventory.Stamp(forwarded, config, home);
+        var enriched = await RepositoryDetection.EnrichWithRepositoryInfo(config, forwarded.ToJsonString());
 
         if (activeProfile?.ExcludedRepos is { Length: > 0 } excludedRepos
-         && await RepoExclusion.IsExcludedAsync(enriched, excludedRepos)) {
-            DisabledSessions.Mark(sessionId);
+         && await RepoExclusion.IsExcludedAsync(config, enriched, excludedRepos)) {
+            DisabledSessions.Mark(sessionId, config);
             return 0;
         }
 
@@ -153,49 +154,46 @@ static class PiHookCommand {
         // it captures stdout (--memory-contract >= 1), else an older kcap.ts would spend the
         // once-only lease on output it discards.
         var memoryTask = MemoryContractOf(args) >= 1
-            ? StartMemoryIndexTask(
-                baseUrl, file, scopeRoot,
+            ? StartMemoryIndexTask(file, scopeRoot,
                 activeProfile?.DisableMemoryIndex is true,
                 activeProfile?.DisableSessionGuidelines is true,
-                HookBudget.Remaining(processStart, "session-start"),
-                memoryClientFactory, memoryStoreFactory, reason)
+                budget.Remaining,
+                reason)
             : Task.FromResult<string?>(null);
 
         // Spawn-before-post: capture must start on Posted OR Spooled (auth lapse /
         // outage) — a doomed/delayed lifecycle POST must never withhold the watcher. Only a
         // permanent failure keeps the prior non-zero exit and skips the watcher.
-        var outcome = await AgentHookPoster.PostOrSpoolAsync(
-            baseUrl, "session-start/pi", enriched, "pi-hook",
+        var outcome = await _poster.PostOrSpoolAsync("session-start/pi", enriched, "pi-hook",
             spool, sessionId, route: "session-start/pi");
 
         // BEFORE the watcher gate and before any early return: a withheld watcher must not suppress
         // an injection whose once-per-session lease is already spent. pi.exec hands the extension
         // stdout regardless of exit code, so no commit gate is needed (unlike Copilot).
-        var fragment = await SessionStartMemoryHookSupport.AwaitBounded(memoryTask, processStart, "session-start");
+        var fragment = await SessionStartMemoryHookSupport.AwaitBounded(memoryTask, budget);
         var workItemsNudge = HarnessNudgeEmitter.Combine(
-            WorkItemsNudgeEmitter.Resolve(SessionStartHarness.Pi, sessionId, activeProfile?.DisableWorkItemsNudge is true),
-            HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true));
+            WorkItemsNudgeEmitter.Resolve(HarnessId.Pi, sessionId, activeProfile?.DisableWorkItemsNudge is true, home),
+            HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true, config, home));
         await WriteMemoryFragment(stdout, fragment, workItemsNudge);
 
-        if (!AgentHookPoster.ShouldSpawnAfter(outcome, baseUrl)) return outcome == HookPostOutcome.Failed ? 1 : 0;
+        if (!AgentHookPoster.ShouldSpawnAfter(outcome, Url)) return outcome == HookPostOutcome.Failed ? 1 : 0;
 
-        await WatcherManager.EnsureWatcherRunning(
-            baseUrl, sessionId, file,
+        await _watchers.EnsureWatcherRunning(sessionId, file,
             agentId: null, sessionIdOverride: null, cwd: cwd,
             skipTitle: false, vendor: "pi"
         );
         return 0;
     }
 
-    static async Task<int> HandleSessionEnd(string baseUrl, string sessionId, string file, string? cwd, string? reason) {
+    async Task<int> HandleSessionEnd(string sessionId, string file, string? cwd, string? reason) {
         // Kill watcher + inline-drain BEFORE the POST so the server computes
         // stats over the full transcript — capped so a slow drain can't starve
         // the session-end POST (mirror of ClaudeHookCommand).
         try {
             var drained = await TimeBudget.RunCappedAsync(
                 async () => {
-                    await WatcherManager.KillWatcher(sessionId);
-                    await WatcherManager.InlineDrainAsync(baseUrl, sessionId, file, agentId: null, vendor: "pi");
+                    await _watchers.KillWatcher(sessionId);
+                    await _watchers.InlineDrainAsync(sessionId, file, agentId: null, vendor: "pi");
                 },
                 PreHookDrainCap
             );
@@ -213,7 +211,7 @@ static class PiHookCommand {
             ["hook_event_name"] = "sessionEnd",
             ["session_id"]      = sessionId,
             ["reason"]          = string.IsNullOrEmpty(reason) ? "quit" : reason,
-            ["home_dir"]        = PathHelpers.HomeDirectory,
+            ["home_dir"]        = home.Path,
             ["ended_at"]        = DateTimeOffset.UtcNow.ToString("O")
         };
 
@@ -221,7 +219,7 @@ static class PiHookCommand {
         if (Environment.GetEnvironmentVariable("KCAP_AGENT_ID") is { } agentHostId) forwarded["agent_host_id"] = agentHostId;
 
         // AuthLapsed / Posted → clean exit (0); a real failure keeps the prior non-zero exit.
-        return await PostHookAsync(baseUrl, "session-end/pi", forwarded.ToJsonString()) == HookPostOutcome.Failed ? 1 : 0;
+        return await PostHookAsync("session-end/pi", forwarded.ToJsonString()) == HookPostOutcome.Failed ? 1 : 0;
     }
 
     // ── helpers ─────────────────────────────────────────────────────────────
@@ -272,8 +270,8 @@ static class PiHookCommand {
     // Shared auth-aware recording POST: skips the doomed POST (and the misleading per-turn
     // "HTTP 401" stderr line) when auth has lapsed, reporting AuthLapsed so the caller exits
     // cleanly instead of erroring. See AgentHookPoster.
-    static Task<HookPostOutcome> PostHookAsync(string baseUrl, string endpoint, string body)
-        => AgentHookPoster.PostAsync(baseUrl, endpoint, body, "pi-hook");
+    Task<HookPostOutcome> PostHookAsync(string endpoint, string body)
+        => _poster.PostAsync(endpoint, body, "pi-hook");
 
     internal static async Task WriteMemoryFragment(TextWriter stdout, string? fragment, string? workItemsNudge = null) {
         var payload = RenderMemoryOutput(fragment, workItemsNudge);
@@ -286,7 +284,7 @@ static class PiHookCommand {
     internal static string RenderMemoryOutput(string? fragment, string? workItemsNudge = null) =>
         fragment is null && string.IsNullOrWhiteSpace(workItemsNudge)
             ? ""
-            : SessionStartMemoryOutputAdapters.Render(SessionStartHarness.Pi, fragment, workItemsNudge);
+            : SessionStartMemoryOutputAdapters.Render(HarnessId.Pi, fragment, workItemsNudge);
 
     /// <summary>
     /// The lifecycle this harness reports. SessionId is the session FILE PATH — the identity
@@ -296,7 +294,7 @@ static class PiHookCommand {
     /// and resumes re-fire session_start for the same file.
     /// </summary>
     internal static SessionMemoryLifecycle LifecycleFor(string file, string? reason) =>
-        new(SessionStartHarness.Pi, file, LifecycleInstanceId: null,
+        new(HarnessId.Pi, file, LifecycleInstanceId: null,
             IsTopLevel: true, ClassificationAuthoritative: true,
             MapReason(reason), CallbackMayRepeat: true);
 
@@ -310,30 +308,28 @@ static class PiHookCommand {
         _                  => SessionLifecycleReason.RepeatedTurnCallback
     };
 
-    internal static Task<string?> StartMemoryIndexTask(
-            string   baseUrl,
+    internal Task<string?> StartMemoryIndexTask(
             string   file,
             string?  scopeRoot,
             bool     disabled,
             bool     guidelinesDisabled,
             TimeSpan budget,
-            Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory,
-            Func<SessionStartMemoryLeaseStore>?                 memoryStoreFactory,
             string?  reason = null) {
         if ((disabled && guidelinesDisabled) || string.IsNullOrWhiteSpace(file) || string.IsNullOrWhiteSpace(scopeRoot)
          || budget <= TimeSpan.Zero
-         || !SessionStartMemoryHookSupport.CanAttempt(baseUrl))
+         || !SessionStartMemoryHookSupport.CanAttempt(Url))
             return Task.FromResult<string?>(null);
 
         try {
-            var store    = memoryStoreFactory?.Invoke() ?? new SessionStartMemoryLeaseStore();
+            var store    = SessionStartMemoryLeaseStore.Create(config, clock.Time);
             var provider = SessionStartMemoryHookSupport.CompositeProvider(
-                memoryClientFactory ?? SessionStartMemoryHookSupport.ClientFactory(baseUrl),
-                disposeClients: memoryClientFactory is null);
+                config,
+                SessionStartMemoryHookSupport.ClientFactory(config, profiles, Url),
+                disposeClients: true);
 
             return new SessionStartMemoryOrchestrator(store, provider).GetFragmentAsync(
                 LifecycleFor(file, reason),
-                new SessionStartMemoryContextRequest(baseUrl, scopeRoot, disabled, budget, CancellationToken.None,
+                new SessionStartMemoryContextRequest(Url, scopeRoot, disabled, budget, CancellationToken.None,
                     GuidelinesDisabled: guidelinesDisabled));
         } catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException) {
             return Task.FromResult<string?>(null);

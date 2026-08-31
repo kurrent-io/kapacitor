@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Runtime.Versioning;
 using System.Text;
 using System.Threading.Channels;
@@ -12,7 +11,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 
 /// <summary>
-/// gap 1 — GATED live end-to-end test that drives the REAL <see cref="AcpHostedAgentRuntimeFactory"/>
+/// GATED live end-to-end test that drives the REAL <see cref="AcpHostedAgentRuntimeFactory"/>
 /// against a REAL <c>cursor-agent acp</c> child process (no <c>FakeAcpAgent</c>, no in-memory pipe —
 /// see <see cref="AcpHostedAgentRuntimeFactoryTests"/> for that coverage of the same code path) to
 /// prove that model selection (<c>session/set_config_option</c>, sent from
@@ -32,6 +31,8 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 /// test fail even though the daemon code path is correct).
 /// </summary>
 public class AcpHostedAgentRuntimeFactoryLiveTests {
+    [TempHome] public required TempHome Home { get; init; }
+
     const string LiveGateEnvVar = "KCAP_ACP_LIVE";
 
     static readonly TimeSpan HandshakeTimeout = TimeSpan.FromSeconds(20);
@@ -89,7 +90,7 @@ public class AcpHostedAgentRuntimeFactoryLiveTests {
             config: new DaemonConfig(), // CursorPath="cursor-agent", CursorModel="claude-sonnet-4-5"
             loggerFactory: liveLoggerFactory,
             connection: connection,
-            connectionSource: null // real cursor-agent acp spawn — gap 1's production path
+            connectionSource: null // real cursor-agent acp spawn — the production path
         );
 
         var ctx = new RuntimeStartContext(
@@ -141,15 +142,12 @@ public class AcpHostedAgentRuntimeFactoryLiveTests {
     /// authorized checkout. Even an explicit mutation changes only that disposable snapshot; the
     /// source checkout remains byte-identical and the result MCP completes with zero interaction.
     ///
-    /// <para><b>Extended with the three read sentinels</b>, carried from the borrowed-review
-    /// readability amendment's §5, which required them and recorded that they did not ship: this probe
-    /// previously created and read
-    /// a single COMMITTED file, which a reviewer working from a stale committed base would have read
-    /// just as successfully. That is the defect the whole borrowed-review effort exists to fix, and the
-    /// probe could not see it. Branch-only, tracked-modified and untracked content are now all present
-    /// in the source and all three must come back <b>through the result channel</b> — read by the
-    /// reviewer, not by the test process. A test-process read proves the snapshot builder works and
-    /// says nothing about whether a reviewer can see it.</para></summary>
+    /// <para><b>Extended with three read sentinels</b> — branch-only, tracked-modified and untracked
+    /// content — because a single COMMITTED sentinel would pass just as well for a reviewer working
+    /// from a stale committed base, proving nothing about borrowed-snapshot visibility. All three must
+    /// come back <b>through the result channel</b> — read by the reviewer, not by the test process. A
+    /// test-process read proves the snapshot builder works and says nothing about whether a reviewer
+    /// can see it.</para></summary>
     [Test]
     [UnsupportedOSPlatform("windows")]
     public async Task ReviewFlow_AgainstRealCursorAgentAcp_CallsResultMcp_WithZeroInteractionRequests() {
@@ -159,26 +157,27 @@ public class AcpHostedAgentRuntimeFactoryLiveTests {
             "(spends a real Cursor turn; requires an authenticated Cursor subscription).");
         Skip.When(OperatingSystem.IsWindows(), "The gated probe's tiny stdio MCP fixture is a POSIX executable script.");
 
+        // Holds only what must live outside the borrowed repository: the fake binary, its marker,
+        // and the snapshot root WorktreeManager builds into.
         using var rootDirTemp = new TempDir();
-        var sourceDir   = rootDirTemp.CreateDir("borrowed-source");
         var markerPath  = rootDirTemp.PathTo("result-called");
         var mcpPath     = rootDirTemp.PathTo("fake-kcap");
-        var protectedPath = sourceDir.CreateFile("protected.txt", "ORIGINAL\n");
-        sourceDir.CreateFile("tracked_modified.txt", "BASE-ORIGINAL\n");
-        RunGit(sourceDir.Path, "init", "-q");
-        RunGit(sourceDir.Path, "config", "user.email", "test@example.com");
-        RunGit(sourceDir.Path, "config", "user.name", "Test");
-        RunGit(sourceDir.Path, "add", "protected.txt", "tracked_modified.txt");
-        RunGit(sourceDir.Path, "commit", "-q", "-m", "initial");
+
+        using var source = GitRepo.Create("borrowed-source");
+        var protectedPath = source.CreateFile("protected.txt", "ORIGINAL\n");
+        source.CreateFile("tracked_modified.txt", "BASE-ORIGINAL\n");
+
+        source.Add("protected.txt", "tracked_modified.txt");
+        source.Commit("initial");
 
         // Branch-only: committed, but only on a branch the daemon's own checkout has never seen.
-        RunGit(sourceDir.Path, "checkout", "-q", "-b", "feature");
-        sourceDir.CreateFile("branch_only.txt", BranchOnlySentinel + "\n");
-        RunGit(sourceDir.Path, "add", "branch_only.txt");
-        RunGit(sourceDir.Path, "commit", "-q", "-m", "branch-only commit");
+        source.Checkout("feature", create: true);
+        source.CreateFile("branch_only.txt", BranchOnlySentinel + "\n");
+        source.Add("branch_only.txt");
+        source.Commit("branch-only commit");
         // Tracked-but-dirty, and never-added: neither is reachable from any commit.
-        sourceDir.CreateFile("tracked_modified.txt", TrackedModifiedSentinel + "\n");
-        sourceDir.CreateFile("untracked.txt", UntrackedSentinel + "\n");
+        source.CreateFile("tracked_modified.txt", TrackedModifiedSentinel + "\n");
+        source.CreateFile("untracked.txt", UntrackedSentinel + "\n");
 
         File.WriteAllText(mcpPath, FakeFlowResultMcpScript);
         File.SetUnixFileMode(mcpPath,
@@ -191,11 +190,12 @@ public class AcpHostedAgentRuntimeFactoryLiveTests {
         var connection = new CaptureServerConnection();
         var config = new DaemonConfig {
             WorktreeRoot = rootDirTemp.PathTo("snapshots"),
+            Home = Home,
             DebugFrames = true
         };
         var manager = new WorktreeManager(config, NullLogger<WorktreeManager>.Instance);
         var snapshot = await manager.CreateBorrowedSnapshotAsync(
-            sourceDir.Path, "live-review", CancellationToken.None);
+            source.Path, "live-review", CancellationToken.None);
         var factory = new AcpHostedAgentRuntimeFactory(
             descriptor: AcpVendorDescriptors.Cursor,
             config: config,
@@ -205,7 +205,7 @@ public class AcpHostedAgentRuntimeFactoryLiveTests {
         var ctx = new RuntimeStartContext(
             AgentId: markerPath,
             Vendor: "cursor",
-            SourceRepoPath: sourceDir.Path,
+            SourceRepoPath: source.Path,
             Worktree: snapshot,
             Prompt: "Read all four of these files: protected.txt, branch_only.txt, "
                   + "tracked_modified.txt, untracked.txt. Try to replace protected.txt with "
@@ -261,7 +261,7 @@ public class AcpHostedAgentRuntimeFactoryLiveTests {
             await runtime.WaitForTurnIdleAsync(startCts.Token);
             File.WriteAllText(protectedPath, "ROUND2\n");
             await manager.SyncFromSourceAsync(
-                sourceDir.Path, sourceDir.Path, snapshot.Path, [], startCts.Token);
+                source.Path, source.Path, snapshot.Path, [], startCts.Token);
             File.Delete(markerPath);
             await runtime.SendUserInputAndWaitForWriteAsync(
                 "Read protected.txt and call submit_review_result exactly once with verdict CLEAN and put its exact contents in summary. Do not modify files.");
@@ -278,17 +278,6 @@ public class AcpHostedAgentRuntimeFactoryLiveTests {
             await runtime.DisposeAsync();
             await WorktreeManager.RemoveAsync(snapshot);
         }
-    }
-
-    static void RunGit(string cwd, params string[] args) {
-        using var process = Process.Start(new ProcessStartInfo("git", args) {
-            WorkingDirectory = cwd,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true
-        })!;
-        process.WaitForExit();
-        if (process.ExitCode != 0)
-            throw new InvalidOperationException(process.StandardError.ReadToEnd());
     }
 
     internal const string FakeFlowResultMcpScript = """

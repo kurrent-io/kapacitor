@@ -19,8 +19,8 @@ public class AuthCancellationTests {
         return $"header.{b64}.signature";
     }
 
-    // RunDeviceFlowAsync(clientId) hardcodes github.com with no URL seam, so cancellation is
-    // exercised through the HttpClient-accepting overload against a fake handler instead.
+    // The device-code and poll endpoints are hardcoded to github.com with no URL seam, so
+    // cancellation is exercised against a fake handler on the injected HttpClient instead.
     sealed class FakeGitHubDeviceHandler(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) {
             ct.ThrowIfCancellationRequested();
@@ -51,7 +51,7 @@ public class AuthCancellationTests {
         });
         using var http = new HttpClient(handler);
 
-        await Assert.That(async () => await OAuthLoginFlow.RunDeviceFlowAsync(http, "client_id", cts.Token))
+        await Assert.That(async () => await OAuthLoginFlow.RunDeviceFlowAsync(http, "client_id", new RecordingBrowser(), cts.Token))
             .Throws<OperationCanceledException>();
 
         await Assert.That(pollCount).IsGreaterThanOrEqualTo(3);
@@ -114,7 +114,7 @@ public class AuthCancellationTests {
         var picker = Substitute.For<ITenantPicker>();
         picker.Pick(Arg.Any<DiscoveredTenant[]>())
               .Returns(_ => throw new InvalidOperationException("TenantDiscovery must await PickAsync, not call the sync Pick"));
-        picker.PickAsync(list, Arg.Any<CancellationToken>()).Returns(Task.FromResult<DiscoveredTenant?>(list[1]));
+        picker.PickAsync(list, Arg.Any<TenantPickContext>(), Arg.Any<CancellationToken>()).Returns(Task.FromResult<DiscoveredTenant?>(list[1]));
 
         var discovery = new TenantDiscovery(proxy, picker);
         var outcome   = await discovery.RunAsync("https://proxy", "gh");

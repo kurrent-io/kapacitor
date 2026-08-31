@@ -1,5 +1,8 @@
 using Capacitor.Cli.Commands.Harness;
+using Capacitor.Cli.Commands;
 using Capacitor.Cli.SessionStartMemory;
+using Capacitor.Cli.Tests.Unit.SessionStartMemory;
+using Capacitor.Cli.Core.Harness;
 
 namespace Capacitor.Cli.Tests.Unit.Harness.Antigravity;
 
@@ -17,6 +20,17 @@ namespace Capacitor.Cli.Tests.Unit.Harness.Antigravity;
 /// lives in SessionStartMemoryFoundationTests (the Antigravity_* tests), next to the lease fixtures.
 /// </summary>
 public class AntigravitySessionStartMemoryTests {
+    [TempHome] public required TempHome Home { get; init; }
+
+    // Instance, not static: the hook writes under the config dir (the repo-detection cache,
+    // the lease store), so it must be handed this test's own root — which a static helper
+    // cannot see, TUnit injecting it after construction.
+    // The server URL is the resolution's, so a test proving the url guard fires hands in the bad one
+    // here rather than as an argument.
+    AntigravityHookCommand Hook(string serverUrl = "https://example.test") =>
+        new(Config.Root, Resolutions.At(serverUrl, Config.Root), new HookClock(TimeProvider.System), Home);
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     static string Write(string? fragment) {
         var sw = new StringWriter();
         AntigravityHookCommand.WritePreInvocationOutput(sw, fragment);
@@ -84,7 +98,7 @@ public class AntigravitySessionStartMemoryTests {
     public async Task Lifecycle_is_a_repeating_top_level_callback() {
         var lifecycle = AntigravityHookCommand.LifecycleFor("e80c33bfc10f4d2fb626b0043f488fc0");
 
-        await Assert.That(lifecycle.Harness).IsEqualTo(SessionStartHarness.Antigravity);
+        await Assert.That(lifecycle.Harness).IsEqualTo(HarnessId.Antigravity);
         await Assert.That(lifecycle.IsTopLevel).IsTrue();
         await Assert.That(lifecycle.ClassificationAuthoritative).IsTrue();
         await Assert.That(lifecycle.Reason).IsEqualTo(SessionLifecycleReason.RepeatedTurnCallback);
@@ -102,31 +116,31 @@ public class AntigravitySessionStartMemoryTests {
         // Each guard alone must suppress the fetch. A non-postable base url is checked
         // BEFORE any client is built, because EnsureAbsolute calls Environment.Exit(2).
         // Both lanes off ⇒ suppressed; a single lane off would still fetch.
-        await Assert.That(await AntigravityHookCommand.StartMemoryIndexTask(
-            "https://example.test", "e80c33bfc10f4d2fb626b0043f488fc0", "/repo",
-            disabled: true, guidelinesDisabled: true, TimeSpan.FromSeconds(5), null, null)).IsNull();
+        await Assert.That(await Hook().StartMemoryIndexTask("e80c33bfc10f4d2fb626b0043f488fc0", "/repo",
+            disabled: true, guidelinesDisabled: true, TimeSpan.FromSeconds(5))).IsNull();
 
         // The scope / budget / url guards suppress even with guidelines ENABLED.
-        await Assert.That(await AntigravityHookCommand.StartMemoryIndexTask(
-            "https://example.test", "e80c33bfc10f4d2fb626b0043f488fc0", scopeRoot: null,
-            disabled: false, guidelinesDisabled: false, TimeSpan.FromSeconds(5), null, null)).IsNull();
+        await Assert.That(await Hook().StartMemoryIndexTask("e80c33bfc10f4d2fb626b0043f488fc0", scopeRoot: null,
+            disabled: false, guidelinesDisabled: false, TimeSpan.FromSeconds(5))).IsNull();
 
-        await Assert.That(await AntigravityHookCommand.StartMemoryIndexTask(
-            "https://example.test", "e80c33bfc10f4d2fb626b0043f488fc0", "/repo",
-            disabled: false, guidelinesDisabled: false, TimeSpan.Zero, null, null)).IsNull();
+        await Assert.That(await Hook().StartMemoryIndexTask("e80c33bfc10f4d2fb626b0043f488fc0", "/repo",
+            disabled: false, guidelinesDisabled: false, TimeSpan.Zero)).IsNull();
 
-        await Assert.That(await AntigravityHookCommand.StartMemoryIndexTask(
-            "", "e80c33bfc10f4d2fb626b0043f488fc0", "/repo",
-            disabled: false, guidelinesDisabled: false, TimeSpan.FromSeconds(5), null, null)).IsNull();
+        await Assert.That(await Hook("").StartMemoryIndexTask(
+            "e80c33bfc10f4d2fb626b0043f488fc0", "/repo",
+            disabled: false, guidelinesDisabled: false, TimeSpan.FromSeconds(5))).IsNull();
     }
 
+    /// <summary>The memory subsystem is optional, so a store that cannot even be constructed must
+    /// resolve to "no fragment" rather than fault the hook. A file where the store root's directory
+    /// has to go makes construction throw synchronously, inside the try — the one failure mode that
+    /// would otherwise escape before any await.</summary>
     [Test]
-    public async Task A_throwing_store_factory_resolves_to_null_rather_than_faulting() {
-        var task = AntigravityHookCommand.StartMemoryIndexTask(
-            "https://example.test", "e80c33bfc10f4d2fb626b0043f488fc0", "/repo",
-            disabled: false, guidelinesDisabled: true, TimeSpan.FromSeconds(5),
-            memoryClientFactory: null,
-            memoryStoreFactory: () => throw new InvalidOperationException("boom"));
+    public async Task A_store_that_cannot_be_constructed_resolves_to_null_rather_than_faulting() {
+        MemoryStoreProbe.Poison(Config.Root);
+
+        var task = Hook().StartMemoryIndexTask("e80c33bfc10f4d2fb626b0043f488fc0", "/repo",
+            disabled: false, guidelinesDisabled: true, TimeSpan.FromSeconds(5));
 
         await Assert.That(await task).IsNull();
     }
@@ -134,8 +148,7 @@ public class AntigravitySessionStartMemoryTests {
     [Test]
     public async Task A_non_PreInvocation_event_writes_nothing_and_exits_zero() {
         var sw   = new StringWriter();
-        var code = await AntigravityHookCommand.Handle(
-            "https://example.test", ["--antigravity", "Stop"], new StringReader("{}"), sw);
+        var code = await new AntigravityHookCommand(Config.Root, Resolutions.At("https://example.test", Config.Root), new HookClock(TimeProvider.System), Home).Handle(["--antigravity", "Stop"], new StringReader("{}"), sw);
 
         await Assert.That(code).IsEqualTo(0);
         await Assert.That(sw.ToString()).IsEqualTo("");
@@ -144,8 +157,7 @@ public class AntigravitySessionStartMemoryTests {
     [Test]
     public async Task A_malformed_payload_writes_nothing_and_exits_zero() {
         var sw   = new StringWriter();
-        var code = await AntigravityHookCommand.Handle(
-            "https://example.test", ["--antigravity", "PreInvocation"], new StringReader("{not json"), sw);
+        var code = await new AntigravityHookCommand(Config.Root, Resolutions.At("https://example.test", Config.Root), new HookClock(TimeProvider.System), Home).Handle(["--antigravity", "PreInvocation"], new StringReader("{not json"), sw);
 
         await Assert.That(code).IsEqualTo(0);
         await Assert.That(sw.ToString()).IsEqualTo("");
@@ -217,24 +229,42 @@ public class AntigravitySessionStartMemoryTests {
     [Test, NotInParallel]
     public async Task HandleCore_consults_the_fallback_for_an_empty_workspacePaths_payload() {
         const string conversationId = "e80c33bf-c10f-4d2f-b626-b0043f488fc0";
-        DisabledSessions.Mark(conversationId.Replace("-", ""));
+        DisabledSessions.Mark(conversationId.Replace("-", ""), Config.Root);
 
-        try {
-            var consulted = false;
-            var sw        = new StringWriter();
-            var code      = await AntigravityHookCommand.Handle(
-                "https://example.test", ["--antigravity", "PreInvocation"],
-                new StringReader($$"""
-                    {"conversationId":"{{conversationId}}","transcriptPath":"/tmp/t.jsonl","workspacePaths":[]}
-                    """),
-                sw,
-                workspaceFallback: () => { consulted = true; return null; });
+        var consulted = false;
+        var sw        = new StringWriter();
+     var code = await new AntigravityHookCommand(Config.Root, Resolutions.At("https://example.test", Config.Root), new HookClock(TimeProvider.System), Home).Handle(["--antigravity", "PreInvocation"],
+            new StringReader($$"""
+                {"conversationId":"{{conversationId}}","transcriptPath":"/tmp/t.jsonl","workspacePaths":[]}
+                """),
+            sw,
+            workspaceFallback: () => { consulted = true; return null; });
 
-            await Assert.That(code).IsEqualTo(0);
-            await Assert.That(sw.ToString()).IsEqualTo("");
-            await Assert.That(consulted).IsTrue();
-        } finally {
-            DisabledSessions.RemoveMarker(conversationId.Replace("-", ""));
-        }
+        await Assert.That(code).IsEqualTo(0);
+        await Assert.That(sw.ToString()).IsEqualTo("");
+        await Assert.That(consulted).IsTrue();
+    }
+
+    // The nudges carry no lease, so on this repeating callback only the invocation counter keeps
+    // them from re-injecting a persistent userMessage step every turn.
+
+    [Test]
+    public async Task The_first_invocation_emits_nudges() {
+        await Assert.That(AntigravityHookCommand.IsFirstInvocation(Payload("""{"invocationNum":1}"""))).IsTrue();
+    }
+
+    [Test]
+    public async Task A_later_invocation_suppresses_nudges() {
+        await Assert.That(AntigravityHookCommand.IsFirstInvocation(Payload("""{"invocationNum":2}"""))).IsFalse();
+        await Assert.That(AntigravityHookCommand.IsFirstInvocation(Payload("""{"invocationNum":97}"""))).IsFalse();
+    }
+
+    // Fail-open: a payload whose counter cannot mark a later turn — missing, non-numeric, or below
+    // the genuine first value of one — must still emit.
+    [Test]
+    public async Task A_missing_or_unusable_counter_reads_as_the_first_invocation() {
+        await Assert.That(AntigravityHookCommand.IsFirstInvocation(Payload("{}"))).IsTrue();
+        await Assert.That(AntigravityHookCommand.IsFirstInvocation(Payload("""{"invocationNum":"2"}"""))).IsTrue();
+        await Assert.That(AntigravityHookCommand.IsFirstInvocation(Payload("""{"invocationNum":0}"""))).IsTrue();
     }
 }

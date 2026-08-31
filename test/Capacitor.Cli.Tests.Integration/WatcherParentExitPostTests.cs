@@ -14,7 +14,15 @@ namespace Capacitor.Cli.Tests.Integration;
 /// SessionEnded and tells us whether to spawn the what's-done generator.
 /// </summary>
 public class WatcherParentExitPostTests : IDisposable {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+    [TempHome] public required TempHome Home { get; init; }
+
     readonly WireMockServer _server = WireMockServer.Start();
+
+    // Instance, not static: the parent-exit POST resolves its client against a config dir, so it
+    // must be this test's own root — which a static helper cannot see, TUnit injecting it after
+    // construction.
+    WatchCommand Watch() => new(Config.Root, Resolutions.At(_server.Url!, Config.Root), Home);
 
     public void Dispose() => _server.Stop();
 
@@ -34,8 +42,7 @@ public class WatcherParentExitPostTests : IDisposable {
 
         var sessionId = $"test-{Guid.NewGuid():N}";
 
-        await WatchCommand.PostSessionEndOnParentExitAsync(
-            baseUrl:        _server.Url!,
+        await Watch().PostSessionEndOnParentExitAsync(
             sessionId:      sessionId,
             transcriptPath: "/tmp/fake.jsonl",
             cwd:            "/repo",
@@ -64,8 +71,7 @@ public class WatcherParentExitPostTests : IDisposable {
 
         var sessionId = $"test-{Guid.NewGuid():N}";
 
-        await WatchCommand.PostSessionEndOnParentExitAsync(
-            baseUrl:        _server.Url!,
+        await Watch().PostSessionEndOnParentExitAsync(
             sessionId:      sessionId,
             transcriptPath: "/tmp/fake.jsonl",
             cwd:            "/repo",
@@ -99,8 +105,7 @@ public class WatcherParentExitPostTests : IDisposable {
         _server.Given(Request.Create().WithPath("/hooks/session-end/*").UsingPost())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody("""{"generate_whats_done":false}"""));
 
-        await WatchCommand.PostSessionEndOnParentExitAsync(
-            baseUrl:        _server.Url!,
+        await Watch().PostSessionEndOnParentExitAsync(
             sessionId:      $"test-{Guid.NewGuid():N}",
             transcriptPath: "/tmp/fake.jsonl",
             cwd:            "/repo",
@@ -120,8 +125,7 @@ public class WatcherParentExitPostTests : IDisposable {
         _server.Given(Request.Create().WithPath("/hooks/session-end/codex").UsingPost())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody("""{"generate_whats_done":false}"""));
 
-        await WatchCommand.PostSessionEndOnParentExitAsync(
-            baseUrl:        _server.Url!,
+        await Watch().PostSessionEndOnParentExitAsync(
             sessionId:      $"test-{Guid.NewGuid():N}",
             transcriptPath: "/tmp/fake.jsonl",
             cwd:            "/repo",
@@ -146,8 +150,7 @@ public class WatcherParentExitPostTests : IDisposable {
         _server.Given(Request.Create().WithPath("/hooks/session-end/kiro").UsingPost())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody("""{"generate_whats_done":false}"""));
 
-        await WatchCommand.PostSessionEndOnParentExitAsync(
-            baseUrl:        _server.Url!,
+        await Watch().PostSessionEndOnParentExitAsync(
             sessionId:      $"test-{Guid.NewGuid():N}",
             transcriptPath: "/tmp/fake.jsonl",
             cwd:            "/repo",
@@ -170,8 +173,7 @@ public class WatcherParentExitPostTests : IDisposable {
         _server.Given(Request.Create().WithPath("/hooks/session-end/pi").UsingPost())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody("""{"generate_whats_done":false}"""));
 
-        await WatchCommand.PostSessionEndOnParentExitAsync(
-            baseUrl:        _server.Url!,
+        await Watch().PostSessionEndOnParentExitAsync(
             sessionId:      $"test-{Guid.NewGuid():N}",
             transcriptPath: "/tmp/fake.jsonl",
             cwd:            "/repo",
@@ -201,8 +203,7 @@ public class WatcherParentExitPostTests : IDisposable {
 
         var sessionId = $"test-{Guid.NewGuid():N}";
 
-        await WatchCommand.PostSessionEndOnParentExitAsync(
-            baseUrl:        _server.Url!,
+        await Watch().PostSessionEndOnParentExitAsync(
             sessionId:      sessionId,
             transcriptPath: "/tmp/fake.jsonl",
             cwd:            "/repo",
@@ -258,8 +259,7 @@ public class WatcherParentExitPostTests : IDisposable {
                 .RespondWith(Response.Create().WithStatusCode(200).WithBody("""{"generate_whats_done":false}"""));
         }
 
-        await WatchCommand.PostSessionEndOnParentExitAsync(
-            baseUrl:        _server.Url!,
+        await Watch().PostSessionEndOnParentExitAsync(
             sessionId:      "0a900000000040008000000000000777",
             transcriptPath: parent,
             cwd:            "/repo",

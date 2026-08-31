@@ -15,12 +15,27 @@ public sealed record DiscoveryOutcome(
     DiscoveredTenant[] Tenants,
     DiscoveredTenant?  Picked,
     string?            ErrorMessage,
-    bool               NoTenantsFound = false
+    bool               NoTenantsFound = false,
+    // The picker owns its own null messaging, so the caller carries this message without rendering it.
+    bool               AlreadyReported = false
 );
 
 public interface ITenantPicker {
     DiscoveredTenant?       Pick(DiscoveredTenant[] tenants);
-    Task<DiscoveredTenant?> PickAsync(DiscoveredTenant[] tenants, CancellationToken ct);
+
+    /// <summary>
+    /// Null means no tenant was chosen AND the picker has already told the user why — discovery adds
+    /// no line of its own. The two reasons need different follow-ups (a user backing out has nothing
+    /// left to do; a session that cannot prompt needs to be told how to name one), and only the
+    /// picker knows which happened.
+    /// </summary>
+    /// <param name="context">
+    /// What a picker needs beyond the rows — the bearer, the proxy client and whether a browser is
+    /// reachable. Carried as an argument rather than set on the instance: the seam is built in
+    /// <c>SetupCommand</c> before any login exists, and a "set this first" contract is one a caller
+    /// can silently skip.
+    /// </param>
+    Task<DiscoveredTenant?> PickAsync(DiscoveredTenant[] tenants, TenantPickContext context, CancellationToken ct);
 }
 
 public class TenantDiscovery(IAuthProxyClient proxy, ITenantPicker picker) {
@@ -44,10 +59,10 @@ public class TenantDiscovery(IAuthProxyClient proxy, ITenantPicker picker) {
 
         var picked = result.Tenants.Length == 1
             ? result.Tenants[0]
-            : await picker.PickAsync(result.Tenants, ct);
+            : await picker.PickAsync(result.Tenants, TenantPickContext.None, ct);
 
         if (picked is null) {
-            return new(result.Tenants, null, "No tenant selected.");
+            return new(result.Tenants, null, "No tenant selected.", AlreadyReported: true);
         }
 
         return new(result.Tenants, picked, null);
@@ -58,9 +73,9 @@ public class TenantDiscovery(IAuthProxyClient proxy, ITenantPicker picker) {
             DiscoveredTenant[] discovered,
             DiscoveredTenant   active) {
         var profiles      = new Dictionary<string, Config_Profile>(existing.Profiles);
-        var activeProfile = string.IsNullOrWhiteSpace(existing.ActiveProfile) ? "default" : existing.ActiveProfile;
+        var activeProfile = existing.ActiveName;
         var template = existing.Profiles.GetValueOrDefault(activeProfile)
-                    ?? existing.Profiles.GetValueOrDefault("default")
+                    ?? existing.Profiles.GetValueOrDefault(ProfileConfig.DefaultName)
                     ?? new Config_Profile();
 
         foreach (var t in discovered) {

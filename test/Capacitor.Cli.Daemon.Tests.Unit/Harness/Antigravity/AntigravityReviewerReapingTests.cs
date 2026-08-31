@@ -128,40 +128,37 @@ public class AntigravityReviewerReapingTests {
     /// </summary>
     [Test]
     public async Task An_antigravity_launch_wires_the_per_turn_pid_record_seam_to_this_agents_record() {
-        var (repoPath, cleanup) = GitRepoHarness.CreateGitRepo();
+        using var repoPath = GitRepo.CreateWithCommit();
 
-        try {
-            var factory = new AntigravityRuntimeSpyFactory();
+        var factory = new AntigravityRuntimeSpyFactory();
 
-            await using var orch = AgentOrchestratorHarness.BuildOrchestrator(
-                new CaptureServerConnection(), new SpyPtyProcessFactory(),
-                new Dictionary<string, IHostedAgentLauncher>(),
-                allowedRepoPath: repoPath, extraRuntimeFactories: [factory]);
+        await using var orch = AgentOrchestratorHarness.BuildOrchestrator(
+            new CaptureServerConnection(), new SpyPtyProcessFactory(),
+            new Dictionary<string, IHostedAgentLauncher>(),
+            allowedRepoPath: repoPath, extraRuntimeFactories: [factory]);
 
-            await orch.HandleLaunchAgentForTest(new LaunchAgentCommand(
-                AgentId: "agy-pid-1", Prompt: "review this", Model: "auto", Effort: null,
-                RepoPath: repoPath, Tools: null, AttachmentIds: null, Vendor: "antigravity"));
+        await orch.HandleLaunchAgentForTest(new LaunchAgentCommand(
+            AgentId: "agy-pid-1", Prompt: "review this", Model: "auto", Effort: null,
+            RepoPath: repoPath, Tools: null, AttachmentIds: null, Vendor: "antigravity"));
 
-            var runtime = factory.LastRuntime;
+        var runtime = factory.LastRuntime;
 
-            await Assert.That(runtime).IsNotNull();
-            await Assert.That(runtime!.PidCallbacks).IsNotNull();
+        await Assert.That(runtime).IsNotNull();
+        await Assert.That(runtime!.PidCallbacks).IsNotNull();
 
-            // The launch's own one-shot record exists — the baseline both assertions move away from.
-            await Assert.That(orch.PidRecordsForTest().Any(r => r.AgentId == "agy-pid-1")).IsTrue();
+        // The launch's own one-shot record exists — the baseline both assertions move away from.
+        await Assert.That(orch.PidRecordsForTest().Any(r => r.AgentId == "agy-pid-1")).IsTrue();
 
-            runtime.PidCallbacks!.Clear();
-            await Assert.That(orch.PidRecordsForTest().Any(r => r.AgentId == "agy-pid-1")).IsFalse();
+        runtime.PidCallbacks!.Clear();
+        await Assert.That(orch.PidRecordsForTest().Any(r => r.AgentId == "agy-pid-1")).IsFalse();
 
-            // A live, capturable pid: PersistPidRecordOrThrow's legacy arm records only a process it
-            // can identify, so a fabricated pid would make this pass for the wrong reason.
-            runtime.PidCallbacks.Record(Environment.ProcessId);
+        // A live, capturable pid: PersistPidRecordOrThrow's legacy arm records only a process it
+        // can identify, so a fabricated pid would make this pass for the wrong reason.
+        runtime.PidCallbacks.Record(Environment.ProcessId);
 
-            await Assert.That(orch.PidRecordsForTest()
-                .Any(r => r.AgentId == "agy-pid-1" && r.Pid == Environment.ProcessId)).IsTrue();
-        } finally {
-            cleanup();
-        }
+        await Assert.That(orch.PidRecordsForTest()
+            .Any(r => r.AgentId == "agy-pid-1" && r.Pid == Environment.ProcessId)).IsTrue();
+
     }
 
     /// <summary>Returns the REAL exec-per-turn runtime (the type the orchestrator's wiring branch

@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text.Json.Nodes;
+using Capacitor.Cli.Commands;
 using Capacitor.Cli.Commands.Harness;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Harness.Cursor;
@@ -26,21 +27,25 @@ namespace Capacitor.Cli.Tests.Unit.Harness.Cursor;
 /// docs/superpowers/specs/2026-07-30-ai1505-cursor-subagent-classification-design.md
 /// </para>
 /// </summary>
-// TokenStoreProfileTests too: these read the shared config.json, and a concurrent writer there
-// DELETES it to republish — which a plain read handle blocks on Windows.
-[NotInParallel(["HomeEnvVarMutation", "TokenStoreProfileTests"])]
+// The hook resolves the harness nudge through HarnessPaths, so it reads every vendor override
+// variable a peer suite clears mid-test.
+[NotInParallel("VendorEnvOverrides")]
 public class CursorLiveSubagentIntegrationTests {
+    [TempHome] public required TempHome Home { get; init; }
+
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     [Test]
     public async Task linked_child_mid_lifecycle_hook_is_suppressed_but_transcript_still_backfills() {
-        using var fx = new Fixture();
+        using var fx = new Fixture(Config.Root);
         var (parentId, childId, childPath) = fx.SetupLinkedPair("write the report");
 
         // Seed the link and the ack DIRECTLY. Establishing them via a child sessionStart would
         // assert a trigger a real child never fires (see the class doc). The ack seed is
         // required: without it the mid-lifecycle hook returns at the no-ack gate and never
         // reaches the backfill this test is about.
-        CursorLiveSubagentLinker.SaveLink(childId, parentId, "task");
-        CursorMarkers.MarkSubagentStartAcked(childId);
+        CursorLiveSubagentLinker.SaveLink(Config.Root, childId, parentId, "task");
+        new CursorMarkers(Config.Root).MarkSubagentStartAcked(childId);
         fx.Sent.Clear();
         fx.RouteOrder.Clear();
 
@@ -60,7 +65,7 @@ public class CursorLiveSubagentIntegrationTests {
         // Regression guard: an ordinary (non-subagent) session must behave exactly as before —
         // no sibling transcript happens to match, so ResolveParent returns null and the normal
         // top-level flow runs unmodified.
-        using var fx = new Fixture();
+        using var fx = new Fixture(Config.Root);
         var soloId  = Guid.NewGuid().ToString();
         var soloDir = Path.Combine(fx.TranscriptsRoot, soloId);
         Directory.CreateDirectory(soloDir);
@@ -102,23 +107,25 @@ public class CursorLiveSubagentIntegrationTests {
     }
 
     sealed class Fixture : IDisposable {
-        readonly TempDir _tmp = new();
+        readonly TempHome _home = new();
 
         public string TranscriptsRoot { get; }
         public string SpoolDir        { get; }
         public List<string> Sent       { get; } = [];
         public List<string> RouteOrder { get; } = [];
         public HookSpool    Spool      { get; }
+        public ConfigRoot   Config     { get; }
         public HttpClient   Client     { get; }
         public HttpStatusCode PostStatus { get; set; } = HttpStatusCode.OK;
 
         readonly List<string> _markersToClean = [];
 
-        public Fixture(HttpStatusCode postStatus = HttpStatusCode.OK) {
+        public Fixture(ConfigRoot config, HttpStatusCode postStatus = HttpStatusCode.OK) {
             PostStatus      = postStatus;
-            TranscriptsRoot = _tmp.CreateDir("agent-transcripts");
-            SpoolDir        = _tmp.PathTo("spool");
+            TranscriptsRoot = _home.CreateDir("agent-transcripts");
+            SpoolDir        = _home.PathTo("spool");
             Spool           = new HookSpool(SpoolDir);
+            Config          = config;
 
             var handler = new StubHandler(async req => {
                 var body = req.Content is null ? "" : await req.Content.ReadAsStringAsync();
@@ -169,14 +176,12 @@ public class CursorLiveSubagentIntegrationTests {
         }
 
         public Task<int> HandleAsync(string sessionId, string eventName, string? transcriptPath, string extraFields = "") =>
-            CursorHookCommand.HandleCore(
+            new CursorHookCommand(Config, Resolutions.At("http://localhost", Config), new HookClock(TimeProvider.System), _home).HandleCore(
                 Client,
-                baseUrl: "http://localhost",
                 stdin: new StringReader(
                     $$"""{"hook_event_name":"{{eventName}}","session_id":"{{sessionId}}","transcript_path":"{{transcriptPath?.Replace(@"\", @"\\")}}"{{extraFields}}}"""
                 ),
-                spool: Spool,
-                budgetTotal: TimeSpan.FromSeconds(2)
+                spool: Spool
             );
 
         public string SentToHook(string segment) =>
@@ -185,14 +190,14 @@ public class CursorLiveSubagentIntegrationTests {
         public void Dispose() {
             Client.Dispose();
             foreach (var m in _markersToClean) {
-                try { File.Delete(Path.Combine(PathHelpers.ConfigPath("cursor-subagent-links"), m)); } catch { }
+                try { File.Delete(Path.Combine(Config.Path("cursor-subagent-links"), m)); } catch { }
                 // The subagent-start ACK marker lives in a different directory and is durable
                 // too. A test that seeds one (see the mid-lifecycle scenario) would otherwise
                 // leave it behind for the rest of the process, where a later
                 // HasSubagentStartAck check could read it.
-                try { File.Delete(CursorMarkers.SubagentStartAckPath(m)); } catch { }
+                try { File.Delete(new CursorMarkers(Config).SubagentStartAckPath(m)); } catch { }
             }
-            _tmp.Dispose();
+            _home.Dispose();
         }
     }
 

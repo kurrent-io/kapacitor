@@ -6,7 +6,14 @@ Options:
   --server-url <url>          Server URL (skip prompt)
   --daemon-name <name>        Daemon name (skip prompt)
   --default-visibility <vis>  Default visibility: private, project, org_public, public
-  --no-prompt                 Non-interactive mode (requires --server-url)
+  --org <name>                Organization name for a workspace to create, instead
+                              of being prompted for it. Requires --slug.
+  --slug <slug>               Workspace URL slug (<slug>.kcap.ai) for a workspace to
+                              create, instead of being prompted for it. Requires
+                              --org. A slug that is taken or malformed ends the run
+                              naming it, rather than asking for another.
+  --no-prompt                 Non-interactive mode (requires --server-url, or
+                              --org + --slug to create a workspace as part of the run)
   --github                    Sign in with GitHub instead of org SSO during
                               the login step (default is org SSO when a
                               browser is available)
@@ -98,10 +105,46 @@ skills, instructions, MCP) for all of them, instead of one prompt per agent.
 Hooks are installed user-wide (Pi, OpenCode, and Antigravity install a
 plugin/hooks-block rather than a shell-hooks file).
 
+Codex runs only hooks you have trusted. After Codex hooks install, the next
+`codex` CLI launch prompts to trust them — accept once to trust them all, or
+run /hooks inside Codex to trust the kcap entries individually. The Codex
+desktop app never shows that prompt: if you only use the desktop app, trust
+the kcap hooks in Settings → Hooks there (and since setup detects Codex by
+`codex` on PATH, you may need `kcap plugin install --codex` to install the
+hooks first). Until trusted, the hooks are installed but inert and no
+sessions are captured.
+
+Once you are signed in, on a server that offers browser setup kcap creates a
+setup link, opens your browser on it, and waits while you work through the
+screens there. It reports the coding agents it found on this machine — which
+ones are on your PATH, which have config on disk, which kcap is already wired
+into, and whether your login shell can find kcap — since only the machine can
+know that, and on a device-code sign-in the browser is a different box. The
+link is printed as well as opened, so a machine with no browser of its own can
+be finished from one on another. Press any key to stop waiting; setup carries
+on in the terminal either way. Skipped on servers that do not offer it, on
+servers that need no sign-in (auth provider None), and under --no-prompt.
+
+When you answer the browser's Agents screen, that answer is what gets installed:
+setup applies it instead of asking again, per agent and per choice, and says
+which agents you picked. A --skip-<agent> flag still wins, so a scripted opt-out
+is never overridden. Answering "Not now" installs nothing.
+
 When you sign in with Kurrent's hosted auth and discovery finds no tenant, setup
 asks how to continue: create one for you (organization name + workspace slug) and
 wait for it to go live, point at a workspace you already belong to (enter its slug
-or URL — same as `kcap setup <tenant>`), or cancel. SSO discovery only lists
+or URL — same as `kcap setup <tenant>`), or cancel. Pass --org and --slug to answer
+the creation questions up front and skip that fork entirely, which is what a script
+or a session with redirected input needs, alongside --no-prompt for the steps after
+it. The two flags go together: the slug becomes a permanent public hostname, so kcap
+will not derive one from the name. They also need --no-prompt on a session that
+cannot be prompted, since only the creation questions are answered by flags. Only
+an account with no workspace yet can create one: if yours already has a different
+one, setup signs in, stops and says so rather than going on to configure that one.
+They cannot be combined with --server-url (or `kcap setup <tenant>`), which points
+at a workspace that exists, or with --github, whose lane never provisions.
+
+SSO discovery only lists
 workspaces that use org SSO, so a workspace whose members sign in with the GitHub
 App appears here as "no tenant": choose "I already have a workspace", or re-run
 with --github.

@@ -22,11 +22,11 @@ public static class AntigravitySubagents {
     /// deterministic regardless of directory enumeration order.
     /// </summary>
     public static IReadOnlyDictionary<string, string> BuildParentMap(
-            string? home = null, string? geminiCliHome = null, CancellationToken ct = default)
-        => BuildParentMapUnder(Path.Combine(AntigravityPaths.Root(home, geminiCliHome), "brain"), ct);
+            AntigravityPaths paths, CancellationToken ct = default)
+        => BuildParentMapUnder(Path.Combine(paths.Root, "brain"), ct);
 
     /// <summary>
-    /// <see cref="BuildParentMap(string?,string?,CancellationToken)"/> over an EXPLICIT brain root.
+    /// <see cref="BuildParentMap(AntigravityPaths,CancellationToken)"/> over an EXPLICIT brain root.
     /// Import scans each product root's brain separately: a subagent chain never crosses roots
     /// (child <c>messages/</c> linkage lives beside the parent under one root, and conversation ids
     /// are unique UUIDs), so per-root maps are complete and need no union.
@@ -72,8 +72,8 @@ public static class AntigravitySubagents {
     }
 
     /// <summary>Parent conversation id for a child, or null when it is a root / unlinked.</summary>
-    public static string? ResolveParent(string childConversationId, string? home = null, string? geminiCliHome = null) =>
-        BuildParentMap(home, geminiCliHome).TryGetValue(childConversationId, out var parent) ? parent : null;
+    public static string? ResolveParent(string childConversationId, AntigravityPaths paths) =>
+        BuildParentMap(paths).TryGetValue(childConversationId, out var parent) ? parent : null;
 
     /// <summary>
     /// Walks parent links up to the top-level ancestor (a conversation with no parent), so a

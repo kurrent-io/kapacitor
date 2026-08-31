@@ -19,10 +19,15 @@ namespace Capacitor.Cli.Commands;
 /// watcher's parent-exit watchdog remains a backstop if the plugin never fires
 /// session-end. Fail-open throughout — a kcap/server problem must never disrupt dsh.
 /// </summary>
-static class DshHookCommand {
+sealed class DshHookCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
+    readonly WatcherManager  _watchers = new(config, profiles);
+    readonly AgentHookPoster _poster   = new(config, profiles);
+
+    string Url => profiles.Resolution.ServerUrl!;
+
     static readonly TimeSpan PreHookDrainCap = TimeSpan.FromSeconds(8);
 
-    public static async Task<int> Handle(string baseUrl, string[] args) {
+    public async Task<int> Handle(string[] args) {
         var eventName = GetArg(args, "--event");
         if (string.IsNullOrWhiteSpace(eventName)) {
             Console.Error.WriteLine(
@@ -48,25 +53,24 @@ static class DshHookCommand {
         var cwd = GetArg(args, "--cwd");
 
         // Disabled-session fast path: `kcap disable` must stop every POST and watcher restart.
-        if (DisabledSessions.IsDisabled(sessionId)) return 0;
+        if (DisabledSessions.IsDisabled(sessionId, config)) return 0;
 
-        var spool         = new HookSpool(PathHelpers.ConfigPath("spool"));
-        var activeProfile = await AppConfig.GetActiveProfileAsync();
+        var spool         = new HookSpool(config);
+        var activeProfile = profiles.Effective;
 
         if (activeProfile?.ExcludedPaths is { Length: > 0 } excludedPaths
-         && PathExclusion.IsExcluded(cwd, excludedPaths)) {
+         && PathExclusion.IsExcluded(cwd, excludedPaths, home)) {
             return 0;
         }
 
         return eventName switch {
-            "session-start" => await HandleSessionStart(baseUrl, sessionId, sessionIdRaw, file, cwd, args, activeProfile, spool),
-            "session-end"   => await HandleSessionEnd(baseUrl, sessionId, sessionIdRaw, file, cwd, args, spool),
+            "session-start" => await HandleSessionStart(sessionId, sessionIdRaw, file, cwd, args, activeProfile, spool),
+            "session-end"   => await HandleSessionEnd(sessionId, sessionIdRaw, file, cwd, args, spool),
             _               => 0
         };
     }
 
-    static async Task<int> HandleSessionStart(
-            string    baseUrl,
+    async Task<int> HandleSessionStart(
             string    sessionId,
             string    sessionIdRaw,
             string    file,
@@ -78,7 +82,7 @@ static class DshHookCommand {
         var forwarded = new JsonObject {
             ["hook_event_name"] = "sessionStart",
             ["session_id"]      = sessionId,
-            ["home_dir"]        = PathHelpers.HomeDirectory,
+            ["home_dir"]        = home.Path,
             ["started_at"]      = DateTimeOffset.UtcNow.ToString("O")
         };
 
@@ -107,23 +111,23 @@ static class DshHookCommand {
             forwarded["default_visibility"] = visibility;
         }
 
-        var enriched = await RepositoryDetection.EnrichWithRepositoryInfo(forwarded.ToJsonString());
+        var enriched = await RepositoryDetection.EnrichWithRepositoryInfo(config, forwarded.ToJsonString());
 
         if (activeProfile?.ExcludedRepos is { Length: > 0 } excludedRepos
-         && await RepoExclusion.IsExcludedAsync(enriched, excludedRepos)) {
-            DisabledSessions.Mark(sessionId);
+         && await RepoExclusion.IsExcludedAsync(config, enriched, excludedRepos)) {
+            DisabledSessions.Mark(sessionId, config);
             return 0;
         }
 
         // Spawn-before-post: capture must start on Posted OR Spooled (auth lapse / outage).
-        var outcome = await AgentHookPoster.PostOrSpoolAsync(
-            baseUrl, "session-start/dsh", enriched, "dsh-hook",
+        var outcome = await _poster.PostOrSpoolAsync(
+            "session-start/dsh", enriched, "dsh-hook",
             spool, sessionId, route: "session-start/dsh");
 
-        if (!AgentHookPoster.ShouldSpawnAfter(outcome, baseUrl)) return 0;
+        if (!AgentHookPoster.ShouldSpawnAfter(outcome, Url)) return 0;
 
-        await WatcherManager.EnsureWatcherRunning(
-            baseUrl, sessionId, file,
+        await _watchers.EnsureWatcherRunning(
+            sessionId, file,
             agentId: null, sessionIdOverride: null, cwd: cwd,
             skipTitle: false, vendor: "dsh"
         );
@@ -131,8 +135,7 @@ static class DshHookCommand {
         return 0;
     }
 
-    static async Task<int> HandleSessionEnd(
-            string    baseUrl,
+    async Task<int> HandleSessionEnd(
             string    sessionId,
             string    sessionIdRaw,
             string    file,
@@ -146,8 +149,8 @@ static class DshHookCommand {
         try {
             var drained = await TimeBudget.RunCappedAsync(
                 async () => {
-                    await WatcherManager.KillWatcher(sessionId);
-                    await WatcherManager.InlineDrainAsync(baseUrl, sessionId, file, agentId: null, vendor: "dsh");
+                    await _watchers.KillWatcher(sessionId);
+                    await _watchers.InlineDrainAsync(sessionId, file, agentId: null, vendor: "dsh");
                 },
                 PreHookDrainCap
             );
@@ -166,7 +169,7 @@ static class DshHookCommand {
             ["hook_event_name"] = "sessionEnd",
             ["session_id"]      = sessionId,
             ["reason"]          = GetArg(args, "--reason") ?? "idle",
-            ["home_dir"]        = PathHelpers.HomeDirectory,
+            ["home_dir"]        = home.Path,
             ["ended_at"]        = DateTimeOffset.UtcNow.ToString("O")
         };
 
@@ -176,8 +179,8 @@ static class DshHookCommand {
             forwarded["agent_host_id"] = agentHostId;
         }
 
-        var outcome = await AgentHookPoster.PostOrSpoolAsync(
-            baseUrl, "session-end/dsh", forwarded.ToJsonString(), "dsh-hook",
+        var outcome = await _poster.PostOrSpoolAsync(
+            "session-end/dsh", forwarded.ToJsonString(), "dsh-hook",
             spool, sessionId, route: "session-end/dsh");
 
         return outcome == HookPostOutcome.Failed ? 1 : 0;

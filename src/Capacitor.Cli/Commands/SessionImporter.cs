@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Core.Harness.Codex;
 using Capacitor.Cli.Harness.Cursor;
 
@@ -18,13 +19,11 @@ static class SessionImporter {
     /// <c>progress</c> / <c>agent_progress</c> entries.
     /// </summary>
     /// <param name="vendor">
-    /// "claude" (default) or "codex". Stamped on every <see cref="TranscriptBatch"/>
-    /// so the server's <c>INormalizerSelector</c> picks the matching normalizer.
-    /// Codex rollouts have no <c>subagents/</c> sibling directory and no
-    /// agent-progress markers, so the Claude agent walk is short-circuited when
-    /// <paramref name="vendor"/> is <c>"codex"</c>; Codex collab subagents (0.146+)
-    /// are instead discovered from the shared sessions tree by parent_thread_id and
-    /// appended after the parent transcript (see the isCodex descendant walk below).
+    /// Stamped on every <see cref="TranscriptBatch"/> so the server's <c>INormalizerSelector</c>
+    /// picks the matching normalizer. Codex rollouts have no <c>subagents/</c> sibling directory and
+    /// no agent-progress markers, so the Claude agent walk is short-circuited for it; its collab
+    /// subagents are discovered from the shared sessions tree by parent_thread_id and appended after
+    /// the parent transcript.
     /// </param>
     internal static async Task<ImportResult> ImportSessionAsync(
             HttpClient                 httpClient,
@@ -34,7 +33,7 @@ static class SessionImporter {
             SessionMetadata            metadata,
             string?                    encodedCwd,
             IProgress<ImportProgress>? progress = null,
-            string                     vendor   = "claude"
+            HarnessId                  vendor   = HarnessId.Claude
         ) {
         if (!File.Exists(transcriptPath))
             return new(sessionId, [], 0);
@@ -43,9 +42,9 @@ static class SessionImporter {
 
         // Codex rollouts don't ship a subagents/ sibling directory and don't carry
         // agent-progress markers in-band, so the Claude-shaped agent walk is skipped — we
-        // stream the rollout straight through the batch loop with vendor="codex", and pick
+        // stream the rollout straight through the batch loop tagged as Codex, and pick
         // up collab subagent rollouts (parent_thread_id-linked) after the main transcript.
-        var isCodex = vendor == "codex";
+        var isCodex = vendor is HarnessId.Codex;
 
         var agentTranscripts = isCodex
             ? []
@@ -174,7 +173,7 @@ static class SessionImporter {
                 try {
                     subLines = await SendTranscriptBatches(
                         httpClient, baseUrl, sessionId, sub.FilePath, subAgentId,
-                        startLine: 0, progress: progress, vendor: "codex", failOnError: true);
+                        startLine: 0, progress: progress, vendor: HarnessId.Codex, failOnError: true);
                 } catch (HttpRequestException) {
                     continue; // leave subagent-stop unsent; a re-import retries (idempotent)
                 }
@@ -516,8 +515,8 @@ static class SessionImporter {
     /// Send transcript lines in batches of 100 for a given file (main or agent).
     /// </summary>
     /// <param name="vendor">
-    /// "claude" (default) or "codex" — stamped on the outgoing
-    /// <see cref="TranscriptBatch"/> so the server picks the matching normalizer.
+    /// Stamped on the outgoing <see cref="TranscriptBatch"/> so the server picks the matching
+    /// normalizer.
     /// </param>
     /// <param name="abortDelivery">
     /// checked immediately BEFORE
@@ -544,7 +543,7 @@ static class SessionImporter {
             string?                    agentId,
             int                        startLine,
             IProgress<ImportProgress>? progress          = null,
-            string                     vendor            = "claude",
+            HarnessId                  vendor            = HarnessId.Claude,
             int                        lineNumberOffset  = 0,
             bool                       failOnError       = false,
             Func<bool>?                abortDelivery     = null
@@ -630,7 +629,7 @@ static class SessionImporter {
             string?      agentId,
             List<string> lines,
             List<int>    lineNumbers,
-            string       vendor,
+            HarnessId    vendor,
             bool         failOnError = false
         ) {
         var batch = new TranscriptBatch {
@@ -638,9 +637,9 @@ static class SessionImporter {
             AgentId     = agentId,
             Lines       = [.. lines],
             LineNumbers = [.. lineNumbers],
-            // Default vendor "claude" stays absent on the wire to match older servers; the
-            // explicit "codex" tag is what flips the server to CodexNormalizer.
-            Vendor = vendor == "claude" ? null : vendor,
+            // Claude stays absent on the wire: an older server reads a missing vendor as Claude,
+            // and the tag is what selects any other normalizer.
+            Vendor = vendor is HarnessId.Claude ? null : vendor.VendorId,
             // Fail-closed callers (failOnError) also want server-side normalization failures to
             // surface as non-2xx (server only does so when Strict), not just transport/HTTP errors.
             Strict = failOnError

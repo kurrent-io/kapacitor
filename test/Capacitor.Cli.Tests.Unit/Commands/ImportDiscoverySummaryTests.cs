@@ -1,4 +1,5 @@
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.Core.FirstRun;
 
 namespace Capacitor.Cli.Tests.Unit.Commands;
 
@@ -11,7 +12,12 @@ public class ImportDiscoverySummaryTests {
     // straddles UTC midnight compare two different dates.
     static readonly DateTimeOffset Now = new(2026, 6, 15, 12, 0, 0, TimeSpan.Zero);
 
-    static readonly DateOnly?[] Windows = [Day(-30), Day(-90), null];
+    // The flow's own keys, so a test exercising the buckets exercises the ones reported.
+    static readonly ImportDiscoveryWindow[] Windows = [
+        new(FirstRunImportWindows.Last30,     Day(-30)),
+        new(FirstRunImportWindows.Last90,     Day(-90)),
+        new(FirstRunImportWindows.Everything, null),
+    ];
 
     static DateOnly Day(int offset) => DateOnly.FromDateTime(Now.UtcDateTime.AddDays(offset));
     static DateTimeOffset At(int daysAgo) => Now.AddDays(daysAgo);
@@ -19,7 +25,7 @@ public class ImportDiscoverySummaryTests {
     static ImportDiscoverySummary Build(
             (string Id, DateTimeOffset? At)[] sessions,
             Dictionary<string, (string Owner, string Name)?> repos,
-            IReadOnlyList<DateOnly?>? windows = null) =>
+            IReadOnlyList<ImportDiscoveryWindow>? windows = null) =>
         ImportDiscoverySummary.Build(
             sessions.Select(s => (s.Id, s.At)), repos, windows ?? Windows);
 
@@ -87,11 +93,73 @@ public class ImportDiscoverySummaryTests {
 
     [Test]
     public async Task The_windows_are_the_callers_so_they_cannot_drift_from_the_ones_offered() {
-        var s = Build([("a", At(-10))], new() { ["a"] = ("E", "r") }, [Day(-7)]);
+        var s = Build([("a", At(-10))], new() { ["a"] = ("E", "r") }, [new("7", Day(-7))]);
 
         await Assert.That(s.ByWindow).Count().IsEqualTo(1);
         await Assert.That(s.ByWindow[0].Since).IsEqualTo(Day(-7));
         await Assert.That(s.ByWindow[0].SessionCount).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task A_repos_counts_are_broken_down_by_window() {
+        // The only figure a picker can use: how many sessions THIS repository has in THIS window.
+        // Neither margin of the table gives it.
+        var s = Build(
+            [("a", At(-5)), ("b", At(-45)), ("c", At(-200)), ("d", At(-5))],
+            new() {
+                ["a"] = ("E", "r"), ["b"] = ("E", "r"), ["c"] = ("E", "r"),
+                ["d"] = ("E", "other"),
+            });
+
+        var r = s.Repos.Single(x => x.Name == "r");
+
+        await Assert.That(r.SessionsByWindow[FirstRunImportWindows.Last30]).IsEqualTo(1);
+        await Assert.That(r.SessionsByWindow[FirstRunImportWindows.Last90]).IsEqualTo(2);
+        await Assert.That(r.SessionsByWindow[FirstRunImportWindows.Everything]).IsEqualTo(3);
+
+        var other = s.Repos.Single(x => x.Name == "other");
+
+        await Assert.That(other.SessionsByWindow[FirstRunImportWindows.Last30]).IsEqualTo(1);
+        await Assert.That(other.SessionsByWindow[FirstRunImportWindows.Everything]).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task Unmatched_sessions_are_broken_down_by_window_too() {
+        var s = Build(
+            [("a", At(-5)), ("b", At(-200))],
+            new() { ["a"] = null, ["b"] = null });
+
+        await Assert.That(s.UnmatchedByWindow[FirstRunImportWindows.Last30]).IsEqualTo(1);
+        await Assert.That(s.UnmatchedByWindow[FirstRunImportWindows.Everything]).IsEqualTo(2);
+        await Assert.That(s.UnmatchedCount).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task A_repos_total_still_counts_every_session_when_no_window_spans_them_all() {
+        // SessionCount is kept rather than read out of the window map, so it means the same thing to
+        // a caller that never asks for "everything".
+        var s = Build(
+            [("a", At(-5)), ("b", At(-200))],
+            new() { ["a"] = ("E", "r"), ["b"] = ("E", "r") },
+            [new(FirstRunImportWindows.Last30, Day(-30))]);
+
+        await Assert.That(s.Repos[0].SessionCount).IsEqualTo(2);
+        await Assert.That(s.Repos[0].SessionsByWindow[FirstRunImportWindows.Last30]).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task A_windows_total_is_its_repo_cells_plus_the_unmatched_ones() {
+        // The margin has to agree with the cells, or a screen showing both contradicts itself.
+        var s = Build(
+            [("a", At(-5)), ("b", At(-5)), ("c", At(-5))],
+            new() { ["a"] = ("E", "r"), ["b"] = ("E", "other"), ["c"] = null });
+
+        var total = s.ByWindow.Single(w => w.Key == FirstRunImportWindows.Last30).SessionCount;
+        var cells = s.Repos.Sum(r => r.SessionsByWindow[FirstRunImportWindows.Last30])
+                  + s.UnmatchedByWindow[FirstRunImportWindows.Last30];
+
+        await Assert.That(total).IsEqualTo(3);
+        await Assert.That(cells).IsEqualTo(total);
     }
 
     [Test]

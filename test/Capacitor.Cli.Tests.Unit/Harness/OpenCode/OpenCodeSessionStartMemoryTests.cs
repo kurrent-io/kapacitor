@@ -1,6 +1,7 @@
 using Capacitor.Cli.Commands.Harness;
 using Capacitor.Cli.Core.Harness.OpenCode;
 using Capacitor.Cli.SessionStartMemory;
+using Capacitor.Cli.Core.Harness;
 
 namespace Capacitor.Cli.Tests.Unit.Harness.OpenCode;
 
@@ -50,7 +51,7 @@ public class OpenCodeSessionStartMemoryTests {
     public async Task Lifecycle_is_a_repeating_top_level_callback() {
         var lifecycle = OpenCodeHookCommand.LifecycleFor("ses023575b3cffetNkaAklu6CAtNp");
 
-        await Assert.That(lifecycle.Harness).IsEqualTo(SessionStartHarness.OpenCode);
+        await Assert.That(lifecycle.Harness).IsEqualTo(HarnessId.OpenCode);
         // The plugin only invokes the CLI for a session its classifier has PROVEN top-level; it defers
         // on ambiguous parentage rather than guessing, so a child never reaches here.
         await Assert.That(lifecycle.IsTopLevel).IsTrue();

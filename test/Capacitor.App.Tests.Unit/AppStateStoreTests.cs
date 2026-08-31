@@ -85,4 +85,29 @@ public class AppStateStoreTests {
 
         await Assert.That(ok).IsFalse();
     }
+
+    [Test]
+    public async Task Harness_choice_is_remembered_per_repo() {
+        using var tmp = TempDir.WithPathTo("app-state.json", out var path);
+        var store = new AppStateStore(path);
+
+        await store.UpdateAsync(s => s with {
+            HarnessByRepo = new Dictionary<string, string> {
+                ["/home/a/kcap-cli"] = "codex",
+                ["/home/a/kcap-web"] = "kiro",
+            }
+        });
+
+        var reloaded = await new AppStateStore(path).LoadAsync();
+
+        await Assert.That(reloaded.HarnessByRepo!["/home/a/kcap-cli"]).IsEqualTo("codex");
+        await Assert.That(reloaded.HarnessByRepo!["/home/a/kcap-web"]).IsEqualTo("kiro");
+    }
+
+    [Test]
+    public async Task Missing_harness_map_is_null_not_empty() {
+        using var tmp = TempDir.WithPathTo("app-state.json", out var path);
+        var state = await new AppStateStore(path).LoadAsync();
+        await Assert.That(state.HarnessByRepo).IsNull();
+    }
 }

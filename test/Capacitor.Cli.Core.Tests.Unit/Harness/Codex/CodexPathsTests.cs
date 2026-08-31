@@ -5,7 +5,9 @@ namespace Capacitor.Cli.Core.Tests.Unit.Harness.Codex;
 public class CodexPathsTests {
     [Test]
     public async Task Discover_returns_empty_when_root_missing() {
-        var result = CodexPaths.Discover(Path.Combine(Path.GetTempPath(), $"codex-missing-{Guid.NewGuid():N}"));
+        using var tmp = TempDir.WithPathTo("codex-missing", out var missing);
+
+        var result = CodexPaths.Discover(missing);
         await Assert.That(result).IsEmpty();
     }
 
@@ -88,8 +90,13 @@ public class CodexPathsTests {
     }
 
     [Test]
-    public async Task UserHooksJson_resolves_under_home_codex() {
-        var expected = Path.Combine(PathHelpers.HomeDirectory, ".codex", "hooks.json");
-        await Assert.That(CodexPaths.UserHooksJson).IsEqualTo(expected);
+    public async Task Members_resolve_under_the_injected_home() {
+        var paths = new CodexPaths(new("/fake/home"), null);
+
+        await Assert.That(paths.Home).IsEqualTo(Path.Combine("/fake/home", ".codex"));
+        await Assert.That(paths.UserHooksJson).IsEqualTo(Path.Combine("/fake/home", ".codex", "hooks.json"));
+        await Assert.That(paths.Sessions).IsEqualTo(Path.Combine("/fake/home", ".codex", "sessions"));
+        await Assert.That(paths.ConfigToml).IsEqualTo(Path.Combine("/fake/home", ".codex", "config.toml"));
+        await Assert.That(paths.SkillsDir).IsEqualTo(Path.Combine("/fake/home", ".codex", "skills"));
     }
 }

@@ -31,13 +31,12 @@ public class AgentOrchestratorVendorTests {
     /// </summary>
     [Test]
     public async Task Git_spawn_failure_reports_the_working_directory_and_PATH_resolution() {
-        var neverCreated = Path.Combine(
-            Path.GetTempPath(), "kcap-orch-never-created-" + Guid.NewGuid().ToString("N"));
+        using var neverCreatedDir = TempDir.WithPathTo("kcap-orch-never-created", out var neverCreated);
 
         await Assert.That(Directory.Exists(neverCreated)).IsFalse(); // precondition
 
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(
-            () => Task.Run(() => GitRepoHarness.Git(neverCreated, "init", "-q")));
+            () => Task.Run(() => GitRepo.At(neverCreated).Do("init", "-q")));
 
         // Names the ambiguity's first horn: the working directory.
         await Assert.That(ex!.Message).Contains(neverCreated);
@@ -292,15 +291,12 @@ public class AgentOrchestratorVendorTests {
 
     [Test]
     public async Task Interactive_codex_launch_echoes_the_selected_posture_on_registration() {
-        var (repoPath, cleanup) = GitRepoHarness.CreateGitRepo();
+        using var repoPath = GitRepo.CreateWithCommit();
 
-        try {
-            var (server, _) = await LaunchForEchoAsync(repoPath, "agent-echo-selected", new("read-only", "never"));
+        var (server, _) = await LaunchForEchoAsync(repoPath, "agent-echo-selected", new("read-only", "never"));
 
-            await Assert.That(server.AgentRegisteredPostures).Contains(("agent-echo-selected", "read-only", "never"));
-        } finally {
-            cleanup();
-        }
+        await Assert.That(server.AgentRegisteredPostures).Contains(("agent-echo-selected", "read-only", "never"));
+
     }
 
     /// <summary>The command→runtime handoff, which no other test covers: the echo is computed from
@@ -310,32 +306,26 @@ public class AgentOrchestratorVendorTests {
     /// registration still advertising the selected pair.</summary>
     [Test]
     public async Task Interactive_codex_launch_threads_the_posture_into_the_runtime_start_context() {
-        var (repoPath, cleanup) = GitRepoHarness.CreateGitRepo();
+        using var repoPath = GitRepo.CreateWithCommit();
 
-        try {
-            var (_, codexSpy) = await LaunchForEchoAsync(repoPath, "agent-thread", new("danger-full-access", "untrusted"));
+        var (_, codexSpy) = await LaunchForEchoAsync(repoPath, "agent-thread", new("danger-full-access", "untrusted"));
 
-            await Assert.That(codexSpy.LastContext).IsNotNull();
-            await Assert.That(codexSpy.LastContext!.CodexPosture).IsNotNull();
-            await Assert.That(codexSpy.LastContext!.CodexPosture!.Sandbox).IsEqualTo("danger-full-access");
-            await Assert.That(codexSpy.LastContext!.CodexPosture!.Approval).IsEqualTo("untrusted");
-        } finally {
-            cleanup();
-        }
+        await Assert.That(codexSpy.LastContext).IsNotNull();
+        await Assert.That(codexSpy.LastContext!.CodexPosture).IsNotNull();
+        await Assert.That(codexSpy.LastContext!.CodexPosture!.Sandbox).IsEqualTo("danger-full-access");
+        await Assert.That(codexSpy.LastContext!.CodexPosture!.Approval).IsEqualTo("untrusted");
+
     }
 
     [Test]
     public async Task Interactive_codex_launch_without_a_posture_threads_null() {
-        var (repoPath, cleanup) = GitRepoHarness.CreateGitRepo();
+        using var repoPath = GitRepo.CreateWithCommit();
 
-        try {
-            var (_, codexSpy) = await LaunchForEchoAsync(repoPath, "agent-thread-null", posture: null);
+        var (_, codexSpy) = await LaunchForEchoAsync(repoPath, "agent-thread-null", posture: null);
 
-            await Assert.That(codexSpy.LastContext).IsNotNull();
-            await Assert.That(codexSpy.LastContext!.CodexPosture).IsNull();
-        } finally {
-            cleanup();
-        }
+        await Assert.That(codexSpy.LastContext).IsNotNull();
+        await Assert.That(codexSpy.LastContext!.CodexPosture).IsNull();
+
     }
 
     /// <summary>A snapshot-backed borrow maps to WorkLocation.OwnedWorktree, so `work` alone would
@@ -343,115 +333,100 @@ public class AgentOrchestratorVendorTests {
     /// `!cmd.Borrowed` arm of the echo predicate.</summary>
     [Test, NotInParallel("LocalPermissionBridgeTests")]
     public async Task Snapshot_borrowed_launch_echoes_no_posture() {
-        var (repoPath, cleanup) = GitRepoHarness.CreateGitRepo();
+        using var repoPath = GitRepo.CreateWithCommit();
 
+        var server     = new CaptureServerConnection();
+        var ptyFactory = new SpyPtyProcessFactory();
+        var codexSpy   = new SpyHostedAgentRuntimeFactory("codex") {
+            EmitsTerminalOutput = false,
+            SupportsUnattended = true,
+            SupportsBorrowedReviewFlow = true,
+            BorrowedReviewRequiresIndependentSnapshot = true
+        };
+
+        await using var orch = AgentOrchestratorHarness.BuildOrchestrator(
+            server, ptyFactory, new Dictionary<string, IHostedAgentLauncher>(),
+            extraRuntimeFactories: [codexSpy]);
+        var bridge = orch.PermissionBridgeForTest;
+        await bridge.StartAsync(CancellationToken.None);
         try {
-            var server     = new CaptureServerConnection();
-            var ptyFactory = new SpyPtyProcessFactory();
-            var codexSpy   = new SpyHostedAgentRuntimeFactory("codex") {
-                EmitsTerminalOutput = false,
-                SupportsUnattended = true,
-                SupportsBorrowedReviewFlow = true,
-                BorrowedReviewRequiresIndependentSnapshot = true
-            };
+            await orch.HandleLaunchAgentForTest(new LaunchAgentCommand(
+                AgentId: "agent-snapshot-borrow",
+                Prompt: "hi",
+                Model: "default",
+                Effort: null,
+                RepoPath: repoPath,
+                Tools: null,
+                AttachmentIds: null,
+                Vendor: "codex",
+                Kind: LaunchKind.Default,
+                Borrowed: true,
+                BorrowCwd: repoPath));
 
-            await using var orch = AgentOrchestratorHarness.BuildOrchestrator(
-                server, ptyFactory, new Dictionary<string, IHostedAgentLauncher>(),
-                extraRuntimeFactories: [codexSpy]);
-            var bridge = orch.PermissionBridgeForTest;
-            await bridge.StartAsync(CancellationToken.None);
-            try {
-                await orch.HandleLaunchAgentForTest(new LaunchAgentCommand(
-                    AgentId: "agent-snapshot-borrow",
-                    Prompt: "hi",
-                    Model: "default",
-                    Effort: null,
-                    RepoPath: repoPath,
-                    Tools: null,
-                    AttachmentIds: null,
-                    Vendor: "codex",
-                    Kind: LaunchKind.Default,
-                    Borrowed: true,
-                    BorrowCwd: repoPath));
+            // The launch must actually REACH registration — otherwise an unrelated early failure
+            // would satisfy a "no non-null echo exists" assertion without ever exercising the
+            // predicate under test. Require exactly one registration, and require it to be null/null.
+            var registrations = server.AgentRegisteredPostures
+                .Where(p => p.AgentId == "agent-snapshot-borrow")
+                .ToList();
 
-                // The launch must actually REACH registration — otherwise an unrelated early failure
-                // would satisfy a "no non-null echo exists" assertion without ever exercising the
-                // predicate under test. Require exactly one registration, and require it to be null/null.
-                var registrations = server.AgentRegisteredPostures
-                    .Where(p => p.AgentId == "agent-snapshot-borrow")
-                    .ToList();
-
-                await Assert.That(registrations).Count().IsEqualTo(1);
-                await Assert.That(registrations[0].Sandbox).IsNull();
-                await Assert.That(registrations[0].Approval).IsNull();
-                // The runtime really started, so the snapshot-borrow path ran end to end.
-                await Assert.That(codexSpy.StartCalls).IsEqualTo(1);
-            } finally {
-                await bridge.DisposeAsync();
-            }
+            await Assert.That(registrations).Count().IsEqualTo(1);
+            await Assert.That(registrations[0].Sandbox).IsNull();
+            await Assert.That(registrations[0].Approval).IsNull();
+            // The runtime really started, so the snapshot-borrow path ran end to end.
+            await Assert.That(codexSpy.StartCalls).IsEqualTo(1);
         } finally {
-            cleanup();
+            await bridge.DisposeAsync();
         }
+
     }
 
     [Test]
     public async Task Interactive_codex_launch_without_a_posture_echoes_the_derived_pair() {
-        var (repoPath, cleanup) = GitRepoHarness.CreateGitRepo();
+        using var repoPath = GitRepo.CreateWithCommit();
 
-        try {
-            var (server, _) = await LaunchForEchoAsync(repoPath, "agent-echo-derived", posture: null);
+        var (server, _) = await LaunchForEchoAsync(repoPath, "agent-echo-derived", posture: null);
 
-            await Assert.That(server.AgentRegisteredPostures)
-                .Contains(("agent-echo-derived", "workspace-write", "on-request"));
-        } finally {
-            cleanup();
-        }
+        await Assert.That(server.AgentRegisteredPostures)
+            .Contains(("agent-echo-derived", "workspace-write", "on-request"));
+
     }
 
     [Test, NotInParallel("LocalPermissionBridgeTests")]
     public async Task Review_flow_launch_echoes_no_posture() {
         // A reviewer's `never` is the containment invariant, not a selection — reporting it would
         // make every reviewer look like a user-chosen bridge-defeating launch.
-        var (repoPath, cleanup) = GitRepoHarness.CreateGitRepo();
+        using var repoPath = GitRepo.CreateWithCommit();
 
-        try {
-            var (server, _) = await LaunchForEchoAsync(
-                repoPath, "agent-echo-flow", posture: null, kind: LaunchKind.ReviewFlow);
+        var (server, _) = await LaunchForEchoAsync(
+            repoPath, "agent-echo-flow", posture: null, kind: LaunchKind.ReviewFlow);
 
-            await Assert.That(server.AgentRegisteredPostures).Contains(("agent-echo-flow", null, null));
-        } finally {
-            cleanup();
-        }
+        await Assert.That(server.AgentRegisteredPostures).Contains(("agent-echo-flow", null, null));
+
     }
 
     [Test]
     public async Task Borrowed_default_launch_echoes_no_posture() {
         // `work` is resolved from cmd.Borrowed independently of Kind, so a posture-LESS borrowed
         // Default command is accepted — and must still echo nothing rather than a derived pair.
-        var (repoPath, cleanup) = GitRepoHarness.CreateGitRepo();
+        using var repoPath = GitRepo.CreateWithCommit();
 
-        try {
-            var (server, _) = await LaunchForEchoAsync(
-                repoPath, "agent-echo-borrowed", posture: null, borrowed: true);
+        var (server, _) = await LaunchForEchoAsync(
+            repoPath, "agent-echo-borrowed", posture: null, borrowed: true);
 
-            await Assert.That(server.AgentRegisteredPostures).Contains(("agent-echo-borrowed", null, null));
-        } finally {
-            cleanup();
-        }
+        await Assert.That(server.AgentRegisteredPostures).Contains(("agent-echo-borrowed", null, null));
+
     }
 
     [Test]
     public async Task Non_codex_launch_echoes_no_posture() {
-        var (repoPath, cleanup) = GitRepoHarness.CreateGitRepo();
+        using var repoPath = GitRepo.CreateWithCommit();
 
-        try {
-            var (server, _) = await LaunchForEchoAsync(
-                repoPath, "agent-echo-claude", posture: null, vendor: "claude");
+        var (server, _) = await LaunchForEchoAsync(
+            repoPath, "agent-echo-claude", posture: null, vendor: "claude");
 
-            await Assert.That(server.AgentRegisteredPostures).Contains(("agent-echo-claude", null, null));
-        } finally {
-            cleanup();
-        }
+        await Assert.That(server.AgentRegisteredPostures).Contains(("agent-echo-claude", null, null));
+
     }
 
     [Test]
@@ -481,46 +456,40 @@ public class AgentOrchestratorVendorTests {
     [Arguments("workspace-write", "never")]
     [Arguments("danger-full-access", "on-request")]
     public async Task Bridge_defeating_posture_logs_a_warning(string sandbox, string approval) {
-        var (repoPath, cleanup) = GitRepoHarness.CreateGitRepo();
+        using var repoPath = GitRepo.CreateWithCommit();
 
-        try {
-            var logger = new CapturingLogger<AgentOrchestrator>();
+        var logger = new CapturingLogger<AgentOrchestrator>();
 
-            await LaunchForEchoAsync(repoPath, "agent-warn", new(sandbox, approval), logger: logger);
+        await LaunchForEchoAsync(repoPath, "agent-warn", new(sandbox, approval), logger: logger);
 
-            // Matched on the posture warning's own wording — an unrelated warning that merely names
-            // the agent (e.g. the terminal-dimensions send failure this harness always provokes)
-            // must not be able to satisfy this.
-            var postureWarnings = logger.Entries
-                .Where(e => e.Level == LogLevel.Warning
-                         && e.Message.Contains("agent-warn")
-                         && e.Message.Contains($"sandbox={sandbox}")
-                         && e.Message.Contains($"approval={approval}"))
-                .ToList();
-            await Assert.That(postureWarnings).IsNotEmpty();
-        } finally {
-            cleanup();
-        }
+        // Matched on the posture warning's own wording — an unrelated warning that merely names
+        // the agent (e.g. the terminal-dimensions send failure this harness always provokes)
+        // must not be able to satisfy this.
+        var postureWarnings = logger.Entries
+            .Where(e => e.Level == LogLevel.Warning
+                     && e.Message.Contains("agent-warn")
+                     && e.Message.Contains($"sandbox={sandbox}")
+                     && e.Message.Contains($"approval={approval}"))
+            .ToList();
+        await Assert.That(postureWarnings).IsNotEmpty();
+
     }
 
     [Test]
     public async Task A_prompting_posture_logs_no_bridge_warning() {
-        var (repoPath, cleanup) = GitRepoHarness.CreateGitRepo();
+        using var repoPath = GitRepo.CreateWithCommit();
 
-        try {
-            var logger = new CapturingLogger<AgentOrchestrator>();
+        var logger = new CapturingLogger<AgentOrchestrator>();
 
-            await LaunchForEchoAsync(repoPath, "agent-no-warn", new("read-only", "untrusted"), logger: logger);
+        await LaunchForEchoAsync(repoPath, "agent-no-warn", new("read-only", "untrusted"), logger: logger);
 
-            // Scoped to the posture warning's wording: this harness emits unrelated warnings (no real
-            // server to accept terminal dimensions), so a bare "any warning" assertion would be false.
-            var postureWarnings = logger.Entries
-                .Where(e => e.Level == LogLevel.Warning && e.Message.Contains("sandbox=read-only"))
-                .ToList();
-            await Assert.That(postureWarnings).IsEmpty();
-        } finally {
-            cleanup();
-        }
+        // Scoped to the posture warning's wording: this harness emits unrelated warnings (no real
+        // server to accept terminal dimensions), so a bare "any warning" assertion would be false.
+        var postureWarnings = logger.Entries
+            .Where(e => e.Level == LogLevel.Warning && e.Message.Contains("sandbox=read-only"))
+            .ToList();
+        await Assert.That(postureWarnings).IsEmpty();
+
     }
 
     // Qodo review on #234: a null Vendor (SignalR boundary — non-null annotation not enforced) must
@@ -649,87 +618,81 @@ public class AgentOrchestratorVendorTests {
 
     [Test]
     public async Task Launch_with_vendor_claude_calls_claude_launcher() {
-        var (repoPath, cleanup) = GitRepoHarness.CreateGitRepo();
+        using var repoPath = GitRepo.CreateWithCommit();
 
-        try {
-            var server     = new CaptureServerConnection();
-            var ptyFactory = new SpyPtyProcessFactory();
-            var claudeSpy  = new SpyHostedAgentLauncher("claude", cliPath: "spy-claude");
-            var codexSpy   = new SpyHostedAgentLauncher("codex", cliPath: "spy-codex");
+        var server     = new CaptureServerConnection();
+        var ptyFactory = new SpyPtyProcessFactory();
+        var claudeSpy  = new SpyHostedAgentLauncher("claude", cliPath: "spy-claude");
+        var codexSpy   = new SpyHostedAgentLauncher("codex", cliPath: "spy-codex");
 
-            var launchers = new Dictionary<string, IHostedAgentLauncher> {
-                ["claude"] = claudeSpy,
-                ["codex"]  = codexSpy
-            };
+        var launchers = new Dictionary<string, IHostedAgentLauncher> {
+            ["claude"] = claudeSpy,
+            ["codex"]  = codexSpy
+        };
 
-            await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, ptyFactory, launchers, allowedRepoPath: repoPath);
+        await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, ptyFactory, launchers, allowedRepoPath: repoPath);
 
-            var cmd = new LaunchAgentCommand(
-                AgentId: "agent-c1",
-                Prompt: "do work",
-                Model: "opus",
-                Effort: null,
-                RepoPath: repoPath,
-                Tools: null,
-                AttachmentIds: null,
-                Vendor: "claude"
-            );
+        var cmd = new LaunchAgentCommand(
+            AgentId: "agent-c1",
+            Prompt: "do work",
+            Model: "opus",
+            Effort: null,
+            RepoPath: repoPath,
+            Tools: null,
+            AttachmentIds: null,
+            Vendor: "claude"
+        );
 
-            await orch.HandleLaunchAgentForTest(cmd);
+        await orch.HandleLaunchAgentForTest(cmd);
 
-            await Assert.That(claudeSpy.BuildArgsCalls).IsEqualTo(1);
-            await Assert.That(claudeSpy.PrepareCalls).IsEqualTo(1);
-            await Assert.That(codexSpy.BuildArgsCalls).IsEqualTo(0);
-            await Assert.That(codexSpy.PrepareCalls).IsEqualTo(0);
+        await Assert.That(claudeSpy.BuildArgsCalls).IsEqualTo(1);
+        await Assert.That(claudeSpy.PrepareCalls).IsEqualTo(1);
+        await Assert.That(codexSpy.BuildArgsCalls).IsEqualTo(0);
+        await Assert.That(codexSpy.PrepareCalls).IsEqualTo(0);
 
-            // PTY spawn must have used the claude launcher's CLI path.
-            await Assert.That(ptyFactory.SpawnCalls).IsEqualTo(1);
-            await Assert.That(ptyFactory.LastCommand).IsEqualTo("spy-claude");
-        } finally {
-            cleanup();
-        }
+        // PTY spawn must have used the claude launcher's CLI path.
+        await Assert.That(ptyFactory.SpawnCalls).IsEqualTo(1);
+        await Assert.That(ptyFactory.LastCommand).IsEqualTo("spy-claude");
+
     }
 
     [Test]
     public async Task Launch_with_vendor_codex_calls_codex_launcher() {
-        var (repoPath, cleanup) = GitRepoHarness.CreateGitRepo();
+        using var repoPath = GitRepo.CreateWithCommit();
 
-        try {
-            var server     = new CaptureServerConnection();
-            var ptyFactory = new SpyPtyProcessFactory();
-            var claudeSpy  = new SpyHostedAgentLauncher("claude", cliPath: "spy-claude");
-            var codexSpy   = new SpyHostedAgentLauncher("codex", cliPath: "spy-codex");
+        var server     = new CaptureServerConnection();
+        var ptyFactory = new SpyPtyProcessFactory();
+        var claudeSpy  = new SpyHostedAgentLauncher("claude", cliPath: "spy-claude");
+        var codexSpy   = new SpyHostedAgentLauncher("codex", cliPath: "spy-codex");
 
-            var launchers = new Dictionary<string, IHostedAgentLauncher> {
-                ["claude"] = claudeSpy,
-                ["codex"]  = codexSpy
-            };
+        var launchers = new Dictionary<string, IHostedAgentLauncher> {
+            ["claude"] = claudeSpy,
+            ["codex"]  = codexSpy
+        };
 
-            await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, ptyFactory, launchers, allowedRepoPath: repoPath);
+        await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, ptyFactory, launchers, allowedRepoPath: repoPath);
 
-            var cmd = new LaunchAgentCommand(
-                AgentId: "agent-x1",
-                Prompt: "do work",
-                Model: "gpt-5",
-                Effort: null,
-                RepoPath: repoPath,
-                Tools: null,
-                AttachmentIds: null,
-                Vendor: "codex"
-            );
+        var cmd = new LaunchAgentCommand(
+            AgentId: "agent-x1",
+            Prompt: "do work",
+            Model: "gpt-5",
+            Effort: null,
+            RepoPath: repoPath,
+            Tools: null,
+            AttachmentIds: null,
+            Vendor: "codex"
+        );
 
-            await orch.HandleLaunchAgentForTest(cmd);
+        await orch.HandleLaunchAgentForTest(cmd);
 
-            await Assert.That(codexSpy.BuildArgsCalls).IsEqualTo(1);
-            await Assert.That(codexSpy.PrepareCalls).IsEqualTo(1);
-            await Assert.That(claudeSpy.BuildArgsCalls).IsEqualTo(0);
-            await Assert.That(claudeSpy.PrepareCalls).IsEqualTo(0);
+        await Assert.That(codexSpy.BuildArgsCalls).IsEqualTo(1);
+        await Assert.That(codexSpy.PrepareCalls).IsEqualTo(1);
+        await Assert.That(claudeSpy.BuildArgsCalls).IsEqualTo(0);
+        await Assert.That(claudeSpy.PrepareCalls).IsEqualTo(0);
 
-            await Assert.That(ptyFactory.SpawnCalls).IsEqualTo(1);
-            await Assert.That(ptyFactory.LastCommand).IsEqualTo("spy-codex");
-        } finally {
-            cleanup();
-        }
+        await Assert.That(ptyFactory.SpawnCalls).IsEqualTo(1);
+        await Assert.That(ptyFactory.LastCommand).IsEqualTo("spy-codex");
+
     }
 
     // Task 10: a "cursor" launch must route to its registered IHostedAgentRuntimeFactory
@@ -737,47 +700,44 @@ public class AgentOrchestratorVendorTests {
     // test — SpyHostedAgentRuntimeFactory never spawns a real cursor-agent process.
     [Test]
     public async Task Launch_with_vendor_cursor_routes_to_the_acp_runtime_factory_not_pty() {
-        var (repoPath, cleanup) = GitRepoHarness.CreateGitRepo();
+        using var repoPath = GitRepo.CreateWithCommit();
 
-        try {
-            var server      = new CaptureServerConnection();
-            var ptyFactory  = new SpyPtyProcessFactory();
-            var claudeSpy   = new SpyHostedAgentLauncher("claude", cliPath: "spy-claude");
-            var cursorSpy   = new SpyHostedAgentRuntimeFactory("cursor");
+        var server      = new CaptureServerConnection();
+        var ptyFactory  = new SpyPtyProcessFactory();
+        var claudeSpy   = new SpyHostedAgentLauncher("claude", cliPath: "spy-claude");
+        var cursorSpy   = new SpyHostedAgentRuntimeFactory("cursor");
 
-            var launchers = new Dictionary<string, IHostedAgentLauncher> { ["claude"] = claudeSpy };
+        var launchers = new Dictionary<string, IHostedAgentLauncher> { ["claude"] = claudeSpy };
 
-            await using var orch = AgentOrchestratorHarness.BuildOrchestrator(
-                server,
-                ptyFactory,
-                launchers,
-                allowedRepoPath: repoPath,
-                extraRuntimeFactories: [cursorSpy]
-            );
+        await using var orch = AgentOrchestratorHarness.BuildOrchestrator(
+            server,
+            ptyFactory,
+            launchers,
+            allowedRepoPath: repoPath,
+            extraRuntimeFactories: [cursorSpy]
+        );
 
-            var cmd = new LaunchAgentCommand(
-                AgentId: "agent-cursor1",
-                Prompt: "do work",
-                Model: "auto",
-                Effort: null,
-                RepoPath: repoPath,
-                Tools: null,
-                AttachmentIds: null,
-                Vendor: "cursor"
-            );
+        var cmd = new LaunchAgentCommand(
+            AgentId: "agent-cursor1",
+            Prompt: "do work",
+            Model: "auto",
+            Effort: null,
+            RepoPath: repoPath,
+            Tools: null,
+            AttachmentIds: null,
+            Vendor: "cursor"
+        );
 
-            await orch.HandleLaunchAgentForTest(cmd);
+        await orch.HandleLaunchAgentForTest(cmd);
 
-            await Assert.That(cursorSpy.StartCalls).IsEqualTo(1);
-            await Assert.That(cursorSpy.LastAgentId).IsEqualTo("agent-cursor1");
+        await Assert.That(cursorSpy.StartCalls).IsEqualTo(1);
+        await Assert.That(cursorSpy.LastAgentId).IsEqualTo("agent-cursor1");
 
-            // Must NOT have gone through the PTY path at all.
-            await Assert.That(ptyFactory.SpawnCalls).IsEqualTo(0);
-            await Assert.That(claudeSpy.PrepareCalls).IsEqualTo(0);
-            await Assert.That(claudeSpy.BuildArgsCalls).IsEqualTo(0);
-        } finally {
-            cleanup();
-        }
+        // Must NOT have gone through the PTY path at all.
+        await Assert.That(ptyFactory.SpawnCalls).IsEqualTo(0);
+        await Assert.That(claudeSpy.PrepareCalls).IsEqualTo(0);
+        await Assert.That(claudeSpy.BuildArgsCalls).IsEqualTo(0);
+
     }
 
     // Fix B/E (PR #244 review, BLOCKER): a runtime whose ReadOutputAsync never yields a byte
@@ -791,56 +751,53 @@ public class AgentOrchestratorVendorTests {
     // while still live (the fake's ReadOutputAsync stays open exactly like the real ACP runtime).
     [Test]
     public async Task Launch_of_a_no_terminal_output_runtime_flips_to_Running_immediately_and_is_not_finalized_as_failed() {
-        var (repoPath, cleanup) = GitRepoHarness.CreateGitRepo();
+        using var repoPath = GitRepo.CreateWithCommit();
 
-        try {
-            var server     = new CaptureServerConnection();
-            var ptyFactory = new SpyPtyProcessFactory();
-            var cursorSpy  = new SpyHostedAgentRuntimeFactory("cursor") { EmitsTerminalOutput = false };
+        var server     = new CaptureServerConnection();
+        var ptyFactory = new SpyPtyProcessFactory();
+        var cursorSpy  = new SpyHostedAgentRuntimeFactory("cursor") { EmitsTerminalOutput = false };
 
-            var launchers = new Dictionary<string, IHostedAgentLauncher>();
+        var launchers = new Dictionary<string, IHostedAgentLauncher>();
 
-            await using var orch = AgentOrchestratorHarness.BuildOrchestrator(
-                server,
-                ptyFactory,
-                launchers,
-                allowedRepoPath: repoPath,
-                extraRuntimeFactories: [cursorSpy]
-            );
+        await using var orch = AgentOrchestratorHarness.BuildOrchestrator(
+            server,
+            ptyFactory,
+            launchers,
+            allowedRepoPath: repoPath,
+            extraRuntimeFactories: [cursorSpy]
+        );
 
-            var cmd = new LaunchAgentCommand(
-                AgentId: "agent-acp-live",
-                Prompt: "do work",
-                Model: "auto",
-                Effort: null,
-                RepoPath: repoPath,
-                Tools: null,
-                AttachmentIds: null,
-                Vendor: "cursor"
-            );
+        var cmd = new LaunchAgentCommand(
+            AgentId: "agent-acp-live",
+            Prompt: "do work",
+            Model: "auto",
+            Effort: null,
+            RepoPath: repoPath,
+            Tools: null,
+            AttachmentIds: null,
+            Vendor: "cursor"
+        );
 
-            await orch.HandleLaunchAgentForTest(cmd);
+        await orch.HandleLaunchAgentForTest(cmd);
 
-            // Flipped to Running synchronously within the launch call itself — no output chunk
-            // was ever produced (the fake's ReadOutputAsync blocks on ExitGate, exactly like the
-            // real ACP runtime blocks on process-exit/ct).
-            await Assert.That(server.StatusChangedCalls).Contains(("agent-acp-live", "Running"));
+        // Flipped to Running synchronously within the launch call itself — no output chunk
+        // was ever produced (the fake's ReadOutputAsync blocks on ExitGate, exactly like the
+        // real ACP runtime blocks on process-exit/ct).
+        await Assert.That(server.StatusChangedCalls).Contains(("agent-acp-live", "Running"));
 
-            // Give the (fire-and-forget) read loop / finalize path a moment to run if it were
-            // (incorrectly) going to — before the fix, ReadOutputAsync completing immediately
-            // would have driven FinalizeAgentRunAsync to run right here and mark the agent Failed.
-            await Task.Delay(200);
+        // Give the (fire-and-forget) read loop / finalize path a moment to run if it were
+        // (incorrectly) going to — before the fix, ReadOutputAsync completing immediately
+        // would have driven FinalizeAgentRunAsync to run right here and mark the agent Failed.
+        await Task.Delay(200);
 
-            await Assert.That(server.StatusChangedCalls).DoesNotContain(("agent-acp-live", "Failed"));
-            await Assert.That(server.StatusChangedCalls).DoesNotContain(("agent-acp-live", "Completed"));
-            await Assert.That(server.LaunchFailedCalls.Count).IsEqualTo(0);
+        await Assert.That(server.StatusChangedCalls).DoesNotContain(("agent-acp-live", "Failed"));
+        await Assert.That(server.StatusChangedCalls).DoesNotContain(("agent-acp-live", "Completed"));
+        await Assert.That(server.LaunchFailedCalls.Count).IsEqualTo(0);
 
-            // Cleanly finish the still-live agent so the harness doesn't leak an ExitGate-blocked
-            // read loop past the test.
-            await orch.HandleStopAgentForTest("agent-acp-live");
-        } finally {
-            cleanup();
-        }
+        // Cleanly finish the still-live agent so the harness doesn't leak an ExitGate-blocked
+        // read loop past the test.
+        await orch.HandleStopAgentForTest("agent-acp-live");
+
     }
 
     // Companion test: the existing PTY on-first-chunk Starting→Running flip must remain exactly
@@ -848,45 +805,42 @@ public class AgentOrchestratorVendorTests {
     // HandleLaunchAgent must not fire for it.
     [Test]
     public async Task Launch_of_a_terminal_output_runtime_does_not_flip_to_Running_before_the_first_output_chunk() {
-        var (repoPath, cleanup) = GitRepoHarness.CreateGitRepo();
+        using var repoPath = GitRepo.CreateWithCommit();
 
-        try {
-            var server     = new CaptureServerConnection();
-            var ptyFactory = new SpyPtyProcessFactory();
-            var cursorSpy  = new SpyHostedAgentRuntimeFactory("cursor") { EmitsTerminalOutput = true };
+        var server     = new CaptureServerConnection();
+        var ptyFactory = new SpyPtyProcessFactory();
+        var cursorSpy  = new SpyHostedAgentRuntimeFactory("cursor") { EmitsTerminalOutput = true };
 
-            var launchers = new Dictionary<string, IHostedAgentLauncher>();
+        var launchers = new Dictionary<string, IHostedAgentLauncher>();
 
-            await using var orch = AgentOrchestratorHarness.BuildOrchestrator(
-                server,
-                ptyFactory,
-                launchers,
-                allowedRepoPath: repoPath,
-                extraRuntimeFactories: [cursorSpy]
-            );
+        await using var orch = AgentOrchestratorHarness.BuildOrchestrator(
+            server,
+            ptyFactory,
+            launchers,
+            allowedRepoPath: repoPath,
+            extraRuntimeFactories: [cursorSpy]
+        );
 
-            var cmd = new LaunchAgentCommand(
-                AgentId: "agent-terminal-live",
-                Prompt: "do work",
-                Model: "auto",
-                Effort: null,
-                RepoPath: repoPath,
-                Tools: null,
-                AttachmentIds: null,
-                Vendor: "cursor"
-            );
+        var cmd = new LaunchAgentCommand(
+            AgentId: "agent-terminal-live",
+            Prompt: "do work",
+            Model: "auto",
+            Effort: null,
+            RepoPath: repoPath,
+            Tools: null,
+            AttachmentIds: null,
+            Vendor: "cursor"
+        );
 
-            await orch.HandleLaunchAgentForTest(cmd);
+        await orch.HandleLaunchAgentForTest(cmd);
 
-            // No output chunk was ever produced (ExitGate is still open) — must NOT have flipped
-            // to Running yet, preserving the existing PTY on-first-chunk contract exactly.
-            await Task.Delay(100);
-            await Assert.That(server.StatusChangedCalls).DoesNotContain(("agent-terminal-live", "Running"));
+        // No output chunk was ever produced (ExitGate is still open) — must NOT have flipped
+        // to Running yet, preserving the existing PTY on-first-chunk contract exactly.
+        await Task.Delay(100);
+        await Assert.That(server.StatusChangedCalls).DoesNotContain(("agent-terminal-live", "Running"));
 
-            await orch.HandleStopAgentForTest("agent-terminal-live");
-        } finally {
-            cleanup();
-        }
+        await orch.HandleStopAgentForTest("agent-terminal-live");
+
     }
 
     [Test]
@@ -894,127 +848,118 @@ public class AgentOrchestratorVendorTests {
         // A git repo with NO origin remote: a Codex review now passes the vendor
         // gate (which used to reject it) and fails later at origin validation —
         // the SAME point a Claude review would. Proves the gate is lifted.
-        var (repoPath, cleanup) = GitRepoHarness.CreateGitRepo();
+        using var repoPath = GitRepo.CreateWithCommit();
 
-        try {
-            var server     = new CaptureServerConnection();
-            var ptyFactory = new SpyPtyProcessFactory();
-            var codexSpy   = new SpyHostedAgentLauncher("codex", cliPath: "spy-codex");
+        var server     = new CaptureServerConnection();
+        var ptyFactory = new SpyPtyProcessFactory();
+        var codexSpy   = new SpyHostedAgentLauncher("codex", cliPath: "spy-codex");
 
-            var launchers = new Dictionary<string, IHostedAgentLauncher> { ["codex"] = codexSpy };
+        var launchers = new Dictionary<string, IHostedAgentLauncher> { ["codex"] = codexSpy };
 
-            await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, ptyFactory, launchers, allowedRepoPath: repoPath);
+        await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, ptyFactory, launchers, allowedRepoPath: repoPath);
 
-            var cmd = new LaunchAgentCommand(
-                AgentId: "agent-r1",
-                Prompt: null,
-                Model: "gpt-5",
-                Effort: null,
-                RepoPath: repoPath,
-                Tools: null,
-                AttachmentIds: null,
-                Vendor: "codex",
-                Kind: LaunchKind.Review,
-                Review: new ReviewLaunchInfo("acme", "widgets", 42)
-            );
+        var cmd = new LaunchAgentCommand(
+            AgentId: "agent-r1",
+            Prompt: null,
+            Model: "gpt-5",
+            Effort: null,
+            RepoPath: repoPath,
+            Tools: null,
+            AttachmentIds: null,
+            Vendor: "codex",
+            Kind: LaunchKind.Review,
+            Review: new ReviewLaunchInfo("acme", "widgets", 42)
+        );
 
-            await orch.HandleLaunchAgentForTest(cmd);
+        await orch.HandleLaunchAgentForTest(cmd);
 
-            await Assert.That(server.LaunchFailedCalls.Count).IsEqualTo(1);
-            // The old Codex-specific rejection is gone...
-            await Assert.That(server.LaunchFailedCalls[0].Reason).DoesNotContain("PR review for Codex");
-            // ...and it failed at the shared origin check instead.
-            await Assert.That(server.LaunchFailedCalls[0].Reason).Contains("origin");
-            await Assert.That(ptyFactory.SpawnCalls).IsEqualTo(0);
-        } finally {
-            cleanup();
-        }
+        await Assert.That(server.LaunchFailedCalls.Count).IsEqualTo(1);
+        // The old Codex-specific rejection is gone...
+        await Assert.That(server.LaunchFailedCalls[0].Reason).DoesNotContain("PR review for Codex");
+        // ...and it failed at the shared origin check instead.
+        await Assert.That(server.LaunchFailedCalls[0].Reason).Contains("origin");
+        await Assert.That(ptyFactory.SpawnCalls).IsEqualTo(0);
+
     }
 
     [Test]
     public async Task Codex_hooks_not_installed_exception_during_prepare_yields_actionable_launch_failed() {
-        var (repoPath, cleanup) = GitRepoHarness.CreateGitRepo();
+        using var repoPath = GitRepo.CreateWithCommit();
 
-        try {
-            var server     = new CaptureServerConnection();
-            var ptyFactory = new SpyPtyProcessFactory();
+        var server     = new CaptureServerConnection();
+        var ptyFactory = new SpyPtyProcessFactory();
 
-            var codexSpy = new SpyHostedAgentLauncher("codex", cliPath: "spy-codex") {
-                PrepareThrow = new CodexHooksNotInstalledException("Run plugin install --codex")
-            };
+        var codexSpy = new SpyHostedAgentLauncher("codex", cliPath: "spy-codex") {
+            PrepareThrow = new CodexHooksNotInstalledException("Run plugin install --codex")
+        };
 
-            var launchers = new Dictionary<string, IHostedAgentLauncher> {
-                ["codex"] = codexSpy
-            };
+        var launchers = new Dictionary<string, IHostedAgentLauncher> {
+            ["codex"] = codexSpy
+        };
 
-            await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, ptyFactory, launchers, allowedRepoPath: repoPath);
+        await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, ptyFactory, launchers, allowedRepoPath: repoPath);
 
-            var cmd = new LaunchAgentCommand(
-                AgentId: "agent-h1",
-                Prompt: "go",
-                Model: "gpt-5",
-                Effort: null,
-                RepoPath: repoPath,
-                Tools: null,
-                AttachmentIds: null,
-                Vendor: "codex"
-            );
+        var cmd = new LaunchAgentCommand(
+            AgentId: "agent-h1",
+            Prompt: "go",
+            Model: "gpt-5",
+            Effort: null,
+            RepoPath: repoPath,
+            Tools: null,
+            AttachmentIds: null,
+            Vendor: "codex"
+        );
 
-            await orch.HandleLaunchAgentForTest(cmd);
+        await orch.HandleLaunchAgentForTest(cmd);
 
-            await Assert.That(server.LaunchFailedCalls.Count).IsEqualTo(1);
-            await Assert.That(server.LaunchFailedCalls[0].AgentId).IsEqualTo("agent-h1");
-            await Assert.That(server.LaunchFailedCalls[0].Reason).IsEqualTo("Run plugin install --codex");
-            await Assert.That(codexSpy.PrepareCalls).IsEqualTo(1);
-            await Assert.That(codexSpy.BuildArgsCalls).IsEqualTo(0);
-            await Assert.That(ptyFactory.SpawnCalls).IsEqualTo(0);
-        } finally {
-            cleanup();
-        }
+        await Assert.That(server.LaunchFailedCalls.Count).IsEqualTo(1);
+        await Assert.That(server.LaunchFailedCalls[0].AgentId).IsEqualTo("agent-h1");
+        await Assert.That(server.LaunchFailedCalls[0].Reason).IsEqualTo("Run plugin install --codex");
+        await Assert.That(codexSpy.PrepareCalls).IsEqualTo(1);
+        await Assert.That(codexSpy.BuildArgsCalls).IsEqualTo(0);
+        await Assert.That(ptyFactory.SpawnCalls).IsEqualTo(0);
+
     }
 
     [Test]
     public async Task Stopping_an_agent_releases_a_read_loop_blocked_on_a_full_terminal_queue() {
-        var (repoPath, cleanup) = GitRepoHarness.CreateGitRepo();
+        using var repoPath = GitRepo.CreateWithCommit();
 
-        try {
-            // The send blocks (full/down queue) until its ct cancels; the PTY keeps the
-            // stream open so the read loop is genuinely parked inside the blocked send.
-            var sendEntered   = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            var sendUnblocked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        // The send blocks (full/down queue) until its ct cancels; the PTY keeps the
+        // stream open so the read loop is genuinely parked inside the blocked send.
+        var sendEntered   = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sendUnblocked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
-            var server     = new CaptureServerConnection { SendEntered = sendEntered, SendUnblocked = sendUnblocked };
-            var ptyFactory = new FixedPtyProcessFactory(new OneChunkThenBlockPtyProcess());
-            var claudeSpy  = new SpyHostedAgentLauncher("claude", cliPath: "spy-claude");
+        var server     = new CaptureServerConnection { SendEntered = sendEntered, SendUnblocked = sendUnblocked };
+        var ptyFactory = new FixedPtyProcessFactory(new OneChunkThenBlockPtyProcess());
+        var claudeSpy  = new SpyHostedAgentLauncher("claude", cliPath: "spy-claude");
 
-            var launchers = new Dictionary<string, IHostedAgentLauncher> { ["claude"] = claudeSpy };
+        var launchers = new Dictionary<string, IHostedAgentLauncher> { ["claude"] = claudeSpy };
 
-            await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, ptyFactory, launchers, allowedRepoPath: repoPath);
+        await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, ptyFactory, launchers, allowedRepoPath: repoPath);
 
-            await orch.HandleLaunchAgentForTest(new LaunchAgentCommand(
-                AgentId: "agent-bp",
-                Prompt: "go",
-                Model: "opus",
-                Effort: null,
-                RepoPath: repoPath,
-                Tools: null,
-                AttachmentIds: null,
-                Vendor: "claude"
-            ));
+        await orch.HandleLaunchAgentForTest(new LaunchAgentCommand(
+            AgentId: "agent-bp",
+            Prompt: "go",
+            Model: "opus",
+            Effort: null,
+            RepoPath: repoPath,
+            Tools: null,
+            AttachmentIds: null,
+            Vendor: "claude"
+        ));
 
-            // Wait until the read loop has produced a chunk and is parked in the blocked send.
-            await sendEntered.Task.WaitAsync(WaitHarness.Bounded);
+        // Wait until the read loop has produced a chunk and is parked in the blocked send.
+        await sendEntered.Task.WaitAsync(WaitHarness.Bounded);
 
-            // Stopping the agent cancels ReadCts. The blocked enqueue MUST be released by
-            // that cancellation; otherwise the read loop (and its finally-block cleanup)
-            // stalls until daemon shutdown. Before the fix the enqueue awaited the
-            // daemon-lifetime token instead, so this never completes.
-            await orch.HandleStopAgentForTest("agent-bp");
+        // Stopping the agent cancels ReadCts. The blocked enqueue MUST be released by
+        // that cancellation; otherwise the read loop (and its finally-block cleanup)
+        // stalls until daemon shutdown. Before the fix the enqueue awaited the
+        // daemon-lifetime token instead, so this never completes.
+        await orch.HandleStopAgentForTest("agent-bp");
 
-            await sendUnblocked.Task.WaitAsync(WaitHarness.Bounded);
-        } finally {
-            cleanup();
-        }
+        await sendUnblocked.Task.WaitAsync(WaitHarness.Bounded);
+
     }
 
     [Test]
@@ -1025,7 +970,7 @@ public class AgentOrchestratorVendorTests {
         // finalize backstop ends the session afterwards. With EndAgentSession blocked,
         // termination must still happen promptly (before the fix HandleStopAgent awaited
         // its own EndAgentSession call and never reached TerminateAsync).
-        var (repoPath, cleanup) = GitRepoHarness.CreateGitRepo();
+        using var repoPath = GitRepo.CreateWithCommit();
         using var endSessionBlock = new CancellationTokenSource();
 
         try {
@@ -1056,7 +1001,6 @@ public class AgentOrchestratorVendorTests {
             await terminated.Task.WaitAsync(WaitHarness.Bounded);
         } finally {
             endSessionBlock.Cancel(); // release the finalize backstop's blocked end-session
-            cleanup();
         }
     }
 
@@ -1067,7 +1011,7 @@ public class AgentOrchestratorVendorTests {
         // up to EndAgentSessionBudget, then proceeds to CleanupAgentAsync (which unregisters
         // the agent) while the retry continues in the background. Here end-session never
         // recovers, yet cleanup must still run.
-        var (repoPath, cleanup) = GitRepoHarness.CreateGitRepo();
+        using var repoPath = GitRepo.CreateWithCommit();
         using var neverRecovers = new CancellationTokenSource();
 
         try {
@@ -1099,7 +1043,6 @@ public class AgentOrchestratorVendorTests {
             await unregistered.Task.WaitAsync(WaitHarness.Bounded);
         } finally {
             neverRecovers.Cancel(); // release the background end-session task
-            cleanup();
         }
     }
 
@@ -1366,42 +1309,39 @@ public class AgentOrchestratorVendorTests {
     /// </summary>
     [Test]
     public async Task Interactive_launch_for_a_vendor_that_cannot_select_a_model_reports_no_model_and_still_launches() {
-        var (repoPath, cleanup) = GitRepoHarness.CreateGitRepo();
+        using var repoPath = GitRepo.CreateWithCommit();
 
-        try {
-            var server     = new CaptureServerConnection();
-            var ptyFactory = new SpyPtyProcessFactory();
-            var kiroSpy    = new SpyHostedAgentRuntimeFactory("kiro") {
-                EmitsTerminalOutput    = false,
-                SupportsModelSelection = false
-            };
+        var server     = new CaptureServerConnection();
+        var ptyFactory = new SpyPtyProcessFactory();
+        var kiroSpy    = new SpyHostedAgentRuntimeFactory("kiro") {
+            EmitsTerminalOutput    = false,
+            SupportsModelSelection = false
+        };
 
-            await using var orch = AgentOrchestratorHarness.BuildOrchestrator(
-                server, ptyFactory, new Dictionary<string, IHostedAgentLauncher>(),
-                allowedRepoPath: repoPath, extraRuntimeFactories: [kiroSpy]);
+        await using var orch = AgentOrchestratorHarness.BuildOrchestrator(
+            server, ptyFactory, new Dictionary<string, IHostedAgentLauncher>(),
+            allowedRepoPath: repoPath, extraRuntimeFactories: [kiroSpy]);
 
-            await orch.HandleLaunchAgentForTest(new LaunchAgentCommand(
-                AgentId: "agent-kiro-model",
-                Prompt: "do the thing",
-                Model: "claude-opus-4-8",   // requested, but this vendor cannot apply it
-                Effort: null,
-                RepoPath: repoPath,
-                Tools: null,
-                AttachmentIds: null,
-                Vendor: "kiro"));
+        await orch.HandleLaunchAgentForTest(new LaunchAgentCommand(
+            AgentId: "agent-kiro-model",
+            Prompt: "do the thing",
+            Model: "claude-opus-4-8",   // requested, but this vendor cannot apply it
+            Effort: null,
+            RepoPath: repoPath,
+            Tools: null,
+            AttachmentIds: null,
+            Vendor: "kiro"));
 
-            // Not refused.
-            await Assert.That(server.LaunchFailedCalls).IsEmpty();
-            await Assert.That(kiroSpy.StartCalls).IsEqualTo(1);
+        // Not refused.
+        await Assert.That(server.LaunchFailedCalls).IsEmpty();
+        await Assert.That(kiroSpy.StartCalls).IsEqualTo(1);
 
-            // The model is cleared on BOTH paths — the reported one and the runtime context — so
-            // nothing downstream can resurrect it.
-            await Assert.That(server.AgentRegisteredCalls).Contains(("agent-kiro-model", (string?)null));
-            await Assert.That(kiroSpy.LastContext).IsNotNull();
-            await Assert.That(kiroSpy.LastContext!.Model).IsNull();
-        } finally {
-            cleanup();
-        }
+        // The model is cleared on BOTH paths — the reported one and the runtime context — so
+        // nothing downstream can resurrect it.
+        await Assert.That(server.AgentRegisteredCalls).Contains(("agent-kiro-model", (string?)null));
+        await Assert.That(kiroSpy.LastContext).IsNotNull();
+        await Assert.That(kiroSpy.LastContext!.Model).IsNull();
+
     }
 
     /// <summary>
@@ -1413,40 +1353,37 @@ public class AgentOrchestratorVendorTests {
     /// </summary>
     [Test]
     public async Task Acp_launch_whose_requested_model_did_not_resolve_registers_no_model() {
-        var (repoPath, cleanup) = GitRepoHarness.CreateGitRepo();
+        using var repoPath = GitRepo.CreateWithCommit();
 
-        try {
-            var server        = new CaptureServerConnection();
-            var ptyFactory    = new SpyPtyProcessFactory();
-            var cursorFactory = new SpyAcpHostedAgentRuntimeFactory { ResolvedModel = null };
+        var server        = new CaptureServerConnection();
+        var ptyFactory    = new SpyPtyProcessFactory();
+        var cursorFactory = new SpyAcpHostedAgentRuntimeFactory { ResolvedModel = null };
 
-            await using var orch = AgentOrchestratorHarness.BuildOrchestrator(
-                server, ptyFactory, new Dictionary<string, IHostedAgentLauncher>(),
-                allowedRepoPath: repoPath, extraRuntimeFactories: [cursorFactory]);
-            orch.AcpFinalDrainBudget = TimeSpan.FromMilliseconds(200);
+        await using var orch = AgentOrchestratorHarness.BuildOrchestrator(
+            server, ptyFactory, new Dictionary<string, IHostedAgentLauncher>(),
+            allowedRepoPath: repoPath, extraRuntimeFactories: [cursorFactory]);
+        orch.AcpFinalDrainBudget = TimeSpan.FromMilliseconds(200);
 
-            await orch.HandleLaunchAgentForTest(new LaunchAgentCommand(
-                AgentId: "agent-acp-unresolved",
-                Prompt: "do the thing",
-                Model: "claude-opus-4-8",
-                Effort: null,
-                RepoPath: repoPath,
-                Tools: null,
-                AttachmentIds: null,
-                Vendor: "cursor"));
+        await orch.HandleLaunchAgentForTest(new LaunchAgentCommand(
+            AgentId: "agent-acp-unresolved",
+            Prompt: "do the thing",
+            Model: "claude-opus-4-8",
+            Effort: null,
+            RepoPath: repoPath,
+            Tools: null,
+            AttachmentIds: null,
+            Vendor: "cursor"));
 
-            // Not refused, and the REQUEST still reached the runtime (selection stays best-effort
-            // there) — this test is about what gets reported, not what gets attempted.
-            await Assert.That(server.LaunchFailedCalls).IsEmpty();
-            await Assert.That(cursorFactory.StartCalls).IsEqualTo(1);
-            await Assert.That(cursorFactory.LastContext!.Model).IsEqualTo("claude-opus-4-8");
+        // Not refused, and the REQUEST still reached the runtime (selection stays best-effort
+        // there) — this test is about what gets reported, not what gets attempted.
+        await Assert.That(server.LaunchFailedCalls).IsEmpty();
+        await Assert.That(cursorFactory.StartCalls).IsEqualTo(1);
+        await Assert.That(cursorFactory.LastContext!.Model).IsEqualTo("claude-opus-4-8");
 
-            await Assert.That(server.AgentRegisteredCalls).Contains(("agent-acp-unresolved", (string?)null));
+        await Assert.That(server.AgentRegisteredCalls).Contains(("agent-acp-unresolved", (string?)null));
 
-            await orch.HandleStopAgentForTest("agent-acp-unresolved");
-        } finally {
-            cleanup();
-        }
+        await orch.HandleStopAgentForTest("agent-acp-unresolved");
+
     }
 
     /// <summary>Paired positive: when the handshake CONFIRMS the applied model, the registration
@@ -1455,38 +1392,35 @@ public class AgentOrchestratorVendorTests {
     /// blanking every ACP launch's model.</summary>
     [Test]
     public async Task Acp_launch_whose_requested_model_resolved_registers_the_confirmed_id() {
-        var (repoPath, cleanup) = GitRepoHarness.CreateGitRepo();
+        using var repoPath = GitRepo.CreateWithCommit();
 
-        try {
-            var server        = new CaptureServerConnection();
-            var ptyFactory    = new SpyPtyProcessFactory();
-            var cursorFactory = new SpyAcpHostedAgentRuntimeFactory {
-                ResolvedModel = "claude-opus-4-8[thinking=true,context=200k]"
-            };
+        var server        = new CaptureServerConnection();
+        var ptyFactory    = new SpyPtyProcessFactory();
+        var cursorFactory = new SpyAcpHostedAgentRuntimeFactory {
+            ResolvedModel = "claude-opus-4-8[thinking=true,context=200k]"
+        };
 
-            await using var orch = AgentOrchestratorHarness.BuildOrchestrator(
-                server, ptyFactory, new Dictionary<string, IHostedAgentLauncher>(),
-                allowedRepoPath: repoPath, extraRuntimeFactories: [cursorFactory]);
-            orch.AcpFinalDrainBudget = TimeSpan.FromMilliseconds(200);
+        await using var orch = AgentOrchestratorHarness.BuildOrchestrator(
+            server, ptyFactory, new Dictionary<string, IHostedAgentLauncher>(),
+            allowedRepoPath: repoPath, extraRuntimeFactories: [cursorFactory]);
+        orch.AcpFinalDrainBudget = TimeSpan.FromMilliseconds(200);
 
-            await orch.HandleLaunchAgentForTest(new LaunchAgentCommand(
-                AgentId: "agent-acp-resolved",
-                Prompt: "do the thing",
-                Model: "claude-opus-4-8",
-                Effort: null,
-                RepoPath: repoPath,
-                Tools: null,
-                AttachmentIds: null,
-                Vendor: "cursor"));
+        await orch.HandleLaunchAgentForTest(new LaunchAgentCommand(
+            AgentId: "agent-acp-resolved",
+            Prompt: "do the thing",
+            Model: "claude-opus-4-8",
+            Effort: null,
+            RepoPath: repoPath,
+            Tools: null,
+            AttachmentIds: null,
+            Vendor: "cursor"));
 
-            await Assert.That(server.LaunchFailedCalls).IsEmpty();
-            await Assert.That(server.AgentRegisteredCalls)
-                .Contains(("agent-acp-resolved", (string?)"claude-opus-4-8[thinking=true,context=200k]"));
+        await Assert.That(server.LaunchFailedCalls).IsEmpty();
+        await Assert.That(server.AgentRegisteredCalls)
+            .Contains(("agent-acp-resolved", (string?)"claude-opus-4-8[thinking=true,context=200k]"));
 
-            await orch.HandleStopAgentForTest("agent-acp-resolved");
-        } finally {
-            cleanup();
-        }
+        await orch.HandleStopAgentForTest("agent-acp-resolved");
+
     }
 
     /// <summary>The other half of <see cref="ModelSelectionLaunchPolicy"/>: a PINNED reviewer model is
@@ -1531,96 +1465,90 @@ public class AgentOrchestratorVendorTests {
 
     [Test]
     public async Task NewNew_explicit_model_launch_reports_on_the_v3_channel_and_launches_verbatim_model() {
-        var (repoPath, cleanup) = GitRepoHarness.CreateGitRepo();
+        using var repoPath = GitRepo.CreateWithCommit();
 
-        try {
-            var server     = new CaptureServerConnection();
-            var ptyFactory = new SpyPtyProcessFactory();
-            var claudeSpy  = new SpyHostedAgentRuntimeFactory("claude") {
-                EmitsTerminalOutput   = false,
-                SupportsUnattended    = true,
-                ReviewerModelResolver = ClaudeReviewerModelResolver.Instance
-            };
+        var server     = new CaptureServerConnection();
+        var ptyFactory = new SpyPtyProcessFactory();
+        var claudeSpy  = new SpyHostedAgentRuntimeFactory("claude") {
+            EmitsTerminalOutput   = false,
+            SupportsUnattended    = true,
+            ReviewerModelResolver = ClaudeReviewerModelResolver.Instance
+        };
 
-            await using var orch = AgentOrchestratorHarness.BuildOrchestrator(
-                server, ptyFactory, new Dictionary<string, IHostedAgentLauncher>(),
-                allowedRepoPath: repoPath, extraRuntimeFactories: [claudeSpy]);
+        await using var orch = AgentOrchestratorHarness.BuildOrchestrator(
+            server, ptyFactory, new Dictionary<string, IHostedAgentLauncher>(),
+            allowedRepoPath: repoPath, extraRuntimeFactories: [claudeSpy]);
 
-            var cmd = new LaunchAgentCommand(
-                AgentId: "agent-v3",
-                Prompt: "review this",
-                Model: "opus",                       // dispatched value; the block's LaunchModel wins
-                Effort: null,
-                RepoPath: repoPath,
-                Tools: null,
-                AttachmentIds: null,
-                Vendor: "claude",
-                ExplicitReviewerModel: new ExplicitReviewerModelLaunch(
-                    LaunchAttemptId: "attempt-v3", LaunchModel: "sonnet",
-                    PolicyVersion: "claude-reviewer-model-v1", EquivalenceKey: "claude/sonnet"));
+        var cmd = new LaunchAgentCommand(
+            AgentId: "agent-v3",
+            Prompt: "review this",
+            Model: "opus",                       // dispatched value; the block's LaunchModel wins
+            Effort: null,
+            RepoPath: repoPath,
+            Tools: null,
+            AttachmentIds: null,
+            Vendor: "claude",
+            ExplicitReviewerModel: new ExplicitReviewerModelLaunch(
+                LaunchAttemptId: "attempt-v3", LaunchModel: "sonnet",
+                PolicyVersion: "claude-reviewer-model-v1", EquivalenceKey: "claude/sonnet"));
 
-            await orch.HandleLaunchAgentForTest(cmd);
+        await orch.HandleLaunchAgentForTest(cmd);
 
-            // The launch threaded the EXACT block LaunchModel through the runtime start context (never
-            // recanonicalized, and overriding the dispatched cmd.Model).
-            await Assert.That(claudeSpy.LastContext).IsNotNull();
-            await Assert.That(claudeSpy.LastContext!.Model).IsEqualTo("sonnet");
+        // The launch threaded the EXACT block LaunchModel through the runtime start context (never
+        // recanonicalized, and overriding the dispatched cmd.Model).
+        await Assert.That(claudeSpy.LastContext).IsNotNull();
+        await Assert.That(claudeSpy.LastContext!.Model).IsEqualTo("sonnet");
 
-            // The registered AgentInstance ALSO carries the pinned LaunchModel — not the dispatched
-            // cmd.Model ("opus") — so RegisterAgentAsync / AgentRunStarted / every reconnect
-            // re-registration report the model the process actually runs.
-            await Assert.That(server.AgentRegisteredCalls).Contains(("agent-v3", "sonnet"));
+        // The registered AgentInstance ALSO carries the pinned LaunchModel — not the dispatched
+        // cmd.Model ("opus") — so RegisterAgentAsync / AgentRunStarted / every reconnect
+        // re-registration report the model the process actually runs.
+        await Assert.That(server.AgentRegisteredCalls).Contains(("agent-v3", "sonnet"));
 
-            // Reported on the v3 channel with the derived key; the legacy channel was NOT used.
-            await server.ExplicitReviewerModelReportSignal.Reader.ReadAsync().AsTask().WaitAsync(WaitHarness.Bounded);
-            await Assert.That(server.ExplicitReviewerModelReports).Count().IsEqualTo(1);
-            var report = server.ExplicitReviewerModelReports[0];
-            await Assert.That(report.AgentId).IsEqualTo("agent-v3");
-            await Assert.That(report.LaunchAttemptId).IsEqualTo("attempt-v3");
-            await Assert.That(report.ResolvedModel).IsEqualTo("sonnet");
-            await Assert.That(report.EquivalenceKey).IsEqualTo("claude/sonnet");
-            await Assert.That(server.ReportAgentResolvedModelCalls).IsEmpty();
+        // Reported on the v3 channel with the derived key; the legacy channel was NOT used.
+        await server.ExplicitReviewerModelReportSignal.Reader.ReadAsync().AsTask().WaitAsync(WaitHarness.Bounded);
+        await Assert.That(server.ExplicitReviewerModelReports).Count().IsEqualTo(1);
+        var report = server.ExplicitReviewerModelReports[0];
+        await Assert.That(report.AgentId).IsEqualTo("agent-v3");
+        await Assert.That(report.LaunchAttemptId).IsEqualTo("attempt-v3");
+        await Assert.That(report.ResolvedModel).IsEqualTo("sonnet");
+        await Assert.That(report.EquivalenceKey).IsEqualTo("claude/sonnet");
+        await Assert.That(server.ReportAgentResolvedModelCalls).IsEmpty();
 
-            await orch.HandleStopAgentForTest("agent-v3");
-        } finally {
-            cleanup();
-        }
+        await orch.HandleStopAgentForTest("agent-v3");
+
     }
 
     [Test]
     public async Task NewDaemon_oldServer_legacy_codex_launch_uses_the_unchanged_ReportAgentResolvedModel() {
-        var (repoPath, cleanup) = GitRepoHarness.CreateGitRepo();
+        using var repoPath = GitRepo.CreateWithCommit();
 
-        try {
-            var server     = new CaptureServerConnection();
-            var ptyFactory = new SpyPtyProcessFactory();
-            var codexSpy   = new SpyHostedAgentRuntimeFactory("codex") { EmitsTerminalOutput = false };
+        var server     = new CaptureServerConnection();
+        var ptyFactory = new SpyPtyProcessFactory();
+        var codexSpy   = new SpyHostedAgentRuntimeFactory("codex") { EmitsTerminalOutput = false };
 
-            await using var orch = AgentOrchestratorHarness.BuildOrchestrator(
-                server, ptyFactory, new Dictionary<string, IHostedAgentLauncher>(),
-                allowedRepoPath: repoPath, extraRuntimeFactories: [codexSpy]);
+        await using var orch = AgentOrchestratorHarness.BuildOrchestrator(
+            server, ptyFactory, new Dictionary<string, IHostedAgentLauncher>(),
+            allowedRepoPath: repoPath, extraRuntimeFactories: [codexSpy]);
 
-            var cmd = new LaunchAgentCommand(
-                AgentId: "agent-legacy",
-                Prompt: "go",
-                Model: "gpt-5-codex",
-                Effort: null,
-                RepoPath: repoPath,
-                Tools: null,
-                AttachmentIds: null,
-                Vendor: "codex"                       // no ExplicitReviewerModel block → legacy path
-            );
+        var cmd = new LaunchAgentCommand(
+            AgentId: "agent-legacy",
+            Prompt: "go",
+            Model: "gpt-5-codex",
+            Effort: null,
+            RepoPath: repoPath,
+            Tools: null,
+            AttachmentIds: null,
+            Vendor: "codex"                       // no ExplicitReviewerModel block → legacy path
+        );
 
-            await orch.HandleLaunchAgentForTest(cmd);
+        await orch.HandleLaunchAgentForTest(cmd);
 
-            // Legacy channel used (name/arity/behavior unchanged); the v3 channel was NOT used.
-            await Assert.That(server.ReportAgentResolvedModelCalls).Contains(("agent-legacy", "gpt-5-codex"));
-            await Assert.That(server.ExplicitReviewerModelReports).IsEmpty();
+        // Legacy channel used (name/arity/behavior unchanged); the v3 channel was NOT used.
+        await Assert.That(server.ReportAgentResolvedModelCalls).Contains(("agent-legacy", "gpt-5-codex"));
+        await Assert.That(server.ExplicitReviewerModelReports).IsEmpty();
 
-            await orch.HandleStopAgentForTest("agent-legacy");
-        } finally {
-            cleanup();
-        }
+        await orch.HandleStopAgentForTest("agent-legacy");
+
     }
 
     // ══ Owner consent gate wired into the server launch choke point ══════════════════════
@@ -1661,46 +1589,43 @@ public class AgentOrchestratorVendorTests {
 
     [Test]
     public async Task Owner_launch_proceeds_under_deny_default() {
-        var (repoPath, cleanup) = GitRepoHarness.CreateGitRepo();
+        using var repoPath = GitRepo.CreateWithCommit();
         using var tmp = new TempDir();
 
-        try {
-            var server     = new CaptureServerConnection();
-            var ptyFactory = new SpyPtyProcessFactory();
-            var claudeSpy  = new SpyHostedAgentLauncher("claude", cliPath: "spy-claude");
+        var server     = new CaptureServerConnection();
+        var ptyFactory = new SpyPtyProcessFactory();
+        var claudeSpy  = new SpyHostedAgentLauncher("claude", cliPath: "spy-claude");
 
-            var launchers = new Dictionary<string, IHostedAgentLauncher> { ["claude"] = claudeSpy };
+        var launchers = new Dictionary<string, IHostedAgentLauncher> { ["claude"] = claudeSpy };
 
-            await using var orch = AgentOrchestratorHarness.BuildOrchestrator(
-                server, ptyFactory, launchers, allowedRepoPath: repoPath, consentGate: AgentOrchestratorHarness.DenyDefaultGate(tmp.Path));
+        await using var orch = AgentOrchestratorHarness.BuildOrchestrator(
+            server, ptyFactory, launchers, allowedRepoPath: repoPath, consentGate: AgentOrchestratorHarness.DenyDefaultGate(tmp.Path));
 
-            var cmd = new LaunchAgentCommand(
-                AgentId: "agent-consent-owner",
-                Prompt: "do work",
-                Model: "opus",
-                Effort: null,
-                RepoPath: repoPath,
-                Tools: null,
-                AttachmentIds: null,
-                Vendor: "claude",
-                RequesterUserId: "user_owner",
-                RequesterIsOwner: true
-            );
+        var cmd = new LaunchAgentCommand(
+            AgentId: "agent-consent-owner",
+            Prompt: "do work",
+            Model: "opus",
+            Effort: null,
+            RepoPath: repoPath,
+            Tools: null,
+            AttachmentIds: null,
+            Vendor: "claude",
+            RequesterUserId: "user_owner",
+            RequesterIsOwner: true
+        );
 
-            await orch.HandleLaunchAgentForTest(cmd);
+        await orch.HandleLaunchAgentForTest(cmd);
 
-            // No consent-coded denial — the owner bypasses the deny-default policy entirely, and
-            // the launch reaches the normal claude vendor path (same assertions as
-            // Launch_with_vendor_claude_calls_claude_launcher above — deliberately NOT asserting
-            // LaunchFailedCalls is empty: a StubPtyProcess that never produces output can trip the
-            // unrelated startup-failure heuristic in the fire-and-forget finalize path, exactly as
-            // it can for that neighboring test, which doesn't assert on it either).
-            await Assert.That(claudeSpy.BuildArgsCalls).IsEqualTo(1);
-            await Assert.That(claudeSpy.PrepareCalls).IsEqualTo(1);
-            await Assert.That(ptyFactory.SpawnCalls).IsEqualTo(1);
-            await Assert.That(ptyFactory.LastCommand).IsEqualTo("spy-claude");
-        } finally {
-            cleanup();
-        }
+        // No consent-coded denial — the owner bypasses the deny-default policy entirely, and
+        // the launch reaches the normal claude vendor path (same assertions as
+        // Launch_with_vendor_claude_calls_claude_launcher above — deliberately NOT asserting
+        // LaunchFailedCalls is empty: a StubPtyProcess that never produces output can trip the
+        // unrelated startup-failure heuristic in the fire-and-forget finalize path, exactly as
+        // it can for that neighboring test, which doesn't assert on it either).
+        await Assert.That(claudeSpy.BuildArgsCalls).IsEqualTo(1);
+        await Assert.That(claudeSpy.PrepareCalls).IsEqualTo(1);
+        await Assert.That(ptyFactory.SpawnCalls).IsEqualTo(1);
+        await Assert.That(ptyFactory.LastCommand).IsEqualTo("spy-claude");
+
     }
 }

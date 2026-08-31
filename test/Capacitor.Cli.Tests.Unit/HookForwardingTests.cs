@@ -57,6 +57,11 @@ public class PostWithRetryTests : IDisposable {
 }
 
 public class InlineDrainTests : IDisposable {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
+    WatcherManager? _watchers;
+    WatcherManager  Watchers => _watchers ??= new(Config.Root, Resolutions.At(_server.Url!, Config.Root));
+
     readonly WireMockServer _server = WireMockServer.Start();
 
     public void Dispose() => _server.Stop();
@@ -85,7 +90,7 @@ public class InlineDrainTests : IDisposable {
             """{"type":"assistant","message":{"content":"hi back"}}""" + "\n"
         );
 
-        await WatcherManager.InlineDrainAsync(_server.Url!, sessionId, transcriptPath, null);
+        await Watchers.InlineDrainAsync(sessionId, transcriptPath, null);
 
         var requests = _server.FindLogEntries(Request.Create().WithPath("/hooks/transcript").UsingPost());
 
@@ -121,7 +126,7 @@ public class InlineDrainTests : IDisposable {
             """{"timestamp":"2026-05-07T15:50:21.989Z","type":"session_meta","payload":{}}""" + "\n"
         );
 
-        await WatcherManager.InlineDrainAsync(_server.Url!, sessionId, transcriptPath, agentId: null, vendor: "codex");
+        await Watchers.InlineDrainAsync(sessionId, transcriptPath, agentId: null, vendor: "codex");
 
         var requests = _server.FindLogEntries(Request.Create().WithPath("/hooks/transcript").UsingPost());
 

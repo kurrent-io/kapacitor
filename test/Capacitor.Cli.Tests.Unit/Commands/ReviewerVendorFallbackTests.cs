@@ -1,7 +1,6 @@
 using System.Net;
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Commands;
-using Capacitor.Cli.Core;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
 using WireMock.Server;
@@ -15,18 +14,18 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 /// acceptable retry is one the server has provably refused before doing anything: the structured
 /// reviewer_vendor_required code on a vendor-less, model-less catalog start.
 /// </summary>
-[NotInParallel("TokenStoreProfileTests")]
 public class ReviewerVendorFallbackTests {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
+    // The dispatch is profile-scoped: its token refresh resolves a profile. These tests exercise
+    // routing, not profile selection.
+    McpFlowsServer Server() =>
+        new(Config.Root, Resolutions.None(Config.Root));
+
     // The wire shape TryParseCodedError accepts: a JSON object with a non-empty string "error"
     // plus a string "message" — the CLI-side reading of the server's FlowReviewerResultError.
     const string VendorRequired =
         """{"error":"reviewer_vendor_required","message":"no reviewer vendor was requested and the definition names none"}""";
-
-    static string TokensDir  => PathHelpers.ConfigPath("tokens");
-    static string LegacyPath => PathHelpers.ConfigPath("tokens.json");
-
-    [Before(Test)]
-    public void Cleanup() => SharedConfigDirCleanup.ClearTokenAndProfileState(LegacyPath, TokensDir);
 
     // === The pure trigger ===
 
@@ -227,7 +226,7 @@ public class ReviewerVendorFallbackTests {
             return Task.FromResult(new McpFlowsServer.SavedReviewerVendor(saved, "default"));
         }
 
-        var first = await McpFlowsServer.HandleToolCallAsync(
+        var first = await Server().HandleToolCallAsync(
             JsonNode.Parse("1")!, ToolCallRequest("start_review_flow", StartArguments()),
             client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null,
             reviewerVendorPreference: ReadPreference);
@@ -236,7 +235,7 @@ public class ReviewerVendorFallbackTests {
 
         saved = "codex";
 
-        var second = await McpFlowsServer.HandleToolCallAsync(
+        var second = await Server().HandleToolCallAsync(
             JsonNode.Parse("2")!, ToolCallRequest("start_review_flow", StartArguments()),
             client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null,
             reviewerVendorPreference: ReadPreference);
@@ -255,7 +254,7 @@ public class ReviewerVendorFallbackTests {
               .RespondWith(Response.Create().WithStatusCode(400).WithBody(VendorRequiredBody));
         using var client = new HttpClient();
 
-        var response = await McpFlowsServer.HandleToolCallAsync(
+        var response = await Server().HandleToolCallAsync(
             JsonNode.Parse("1")!, ToolCallRequest("start_review_flow", StartArguments()),
             client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null,
             reviewerVendorPreference: Preference(null, profile: "work"));
@@ -289,7 +288,7 @@ public class ReviewerVendorFallbackTests {
               .RespondWith(Response.Create().WithStatusCode(200).WithBody(StartedWithVendor("codex")));
         using var client = new HttpClient();
 
-        var response = await McpFlowsServer.HandleToolCallAsync(
+        var response = await Server().HandleToolCallAsync(
             JsonNode.Parse("1")!, ToolCallRequest("start_review_flow", StartArguments()),
             client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null,
             reviewerVendorPreference: Preference("codex"));
@@ -319,7 +318,7 @@ public class ReviewerVendorFallbackTests {
               .RespondWith(Response.Create().WithStatusCode(200).WithBody(StartedWithVendor("codex")));
         using var client = new HttpClient();
 
-        var response = await McpFlowsServer.HandleToolCallAsync(
+        var response = await Server().HandleToolCallAsync(
             JsonNode.Parse("1")!, ToolCallRequest("start_flow", StartArguments(generic: true)),
             client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null,
             reviewerVendorPreference: Preference("  Codex  "));
@@ -343,7 +342,7 @@ public class ReviewerVendorFallbackTests {
                   """{"error":"reviewer_vendor_unavailable","message":"codex is not certified unattended on any eligible daemon"}"""));
         using var client = new HttpClient();
 
-        var response = await McpFlowsServer.HandleToolCallAsync(
+        var response = await Server().HandleToolCallAsync(
             JsonNode.Parse("1")!, ToolCallRequest("start_review_flow", StartArguments()),
             client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null,
             reviewerVendorPreference: Preference("codex"));
@@ -369,7 +368,7 @@ public class ReviewerVendorFallbackTests {
                   """{"error":"unknown_vendor","message":"'kodex' is not a known vendor"}"""));
         using var client = new HttpClient();
 
-        var response = await McpFlowsServer.HandleToolCallAsync(
+        var response = await Server().HandleToolCallAsync(
             JsonNode.Parse("1")!, ToolCallRequest("start_review_flow", StartArguments()),
             client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null,
             reviewerVendorPreference: Preference("kodex"));
@@ -394,7 +393,7 @@ public class ReviewerVendorFallbackTests {
                   """{"error":"server_catching_up","message":"the flows read model is replaying"}"""));
         using var client = new HttpClient();
 
-        var response = await McpFlowsServer.HandleToolCallAsync(
+        var response = await Server().HandleToolCallAsync(
             JsonNode.Parse("1")!, ToolCallRequest("start_review_flow", StartArguments()),
             client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null,
             reviewerVendorPreference: Preference("codex"));
@@ -421,7 +420,7 @@ public class ReviewerVendorFallbackTests {
               .RespondWith(Response.Create().WithStatusCode(400).WithBody(VendorRequiredBody));
         using var client = new HttpClient();
 
-        var response = await McpFlowsServer.HandleToolCallAsync(
+        var response = await Server().HandleToolCallAsync(
             JsonNode.Parse("1")!, ToolCallRequest("start_review_flow", StartArguments()),
             client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null,
             reviewerVendorPreference: Preference("codex"));
@@ -452,7 +451,7 @@ public class ReviewerVendorFallbackTests {
               .RespondWith(Response.Create().WithStatusCode(200));
         using var client = new HttpClient();
 
-        var response = await McpFlowsServer.HandleToolCallAsync(
+        var response = await Server().HandleToolCallAsync(
             JsonNode.Parse("1")!, ToolCallRequest("start_review_flow", StartArguments()),
             client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null,
             reviewerVendorPreference: Preference("codex"));
@@ -476,7 +475,7 @@ public class ReviewerVendorFallbackTests {
               .RespondWith(Response.Create().WithStatusCode(400).WithBody(VendorRequiredBody));
         using var client = new HttpClient();
 
-        var response = await McpFlowsServer.HandleToolCallAsync(
+        var response = await Server().HandleToolCallAsync(
             JsonNode.Parse("1")!, ToolCallRequest("start_review_flow", StartArguments(vendor: "claude")),
             client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null,
             reviewerVendorPreference: Preference("codex"));
@@ -495,7 +494,7 @@ public class ReviewerVendorFallbackTests {
               .RespondWith(Response.Create().WithStatusCode(400).WithBody(VendorRequiredBody));
         using var client = new HttpClient();
 
-        var response = await McpFlowsServer.HandleToolCallAsync(
+        var response = await Server().HandleToolCallAsync(
             JsonNode.Parse("1")!,
             ToolCallRequest("start_flow", StartArguments(definitionYaml: "participants: {}")),
             client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null,
@@ -526,7 +525,7 @@ public class ReviewerVendorFallbackTests {
         var handler = new ScriptedStartHandler(clock, held);
         using var client = new HttpClient(handler) { BaseAddress = new Uri("http://flows.test") };
 
-        var response = await McpFlowsServer.HandleToolCallAsync(
+        var response = await Server().HandleToolCallAsync(
             JsonNode.Parse("1")!, ToolCallRequest("start_review_flow", StartArguments()),
             client, "http://flows.test", cwd: "/tmp/cwd", repoRoot: null, repoInfo: null,
             clock: clock, backoff: SettlementBackoff.Seeded(3),
@@ -579,7 +578,7 @@ public class ReviewerVendorFallbackTests {
         var sends = 0;
         using var client = new HttpClient();
 
-        var result = await McpFlowsServer.SendWithSettlementRetryAsync(
+        var result = await Server().SendWithSettlementRetryAsync(
             client, "https://flows.example.test",
             (_, _) => {
                 sends++;
@@ -607,7 +606,7 @@ public class ReviewerVendorFallbackTests {
               .RespondWith(Response.Create().WithStatusCode(401));
         using var client = new HttpClient();
 
-        var response = await McpFlowsServer.HandleToolCallAsync(
+        var response = await Server().HandleToolCallAsync(
             JsonNode.Parse("1")!, ToolCallRequest("start_review_flow", StartArguments()),
             client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null,
             reviewerVendorPreference: Preference("codex"));
@@ -634,7 +633,7 @@ public class ReviewerVendorFallbackTests {
 
         var reads = 0;
 
-        var response = await McpFlowsServer.HandleToolCallAsync(
+        var response = await Server().HandleToolCallAsync(
             JsonNode.Parse("1")!, ToolCallRequest("start_review_flow", StartArguments()),
             client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null,
             reviewerVendorPreference: () => {

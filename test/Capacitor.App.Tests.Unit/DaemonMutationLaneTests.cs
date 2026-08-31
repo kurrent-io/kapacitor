@@ -1,11 +1,12 @@
 using Capacitor.App.Services;
 using Capacitor.App.Services.Mutation;
+using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Setup;
 using Microsoft.Extensions.Time.Testing;
 
 namespace Capacitor.App.Tests.Unit;
 
-/// Deterministic TUnit tests: every ordering assertion is driven by TaskCompletionSource gates on
-/// FakeKcapCli (shared from DaemonLifecycleControllerTests.cs, same namespace), never Task.Delay.
+/// Ordering assertions gate on TaskCompletionSource, never Task.Delay, to stay deterministic.
 public class DaemonMutationLaneTests {
     [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
 
@@ -38,7 +39,7 @@ public class DaemonMutationLaneTests {
             string state = "running", bool unitPresent = true) =>
         new("daemon-a", unitPresent, state, "/opt/kcap/kcapd", "/opt/kcap/kcapd", jobPid, daemonPid, txnMarker, txnActive);
 
-    // expectation matches Req()'s own default canonical server — P2-4's TryAttribute now requires
+    // expectation must match Req()'s canonical server — TryAttribute also checks
     // ServerIdentity.Matches(Expectation, request.CanonicalServer) on top of schema/attempt/etc.
     static string MarkerJson(string daemonName, string? attemptId) => $$"""
         {"schema":1,"daemon_name":"{{daemonName}}","token":"server_expectation_mismatch","expectation":"https://cap.example.test","resolved":"https://t","pid":4242,"instance_id":"inst-1","attempt_id":{{(attemptId is null ? "null" : $"\"{attemptId}\"")}}}
@@ -52,7 +53,7 @@ public class DaemonMutationLaneTests {
 
     /// Drives a suspended poll loop by repeatedly advancing a FakeTimeProvider until the task
     /// settles — Task.Delay(interval, time, ct)'s continuation resumes synchronously inside
-    /// Advance(), so no real waiting is needed (same pattern as ServiceVerifyStartTests.Drive).
+    /// Advance(), so no real waiting is needed.
     static async Task<MutationOutcome> Drive(Task<MutationOutcome> task, FakeTimeProvider time, TimeSpan step) {
         var guard = 0;
         while (!task.IsCompleted && guard++ < 500) time.Advance(step);
@@ -252,12 +253,13 @@ public class DaemonMutationLaneTests {
         await lane.DisposeAsync();
     }
 
-    // Qodo: a cached negative must not refuse forever — installing a compatible CLI must let the
-    // very next action recover without an app restart, so a null cached probe gets exactly one
-    // forced re-probe before the lane gives up.
+    // A cached negative must not refuse forever — installing a compatible CLI must let the very
+    // next action recover without an app restart, so a null cached probe gets exactly one forced
+    // re-probe before the lane gives up.
     [Test]
     public async Task Cached_negative_probe_recovers_via_one_forced_refresh_before_refusing() {
-        var justInstalledPath = Path.Combine(Path.GetTempPath(), "opt-kcap", "bin", "kcap"); // Path.Combine, not a Unix literal, for the Windows CI leg
+        using var tmp = new TempDir();
+        var justInstalledPath = tmp.PathTo("opt-kcap", "bin", "kcap"); // the probe's answer, never opened
         var cli = new FakeKcapCli();
         var factory = new RecordingExecutorFactory { Behavior = (_, _) => cli };
         var probe = new FakeLoginShellProbe {
@@ -334,7 +336,8 @@ public class DaemonMutationLaneTests {
 
     [Test]
     public async Task Executor_factory_runs_once_per_action_and_the_same_pinned_path_serves_probe_and_mutation() {
-        var customPath = Path.Combine(Path.GetTempPath(), "custom", "kcap"); // Path.Combine, not a Unix literal, for the Windows CI leg
+        using var tmp = new TempDir();
+        var customPath = tmp.PathTo("custom", "kcap"); // the probe's answer, never opened
         var cli = new FakeKcapCli();
         var factory = new RecordingExecutorFactory { Behavior = (_, _) => cli };
         var lane = MakeLane(factory, cliOverride: () => customPath, classify: CannedSucceeded);
@@ -417,7 +420,7 @@ public class DaemonMutationLaneTests {
         await lane.DisposeAsync();
     }
 
-    // ---- T1: verb coverage ----
+    // ---- verb coverage ----
 
     [Test]
     public async Task Install_verb_calls_ServiceInstallVerifiedAsync_with_replace_false() {
@@ -497,7 +500,7 @@ public class DaemonMutationLaneTests {
         await lane.DisposeAsync();
     }
 
-    // ---- I1: post-dispose admission must never spawn a real mutation ----
+    // ---- post-dispose admission must never spawn a real mutation ----
 
     [Test]
     public async Task Dispose_mid_action_cancels_queued_work_without_starting_a_successor() {
@@ -528,9 +531,8 @@ public class DaemonMutationLaneTests {
         await lane.DisposeAsync(); // idempotent
     }
 
-    // Qodo Low: the drain cancels queued waiters BEFORE _lifetime.Cancel() runs (a reviewed
-    // ordering — the drain-under-_gate-first structure stays), so it must not claim the lifetime
-    // token's identity on a task that's cancelled ahead of that token actually being cancelled.
+    // The drain cancels queued waiters before _lifetime.Cancel() runs, so that cancellation must
+    // not claim the lifetime token's identity for a task cancelled ahead of the token itself.
     [Test]
     public async Task Dispose_drain_cancellation_does_not_claim_the_lifetime_tokens_identity() {
         var requestA = Req(daemonName: "daemon-a");
@@ -556,8 +558,8 @@ public class DaemonMutationLaneTests {
         await lane.DisposeAsync(); // idempotent
     }
 
-    // N1: RunAsync arriving after DisposeAsync has already completed must resolve cancelled under
-    // the _gate _disposed check in AttachOrCreate — no action started, nothing enqueued.
+    // RunAsync arriving after DisposeAsync has already completed must resolve cancelled under the
+    // _gate _disposed check in AttachOrCreate — no action started, nothing enqueued.
     [Test]
     public async Task RunAsync_after_dispose_has_completed_resolves_cancelled_and_starts_nothing() {
         var factory = new RecordingExecutorFactory();
@@ -571,7 +573,7 @@ public class DaemonMutationLaneTests {
         await AssertChannelEmptyAsync(channel);
     }
 
-    // ---- I2: no outcome silently vanishes ----
+    // ---- no outcome silently vanishes ----
 
     [Test, NotInParallel]
     public async Task Waiterless_cancellation_from_a_disposed_lane_logs_one_line_and_enqueues_nothing() {
@@ -608,7 +610,7 @@ public class DaemonMutationLaneTests {
         using var capture = ConsoleOutput.StartErrorCapture();
         var outcome = await lane.RunAsync(Req(), CancellationToken.None);
 
-        // N2: the exception type/message stay ONLY in the log line — the outcome itself carries a
+        // The exception type/message stay only in the log line — the outcome itself carries a
         // named, stable exit code and reason token, never a leaked exception identity.
         await Assert.That(outcome).IsEqualTo(new MutationOutcome.Failed(DaemonMutationLane.UnexpectedExitCode, "internal_error", RecoverySurface.Attention));
         await Assert.That(capture.GetCapturedError()).Contains(nameof(InvalidOperationException));
@@ -619,7 +621,7 @@ public class DaemonMutationLaneTests {
         await lane.DisposeAsync();
     }
 
-    // ---- M5: waiterless success is logged, not silently dropped ----
+    // ---- waiterless success is logged, not silently dropped ----
 
     [Test, NotInParallel]
     public async Task Waiterless_success_logs_one_line_to_console_error() {
@@ -643,7 +645,7 @@ public class DaemonMutationLaneTests {
         await lane.DisposeAsync();
     }
 
-    // ==== Task 9b: outcome classification (service verbs, exit 0) ====
+    // ==== outcome classification (service verbs, exit 0) ====
 
     [Test]
     public async Task Mutation_failure_beside_matching_evidence_is_not_Succeeded() {
@@ -960,7 +962,7 @@ public class DaemonMutationLaneTests {
         await lane.DisposeAsync();
     }
 
-    // ---- IMPORTANT 2 (round 1): ownership repair/skew signals evaluated regardless of evidence reachability ----
+    // ---- ownership repair/skew signals are evaluated regardless of evidence reachability ----
 
     [Test]
     public async Task Stale_txn_marker_with_unreachable_evidence_yields_AttentionRepair_not_UnconfirmedNoAttach() {
@@ -1003,7 +1005,7 @@ public class DaemonMutationLaneTests {
         await lane.DisposeAsync();
     }
 
-    // ==== Task 9b: outcome classification (service verbs, coded nonzero exits) ====
+    // ==== outcome classification (service verbs, coded nonzero exits) ====
 
     [Test]
     public async Task Exit28_with_a_takeover_routed_token_fails_with_Takeover_surface() {
@@ -1141,7 +1143,7 @@ public class DaemonMutationLaneTests {
         await lane.DisposeAsync();
     }
 
-    // ==== Task 9b: outcome classification (DetachedStart) ====
+    // ==== outcome classification (DetachedStart) ====
 
     [Test]
     public async Task Exit43_with_a_routed_token_fails_with_Reinstall_surface() {
@@ -1227,12 +1229,10 @@ public class DaemonMutationLaneTests {
         await lane.DisposeAsync();
     }
 
-    // ---- CRITICAL 1 (round 1) / IMPORTANT (round 2): DetachedStart shares the SAME evidence
-    // predicate as the service-verb ladder — a legacy/below-floor/pid-less daemon must never read
-    // as Succeeded just because it's reachable and identity-consistent. Round 2: the loop no longer
-    // fails fast on the first bad poll (a transient mid-boot shape must not misfire) — it polls
-    // through and only decides at window expiry, so these are now persistent-leg-through-expiry
-    // tests, driven by FakeTimeProvider rather than resolving on the first poll. ----
+    // ---- DetachedStart shares the same evidence predicate as the service-verb ladder: a
+    // legacy/below-floor/pid-less daemon must never read as Succeeded just because it's reachable
+    // and identity-consistent. A transient mid-boot shape is polled through rather than failed
+    // fast, deciding only at window expiry — driven by FakeTimeProvider. ----
 
     [Test]
     public async Task DetachedStart_persistent_missing_consent_capability_through_expiry_yields_AttentionSkew() {
@@ -1284,10 +1284,10 @@ public class DaemonMutationLaneTests {
         await lane.DisposeAsync();
     }
 
-    // ---- IMPORTANT (round 2): a transient, non-full, non-unreachable evidence shape (the two-dial
-    // probe's genuine mid-boot reading — hello answered, snapshot not yet subscribed) must be
-    // polled THROUGH, never fail-fast — whether it eventually resolves to full evidence or is caught
-    // by a marker arriving mid-window. ----
+    // ---- A transient, non-full, non-unreachable evidence shape (the two-dial probe's genuine
+    // mid-boot reading — hello answered, snapshot not yet subscribed) must be polled through,
+    // never fail-fast — whether it eventually resolves to full evidence or is caught by a marker
+    // arriving mid-window. ----
 
     static ObservedEvidence MidBootEvidence() =>
         // Hello answered (capabilities/version/pid/instance present) but the snapshot dial isn't up
@@ -1342,7 +1342,7 @@ public class DaemonMutationLaneTests {
         await lane.DisposeAsync();
     }
 
-    // ---- TEST GAP (round 1): the loop actually re-observes, not just waits out a single check ----
+    // ---- the loop actually re-observes, not just waits out a single check ----
 
     [Test]
     public async Task DetachedStart_evidence_appearing_on_the_third_poll_is_Succeeded() {
@@ -1367,7 +1367,7 @@ public class DaemonMutationLaneTests {
         await lane.DisposeAsync();
     }
 
-    // ---- MINOR 7 (round 1): window boundary, asserted against the real DetachedConfirmWindow const ----
+    // ---- window boundary, asserted against the real DetachedConfirmWindow const ----
 
     [Test]
     public async Task DetachedStart_evidence_arriving_just_inside_the_confirm_window_is_Succeeded() {
@@ -1413,9 +1413,9 @@ public class DaemonMutationLaneTests {
         await lane.DisposeAsync();
     }
 
-    // ---- MINOR 6 (round 1): a null attemptId (only reachable via direct Classify-seam injection —
-    // a real DetachedStart action never produces one) must never attribute a marker, even a
-    // matching null-attempt one (which belongs to a service-verb refusal, not this action). ----
+    // ---- a null attemptId (only reachable via direct Classify-seam injection — a real
+    // DetachedStart action never produces one) must never attribute a marker, even a matching
+    // null-attempt one (which belongs to a service-verb refusal, not this action). ----
 
     [Test]
     public async Task DetachedStart_classifier_with_a_null_attemptId_never_attributes_even_a_null_attempt_marker() {
@@ -1435,11 +1435,11 @@ public class DaemonMutationLaneTests {
         await lane.DisposeAsync();
     }
 
-    // ==== Task 9b: DetachedStart boot-refusal marker attribution (real filesystem — BootRefusalMarkerTests pattern) ====
+    // ==== DetachedStart boot-refusal marker attribution ====
 
     [Test]
     public async Task DetachedStart_exit_zero_with_an_attributed_marker_is_Refused_and_consumes_the_marker() {
-        var time = new FakeTimeProvider(); // MINOR 8: no 10s wall-clock worst case if attribution ever regresses
+        var time = new FakeTimeProvider(); // avoids a 10s wall-clock worst case if attribution ever regresses
         var cli = new FakeKcapCli();
         cli.DetachedStartBehavior = _ => {
             PlantMarker("daemon-a", MarkerJson("daemon-a", cli.LastBootAttemptId!));
@@ -1458,9 +1458,9 @@ public class DaemonMutationLaneTests {
         }
     }
 
-    // ---- IMPORTANT 3 (round 1): marker checked BEFORE evidence each iteration — a refusing daemon
-    // never attaches, so marker-first can never produce a false Refused, while evidence-first could
-    // let a pre-existing same-name daemon's evidence mask a real refusal. ----
+    // ---- marker checked before evidence each iteration — a refusing daemon never attaches, so
+    // marker-first can never produce a false Refused, while evidence-first could let a
+    // pre-existing same-name daemon's evidence mask a real refusal. ----
 
     [Test]
     public async Task DetachedStart_marker_and_full_evidence_both_present_from_the_start_marker_wins() {

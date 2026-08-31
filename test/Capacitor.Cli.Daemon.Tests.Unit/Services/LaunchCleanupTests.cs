@@ -22,28 +22,25 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 public class LaunchCleanupTests {
     [Test]
     public async Task Post_insert_launch_failure_tears_down_via_single_flight_and_unregisters() {
-        var (repoPath, cleanup) = GitRepoHarness.CreateGitRepo();
+        using var repoPath = GitRepo.CreateWithCommit();
 
-        try {
-            // AgentRegisteredAsync throws on the launch's RegisterAgentAsync call, AFTER the agent was
-            // inserted into _agents — the exact post-insert failure the D1 routing must catch.
-            var server     = new CaptureServerConnection { AgentRegisteredFailTimes = 1 };
-            var ptyFactory = new SpyPtyProcessFactory();
+        // AgentRegisteredAsync throws on the launch's RegisterAgentAsync call, AFTER the agent was
+        // inserted into _agents — the exact post-insert failure the D1 routing must catch.
+        var server     = new CaptureServerConnection { AgentRegisteredFailTimes = 1 };
+        var ptyFactory = new SpyPtyProcessFactory();
 
-            await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, ptyFactory, AgentOrchestratorHarness.Launcher("claude"), allowedRepoPath: repoPath);
+        await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, ptyFactory, AgentOrchestratorHarness.Launcher("claude"), allowedRepoPath: repoPath);
 
-            await orch.HandleLaunchAgentForTest(new LaunchAgentCommand(
-                AgentId: "a1", Prompt: "hi", Model: "opus", Effort: null,
-                RepoPath: repoPath, Tools: null, AttachmentIds: null, Vendor: "claude"));
+        await orch.HandleLaunchAgentForTest(new LaunchAgentCommand(
+            AgentId: "a1", Prompt: "hi", Model: "opus", Effort: null,
+            RepoPath: repoPath, Tools: null, AttachmentIds: null, Vendor: "claude"));
 
-            // Routed through CleanupAgentAsync: the registry entry is gone, the launch failed on the
-            // server, and — the discriminator vs the pre-insert path — AgentUnregistered was sent.
-            await Assert.That(orch.GetAgentForTest("a1")).IsNull();
-            await Assert.That(server.LaunchFailedCalls.Any(c => c.AgentId == "a1")).IsTrue();
-            await Assert.That(server.AgentUnregisteredCalls).Contains("a1");
-        } finally {
-            cleanup();
-        }
+        // Routed through CleanupAgentAsync: the registry entry is gone, the launch failed on the
+        // server, and — the discriminator vs the pre-insert path — AgentUnregistered was sent.
+        await Assert.That(orch.GetAgentForTest("a1")).IsNull();
+        await Assert.That(server.LaunchFailedCalls.Any(c => c.AgentId == "a1")).IsTrue();
+        await Assert.That(server.AgentUnregisteredCalls).Contains("a1");
+
     }
 
     [Test]
@@ -95,27 +92,24 @@ public class LaunchCleanupTests {
 
     [Test]
     public async Task Launch_stamps_daemon_identity_env_markers_on_the_spawned_child() {
-        var (repoPath, cleanup) = GitRepoHarness.CreateGitRepo();
+        using var repoPath = GitRepo.CreateWithCommit();
 
-        try {
-            var server     = new CaptureServerConnection();
-            var ptyFactory = new SpyPtyProcessFactory();
+        var server     = new CaptureServerConnection();
+        var ptyFactory = new SpyPtyProcessFactory();
 
-            await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, ptyFactory, AgentOrchestratorHarness.Launcher("claude"), allowedRepoPath: repoPath);
+        await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, ptyFactory, AgentOrchestratorHarness.Launcher("claude"), allowedRepoPath: repoPath);
 
-            await orch.HandleLaunchAgentForTest(new LaunchAgentCommand(
-                AgentId: "env-1", Prompt: "hi", Model: "opus", Effort: null,
-                RepoPath: repoPath, Tools: null, AttachmentIds: null, Vendor: "claude"));
+        await orch.HandleLaunchAgentForTest(new LaunchAgentCommand(
+            AgentId: "env-1", Prompt: "hi", Model: "opus", Effort: null,
+            RepoPath: repoPath, Tools: null, AttachmentIds: null, Vendor: "claude"));
 
-            // The OrphanReaper env-marker scan (D4 §6.4(3)) recognizes a recordless survivor by these
-            // three markers on the LIVE child's own env — so the spawn must stamp all three.
-            await Assert.That(ptyFactory.LastEnv).IsNotNull();
-            await Assert.That(ptyFactory.LastEnv!["KCAP_AGENT_ID"]).IsEqualTo("env-1");
-            await Assert.That(ptyFactory.LastEnv!["KCAP_DAEMON_ID"]).IsEqualTo(orch.DaemonIdForTest);
-            await Assert.That(ptyFactory.LastEnv!["KCAP_DAEMON_EPOCH"]).IsEqualTo(orch.DaemonEpochForTest);
-        } finally {
-            cleanup();
-        }
+        // The OrphanReaper env-marker scan (D4 §6.4(3)) recognizes a recordless survivor by these
+        // three markers on the LIVE child's own env — so the spawn must stamp all three.
+        await Assert.That(ptyFactory.LastEnv).IsNotNull();
+        await Assert.That(ptyFactory.LastEnv!["KCAP_AGENT_ID"]).IsEqualTo("env-1");
+        await Assert.That(ptyFactory.LastEnv!["KCAP_DAEMON_ID"]).IsEqualTo(orch.DaemonIdForTest);
+        await Assert.That(ptyFactory.LastEnv!["KCAP_DAEMON_EPOCH"]).IsEqualTo(orch.DaemonEpochForTest);
+
     }
 
     [Test]

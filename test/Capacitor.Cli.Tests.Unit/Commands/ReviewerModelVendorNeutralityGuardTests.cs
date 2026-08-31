@@ -40,6 +40,15 @@ public class ReviewerModelVendorNeutralityGuardTests {
         "CodexLauncher.cs",
     };
 
+    /// <summary>Files whose PURPOSE is a curated, user-facing model catalog — the desktop
+    /// launcher's picker suggestions live here as deliberate vendor-model knowledge, offered to
+    /// the user and sent verbatim on the launch wire, never consulted by reviewer-model routing.
+    /// Exempt wholesale (not per-line grandfathered): the catalog grows a model per release by
+    /// design, and a guard edit per curated entry adds friction without safety.</summary>
+    static readonly HashSet<string> CatalogOwnedFiles = new(StringComparer.OrdinalIgnoreCase) {
+        "HostedHarnessCatalog.cs",
+    };
+
     /// <summary>Per-file substrings that are PRE-EXISTING, unrelated vendor-model literals
     /// (predate this feature, no relation to the reviewer-model-override feature) — grandfathered so the
     /// guard is GREEN today without touching those working, unrelated features. Scoped by filename
@@ -105,7 +114,7 @@ public class ReviewerModelVendorNeutralityGuardTests {
 
         foreach (var file in Directory.EnumerateFiles(srcRoot, "*.cs", SearchOption.AllDirectories)) {
             var name = Path.GetFileName(file);
-            if (ResolverOwnedFiles.Contains(name)) continue;
+            if (ResolverOwnedFiles.Contains(name) || CatalogOwnedFiles.Contains(name)) continue;
 
             var grandfathered = GrandfatheredPreExistingLines.TryGetValue(name, out var substrings)
                 ? substrings

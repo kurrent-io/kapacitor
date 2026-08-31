@@ -20,10 +20,6 @@ internal sealed class OpenCodeImportLedger {
         _path = path; _byServer = data;
     }
 
-    public static string DefaultPath() =>
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                     ".cache", "kcap", "opencode-imported.json");
-
     public static OpenCodeImportLedger Load(string path) {
         try {
             if (File.Exists(path)) {

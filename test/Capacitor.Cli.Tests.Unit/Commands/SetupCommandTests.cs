@@ -1,16 +1,307 @@
-using System.Diagnostics;
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.Config;
+using Capacitor.Cli.Core.FirstRun;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
 using WireMock.Server;
+using Capacitor.Cli.Core.Harness;
 
 namespace Capacitor.Cli.Tests.Unit.Commands;
 
 public class SetupCommandTests {
+    [TempHome] public required TempHome Home { get; init; }
+
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
+    // --- The browser leg's one outcome line ---
+
+    [Test]
+    public async Task BrowserFlowOutcome_marks_only_a_finished_flow_as_a_success() {
+        await Assert.That(SetupCommand.BrowserFlowOutcome(new FirstRunFlowResult.Finished(new() { FlowId = "x" })))
+                    .Contains("[green]");
+    }
+
+    [Test]
+    [Arguments(typeof(FirstRunFlowResult.Expired))]
+    [Arguments(typeof(FirstRunFlowResult.Abandoned))]
+    public async Task BrowserFlowOutcome_warns_about_a_flow_that_did_not_finish(Type kind) {
+        var result = kind == typeof(FirstRunFlowResult.Expired)
+            ? new FirstRunFlowResult.Expired()
+            : (FirstRunFlowResult)new FirstRunFlowResult.Abandoned(null);
+
+        await Assert.That(SetupCommand.BrowserFlowOutcome(result)).Contains("[yellow]");
+    }
+
+    // A keypress is a choice, and dressing a chosen thing up as something gone wrong is how a CLI
+    // teaches people to read past its warnings.
+    [Test]
+    public async Task BrowserFlowOutcome_does_not_warn_about_a_wait_the_user_ended() {
+        var line = SetupCommand.BrowserFlowOutcome(new FirstRunFlowResult.Dismissed(null));
+
+        await Assert.That(line).DoesNotContain("[yellow]");
+        await Assert.That(line).DoesNotContain("[green]");
+    }
+
+    [Test]
+    public async Task BrowserFlowOutcome_reports_the_rate_limit_in_whole_minutes() {
+        // Rounded UP and floored at one: "available again in 0 min" reads as "try now", which is the
+        // one thing the server has just refused.
+        await Assert.That(SetupCommand.BrowserFlowOutcome(new FirstRunFlowResult.RateLimited(TimeSpan.FromMinutes(10))))
+                    .Contains("10 min");
+        await Assert.That(SetupCommand.BrowserFlowOutcome(new FirstRunFlowResult.RateLimited(TimeSpan.FromSeconds(30))))
+                    .Contains("1 min");
+    }
+
+    [Test]
+    public async Task BrowserFlowOutcome_escapes_a_failure_message__which_reaches_Spectre_markup() {
+        var line = SetupCommand.BrowserFlowOutcome(new FirstRunFlowResult.Failed("bad [thing] here"));
+
+        await Assert.That(line).Contains("[[thing]]");
+    }
+
+    // --- What Step 4 says when the browser already answered it ---
+
+    static FirstRunAgentsAnswer Answer(int unrecognised, params HarnessId[] harnesses) =>
+        new([.. harnesses.Select(h => new FirstRunAgentsChoice(h, true, true))],
+            new DateTimeOffset(2026, 8, 25, 9, 30, 0, TimeSpan.Zero),
+            unrecognised);
+
+    // Step 4 must omit a choice the live progress line already named, or the same fact lands twice.
+    [Test]
+    public async Task BrowserAgentsSummary_omits_a_choice_the_live_line_already_named() {
+        var lines = SetupCommand.BrowserAgentsSummary(Answer(0, HarnessId.Cursor, HarnessId.Claude));
+
+        await Assert.That(string.Join("\n", lines)).DoesNotContain("Claude Code");
+    }
+
+    [Test]
+    public async Task The_live_step_line_names_the_harnesses_that_were_chosen() {
+        var line = SpectreFirstRunFlowProgress.StepLine(
+            FirstRunFlowStep.Agents, FirstRunStepOutcome.Completed, "Claude Code, Cursor");
+
+        await Assert.That(line).Contains("Claude Code, Cursor");
+        await Assert.That(line).Contains("[green]");
+    }
+
+    // No detail reaches this line for two different answers — a real decline, and one naming only
+    // vendors this build cannot map — and the renderer cannot tell them apart. So it must not claim
+    // either: "chose not to" is false of the second, which asked for agents and got none.
+    [Test]
+    public async Task The_live_step_line_does_not_claim_a_decline_it_cannot_tell_apart() {
+        var line = SpectreFirstRunFlowProgress.StepLine(
+            FirstRunFlowStep.Agents, FirstRunStepOutcome.Completed, null);
+
+        await Assert.That(line).Contains("No agents to set up");
+        await Assert.That(line).DoesNotContain("Chose");
+    }
+
+    // Done needs none: the leg's own outcome line lands a moment later and says the same thing.
+    [Test]
+    public async Task The_live_step_line_leaves_the_last_step_to_the_legs_outcome_line() {
+        await Assert.That(SpectreFirstRunFlowProgress.StepLine(
+            FirstRunFlowStep.Done, FirstRunStepOutcome.Completed, null)).IsNull();
+    }
+
+    [Test]
+    public async Task The_live_step_line_marks_a_failed_step_as_a_warning_not_a_tick() {
+        var line = SpectreFirstRunFlowProgress.StepLine(
+            FirstRunFlowStep.Import, FirstRunStepOutcome.Failed, null);
+
+        await Assert.That(line).Contains("[yellow]");
+        await Assert.That(line).DoesNotContain("[green]");
+    }
+
+    // A spinner naming the screen the user is supposedly looking at, while the server has answered
+    // nothing for minutes, states a fact nothing in the CLI has.
+    [Test]
+    public async Task The_spinner_says_the_server_is_unreachable_rather_than_naming_a_screen() {
+        await Assert.That(SpectreFirstRunFlowProgress.WaitText(FirstRunFlowStep.Import, healthy: true))
+                    .Contains("Choose what to import");
+        await Assert.That(SpectreFirstRunFlowProgress.WaitText(FirstRunFlowStep.Import, healthy: false))
+                    .IsEqualTo(SpectreFirstRunFlowProgress.Unreachable);
+    }
+
+    // A step a newer server invented reaches the renderer as null, and the wait still has to read as
+    // a wait rather than throwing or going blank.
+    [Test]
+    public async Task The_spinner_has_wording_for_a_step_this_build_does_not_know() {
+        await Assert.That(SpectreFirstRunFlowProgress.WaitText(null, healthy: true))
+                    .IsEqualTo("Waiting on the browser");
+    }
+
+    // With no pinned line to carry it the offer has to be said outright, or a terminal too narrow to
+    // host a block gets neither the spinner nor the offer.
+    [Test]
+    public async Task The_offer_is_said_outright_when_no_pinned_line_carries_it() {
+        await Assert.That(SpectreFirstRunFlowProgress.SaysOfferOutright(
+            pinned: false, canWatch: true, pickedUp: false, alreadySaid: false)).IsTrue();
+    }
+
+    [Test]
+    [Arguments(true, true, false, false)]    // a pinned line is already carrying it
+    [Arguments(false, false, false, false)]  // no keyboard, so nothing to offer
+    [Arguments(false, true, true, false)]    // withdrawn: a decision has been made in the browser
+    [Arguments(false, true, false, true)]    // said once already, and a line cannot be taken back
+    public async Task The_offer_is_not_said_outright_otherwise(
+            bool pinned, bool canWatch, bool pickedUp, bool alreadySaid) {
+        await Assert.That(SpectreFirstRunFlowProgress.SaysOfferOutright(
+            pinned, canWatch, pickedUp, alreadySaid)).IsFalse();
+    }
+
+    // Naming the key in one place is what stops the offer and the loop disagreeing about it.
+    [Test]
+    public async Task The_offer_names_the_key_the_loop_actually_acts_on() {
+        await Assert.That(SpectreFirstRunFlowProgress.Offer)
+                    .StartsWith(BrowserFirstRunFlow.HandoverKey.ToString());
+    }
+
+    // Without this the user turns a harness on, nothing happens, and there is no reason anywhere for
+    // why — the vendor was simply dropped as unreadable by a CLI older than the server.
+    [Test]
+    public async Task BrowserAgentsSummary_says_when_this_build_could_not_read_part_of_the_answer() {
+        var lines = SetupCommand.BrowserAgentsSummary(Answer(2, HarnessId.Claude));
+
+        await Assert.That(string.Join("\n", lines)).Contains("kcap update");
+    }
+
+    [Test]
+    public async Task BrowserAgentsSummary_says_nothing_at_all_when_it_read_the_whole_answer() {
+        var lines = SetupCommand.BrowserAgentsSummary(Answer(0, HarnessId.Claude));
+
+        await Assert.That(lines.Count).IsEqualTo(0);
+    }
+
+    static FirstRunImportAnswer ImportAnswer(
+            int unreadable = 0, string window = FirstRunImportWindows.Last90, params string[] repos) =>
+        new([.. repos.Select(r => new FirstRunImportChoice("kurrent-io", r, FirstRunImportLevel.Shared))],
+            window,
+            FirstRunImportTitles.Server,
+            null,
+            new DateTimeOffset(2026, 8, 25, 9, 30, 0, TimeSpan.Zero),
+            unreadable);
+
+    [Test]
+    public async Task BrowserImportSummary_reports_what_ran_rather_than_offering_to_run_it_again() {
+        // Step 6 can only offer the current repository, and the screen just chose several — so
+        // re-prompting would offer to redo a subset of what already happened.
+        var lines = SetupCommand.BrowserImportSummary(ImportAnswer(repos: ["kcap-server", "kcap-cli"]));
+
+        await Assert.That(string.Join("\n", lines)).Contains("2 repositories");
+    }
+
+    [Test]
+    public async Task BrowserImportSummary_names_the_window_so_the_figure_can_be_reconciled() {
+        var lines = SetupCommand.BrowserImportSummary(ImportAnswer(window: FirstRunImportWindows.Last30, repos: "kcap"));
+
+        await Assert.That(string.Join("\n", lines)).Contains("last 30 days");
+    }
+
+    [Test]
+    public async Task BrowserImportSummary_says_a_decline_imported_nothing() {
+        var lines = SetupCommand.BrowserImportSummary(ImportAnswer());
+
+        await Assert.That(string.Join("\n", lines)).Contains("chose not to import");
+    }
+
+    // Without this a repository the user selected simply never arrives, with no reason anywhere.
+    [Test]
+    public async Task BrowserImportSummary_says_when_this_build_could_not_read_part_of_the_answer() {
+        var lines = SetupCommand.BrowserImportSummary(ImportAnswer(unreadable: 1, repos: "kcap"));
+
+        await Assert.That(string.Join("\n", lines)).Contains("kcap update");
+    }
+
+    // The failure that would otherwise be silent: repositories chosen, nothing scanned, and a line
+    // saying it imported them.
+    [Test]
+    public async Task BrowserImportSummary_says_nothing_was_imported_when_it_knew_none_of_the_agents() {
+        var answer = ImportAnswer(repos: "kcap") with { Vendors = [] };
+
+        var lines = SetupCommand.BrowserImportSummary(answer);
+
+        await Assert.That(string.Join("\n", lines)).Contains("Nothing was imported");
+        await Assert.That(string.Join("\n", lines)).Contains("kcap update");
+    }
+
+    // The closing summary must not contradict the warning the import itself printed while running.
+    [Test]
+    public async Task BrowserImportSummary_says_partly_imported_when_a_pass_returned_non_zero() {
+        var lines = SetupCommand.BrowserImportSummary(ImportAnswer(repos: "kcap"), failed: true);
+
+        await Assert.That(string.Join("\n", lines)).Contains("Partly imported");
+        await Assert.That(string.Join("\n", lines)).DoesNotContain("[green]");
+    }
+
+    [Test]
+    public async Task BrowserImportSummary_an_answer_it_read_whole_gets_one_line() {
+        await Assert.That(SetupCommand.BrowserImportSummary(ImportAnswer(repos: "kcap")).Count).IsEqualTo(1);
+    }
+
+    static FirstRunAgentsAnswer VisibilityAnswer(string? visibility) =>
+        new([new FirstRunAgentsChoice(HarnessId.Claude, true, true)],
+            new DateTimeOffset(2026, 8, 26, 9, 0, 0, TimeSpan.Zero),
+            0,
+            visibility);
+
+    [Test]
+    public async Task DecideVisibility_applies_what_the_browser_chose() {
+        var decided = SetupCommand.DecideVisibility(VisibilityAnswer("public"), current: "private");
+
+        await Assert.That(decided.Apply).IsEqualTo("public");
+        await Assert.That(decided.Kept).IsFalse();
+    }
+
+    // Falling through to the prompt would not leave the profile alone: its cursor starts on org_public,
+    // so one Return widens an existing private on a screen the user already answered.
+    [Test]
+    public async Task DecideVisibility_keeps_the_profile_when_the_screen_was_answered_and_left_unset() {
+        var decided = SetupCommand.DecideVisibility(VisibilityAnswer(null), current: "private");
+
+        await Assert.That(decided.Apply).IsEqualTo("private");
+        await Assert.That(decided.Kept).IsTrue();
+    }
+
+    [Test]
+    public async Task DecideVisibility_prompts_when_that_screen_never_settled() {
+        // Never asked is not the same as asked and declined: the terminal still has to put the
+        // question, which is what a null Apply means.
+        var decided = SetupCommand.DecideVisibility(null, current: "private");
+
+        await Assert.That(decided.Apply).IsNull();
+        await Assert.That(decided.Kept).IsFalse();
+    }
+
+    [Test]
+    public async Task DecideVisibility_never_narrows_or_widens_a_kept_profile() {
+        // Whatever the profile holds is what comes back, for every stop - the branch must not have a
+        // fallback of its own.
+        foreach (var stop in AppConfig.ValidVisibilities) {
+            await Assert.That(SetupCommand.DecideVisibility(VisibilityAnswer(null), stop).Apply)
+                        .IsEqualTo(stop);
+        }
+    }
+
+    [Test]
+    public async Task VisibilityLabel_names_every_stop_the_wire_can_carry() {
+        // One list behind the prompt and behind the browser-answer line, so the two cannot describe the
+        // same stop differently.
+        foreach (var stop in AppConfig.ValidVisibilities) {
+            await Assert.That(SetupCommand.VisibilityLabel(stop))
+                        .IsNotEqualTo(stop)
+                        .Because($"'{stop}' has no human label");
+        }
+    }
+
+    [Test]
+    public async Task VisibilityLabel_falls_back_to_the_value_for_a_stop_it_does_not_know() {
+        // Reachable only if the closed set grows without this switch; showing the raw value beats
+        // showing nothing.
+        await Assert.That(SetupCommand.VisibilityLabel("telepathy")).IsEqualTo("telepathy");
+    }
+
     // --- Step 6 import auth-eligibility probe (IsAuthSatisfiedAsync) ---
 
     [Test]
@@ -169,10 +460,6 @@ public class SetupCommandTests {
     }
 
     [Test]
-    // Touches the process-wide AppConfig.GetConfigPath() (config.json). Share the
-    // TokenStoreProfileTests serialization key so it can't run concurrently with tests
-    // that reset/read that same shared config (e.g. TokenStoreProfileTests cleanup).
-    [NotInParallel("TokenStoreProfileTests")]
     public async Task Setup_save_profile_config_round_trips_active_profile() {
         // Smoke-check that the discovery-path SetupCommand can save and reload the active
         // profile after MergeProfiles has set it to a non-"default" name. The full discovery
@@ -183,9 +470,9 @@ public class SetupCommandTests {
                 ["acme"] = new() { ServerUrl = "https://a.example", DefaultVisibility = "org_public" }
             }
         };
-        await ConfigMutator.MutateAsync(_ => cfg);
+        await ConfigMutator.MutateAsync(Config.Root, _ => cfg);
 
-        var reloaded = await AppConfig.LoadProfileConfig();
+        var reloaded = await AppConfig.LoadProfileConfig(Config.Root);
         await Assert.That(reloaded.ActiveProfile).IsEqualTo("acme");
         await Assert.That(reloaded.Profiles["acme"].ServerUrl).IsEqualTo("https://a.example");
     }
@@ -559,8 +846,7 @@ public class SetupCommandTests {
     //
     // SetupCommand.ImportRunnerOverride is process-global static state (mutated by
     // RunImportStepAsync's caller — HandleAsync — only via this seam), so every test that sets it
-    // must run serialized against the others and reset it to null in a finally block, mirroring
-    // the AppConfigResolvedStateTests.ResolvedStateMutation pattern.
+    // must run serialized against the others and reset it to null in a finally block.
     const string ImportRunnerOverrideMutation = nameof(ImportRunnerOverrideMutation);
 
     [Test]
@@ -571,28 +857,28 @@ public class SetupCommandTests {
             captured = inv;
             return Task.FromResult(0);
         };
+        var passed = Resolutions.At("https://example.test", Config.Root);
 
         try {
-            await SetupCommand.RunImportStepAsync(
+            await new SetupCommand(Config.Root, Resolutions.None(Config.Root), new RecordingBrowser(), Home).RunImportStepAsync(
                 currentRepo:       ("acme", "widgets"),
                 authSatisfied:     true,
                 skipImport:        false,
                 noPrompt:          true,
                 promptYesNo:       () => throw new InvalidOperationException("must not prompt under --no-prompt"),
-                serverUrl:         "https://example.test",
-                activeProfile:     "default",
+                profiles:          passed,
                 defaultVisibility: "org_public");
         } finally {
             SetupCommand.ImportRunnerOverride = null;
         }
 
         await Assert.That(captured).IsNotNull();
-        await Assert.That(captured!.BaseUrl).IsEqualTo("https://example.test");
+        await Assert.That(captured!.Profiles.Resolution.ServerUrl).IsEqualTo("https://example.test");
         await Assert.That(captured.Repo).IsEqualTo(("acme", "widgets"));
         await Assert.That(captured.DefaultVisibility).IsEqualTo("org_public");
         await Assert.That(captured.AutoSkipExclusions).IsTrue();
         await Assert.That(captured.ForcePrivate).IsFalse();
-        await Assert.That(captured.ActiveProfile).IsEqualTo("default");
+        await Assert.That(captured.Profiles).IsSameReferenceAs(passed);
     }
 
     [Test]
@@ -605,14 +891,13 @@ public class SetupCommandTests {
         };
 
         try {
-            await SetupCommand.RunImportStepAsync(
+            await new SetupCommand(Config.Root, Resolutions.None(Config.Root), new RecordingBrowser(), Home).RunImportStepAsync(
                 currentRepo:       ("acme", "widgets"),
                 authSatisfied:     true,
                 skipImport:        false,
                 noPrompt:          false,
                 promptYesNo:       () => true,
-                serverUrl:         "https://example.test",
-                activeProfile:     "default",
+                profiles:          Resolutions.At("https://example.test", Config.Root),
                 defaultVisibility: "org_public");
         } finally {
             SetupCommand.ImportRunnerOverride = null;
@@ -629,14 +914,13 @@ public class SetupCommandTests {
         try {
             // Completing without an unhandled exception is the assertion: a non-zero exit
             // code must be swallowed (warned about, not propagated) so setup still finishes.
-            await SetupCommand.RunImportStepAsync(
+            await new SetupCommand(Config.Root, Resolutions.None(Config.Root), new RecordingBrowser(), Home).RunImportStepAsync(
                 currentRepo:       ("acme", "widgets"),
                 authSatisfied:     true,
                 skipImport:        false,
                 noPrompt:          true,
                 promptYesNo:       () => throw new InvalidOperationException("must not prompt"),
-                serverUrl:         "https://example.test",
-                activeProfile:     "default",
+                profiles:          Resolutions.At("https://example.test", Config.Root),
                 defaultVisibility: "org_public");
         } finally {
             SetupCommand.ImportRunnerOverride = null;
@@ -651,14 +935,13 @@ public class SetupCommandTests {
         try {
             // Completing without the InvalidOperationException escaping is the assertion —
             // import is best-effort and must never fail setup.
-            await SetupCommand.RunImportStepAsync(
+            await new SetupCommand(Config.Root, Resolutions.None(Config.Root), new RecordingBrowser(), Home).RunImportStepAsync(
                 currentRepo:       ("acme", "widgets"),
                 authSatisfied:     true,
                 skipImport:        false,
                 noPrompt:          true,
                 promptYesNo:       () => throw new InvalidOperationException("must not prompt"),
-                serverUrl:         "https://example.test",
-                activeProfile:     "default",
+                profiles:          Resolutions.At("https://example.test", Config.Root),
                 defaultVisibility: "org_public");
         } finally {
             SetupCommand.ImportRunnerOverride = null;
@@ -671,14 +954,13 @@ public class SetupCommandTests {
         SetupCommand.ImportRunnerOverride = _ => throw new InvalidOperationException("must not run import");
 
         try {
-            await SetupCommand.RunImportStepAsync(
+            await new SetupCommand(Config.Root, Resolutions.None(Config.Root), new RecordingBrowser(), Home).RunImportStepAsync(
                 currentRepo:       null,
                 authSatisfied:     true,
                 skipImport:        false,
                 noPrompt:          false,
                 promptYesNo:       () => throw new InvalidOperationException("must not prompt"),
-                serverUrl:         "https://example.test",
-                activeProfile:     "default",
+                profiles:          Resolutions.At("https://example.test", Config.Root),
                 defaultVisibility: "org_public");
         } finally {
             SetupCommand.ImportRunnerOverride = null;
@@ -691,56 +973,40 @@ public class SetupCommandTests {
         SetupCommand.ImportRunnerOverride = _ => throw new InvalidOperationException("must not run import");
 
         try {
-            await SetupCommand.RunImportStepAsync(
+            await new SetupCommand(Config.Root, Resolutions.None(Config.Root), new RecordingBrowser(), Home).RunImportStepAsync(
                 currentRepo:       ("acme", "widgets"),
                 authSatisfied:     true,
                 skipImport:        true,
                 noPrompt:          true,
                 promptYesNo:       () => throw new InvalidOperationException("must not prompt"),
-                serverUrl:         "https://example.test",
-                activeProfile:     "default",
+                profiles:          Resolutions.At("https://example.test", Config.Root),
                 defaultVisibility: "org_public");
         } finally {
             SetupCommand.ImportRunnerOverride = null;
         }
     }
 
-    // =====================================================================
-    // HandleAsync-level acceptance coverage for the Step 6 import wiring
-    // (review finding — see .superpowers/sdd/review-fix-report.md).
+    // HandleAsync-level acceptance coverage for the import wiring: the whole wizard — flag parsing,
+    // server normalization and probe, auth discovery, profile save, import — against a real WireMock
+    // server, with only the final import call intercepted through ImportRunnerOverride.
     //
-    // These drive the FULL wizard (flag parsing → server normalization/probe →
-    // auth discovery → profile save → authSatisfied computation → Step 6) against
-    // a real WireMock server, intercepting only the final import call via
-    // ImportRunnerOverride. Every test here:
-    //   • runs from a throwaway git repo (real `git init` + `remote add origin`)
-    //     so RepositoryDetection.DetectRepositoryAsync resolves an owner/repo —
-    //     HandleAsync reads Environment.CurrentDirectory directly (Step 6), so
-    //     there is no way to inject this without actually changing the process cwd.
-    //   • redirects HOME to a throwaway directory — every coding-agent path
-    //     (ClaudePaths/CodexPaths/CursorPaths/...) resolves from
-    //     PathHelpers.HomeDirectory, read live (not cached), so this contains any
-    //     install that isn't fully gated by a --skip-*-hooks flag.
-    //   • passes every --skip-*-hooks/-mcp/-instructions/-skills flag so Step 4
-    //     never attempts a real coding-agent install, belt-and-suspenders with
-    //     the HOME redirect above.
-    //   • uses auth provider "None" (a WireMock /auth/config stub) so Step 2 never
-    //     drives a real OAuth/device-code login flow — HandleAsync's --server-url
-    //     path has no way to no-prompt past that login when the provider isn't
-    //     None (Decision 9 / authSatisfied is a separate concern from Step 2).
-    //   • resets HttpClientExtensions' in-process auth-provider cache first — that
-    //     cache is keyed by nothing but process lifetime (first caller wins for
-    //     every baseUrl afterward), so a prior call elsewhere in the process could
-    //     otherwise make this test's own WireMock stub a no-op. See
-    //     HttpClientExtensions.ResetProviderCacheForTesting's doc.
+    // Every test here:
+    //   • runs from a throwaway git repo (real `git init` + `remote add origin`) so repository
+    //     detection resolves an owner/repo — HandleAsync reads Environment.CurrentDirectory itself,
+    //     so the process cwd has to move.
+    //   • passes every --skip-*-hooks/-mcp/-instructions/-skills flag, so no coding-agent install
+    //     runs against the injected home.
+    //   • uses auth provider "None" (a WireMock /auth/config stub): with any other provider the
+    //     --server-url path has no way to no-prompt past the login.
+    //   • resets HttpClientExtensions' in-process auth-provider cache first — that cache is keyed by
+    //     nothing but process lifetime, so a prior call elsewhere would make this test's own stub a
+    //     no-op. See HttpClientExtensions.ResetProviderCacheForTesting's doc.
     //
-    // All four mutate Environment.CurrentDirectory, HOME, AppConfig's resolved
-    // state (SetResolvedState always runs near the end of HandleAsync), and the
-    // shared KCAP_CONFIG_DIR config/tokens store — so all four join every
-    // NotInParallel group any of those resources already uses elsewhere.
-    const string HandleAsyncNotInParallelGroups_HomeEnvVarMutation = "HomeEnvVarMutation"; // shared w/ UninstallCommandTests
+    // They move the working directory, and SetupCommand's own HarnessPaths reads every vendor
+    // override variable, so they join both cohorts.
+    const string HandleAsyncNotInParallelGroups_VendorEnvOverrides = "VendorEnvOverrides"; // shared w/ UninstallCommandTests
     const string HandleAsyncNotInParallelGroups_CwdMutation        = "CwdMutation";        // shared w/ UninstallCommandTests
-    const string HandleAsyncNotInParallelGroups_ResolvedState      = "ResolvedStateMutation"; // shared w/ AppConfigResolvedStateTests / ImportVisibilityTests
+    const string HandleAsyncNotInParallelGroups_ProviderCache      = "AuthProviderDiscoveryCache"; // shared w/ every /auth/config stubber
 
     static string[] SkipAllAgentInstallFlags => [
         "--skip-claude-hooks", "--skip-codex-hooks", "--skip-codex-network-access",
@@ -763,14 +1029,15 @@ public class SetupCommandTests {
 
     [Test]
     [NotInParallel([
-        HandleAsyncNotInParallelGroups_HomeEnvVarMutation, HandleAsyncNotInParallelGroups_CwdMutation,
-        HandleAsyncNotInParallelGroups_ResolvedState, "TokenStoreProfileTests", ImportRunnerOverrideMutation
+        HandleAsyncNotInParallelGroups_VendorEnvOverrides, HandleAsyncNotInParallelGroups_CwdMutation,
+        HandleAsyncNotInParallelGroups_ProviderCache,
+        ImportRunnerOverrideMutation
     ])]
     public async Task HandleAsync_NoPromptWithServerUrl_AutoImportsWithPinnedInvocation_UnderAuthProviderNoneAndNoToken() {
         using var server = WireMockServer.Start();
         StubAuthProviderNone(server);
 
-        await using var fixture = await HandleAsyncE2EFixture.CreateAsync("acme-auto-import", "widgets");
+        await using var fixture = await HandleAsyncE2EFixture.CreateAsync("acme-auto-import", "widgets", Config.Root);
 
         SetupCommand.ImportInvocation? captured = null;
         SetupCommand.ImportRunnerOverride = inv => {
@@ -781,7 +1048,7 @@ public class SetupCommandTests {
         try {
             var args = BuildArgs("--server-url", server.Url!, "--no-prompt", "--default-visibility", "org_public");
 
-            var exit = await SetupCommand.HandleAsync(args);
+            var exit = await new SetupCommand(Config.Root, Resolutions.None(Config.Root), new RecordingBrowser(), Home).HandleAsync(args);
 
             await Assert.That(exit).IsEqualTo(0);
             await Assert.That(captured).IsNotNull();
@@ -789,13 +1056,14 @@ public class SetupCommandTests {
             await Assert.That(captured.AutoSkipExclusions).IsTrue();
             await Assert.That(captured.ForcePrivate).IsFalse();
             await Assert.That(captured.DefaultVisibility).IsEqualTo("org_public");
-            await Assert.That(captured.BaseUrl).IsEqualTo(server.Url!.TrimEnd('/'));
+            await Assert.That(captured.Profiles.Resolution.ServerUrl).IsEqualTo(server.Url!.TrimEnd('/'));
 
             // Auth provider None makes Step 6 eligible WITHOUT any token: Step 2 short-circuits
             // to "no login required" (no OAuth flow ran), so nothing was ever stored — yet
             // import still ran (asserted above). Confirm no token exists for the profile the
             // import actually saw.
-            await Assert.That(await TokenStore.LoadAsync(captured.ActiveProfile)).IsNull();
+            await Assert.That(await new TokenStore(Config.Root).LoadAsync(
+                captured.Profiles.Name)).IsNull();
         } finally {
             SetupCommand.ImportRunnerOverride = null;
         }
@@ -803,14 +1071,15 @@ public class SetupCommandTests {
 
     [Test]
     [NotInParallel([
-        HandleAsyncNotInParallelGroups_HomeEnvVarMutation, HandleAsyncNotInParallelGroups_CwdMutation,
-        HandleAsyncNotInParallelGroups_ResolvedState, "TokenStoreProfileTests", ImportRunnerOverrideMutation
+        HandleAsyncNotInParallelGroups_VendorEnvOverrides, HandleAsyncNotInParallelGroups_CwdMutation,
+        HandleAsyncNotInParallelGroups_ProviderCache,
+        ImportRunnerOverrideMutation
     ])]
     public async Task HandleAsync_SkipImportFlag_SuppressesAutoImport() {
         using var server = WireMockServer.Start();
         StubAuthProviderNone(server);
 
-        await using var fixture = await HandleAsyncE2EFixture.CreateAsync("acme-skip-import", "widgets");
+        await using var fixture = await HandleAsyncE2EFixture.CreateAsync("acme-skip-import", "widgets", Config.Root);
 
         SetupCommand.ImportRunnerOverride = _ => throw new InvalidOperationException("must not run import");
 
@@ -819,7 +1088,7 @@ public class SetupCommandTests {
 
             // Completing with exit 0 without the override's exception escaping is the
             // assertion — --skip-import must suppress the Step 6 call entirely.
-            var exit = await SetupCommand.HandleAsync(args);
+            var exit = await new SetupCommand(Config.Root, Resolutions.None(Config.Root), new RecordingBrowser(), Home).HandleAsync(args);
 
             await Assert.That(exit).IsEqualTo(0);
         } finally {
@@ -829,8 +1098,9 @@ public class SetupCommandTests {
 
     [Test]
     [NotInParallel([
-        HandleAsyncNotInParallelGroups_HomeEnvVarMutation, HandleAsyncNotInParallelGroups_CwdMutation,
-        HandleAsyncNotInParallelGroups_ResolvedState, "TokenStoreProfileTests", ImportRunnerOverrideMutation
+        HandleAsyncNotInParallelGroups_VendorEnvOverrides, HandleAsyncNotInParallelGroups_CwdMutation,
+        HandleAsyncNotInParallelGroups_ProviderCache,
+        ImportRunnerOverrideMutation
     ])]
     public async Task HandleAsync_SchemeLessServerUrl_ReachesImportRunnerNormalizedWithHttpScheme() {
         using var server = WireMockServer.Start();
@@ -839,7 +1109,7 @@ public class SetupCommandTests {
         var port                = new Uri(server.Url!).Port;
         var schemeLessServerUrl = $"localhost:{port}";
 
-        await using var fixture = await HandleAsyncE2EFixture.CreateAsync("acme-schemeless", "widgets");
+        await using var fixture = await HandleAsyncE2EFixture.CreateAsync("acme-schemeless", "widgets", Config.Root);
 
         SetupCommand.ImportInvocation? captured = null;
         SetupCommand.ImportRunnerOverride = inv => {
@@ -850,35 +1120,31 @@ public class SetupCommandTests {
         try {
             var args = BuildArgs("--server-url", schemeLessServerUrl, "--no-prompt");
 
-            var exit = await SetupCommand.HandleAsync(args);
+            var exit = await new SetupCommand(Config.Root, Resolutions.None(Config.Root), new RecordingBrowser(), Home).HandleAsync(args);
 
             await Assert.That(exit).IsEqualTo(0);
             await Assert.That(captured).IsNotNull();
-            // AppConfig.SetResolvedState + the Step-1 normalization: the scheme-less
-            // --server-url must reach the import runner already normalized (http://
-            // for a loopback host), not the raw scheme-less string.
-            await Assert.That(captured!.BaseUrl).IsEqualTo($"http://localhost:{port}");
+            // Step-1 normalization: the scheme-less --server-url must reach the import runner
+            // already normalized (http:// for a loopback host), not the raw scheme-less string.
+            await Assert.That(captured!.Profiles.Resolution.ServerUrl).IsEqualTo($"http://localhost:{port}");
         } finally {
             SetupCommand.ImportRunnerOverride = null;
         }
     }
 
     [Test]
-    [NotInParallel([
-        HandleAsyncNotInParallelGroups_HomeEnvVarMutation, HandleAsyncNotInParallelGroups_CwdMutation,
-        HandleAsyncNotInParallelGroups_ResolvedState, "TokenStoreProfileTests", ImportRunnerOverrideMutation
-    ])]
+    // Bare, not the shared keys: both vars are read by every profile resolution in the assembly
+    // and inherited by every spawned child, so no cohort of key-holders can exclude their observers.
+    [NotInParallel]
     public async Task HandleAsync_ConflictingKcapUrlAndProfileEnvVars_DoesNotHijackSavedServerOrProfile() {
         using var server = WireMockServer.Start();
         StubAuthProviderNone(server);
 
-        await using var fixture = await HandleAsyncE2EFixture.CreateAsync("acme-envconflict", "widgets");
+        await using var fixture = await HandleAsyncE2EFixture.CreateAsync("acme-envconflict", "widgets", Config.Root);
 
-        var savedKcapUrl     = Environment.GetEnvironmentVariable("KCAP_URL");
-        var savedKcapProfile = Environment.GetEnvironmentVariable("KCAP_PROFILE");
         // Deliberately conflicting: neither matches the --server-url this run actually saves.
-        Environment.SetEnvironmentVariable("KCAP_URL", "http://conflicting-env.invalid");
-        Environment.SetEnvironmentVariable("KCAP_PROFILE", "conflicting-profile");
+        using var kcapUrl     = EnvScope.Exclusive("KCAP_URL", "http://conflicting-env.invalid");
+        using var kcapProfile = EnvScope.Exclusive("KCAP_PROFILE", "conflicting-profile");
 
         SetupCommand.ImportInvocation? captured = null;
         SetupCommand.ImportRunnerOverride = inv => {
@@ -889,21 +1155,16 @@ public class SetupCommandTests {
         try {
             var args = BuildArgs("--server-url", server.Url!, "--no-prompt");
 
-            var exit = await SetupCommand.HandleAsync(args);
+            var exit = await new SetupCommand(Config.Root, Resolutions.None(Config.Root), new RecordingBrowser(), Home).HandleAsync(args);
 
             await Assert.That(exit).IsEqualTo(0);
             await Assert.That(captured).IsNotNull();
-            await Assert.That(captured!.BaseUrl).IsEqualTo(server.Url!.TrimEnd('/'));
-            await Assert.That(captured.ActiveProfile).IsEqualTo("default");
-
-            // AppConfig.SetResolvedState assigns directly rather than re-resolving
-            // CLI/env/repo precedence — so the just-saved server survives even though a
-            // conflicting KCAP_URL/KCAP_PROFILE sat in the environment for the whole call.
-            await Assert.That(AppConfig.ResolvedServerUrl).IsEqualTo(server.Url!.TrimEnd('/'));
+            await Assert.That(captured!.Profiles.Resolution.ServerUrl).IsEqualTo(server.Url!.TrimEnd('/'));
+            // Setup hands the import the resolution it just persisted, not a re-resolution — so a
+            // conflicting KCAP_PROFILE in the environment cannot redirect it.
+            await Assert.That(captured.Profiles.Resolution.ProfileName).IsEqualTo("default");
         } finally {
             SetupCommand.ImportRunnerOverride = null;
-            Environment.SetEnvironmentVariable("KCAP_URL", savedKcapUrl);
-            Environment.SetEnvironmentVariable("KCAP_PROFILE", savedKcapProfile);
         }
     }
 
@@ -912,78 +1173,237 @@ public class SetupCommandTests {
     /// preceding them for what each piece of isolation guards against.
     /// </summary>
     sealed class HandleAsyncE2EFixture : IAsyncDisposable {
-        readonly TempDir _repoDir;
-        readonly TempDir _home;
+        readonly GitRepo _repo;
         readonly string  _originalCwd;
-        readonly string? _originalHome;
 
-        public string RepoDir => _repoDir.Path;
-        public string Home    => _home.Path;
+        public string RepoDir => _repo.Path;
 
-        HandleAsyncE2EFixture(TempDir repoDir, TempDir home, string originalCwd, string? originalHome) {
-            _repoDir      = repoDir;
-            _home         = home;
-            _originalCwd  = originalCwd;
-            _originalHome = originalHome;
+        HandleAsyncE2EFixture(GitRepo repo, string originalCwd) {
+            _repo        = repo;
+            _originalCwd = originalCwd;
         }
 
-        public static async Task<HandleAsyncE2EFixture> CreateAsync(string owner, string repo) {
-            var repoDir = new TempDir();
-            await RunGitAsync("init", repoDir.Path);
-            await RunGitAsync($"remote add origin https://github.com/{owner}/{repo}.git", repoDir.Path);
+        public static async Task<HandleAsyncE2EFixture> CreateAsync(string owner, string repo, ConfigRoot configRoot) {
+            var repoDir = GitRepo.Create();
+            repoDir.AddRemote($"https://github.com/{owner}/{repo}.git");
 
-            var home = new TempDir();
-
-            var originalCwd  = Environment.CurrentDirectory;
-            var originalHome = Environment.GetEnvironmentVariable("HOME");
+            var originalCwd = Environment.CurrentDirectory;
 
             // Reset shared process/config state to a known baseline before this run —
             // mirrors TokenStoreProfileTests.Cleanup / the round-trip test above.
             HttpClientExtensions.ResetProviderCacheForTesting();
 
-            var configPath = AppConfig.GetConfigPath();
+            var configPath = AppConfig.GetConfigPath(configRoot);
             if (File.Exists(configPath)) File.Delete(configPath);
 
-            var tokensDir = PathHelpers.ConfigPath("tokens");
+            var tokensDir = configRoot.Path("tokens");
             if (Directory.Exists(tokensDir)) Directory.Delete(tokensDir, recursive: true);
 
-            var legacyTokens = PathHelpers.ConfigPath("tokens.json");
+            var legacyTokens = configRoot.Path("tokens.json");
             if (File.Exists(legacyTokens)) File.Delete(legacyTokens);
 
             Environment.CurrentDirectory = repoDir.Path;
-            Environment.SetEnvironmentVariable("HOME", home.Path);
 
-            return new HandleAsyncE2EFixture(repoDir, home, originalCwd, originalHome);
+            return new HandleAsyncE2EFixture(repoDir, originalCwd);
         }
 
         public ValueTask DisposeAsync() {
             Environment.CurrentDirectory = _originalCwd;
-            Environment.SetEnvironmentVariable("HOME", _originalHome);
             HttpClientExtensions.ResetProviderCacheForTesting();
 
-            _repoDir.Dispose();
-            _home.Dispose();
+            _repo.Dispose();
 
             return ValueTask.CompletedTask;
         }
 
-        static async Task RunGitAsync(string arguments, string workingDir) {
-            var psi = new ProcessStartInfo("git", arguments) {
-                WorkingDirectory       = workingDir,
-                RedirectStandardOutput = true,
-                RedirectStandardError  = true,
-                UseShellExecute        = false,
-                CreateNoWindow         = true,
-            };
+    }
 
-            using var process = Process.Start(psi) ?? throw new InvalidOperationException("Failed to start git");
-            await process.WaitForExitAsync();
+    // --- --org / --slug, the create-a-workspace prompts answered up front ---
 
-            if (process.ExitCode != 0) {
-                var err = await process.StandardError.ReadToEndAsync();
+    static (RequestedWorkspace? Workspace, string? Error) Parse(params string[] args) =>
+        SetupCommand.ParseRequestedWorkspace(args, haveServerUrl: false);
 
-                throw new InvalidOperationException($"git {arguments} failed: {err}");
-            }
-        }
+    [Test]
+    public async Task ParseRequestedWorkspace_asks_for_nothing_when_neither_flag_is_passed() {
+        var (workspace, error) = Parse("setup", "--no-prompt");
+
+        await Assert.That(workspace).IsNull();
+        await Assert.That(error).IsNull();
+    }
+
+    [Test]
+    public async Task ParseRequestedWorkspace_carries_both_answers_through() {
+        var (workspace, error) = Parse("setup", "--org", "  Acme  ", "--slug", "  ACME  ");
+
+        await Assert.That(error).IsNull();
+        await Assert.That(workspace!.OrgName).IsEqualTo("Acme");
+        await Assert.That(workspace.Slug).IsEqualTo("acme");
+        await Assert.That(workspace.Origin).IsEqualTo("https://acme.kcap.ai");
+    }
+
+    [Test]
+    public async Task ParseRequestedWorkspace_refuses_half_a_pair() {
+        await Assert.That(Parse("setup", "--org", "Acme").Error).Contains("--slug");
+        await Assert.That(Parse("setup", "--slug", "acme").Error).Contains("--org");
+    }
+
+    [Test]
+    public async Task ParseRequestedWorkspace_refuses_a_flag_where_a_value_should_be() {
+        var (workspace, error) = Parse("setup", "--org", "--slug", "acme");
+
+        await Assert.That(workspace).IsNull();
+        await Assert.That(error!).Contains("--org needs a value");
+    }
+
+    [Test]
+    public async Task ParseRequestedWorkspace_refuses_a_flag_with_no_value_at_all() {
+        await Assert.That(Parse("setup", "--slug", "acme", "--org").Error!).Contains("--org needs a value");
+    }
+
+    [Test]
+    public async Task ParseRequestedWorkspace_refuses_a_blank_value() {
+        await Assert.That(Parse("setup", "--org", "   ", "--slug", "acme").Error!).Contains("--org needs a value");
+        await Assert.That(Parse("setup", "--org", "Acme", "--slug", "   ").Error!).Contains("--slug needs a value");
+    }
+
+    // Not this CLI's spelling, so an exact-token search cannot see it - and the flags would be
+    // dropped in silence, which is the one outcome this parse refuses.
+    [Test]
+    public async Task ParseRequestedWorkspace_refuses_the_equals_spelling() {
+        await Assert.That(Parse("setup", "--org=Acme", "--slug=acme").Error!).Contains("--org needs a value");
+    }
+
+    [Test]
+    public async Task ParseRequestedWorkspace_refuses_an_empty_value() {
+        await Assert.That(Parse("setup", "--org", "", "--slug", "acme").Error!).Contains("--org needs a value");
+    }
+
+    // Caught here rather than only on the path that reaches the provisioner, so one message describes
+    // a malformed slug wherever the run happens to notice it.
+    [Test]
+    public async Task ParseRequestedWorkspace_refuses_a_slug_that_could_never_be_a_hostname() {
+        await Assert.That(Parse("setup", "--org", "Acme", "--slug", "Acme Corp").Error!).Contains("not a valid slug");
+        await Assert.That(Parse("setup", "--org", "Acme", "--slug", "api").Error!).Contains("reserved");
+    }
+
+    [Test]
+    public async Task ParseRequestedWorkspace_refuses_to_create_and_point_at_a_positional_tenant_at_once() {
+        var (workspace, error) = SetupCommand.ParseRequestedWorkspace(
+            ["setup", "acme", "--org", "Acme", "--slug", "acme"], haveServerUrl: true);
+
+        await Assert.That(workspace).IsNull();
+        await Assert.That(error!).Contains("kcap setup <tenant>");
+    }
+
+    [Test]
+    public async Task ParseRequestedWorkspace_refuses_to_create_and_point_at_a_server_at_once() {
+        var (workspace, error) = SetupCommand.ParseRequestedWorkspace(
+            ["setup", "--org", "Acme", "--slug", "acme"], haveServerUrl: true);
+
+        await Assert.That(workspace).IsNull();
+        await Assert.That(error!).Contains("--server-url");
+    }
+
+    static Task Guard(RequestedWorkspace requested, params string[] profiles) =>
+        SetupCommand.WorkspaceGuard(requested)!(
+            [.. profiles.Select(p => new AuthIdentity(p, $"https://{p}.kcap.ai"))], CancellationToken.None);
+
+    // Refusing on the commit boundary's last cancellable step is what keeps the stop free of a
+    // published profile, stamp or token.
+    [Test]
+    public async Task WorkspaceGuard_refuses_a_commit_that_would_publish_another_workspace() {
+        var thrown = await Assert.ThrowsAsync<InvalidOperationException>(
+            async () => await Guard(new RequestedWorkspace("Acme", "acme"), "globex"));
+
+        await Assert.That(thrown!.Message).Contains("acme");
+        await Assert.That(thrown.Message).Contains("globex");
+    }
+
+    // A re-run once the workspace exists lands on it, which is the asked-for outcome.
+    [Test]
+    public async Task WorkspaceGuard_lets_the_workspace_that_was_asked_for_through() {
+        await Guard(new RequestedWorkspace("Acme", "acme"), "acme");
+    }
+
+    // The profile name is the comparison, not the URL: the server names the workspace it creates, so
+    // a url in any other shape must not read as landing somewhere else.
+    [Test]
+    public async Task WorkspaceGuard_judges_by_slug_rather_than_by_the_url_the_server_returned() {
+        await Guard(new RequestedWorkspace("Acme", "acme"), "acme");
+
+        await SetupCommand.WorkspaceGuard(new RequestedWorkspace("Acme", "acme"))!(
+            [new AuthIdentity("acme", "https://acme.eu.kcap.ai")], CancellationToken.None);
+    }
+
+    [Test]
+    public async Task WorkspaceGuard_is_absent_when_no_workspace_was_asked_for() {
+        await Assert.That(SetupCommand.WorkspaceGuard(null)).IsNull();
+    }
+
+    // These drive argv. The three rejections return before any config read, network call or console
+    // rule, so they need none of the E2E fixture below.
+    [Test]
+    [NotInParallel]
+    public async Task HandleAsync_rejects_half_a_pair_before_doing_anything() {
+        using var capture = ConsoleOutput.StartErrorCapture();
+
+        var exit = await new SetupCommand(Config.Root, Resolutions.None(Config.Root), new RecordingBrowser(), Home).HandleAsync(["setup", "--org", "Acme"]);
+
+        await Assert.That(exit).IsEqualTo(1);
+        await Assert.That(capture.GetCapturedError()).Contains("--slug");
+    }
+
+    [Test]
+    [NotInParallel]
+    public async Task HandleAsync_rejects_creating_and_pointing_at_a_server_at_once() {
+        using var capture = ConsoleOutput.StartErrorCapture();
+
+        var exit = await new SetupCommand(Config.Root, Resolutions.None(Config.Root), new RecordingBrowser(), Home).HandleAsync(
+            ["setup", "--org", "Acme", "--slug", "acme", "--server-url", "https://other.kcap.ai"]);
+
+        await Assert.That(exit).IsEqualTo(1);
+        await Assert.That(capture.GetCapturedError()).Contains("--server-url");
+    }
+
+    [Test]
+    [NotInParallel]
+    public async Task HandleAsync_rejects_a_provider_that_cannot_create() {
+        using var capture = ConsoleOutput.StartErrorCapture();
+
+        var exit = await new SetupCommand(Config.Root, Resolutions.None(Config.Root), new RecordingBrowser(), Home).HandleAsync(["setup", "--org", "Acme", "--slug", "acme", "--github"]);
+
+        await Assert.That(exit).IsEqualTo(1);
+        await Assert.That(capture.GetCapturedError()).Contains("--github");
+    }
+
+    [Test]
+    [NotInParallel]
+    public async Task HandleAsync_still_requires_a_server_url_with_no_prompt_and_no_answers() {
+        using var capture = ConsoleOutput.StartErrorCapture();
+
+        var exit = await new SetupCommand(Config.Root, Resolutions.None(Config.Root), new RecordingBrowser(), Home).HandleAsync(["setup", "--no-prompt"]);
+
+        await Assert.That(exit).IsEqualTo(1);
+        await Assert.That(capture.GetCapturedError()).Contains("--server-url is required");
+        await Assert.That(capture.GetCapturedError()).Contains("--org");
+    }
+
+    // Presence, not value: a valueless --server-url parses as absent, and taking that as "no conflict"
+    // turns a run meant to point at a workspace into one that creates a different one.
+    [Test]
+    public async Task ParseRequestedWorkspace_refuses_a_server_flag_that_carries_no_value() {
+        var (workspace, error) = SetupCommand.ParseRequestedWorkspace(
+            ["setup", "--org", "Acme", "--slug", "acme", "--server-url"], haveServerUrl: true);
+
+        await Assert.That(workspace).IsNull();
+        await Assert.That(error!).Contains("--server-url");
+    }
+
+    [Test]
+    public async Task ParseRequestedWorkspace_refuses_a_provider_that_cannot_create() {
+        var (workspace, error) = Parse("setup", "--org", "Acme", "--slug", "acme", "--github");
+
+        await Assert.That(workspace).IsNull();
+        await Assert.That(error!).Contains("--github");
     }
 }

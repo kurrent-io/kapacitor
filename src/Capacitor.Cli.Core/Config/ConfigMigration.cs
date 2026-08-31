@@ -82,7 +82,7 @@ public static class ConfigMigration {
             if (!string.IsNullOrEmpty(name)) bindings[path] = name;
 
         return config with {
-            ActiveProfile   = string.IsNullOrEmpty(config.ActiveProfile) ? "default" : config.ActiveProfile,
+            ActiveProfile   = config.ActiveName,
             Profiles        = profiles,
             ProfileBindings = bindings,
             CwdRemap = (config.CwdRemap ?? [])

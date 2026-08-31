@@ -1,4 +1,5 @@
 using Capacitor.Cli.Commands.Harness;
+using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.SessionStartMemory;
 
@@ -18,6 +19,10 @@ namespace Capacitor.Cli.Tests.Unit.Harness.Gemini;
 /// otherwise put kcap text into the model's context.</para>
 /// </summary>
 public class GeminiSessionStartMemoryTests {
+    [TempHome] public required TempHome Home { get; init; }
+
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     static string Write(string? fragment) => GeminiHookCommand.RenderSessionStartPayload(fragment);
 
     // ── the divergence from every other adapter ───────────────────────────────
@@ -142,11 +147,11 @@ public class GeminiSessionStartMemoryTests {
         await Assert.That(await CaptureHandleStdout(payload)).IsEqualTo("");
     }
 
-    static async Task<string> CaptureHandleStdout(string payload) {
+    async Task<string> CaptureHandleStdout(string payload) {
         using var capture = ConsoleOutput.StartCapture();
 
         // baseUrl is unreachable on purpose: these paths must return before any network work.
-        await GeminiHookCommand.Handle("http://127.0.0.1:1", new StringReader(payload));
+        await new GeminiHookCommand(Config.Root, Resolutions.At("http://127.0.0.1:1", Config.Root), new HookClock(TimeProvider.System), Home).Handle(new StringReader(payload));
 
         return capture.GetCapturedOutput();
     }

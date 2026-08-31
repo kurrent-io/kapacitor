@@ -184,7 +184,7 @@ public static class CodexSubagentDiscovery {
 
         var since = DayDirDate(parentTranscriptPath);
 
-        foreach (var (childId, filePath, _) in CodexPaths.Discover(sessionsDir: root, since: since)) {
+        foreach (var (childId, filePath, _) in CodexPaths.Discover(root, since)) {
             if (filePath == parentTranscriptPath) continue;
             if (ruledOut?.Contains(filePath) == true) continue;
 

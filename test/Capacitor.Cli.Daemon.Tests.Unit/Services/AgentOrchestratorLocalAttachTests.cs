@@ -10,6 +10,7 @@ using Capacitor.Cli.Daemon.Pty;
 using Capacitor.Cli.Daemon.Services;
 using Capacitor.Cli.Daemon.Tests.Unit.Pty;
 using Microsoft.Extensions.Logging.Abstractions;
+using TUnit.Core.Enums;
 
 namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 
@@ -17,6 +18,8 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 /// AgentOrchestratorVendorTests to reuse its BuildOrchestrator + test doubles.
 [ParallelLimiter<SubprocessLimit>]
 public class AgentOrchestratorLocalAttachTests {
+    [TempHome] public required TempHome Home { get; init; }
+
     sealed class NoopRestartStrategy : IRestartStrategy { public RestartOutcome Restart() => RestartOutcome.NoOp; }
 
     static RestartCoordinator TestCoordinator(DaemonStore store) =>
@@ -39,6 +42,10 @@ public class AgentOrchestratorLocalAttachTests {
     static DaemonStatusIpc TestStatusIpc(DaemonConfig config, AgentOrchestrator orch, ServerConnection connection) =>
         new(config, orch, connection, new DaemonStatusNotifier());
 
+    // A throwaway broker: these LocalControlServer tests never exercise permission prompts.
+    static PermissionIpc TestPermissionIpc() =>
+        new(new PermissionPromptBroker(), NullLogger<PermissionIpc>.Instance);
+
     static DaemonConfig LauncherCfg() => new() { Name = "t", ServerUrl = "http://127.0.0.1:1" };
 
     static LauncherContext CtxFor(string path)
@@ -50,7 +57,7 @@ public class AgentOrchestratorLocalAttachTests {
     public async Task Claude_borrowed_cwd_prepare_writes_no_repo_files() {
         using var tmp = new TempDir();
 
-        var launcher = new ClaudeLauncher(LauncherCfg(), NullLogger<ClaudeLauncher>.Instance);
+        var launcher = new ClaudeLauncher(LauncherCfg(), Home, NullLogger<ClaudeLauncher>.Instance);
         launcher.Prepare(CtxFor(tmp.Path));
 
         await Assert.That(File.Exists(tmp.PathTo(".mcp.json"))).IsFalse();
@@ -60,14 +67,14 @@ public class AgentOrchestratorLocalAttachTests {
 
     [Test]
     public async Task Claude_passthrough_forwards_user_args_verbatim() {
-        var launcher = new ClaudeLauncher(LauncherCfg(), NullLogger<ClaudeLauncher>.Instance);
+        var launcher = new ClaudeLauncher(LauncherCfg(), Home, NullLogger<ClaudeLauncher>.Instance);
         var a = launcher.BuildPassthrough(CtxFor("/r"), ["--model", "opus", "fix it"]);
         await Assert.That(a.Args).IsEquivalentTo(new[] { "--model", "opus", "fix it" });
     }
 
     [Test]
     public async Task Codex_passthrough_injects_mandatory_flags_then_user_args() {
-        var launcher = new CodexLauncher(LauncherCfg(), NullLogger<CodexLauncher>.Instance);
+        var launcher = new CodexLauncher(LauncherCfg(), Home, NullLogger<CodexLauncher>.Instance);
         var a = launcher.BuildPassthrough(CtxFor("/r"), ["-m", "gpt"]);
         await Assert.That(a.Args).Contains("--cd");
         await Assert.That(a.Args).Contains("--no-alt-screen");
@@ -77,37 +84,34 @@ public class AgentOrchestratorLocalAttachTests {
 
     [Test]
     public async Task Codex_passthrough_rejects_user_duplicate_of_mandatory_flag() {
-        var launcher = new CodexLauncher(LauncherCfg(), NullLogger<CodexLauncher>.Instance);
+        var launcher = new CodexLauncher(LauncherCfg(), Home, NullLogger<CodexLauncher>.Instance);
         await Assert.That(() => launcher.BuildPassthrough(CtxFor("/r"), ["--cd", "/elsewhere"]))
             .Throws<ArgumentException>();
     }
 
     [Test]
     public async Task Borrowed_cwd_cleanup_does_not_delete_user_dir_or_branch() {
-        var (repoPath, cleanup) = GitRepoHarness.CreateGitRepo();
+        using var repoPath = GitRepo.CreateWithCommit();
 
-        try {
-            var server = new CaptureServerConnection();
-            await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+        var server = new CaptureServerConnection();
+        await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
 
-            // IsStandalone:true means RemoveAsync WOULD Directory.Delete this path —
-            // the Work=BorrowedCwd guard must prevent that.
-            var agent = new AgentInstance(
-                "local-1", null, "", null, repoPath, "claude",
-                new PtyHostedAgentRuntime("claude", new StubPtyProcess()), new WorktreeInfo(repoPath, "", repoPath, IsStandalone: true), new CancellationTokenSource()
-            ) {
-                IsPrivate = true,
-                Work      = WorkLocation.BorrowedCwd
-            };
+        // IsStandalone:true means RemoveAsync WOULD Directory.Delete this path —
+        // the Work=BorrowedCwd guard must prevent that.
+        var agent = new AgentInstance(
+            "local-1", null, "", null, repoPath, "claude",
+            new PtyHostedAgentRuntime("claude", new StubPtyProcess()), new WorktreeInfo(repoPath, "", repoPath, IsStandalone: true), new CancellationTokenSource()
+        ) {
+            IsPrivate = true,
+            Work      = WorkLocation.BorrowedCwd
+        };
 
-            orch.RegisterAgentForTest(agent);
-            await orch.CleanupAgentForTest("local-1");
+        orch.RegisterAgentForTest(agent);
+        await orch.CleanupAgentForTest("local-1");
 
-            await Assert.That(Directory.Exists(repoPath)).IsTrue();
-            await Assert.That(File.Exists(Path.Combine(repoPath, "README.md"))).IsTrue();
-        } finally {
-            cleanup();
-        }
+        await Assert.That(Directory.Exists(repoPath)).IsTrue();
+        await Assert.That(File.Exists(Path.Combine(repoPath, "README.md"))).IsTrue();
+
     }
 
     [Test]
@@ -158,6 +162,53 @@ public class AgentOrchestratorLocalAttachTests {
         await Assert.That(pty.LastEnv!.ContainsKey("KCAP_AGENT_ID")).IsFalse();      // unregistered in Phase 1 → no agent_host_id tag
         await Assert.That(pty.LastEnv!.ContainsKey("KCAP_RENDERED_AGENT")).IsFalse(); // native terminal permissions
         await Assert.That(pty.LastEnv!.ContainsKey("KCAP_DAEMON_URL")).IsFalse();
+    }
+
+    [Test]
+    public async Task Local_spawns_start_transcript_discovery_private_included() {
+        using var tmp = new TempDir();
+        var server    = new TripwireServerConnection();
+        var pty       = new EnvCapturingPtyFactory();
+        var launchers = new Dictionary<string, IHostedAgentLauncher> { ["claude"] = new SpyHostedAgentLauncher("claude", "spy-claude") };
+        await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, pty, launchers);
+
+        foreach (var isPrivate in new[] { false, true }) {
+            var readBuf = new MemoryStream();
+            await FrameCodec.WriteAsync(readBuf, LocalFrame.Detach(), default);
+            readBuf.Position = 0;
+            using var client = new DuplexTestStream(readBuf, new MemoryStream());
+
+            var spawn = FrameCodec.Spawn("claude", WorkLocation.BorrowedCwd, isPrivate, tmp.Path, [], 80, 24);
+            await orch.HandleLocalSpawnAsync(spawn, client, default);
+        }
+
+        await Assert.That(orch.DiscoveryStartsForTest).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task Discovery_reports_to_the_server_for_a_public_agent_only() {
+        var privServer = new TripwireServerConnection();
+        await using var privOrch = AgentOrchestratorHarness.BuildOrchestrator(privServer, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+        var privAgent = new AgentInstance("priv-1", null, "", null, "/r", "claude",
+            new PtyHostedAgentRuntime("claude", new StubPtyProcess()), new WorktreeInfo("/r", "", "/r"), new CancellationTokenSource()) { IsPrivate = true };
+        privOrch.RegisterAgentForTest(privAgent);
+
+        await privOrch.RunDiscoveryForTest(privAgent, _ => ("sid", "/p.jsonl"));
+
+        await Assert.That(privAgent.TranscriptPath).IsEqualTo("/p.jsonl");
+        await Assert.That(privServer.Calls.Count).IsEqualTo(0);
+
+        var pubServer = new TripwireServerConnection();
+        await using var pubOrch = AgentOrchestratorHarness.BuildOrchestrator(pubServer, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+        var pubAgent = new AgentInstance("pub-1", null, "", null, "/r", "claude",
+            new PtyHostedAgentRuntime("claude", new StubPtyProcess()), new WorktreeInfo("/r", "", "/r"), new CancellationTokenSource()) { IsPrivate = false };
+        pubOrch.RegisterAgentForTest(pubAgent);
+
+        await pubOrch.RunDiscoveryForTest(pubAgent, _ => ("sid2", "/q.jsonl"));
+
+        await Assert.That(pubAgent.TranscriptPath).IsEqualTo("/q.jsonl");
+        await Assert.That(pubServer.Calls).Contains(nameof(ServerConnection.AgentStatusChangedAsync));
+        await Assert.That(pubServer.Calls).Contains(nameof(ServerConnection.AppendAgentRunEventAsync));
     }
 
     [Test]
@@ -587,10 +638,8 @@ public class AgentOrchestratorLocalAttachTests {
     /// which is exactly the shape <c>LocalAgentClient</c>'s Error branch prints and exits 1 on
     /// (shared with every other daemon refusal, e.g. the review-agent stop protection).
     /// </summary>
-    [Test]
+    [Test, ExcludeOn(OS.Windows)] // Unix-domain socket path
     public async Task Attach_over_the_real_socket_refuses_a_hosted_agent_with_no_terminal() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         using var daemons = new TempDaemonStore();
         using var cts = new CancellationTokenSource(WaitHarness.Bounded);
 
@@ -608,7 +657,7 @@ public class AgentOrchestratorLocalAttachTests {
             });
 
             var config = new DaemonConfig { Store = daemons.Store, Name = "test", ServerUrl = "http://127.0.0.1:1" };
-            listener = new LocalControlServer(config, orch, TestCoordinator(daemons.Store), TestConsentIpc(config, daemons.CreateDir("consent")), TestStatusIpc(config, orch, server), NullLogger<LocalControlServer>.Instance);
+            listener = new LocalControlServer(config, orch, TestCoordinator(daemons.Store), TestConsentIpc(config, daemons.CreateDir("consent")), TestPermissionIpc(), TestStatusIpc(config, orch, server), NullLogger<LocalControlServer>.Instance);
             await listener.StartAsync(cts.Token);
 
             var sockPath = daemons.Store.SocketPath("test");
@@ -635,10 +684,8 @@ public class AgentOrchestratorLocalAttachTests {
         }
     }
 
-    [Test]
+    [Test, ExcludeOn(OS.Windows)] // Unix-domain socket path
     public async Task Local_socket_list_round_trips_registered_agents_over_a_real_socket() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         using var daemons = new TempDaemonStore();
         using var cts = new CancellationTokenSource(WaitHarness.Bounded);
 
@@ -656,7 +703,7 @@ public class AgentOrchestratorLocalAttachTests {
             });
 
             var config = new DaemonConfig { Store = daemons.Store, Name = "test", ServerUrl = "http://127.0.0.1:1" };
-            listener = new LocalControlServer(config, orch, TestCoordinator(daemons.Store), TestConsentIpc(config, daemons.CreateDir("consent")), TestStatusIpc(config, orch, server), NullLogger<LocalControlServer>.Instance);
+            listener = new LocalControlServer(config, orch, TestCoordinator(daemons.Store), TestConsentIpc(config, daemons.CreateDir("consent")), TestPermissionIpc(), TestStatusIpc(config, orch, server), NullLogger<LocalControlServer>.Instance);
             await listener.StartAsync(cts.Token);
 
             var sockPath = daemons.Store.SocketPath("test");
@@ -699,7 +746,7 @@ public class AgentOrchestratorLocalAttachTests {
             orch.SeedAgentForTest("flow-1", kind: LaunchKind.ReviewFlow, flowRunId: "flow-7f3a", flowRole: "reviewer");
 
             var config = new DaemonConfig { Store = daemons.Store, Name = daemonName, ServerUrl = "http://127.0.0.1:1" };
-            listener = new LocalControlServer(config, orch, TestCoordinator(daemons.Store), TestConsentIpc(config, daemons.CreateDir("consent")), TestStatusIpc(config, orch, server), NullLogger<LocalControlServer>.Instance);
+            listener = new LocalControlServer(config, orch, TestCoordinator(daemons.Store), TestConsentIpc(config, daemons.CreateDir("consent")), TestPermissionIpc(), TestStatusIpc(config, orch, server), NullLogger<LocalControlServer>.Instance);
             await listener.StartAsync(cts.Token);
 
             var sockPath = daemons.Store.SocketPath(daemonName);
@@ -720,20 +767,16 @@ public class AgentOrchestratorLocalAttachTests {
         }
     }
 
-    [Test]
+    [Test, ExcludeOn(OS.Windows)] // Unix-domain socket path
     public async Task Local_socket_stopv2_without_force_refuses_a_protected_agent_end_to_end() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         var resp = await StopV2OverRealSocketAsync("test-stopv2-refuse", force: false, "flow-1");
 
         await Assert.That(resp!.Type).IsEqualTo(FrameType.Error);
         await Assert.That(resp.Text).Contains("--force");
     }
 
-    [Test]
+    [Test, ExcludeOn(OS.Windows)] // Unix-domain socket path
     public async Task Local_socket_stopv2_with_force_stops_a_protected_agent_end_to_end() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         var resp = await StopV2OverRealSocketAsync("test-stopv2-force", force: true, "flow-1");
 
         await Assert.That(resp!.Type).IsEqualTo(FrameType.StopAck);

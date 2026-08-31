@@ -1,3 +1,4 @@
+using Capacitor.Cli.Core;
 using Capacitor.Cli.Services;
 
 namespace Capacitor.Cli.Tests.Unit.Services;
@@ -6,9 +7,15 @@ namespace Capacitor.Cli.Tests.Unit.Services;
 /// No filesystem, no lock, no manager — every case is driven purely through the function's own
 /// parameters, per the task brief verbatim.</summary>
 public class ServiceVerifyStartGateTests {
+    [TempDir] public required TempDir Tmp { get; init; }
+
+    // Every case either bakes its own KCAP_CONFIG_DIR or never reaches the profile lookup, so the
+    // default root is dead evidence here — a directory nothing creates keeps it that way.
+    ConfigRoot NeverRead => new(Tmp.PathTo("never-read"));
+
     [Test]
     public async Task Gate_inactive_without_invoking_directive() {
-        var r = ServiceVerify.EvaluateStartGate(new Dictionary<string, string>(), "/b", "/b", _ => null);
+        var r = ServiceVerify.EvaluateStartGate(new Dictionary<string, string>(), "/b", "/b", _ => null, NeverRead);
         await Assert.That(r).IsNull();
     }
 
@@ -23,7 +30,7 @@ public class ServiceVerifyStartGateTests {
         // The unit env is never even consulted — if it were, the empty dict below would report
         // DirectiveMissing instead, so DirectiveInvalid here proves the invoking-side check fires first.
         var r = ServiceVerify.EvaluateStartGate(new Dictionary<string, string>(), "/b", "/b",
-            k => k == "KCAP_CONSENT_SEED_DEFAULT" ? invoking : null);
+            k => k == "KCAP_CONSENT_SEED_DEFAULT" ? invoking : null, NeverRead);
         await Assert.That(r).IsEqualTo(StartGateReason.DirectiveInvalid);
     }
 
@@ -31,7 +38,7 @@ public class ServiceVerifyStartGateTests {
     public async Task Missing_unit_directive_is_directive_missing() {
         var r = ServiceVerify.EvaluateStartGate(
             new Dictionary<string, string>(),  // unit bakes nothing
-            "/b", "/b", k => k == "KCAP_CONSENT_SEED_DEFAULT" ? "prompt" : null);
+            "/b", "/b", k => k == "KCAP_CONSENT_SEED_DEFAULT" ? "prompt" : null, NeverRead);
         await Assert.That(r).IsEqualTo(StartGateReason.DirectiveMissing);
     }
 
@@ -39,7 +46,7 @@ public class ServiceVerifyStartGateTests {
     public async Task Unit_directive_with_wrong_value_is_directive_invalid() {
         var unit = new Dictionary<string, string> { ["KCAP_CONSENT_SEED_DEFAULT"] = "allow" };
         var r = ServiceVerify.EvaluateStartGate(unit, "/b", "/b",
-            k => k == "KCAP_CONSENT_SEED_DEFAULT" ? "prompt" : null);
+            k => k == "KCAP_CONSENT_SEED_DEFAULT" ? "prompt" : null, NeverRead);
         await Assert.That(r).IsEqualTo(StartGateReason.DirectiveInvalid);
     }
 
@@ -50,7 +57,7 @@ public class ServiceVerifyStartGateTests {
     public async Task Unit_directive_present_but_empty_is_directive_invalid_not_missing() {
         var unit = new Dictionary<string, string> { ["KCAP_CONSENT_SEED_DEFAULT"] = "" };
         var r = ServiceVerify.EvaluateStartGate(unit, "/b", "/b",
-            k => k == "KCAP_CONSENT_SEED_DEFAULT" ? "prompt" : null);
+            k => k == "KCAP_CONSENT_SEED_DEFAULT" ? "prompt" : null, NeverRead);
         await Assert.That(r).IsEqualTo(StartGateReason.DirectiveInvalid);
     }
 
@@ -61,10 +68,10 @@ public class ServiceVerifyStartGateTests {
         static string? Env(string k) => k switch {
             "KCAP_CONSENT_SEED_DEFAULT" => "prompt", _ => null };
 
-        var same = ServiceVerify.EvaluateStartGate(unit, "/opt/kcap/kcap-daemon", "/opt/kcap/kcap-daemon", Env);
+        var same = ServiceVerify.EvaluateStartGate(unit, "/opt/kcap/kcap-daemon", "/opt/kcap/kcap-daemon", Env, NeverRead);
         await Assert.That(same).IsEqualTo(StartGateReason.PackageInconsistent);
 
-        var other = ServiceVerify.EvaluateStartGate(unit, "/somewhere/else/kcap-daemon", "/opt/kcap/kcap-daemon", Env);
+        var other = ServiceVerify.EvaluateStartGate(unit, "/somewhere/else/kcap-daemon", "/opt/kcap/kcap-daemon", Env, NeverRead);
         await Assert.That(other).IsEqualTo(StartGateReason.ForeignBinary);
     }
 
@@ -102,7 +109,7 @@ public class ServiceVerifyStartGateTests {
             "KCAP_EXPECT_SERVER_URL" => "https://t.example",  // fresh invocation expects T
             _ => null };
         // digest can't pass in test builds — inject a digest-pass seam for identity-only tests:
-        var r = ServiceVerify.EvaluateStartGate(unit, "/b", "/b", Env, digestMatches: _ => true);
+        var r = ServiceVerify.EvaluateStartGate(unit, "/b", "/b", Env, NeverRead, digestMatches: _ => true);
         await Assert.That(r).IsEqualTo(StartGateReason.IdentityMismatch);
     }
 
@@ -121,7 +128,7 @@ public class ServiceVerifyStartGateTests {
             "KCAP_PROFILE" => "a",
             "KCAP_EXPECT_SERVER_URL" => "https://s.example",
             _ => null };
-        var r = ServiceVerify.EvaluateStartGate(unit, "/b", "/b", Env, digestMatches: _ => true);
+        var r = ServiceVerify.EvaluateStartGate(unit, "/b", "/b", Env, NeverRead, digestMatches: _ => true);
         await Assert.That(r).IsNull();
     }
 
@@ -140,7 +147,7 @@ public class ServiceVerifyStartGateTests {
             "KCAP_PROFILE" => "a",
             "KCAP_EXPECT_SERVER_URL" => "https://s.example",
             _ => null };
-        var r = ServiceVerify.EvaluateStartGate(unit, "/b", "/b", Env, digestMatches: _ => true);
+        var r = ServiceVerify.EvaluateStartGate(unit, "/b", "/b", Env, NeverRead, digestMatches: _ => true);
         await Assert.That(r).IsEqualTo(StartGateReason.IdentityMismatch);
     }
 
@@ -159,7 +166,7 @@ public class ServiceVerifyStartGateTests {
             "KCAP_PROFILE" => "a",
             "KCAP_EXPECT_SERVER_URL" => "https://s.example",
             _ => null };
-        var r = ServiceVerify.EvaluateStartGate(unit, "/b", "/b", Env, digestMatches: _ => true);
+        var r = ServiceVerify.EvaluateStartGate(unit, "/b", "/b", Env, NeverRead, digestMatches: _ => true);
         await Assert.That(r).IsEqualTo(StartGateReason.IdentityMismatch);
     }
 
@@ -176,7 +183,7 @@ public class ServiceVerifyStartGateTests {
             "KCAP_EXPECT_SERVER_URL" => "https://s.example",
             // no KCAP_PROFILE at all
             _ => null };
-        var r = ServiceVerify.EvaluateStartGate(unit, "/b", "/b", Env, digestMatches: _ => true);
+        var r = ServiceVerify.EvaluateStartGate(unit, "/b", "/b", Env, NeverRead, digestMatches: _ => true);
         await Assert.That(r).IsEqualTo(StartGateReason.IdentityMismatch);
     }
 
@@ -193,7 +200,7 @@ public class ServiceVerifyStartGateTests {
             "KCAP_PROFILE" => "a",
             // no KCAP_EXPECT_SERVER_URL at all
             _ => null };
-        var r = ServiceVerify.EvaluateStartGate(unit, "/b", "/b", Env, digestMatches: _ => true);
+        var r = ServiceVerify.EvaluateStartGate(unit, "/b", "/b", Env, NeverRead, digestMatches: _ => true);
         await Assert.That(r).IsEqualTo(StartGateReason.IdentityMismatch);
     }
 
@@ -211,7 +218,7 @@ public class ServiceVerifyStartGateTests {
             "KCAP_PROFILE" => "a",
             "KCAP_EXPECT_SERVER_URL" => "https://s.example",
             _ => null };
-        var r = ServiceVerify.EvaluateStartGate(unit, "/b", "/b", Env, digestMatches: _ => true);
+        var r = ServiceVerify.EvaluateStartGate(unit, "/b", "/b", Env, NeverRead, digestMatches: _ => true);
         await Assert.That(r).IsEqualTo(StartGateReason.IdentityMismatch);
     }
 
@@ -226,7 +233,7 @@ public class ServiceVerifyStartGateTests {
         var unit = new Dictionary<string, string> {
             ["KCAP_CONSENT_SEED_DEFAULT"] = "prompt",
             ["KCAP_PROFILE"] = "work",
-            ["KCAP_CONFIG_DIR"] = tmp.Path,
+            [ConfigRoot.ConfigDirEnvVar] = tmp.Path,
             ["KCAP_EXPECT_SERVER_URL"] = "https://s.example",
             // no KCAP_URL — forces the BakedProfileServerUrl fallback that reads config.json
         };
@@ -236,7 +243,7 @@ public class ServiceVerifyStartGateTests {
             "KCAP_EXPECT_SERVER_URL" => "https://s.example",
             _ => null };
 
-        var r = ServiceVerify.EvaluateStartGate(unit, "/b", "/b", Env, digestMatches: _ => true);
+        var r = ServiceVerify.EvaluateStartGate(unit, "/b", "/b", Env, NeverRead, digestMatches: _ => true);
         await Assert.That(r).IsEqualTo(StartGateReason.EvidenceUnreadable);
     }
 
@@ -252,7 +259,7 @@ public class ServiceVerifyStartGateTests {
         var unit = new Dictionary<string, string> {
             ["KCAP_CONSENT_SEED_DEFAULT"] = "prompt",
             ["KCAP_PROFILE"] = "work",
-            ["KCAP_CONFIG_DIR"] = tmp.Path,
+            [ConfigRoot.ConfigDirEnvVar] = tmp.Path,
             ["KCAP_EXPECT_SERVER_URL"] = "https://s.example",
             // no KCAP_URL — forces the BakedProfileServerUrl fallback that reads config.json
         };
@@ -262,7 +269,7 @@ public class ServiceVerifyStartGateTests {
             "KCAP_EXPECT_SERVER_URL" => "https://s.example",
             _ => null };
 
-        var r = ServiceVerify.EvaluateStartGate(unit, "/b", "/b", Env, digestMatches: _ => true);
+        var r = ServiceVerify.EvaluateStartGate(unit, "/b", "/b", Env, NeverRead, digestMatches: _ => true);
         await Assert.That(r).IsEqualTo(StartGateReason.EvidenceUnreadable);
     }
 }

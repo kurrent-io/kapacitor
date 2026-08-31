@@ -3,6 +3,7 @@ using System.Text.Json.Nodes;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.SessionStartMemory;
+using Capacitor.Cli.Core.Harness;
 
 // ReSharper disable ShortLivedHttpClient
 
@@ -33,7 +34,16 @@ namespace Capacitor.Cli.Commands.Harness;
 ///   PreToolUse        → swallowed
 ///   PostToolUse       → swallowed
 /// </remarks>
-static class CodexHookCommand {
+sealed class CodexHookCommand(ConfigRoot config, ProfileContext profiles, HookClock clock, UserHome home) {
+    readonly WatcherManager  _watchers = new(config, profiles);
+    readonly AgentHookPoster _poster   = new(config, profiles);
+
+    string Url => profiles.Resolution.ServerUrl!;
+
+    /// <summary>Codex blocks on this hook's stdout and sets no timeout of its own, so this ceiling is
+    /// the only thing standing between a stalled fetch and a stalled agent.</summary>
+    static readonly TimeSpan Ceiling = TimeSpan.FromSeconds(5);
+
     // Codex's Stop and SessionStart hooks parse stdout as the
     // `stop.command.output` / `session-start.command.output` JSON schema and
     // reject empty bodies with "hook returned invalid stop hook JSON output".
@@ -83,7 +93,7 @@ static class CodexHookCommand {
             // (with the trailing newline the fragment-bearing shape already ships).
             payload = fragment is null && string.IsNullOrWhiteSpace(workItemsNudge)
                 ? SessionScopedOutputJson
-                : SessionStartMemoryOutputAdapters.Render(SessionStartHarness.Codex, fragment, workItemsNudge);
+                : SessionStartMemoryOutputAdapters.Render(HarnessId.Codex, fragment, workItemsNudge);
         } catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException) {
             payload = SessionScopedOutputJson;
         }
@@ -107,6 +117,26 @@ static class CodexHookCommand {
     }
 
     /// <summary>
+    /// Whether memory injection may attempt auth discovery for <paramref name="baseUrl"/> at all.
+    /// Guards the process-exiting URL validation inside the authenticated-client helper (see the
+    /// call-site comment): a blank or unacceptable URL must skip injection, never exit the hook.
+    /// </summary>
+    internal static bool CanAttemptMemoryInjection(string? baseUrl) => HookHttp.IsPostable(baseUrl);
+
+    /// <summary>
+    /// An AUTHENTICATED client that honours the provider's 401-refresh contract.
+    /// <c>/api/memories/index</c> is bearer-authenticated, and
+    /// <see cref="SessionStartMemoryContextProvider"/> hands the rejected bearer back here after a
+    /// 401 so a fresh client can be minted. A bare <c>new HttpClient()</c> would 401 on both the
+    /// initial call AND the refresh, the provider would record a retryable failure, and Codex would
+    /// silently never receive memory context on any authenticated deployment. Mirrors
+    /// <c>ClaudeHookCommand</c>'s factory.
+    /// </summary>
+    internal Func<string?, CancellationToken, Task<HttpClient>> DefaultMemoryClientFactory()
+        => async (rejectedAccessToken, ct) => (await HttpClientExtensions.CreateClientWithAuthStatusAsync(config,
+            profiles, Url, ct, allowAutoRedirect: false, rejectedAccessToken: rejectedAccessToken)).Client;
+
+    /// <summary>
     /// Starts the shared SessionStart memory fetch so it overlaps the lifecycle POST
     /// instead of serializing ahead of it — the same start-early/await-bounded shape
     /// <c>ClaudeHookCommand.StartMemoryIndexTask</c> uses. Returns a task that NEVER faults:
@@ -123,36 +153,12 @@ static class CodexHookCommand {
     /// on a resume of the SAME session id is prevented by the shared lease keyed on
     /// (harness, session id) rather than by a reason we cannot observe.</para>
     /// </summary>
-    /// <summary>
-    /// The production memory-index client factory: an AUTHENTICATED client, and one that honours the
-    /// provider's 401-refresh contract. <c>/api/memories/index</c> is bearer-authenticated, and
-    /// <see cref="SessionStartMemoryContextProvider"/> deliberately hands the rejected bearer back to
-    /// this factory after a 401 so it can mint a fresh client. A bare <c>new HttpClient()</c> would
-    /// 401 on both the initial call AND the refresh, the provider would record a retryable failure,
-    /// and Codex would silently never receive memory context on any authenticated deployment.
-    /// Named (not inlined) so a test can assert the production path attaches credentials — the
-    /// writer-level tests cannot see this. Mirrors <c>ClaudeHookCommand</c>'s factory exactly.
-    /// </summary>
-    /// <summary>
-    /// Whether memory injection may attempt auth discovery for <paramref name="baseUrl"/> at all.
-    /// Guards the process-exiting URL validation inside the authenticated-client helper (see the
-    /// call-site comment): a blank or unacceptable URL must skip injection, never exit the hook.
-    /// </summary>
-    internal static bool CanAttemptMemoryInjection(string? baseUrl) => HookHttp.IsPostable(baseUrl);
-
-    internal static Func<string?, CancellationToken, Task<HttpClient>> DefaultMemoryClientFactory(string baseUrl)
-        => async (rejectedAccessToken, ct) => (await HttpClientExtensions.CreateClientWithAuthStatusAsync(
-            baseUrl, ct, allowAutoRedirect: false, rejectedAccessToken: rejectedAccessToken)).Client;
-
-    static Task<string?> StartMemoryIndexTask(
-            string     baseUrl,
+    Task<string?> StartMemoryIndexTask(
             string?    sessionId,
             string?    scopeRoot,
             bool       disabled,
             bool       guidelinesDisabled,
-            TimeSpan   budget,
-            Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory,
-            Func<SessionStartMemoryLeaseStore>?                 memoryStoreFactory) {
+            TimeSpan   budget) {
         if ((disabled && guidelinesDisabled) || string.IsNullOrWhiteSpace(sessionId) || string.IsNullOrWhiteSpace(scopeRoot)
          || budget <= TimeSpan.Zero)
             return Task.FromResult<string?>(null);
@@ -162,23 +168,24 @@ static class CodexHookCommand {
         // accept. Exiting here would kill the hook BEFORE the stdout handshake, so Codex would see
         // no output at all and reject the session — the opposite of fail-open, and strictly worse
         // than skipping an optional memory fragment. Mirrors PostBestEffortAsync's guard.
-        if (!CanAttemptMemoryInjection(baseUrl)) return Task.FromResult<string?>(null);
+        if (!CanAttemptMemoryInjection(Url)) return Task.FromResult<string?>(null);
 
         // Construction itself stays inside the fail-open boundary: store-root validation and
-        // injected factories can throw synchronously.
+        // the injected client factory can throw synchronously.
         try {
-            var store = memoryStoreFactory?.Invoke() ?? new SessionStartMemoryLeaseStore();
+            var store = SessionStartMemoryLeaseStore.Create(config, clock.Time);
             // Only clients WE created are ours to dispose; an injected factory's client is
             // owned by its caller and may be handed back again on the 401-refresh call.
             var provider = SessionStartMemoryHookSupport.CompositeProvider(
-                memoryClientFactory ?? DefaultMemoryClientFactory(baseUrl),
-                disposeClients: memoryClientFactory is null);
+                config,
+                DefaultMemoryClientFactory(),
+                disposeClients: true);
 
             return new SessionStartMemoryOrchestrator(store, provider).GetFragmentAsync(
-                new SessionMemoryLifecycle(SessionStartHarness.Codex, sessionId!, LifecycleInstanceId: null,
+                new SessionMemoryLifecycle(HarnessId.Codex, sessionId!, LifecycleInstanceId: null,
                     IsTopLevel: true, ClassificationAuthoritative: true, SessionLifecycleReason.New,
                     CallbackMayRepeat: false),
-                new SessionStartMemoryContextRequest(baseUrl, scopeRoot, disabled, budget, CancellationToken.None,
+                new SessionStartMemoryContextRequest(Url, scopeRoot, disabled, budget, CancellationToken.None,
                     GuidelinesDisabled: guidelinesDisabled));
         } catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException) {
             return Task.FromResult<string?>(null);
@@ -195,32 +202,21 @@ static class CodexHookCommand {
     /// abandoned (not cancelled mid-flight — its own lease bookkeeping owns that) and null is
     /// returned, so the write degrades to the minimal handshake rather than being delayed.
     /// </summary>
-    static async Task<string?> AwaitMemoryFragmentAsync(Task<string?> task, long processStart) {
+    static async Task<string?> AwaitMemoryFragmentAsync(Task<string?> task, HookBudget budget) {
         try {
-            var budget = HookBudget.Remaining(processStart, "session-start");
+            var remaining = budget.Remaining;
 
-            if (budget <= TimeSpan.Zero)
+            if (remaining <= TimeSpan.Zero)
                 return task.IsCompletedSuccessfully ? task.Result : null;
 
-            return await task.WaitAsync(budget);
+            return await task.WaitAsync(remaining);
         } catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException) {
             return null;
         }
     }
 
-    /// <param name="processStart">
-    /// Monotonic timestamp the hook process started, the anchor for every budget computation.
-    /// Defaults to "now" so production callers need not thread it; tests pass an older stamp to
-    /// drive the budget-exhausted branch deterministically instead of sleeping.
-    /// </param>
-    /// <param name="memoryClientFactory">Test seam: supplies the HTTP client for the memory fetch.</param>
-    /// <param name="memoryStoreFactory">Test seam: redirects the lease store off the real config root.</param>
-    public static async Task<int> Handle(string baseUrl, TextReader stdin,
-            long processStart = 0,
-            Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory = null,
-            Func<SessionStartMemoryLeaseStore>?                 memoryStoreFactory  = null) {
-        var ps   = processStart == 0 ? System.Diagnostics.Stopwatch.GetTimestamp() : processStart;
-        var body = await stdin.ReadToEndAsync();
+    public async Task<int> Handle(TextReader stdin) {
+        var body    = await stdin.ReadToEndAsync();
 
         JsonNode? node;
 
@@ -263,7 +259,7 @@ static class CodexHookCommand {
         // check below); the plan_content branch remains Claude-specific.
         NormalizeGuidField(node, "session_id");
 
-        node["home_dir"] = PathHelpers.HomeDirectory;
+        node["home_dir"] = home.Path;
 
         var agentHostId = Environment.GetEnvironmentVariable("KCAP_AGENT_ID");
         if (agentHostId is not null) {
@@ -275,7 +271,7 @@ static class CodexHookCommand {
         // Stop hook would re-enliven the watcher and re-send transcript data for
         // a session whose data was just deleted server-side.
         var disabledSessionId = TryGetString(node, "session_id");
-        if (disabledSessionId is not null && DisabledSessions.IsDisabled(disabledSessionId)) {
+        if (disabledSessionId is not null && DisabledSessions.IsDisabled(disabledSessionId, config)) {
             // Emit the session-scoped JSON Codex's Stop/SessionStart parsers expect,
             // then skip dispatch. (Claude's disabled branch also returns immediately
             // — see Program.cs around line 593.)
@@ -296,20 +292,19 @@ static class CodexHookCommand {
         // populated) and marking the session via DisabledSessions lets
         // subsequent events take the existing disabled-session fast path
         // above without paying any git cost.
-        var activeProfile = await AppConfig.GetActiveProfileAsync();
+        var activeProfile = profiles.Effective;
 
         if (activeProfile?.ExcludedPaths is { Length: > 0 } excludedPaths
-         && PathExclusion.IsExcluded(TryGetString(node, "cwd"), excludedPaths)) {
+         && PathExclusion.IsExcluded(TryGetString(node, "cwd"), excludedPaths, home)) {
             EmitFallbackOutput(eventName);
             return 0;
         }
 
         try {
             return eventName switch {
-                "SessionStart"      => await HandleSessionStart(baseUrl, node, activeProfile, ps,
-                                             memoryClientFactory, memoryStoreFactory),
-                "Stop"              => await HandleStop(baseUrl, node),
-                "PermissionRequest" => await HandlePermissionRequest(baseUrl, node),
+                "SessionStart"      => await HandleSessionStart(node, activeProfile, clock.Budget(Ceiling)),
+                "Stop"              => await HandleStop(node),
+                "PermissionRequest" => await HandlePermissionRequest(node),
                 "UserPromptSubmit"
                   or "PreToolUse"
                   or "PostToolUse"  => 0,  // v1: swallow informational events
@@ -323,7 +318,7 @@ static class CodexHookCommand {
             // CLI's top-level guard would exit 0 with empty stdout and Codex would
             // report "invalid hook output". Emit the
             // event-appropriate fallback here first, and record for diagnosis.
-            CrashReporter.Record("hook", ex);
+            CrashReporter.Record(config, "hook", ex);
             EmitFallbackOutput(eventName);
             return 0;
         }
@@ -348,10 +343,7 @@ static class CodexHookCommand {
         }
     }
 
-    static async Task<int> HandleSessionStart(string baseUrl, JsonNode node, Profile? activeProfile,
-            long                                                processStart        = 0,
-            Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory = null,
-            Func<SessionStartMemoryLeaseStore>?                 memoryStoreFactory  = null) {
+    async Task<int> HandleSessionStart(JsonNode node, Profile? activeProfile, HookBudget budget) {
         // Stamp the user's configured default visibility onto the payload
         // BEFORE git enrichment so it survives the JsonString round-trip.
         // /hooks/session-start/codex shares SessionStartHook with the Claude
@@ -369,8 +361,8 @@ static class CodexHookCommand {
             node["workspace_root"] = workspaceRoot;
         }
 
-        SessionStartInventory.Stamp(node.AsObject());
-        var enriched = await RepositoryDetection.EnrichWithRepositoryInfo(node.ToJsonString());
+        SessionStartInventory.Stamp(node.AsObject(), config, home);
+        var enriched = await RepositoryDetection.EnrichWithRepositoryInfo(config, node.ToJsonString());
 
         // Repo exclusion runs here (not above the event switch) so that the
         // repository block is already populated by enrichment — RepoExclusion
@@ -380,10 +372,10 @@ static class CodexHookCommand {
         // take the existing disabled-session fast path at the top of Handle
         // without paying any git cost.
         if (activeProfile?.ExcludedRepos is { Length: > 0 } excludedRepos
-         && await RepoExclusion.IsExcludedAsync(enriched, excludedRepos)) {
+         && await RepoExclusion.IsExcludedAsync(config, enriched, excludedRepos)) {
             var excludedSessionId = TryGetString(node, "session_id");
 
-            if (excludedSessionId is not null) DisabledSessions.Mark(excludedSessionId);
+            if (excludedSessionId is not null) DisabledSessions.Mark(excludedSessionId, config);
 
             WriteSessionScopedOutput(Console.Out);
             return 0;
@@ -399,24 +391,21 @@ static class CodexHookCommand {
         // (budget-capped) immediately before the stdout write below, which is the only consumer.
         // Deliberately started after the exclusion/disabled early-outs above so an excluded repo
         // never reaches the memory subsystem at all.
-        var memoryTask = StartMemoryIndexTask(
-            baseUrl, sessionId,
+        var memoryTask = StartMemoryIndexTask(sessionId,
             // The git root discovered above (stamped onto the node) is preferred; the payload cwd is
             // the fallback. Never a process-cwd fallback — see StartMemoryIndexTask's scope note.
             TryGetString(enrichedNode, "workspace_root") ?? TryGetString(enrichedNode, "cwd"),
-            // The EFFECTIVE profile, not AppConfig.ResolvedProfile?.Profile: ProfileResolver returns a
+            // The EFFECTIVE profile, not the resolution's own: ProfileResolver returns a
             // null Profile whenever --server-url or KCAP_URL wins, and GetActiveProfileAsync (which
             // produced activeProfile) is what falls back to the on-disk active profile. Reading the
             // resolved one silently ignored `disable_memory_index: true` for every KCAP_URL user.
             activeProfile?.DisableMemoryIndex is true,
             activeProfile?.DisableSessionGuidelines is true,
-            // Remaining() already reserves Safety — subtracting it again here halved the window.
-            HookBudget.Remaining(processStart, "session-start"),
-            memoryClientFactory, memoryStoreFactory);
+            // Remaining already reserves Safety — subtracting it again here halved the window.
+            budget.Remaining);
 
-        var spool = new HookSpool(PathHelpers.ConfigPath("spool"));
-        var outcome = await AgentHookPoster.PostOrSpoolAsync(
-            baseUrl, "session-start/codex", enriched, "codex-hook", spool,
+        var spool = new HookSpool(config);
+        var outcome = await _poster.PostOrSpoolAsync("session-start/codex", enriched, "codex-hook", spool,
             sessionId: sessionId ?? "", route: "session-start/codex");
 
         // Codex blocks on this hook's stdout — satisfy the handshake contract FIRST, and only
@@ -432,17 +421,17 @@ static class CodexHookCommand {
         // skipped by an early `return 1` above, which left Codex — a host that BLOCKS on this hook's
         // stdout — with zero bytes: no `continue`, no context, just a wait for its hook timeout. The
         // recording outcome must not decide whether the host can proceed.
-        var fragment = await AwaitMemoryFragmentAsync(memoryTask, processStart);
+        var fragment = await AwaitMemoryFragmentAsync(memoryTask, budget);
 
         // The static work-items nudge, resolved (availability-gated + opt-out) independently
         // of the lease-driven memory/guidelines fragment and merged only at the output layer.
         var workItemsNudge = HarnessNudgeEmitter.Combine(
-            WorkItemsNudgeEmitter.Resolve(SessionStartHarness.Codex, sessionId, activeProfile?.DisableWorkItemsNudge is true),
-            HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true));
+            WorkItemsNudgeEmitter.Resolve(HarnessId.Codex, sessionId, activeProfile?.DisableWorkItemsNudge is true, home),
+            HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true, config, home));
 
         await RunSessionStartHandshakeForTest(
             writeStdout: () => WriteSessionStartOutput(Console.Out, fragment, workItemsNudge),
-            postStdoutWork: () => RunPostStdoutWork(baseUrl, spool, enrichedNode, sessionId, outcome));
+            postStdoutWork: () => RunPostStdoutWork(spool, enrichedNode, sessionId, outcome));
 
         // Non-zero on a permanent rejection is preserved — it is the signal the session was not
         // recorded — but it is now reported AFTER the handshake rather than instead of it. The watcher
@@ -462,26 +451,25 @@ static class CodexHookCommand {
     static bool IsEnvelopeSourcedHostedSession() =>
         Environment.GetEnvironmentVariable("KCAP_HOSTED_APPSERVER") is "1";
 
-    static Task RunPostStdoutWork(
-            string baseUrl, HookSpool spool, JsonNode? enrichedNode, string? sessionId, HookPostOutcome outcome) {
-        var transcriptSpool = new TranscriptSpool(PathHelpers.ConfigPath("transcript-spool"));
+    Task RunPostStdoutWork(
+            HookSpool spool, JsonNode? enrichedNode, string? sessionId, HookPostOutcome outcome) {
+        var transcriptSpool = new TranscriptSpool(config);
 
-        _ = AgentHookPoster.DrainSpoolsAsync(baseUrl, spool, transcriptSpool, sessionId);
+        _ = _poster.DrainSpoolsAsync(spool, transcriptSpool, sessionId);
 
-        if (!AgentHookPoster.ShouldSpawnAfter(outcome, baseUrl)) return Task.CompletedTask;
+        if (!AgentHookPoster.ShouldSpawnAfter(outcome, Url)) return Task.CompletedTask;
 
         var transcript = TryGetString(enrichedNode, "transcript_path");
         var cwd        = TryGetString(enrichedNode, "cwd");
 
         return sessionId is not null && transcript is not null && !IsEnvelopeSourcedHostedSession()
-            ? WatcherManager.EnsureWatcherRunning(
-                baseUrl, sessionId, transcript,
+            ? _watchers.EnsureWatcherRunning(sessionId, transcript,
                 agentId: null, sessionIdOverride: null, cwd: cwd,
                 skipTitle: false, vendor: "codex")
             : Task.CompletedTask;
     }
 
-    static async Task<int> HandleStop(string baseUrl, JsonNode node) {
+    async Task<int> HandleStop(JsonNode node) {
         // Codex 'Stop' fires at every turn end, NOT session end. Session-end
         // is fired by the watcher's parent-PID monitor in WatchCommand.cs
         // when the codex process actually exits — that path POSTs
@@ -502,14 +490,13 @@ static class CodexHookCommand {
             // Guard-1: skip the watcher restart for an envelope-sourced hosted session (the daemon owns
             // its transcript); the idle-marker stop POST still fires so the "working" indicator clears.
             if (!IsEnvelopeSourcedHostedSession()) {
-                await WatcherManager.EnsureWatcherRunning(
-                    baseUrl, sessionId, transcript,
+                await _watchers.EnsureWatcherRunning(sessionId, transcript,
                     agentId: null, sessionIdOverride: null, cwd: cwd,
                     skipTitle: false, vendor: "codex"
                 );
             }
 
-            await PostBestEffortAsync(baseUrl, "stop", node, TimeSpan.FromSeconds(2));
+            await PostBestEffortAsync("stop", node, TimeSpan.FromSeconds(2));
         }
 
         // Codex's stop-hook output parser rejects empty stdout as
@@ -518,15 +505,15 @@ static class CodexHookCommand {
         return 0;
     }
 
-    static async Task<int> HandlePermissionRequest(string baseUrl, JsonNode node) {
+    async Task<int> HandlePermissionRequest(JsonNode node) {
         var daemonUrl = Environment.GetEnvironmentVariable("KCAP_DAEMON_URL");
 
         return daemonUrl is null
-            ? await HandlePermissionRequestStub(baseUrl, node)
+            ? await HandlePermissionRequestStub(node)
             : await HandlePermissionRequestViaBridge(daemonUrl, node);
     }
 
-    static async Task<int> HandlePermissionRequestStub(string baseUrl, JsonNode node) {
+    async Task<int> HandlePermissionRequestStub(JsonNode node) {
         // Terminal Codex sessions can't answer a Capacitor UI prompt, so we
         // record the event server-side (best-effort) and emit no decision —
         // Codex falls back to its built-in in-CLI approval flow and the user
@@ -542,12 +529,10 @@ static class CodexHookCommand {
         // Without bounding discovery too, a server that accepts the TCP
         // connection but stalls on /auth/config can burn the full HttpClient
         // default (100 s) before we even start the POST, blowing past Codex's
-        // 30 s hook timeout. Passing baseUrl also keeps discovery targeted at
-        // the server we're about to POST to, not the
-        // AppConfig.ResolvedServerUrl / KCAP_URL / localhost:5108 fallback.
+        // 30 s hook timeout.
         // Recording must never block Codex's approval prompt — see
         // PostBestEffortAsync for the shared swallow-all/cap behavior.
-        await PostBestEffortAsync(baseUrl, "permission-record", node, TimeSpan.FromSeconds(2));
+        await PostBestEffortAsync("permission-record", node, TimeSpan.FromSeconds(2));
 
         // Empty hookSpecificOutput → Codex treats it as "no decision" and runs
         // its normal approval flow. See
@@ -567,7 +552,8 @@ static class CodexHookCommand {
         client.Timeout = Timeout.InfiniteTimeSpan;
 
         try {
-            using var content = new StringContent(node.ToJsonString(), Encoding.UTF8, "application/json");
+            var bridgePayload = BuildBridgePayload(node, HookAgentId.FromEnvironment());
+            using var content = new StringContent(bridgePayload.ToJsonString(), Encoding.UTF8, "application/json");
             using var resp    = await client.PostAsync($"{bridgeBase}/codex/permission-request", content);
 
             if (!resp.IsSuccessStatusCode) {
@@ -583,6 +569,12 @@ static class CodexHookCommand {
             Console.Error.WriteLine($"[kcap] codex-hook permission-request bridge error: {ex.Message}");
             return EmitDenyAndExitNonzero();
         }
+    }
+
+    internal static JsonObject BuildBridgePayload(JsonNode node, string? agentId) {
+        var payload = (JsonObject)node.DeepClone();
+        if (agentId is not null) payload["agent_id"] = agentId;
+        return payload;
     }
 
     static int EmitDenyAndExitNonzero() {
@@ -603,11 +595,11 @@ static class CodexHookCommand {
     /// terminate the caller. The single deadline covers both /auth/config discovery and the POST.
     /// Callers that must satisfy Codex's stdout contract write their JSON output AFTER awaiting this.
     /// </summary>
-    static async Task PostBestEffortAsync(string baseUrl, string endpoint, JsonNode node, TimeSpan cap) {
-        // A blank or non-absolute baseUrl would trip EnsureAbsolute deep inside auth discovery,
+    async Task PostBestEffortAsync(string endpoint, JsonNode node, TimeSpan cap) {
+        // A blank or non-absolute Url would trip EnsureAbsolute deep inside auth discovery,
         // which calls Environment.Exit(2) — uncatchable, and would bypass the caller's stdout/exit
         // contract. Bail silently before we can reach it.
-        if (string.IsNullOrWhiteSpace(baseUrl) || !HttpClientExtensions.IsAcceptableUrl(baseUrl)) {
+        if (string.IsNullOrWhiteSpace(Url) || !HttpClientExtensions.IsAcceptableUrl(Url)) {
             return;
         }
 
@@ -617,7 +609,7 @@ static class CodexHookCommand {
             // Use the status-returning variant, NOT CreateAuthenticatedClientAsync: the latter writes
             // "Not authenticated" / "expired" to stderr, which a per-turn Stop would spam. Stay quiet
             // and skip the POST when there's no usable auth (still swallow-all).
-            var (client, status) = await HttpClientExtensions.CreateClientWithAuthStatusAsync(baseUrl, cts.Token);
+            var (client, status) = await HttpClientExtensions.CreateClientWithAuthStatusAsync(config, profiles, Url, cts.Token);
 
             using (client) {
                 if (status is not (AuthStatus.Ok or AuthStatus.NoAuthRequired)) {
@@ -625,7 +617,7 @@ static class CodexHookCommand {
                 }
 
                 using var content = new StringContent(node.ToJsonString(), Encoding.UTF8, "application/json");
-                using var _       = await client.PostAsync($"{baseUrl}/hooks/{endpoint}", content, cts.Token);
+                using var _       = await client.PostAsync($"{Url}/hooks/{endpoint}", content, cts.Token);
             }
         } catch {
             // Best-effort — must never block or fail the caller.

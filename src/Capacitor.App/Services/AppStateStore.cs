@@ -4,13 +4,18 @@ using System.Text.Json.Serialization;
 namespace Capacitor.App.Services;
 
 /// App-owned UX state only — nothing lifecycle-safety-bearing lives here (spec §3.5). Persisted
-/// to `~/.config/kcap/app-state.json` via PathHelpers.ConfigPath; the CLI's own fixed-namespace
+/// under the app's ConfigRoot as `app-state.json`; the CLI's own fixed-namespace
 /// marker is the source of truth for anything safety-bearing.
 public sealed record AppState(
     bool ShimOffered = false,
     bool ShimDenied = false,
     IReadOnlyList<string>? DeclinedTakeoverPairs = null,
-    bool ConsentQuarantineAcked = false);
+    bool ConsentQuarantineAcked = false,
+    // Absolute repo path -> vendor token. "" is the reserved key for the not-yet-in-a-repository
+    // target (HomeViewModel.ScratchRepoPath) — a stored preference only, since the daemon does
+    // not accept a repo-less launch. Absent key = never chosen here; the caller picks its own
+    // default rather than inheriting another repository's choice.
+    IReadOnlyDictionary<string, string>? HarnessByRepo = null);
 
 public interface IAppStateStore {
     Task<AppState> LoadAsync();

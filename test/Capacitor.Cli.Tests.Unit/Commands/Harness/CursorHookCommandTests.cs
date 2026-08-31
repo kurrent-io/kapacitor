@@ -1,29 +1,42 @@
 using System.Net;
 using System.Text;
 using System.Text.Json.Nodes;
+using Capacitor.Cli.Commands;
 using Capacitor.Cli.Commands.Harness;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Tests.Unit.SessionStartMemory;
+using Capacitor.Cli.Core.Setup;
 using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.Harness.Cursor;
 using Capacitor.Cli.Harness.Cursor;
-using Capacitor.Cli.SessionStartMemory;
+using Microsoft.Extensions.Time.Testing;
 
 namespace Capacitor.Cli.Tests.Unit.Commands.Harness;
 
-// Several tests here read HOME-derived paths (DisabledSessions marker dir,
-// PathHelpers.HomeDirectory injection into the outgoing payload) and one
-// mutates KCAP_AGENT_ID. Serialise against every other test that
-// mutates HOME so a racing HOME-setter from PluginCommand* tests can't
-// land our marker writes in the wrong directory.
-// TokenStoreProfileTests too: these read the shared config.json, and a concurrent writer there
-// DELETES it to republish — which a plain read handle blocks on Windows.
-[NotInParallel(["HomeEnvVarMutation", "TokenStoreProfileTests"])]
+// The hook resolves the harness nudge through HarnessPaths, so it reads every vendor override
+// variable a peer suite clears mid-test.
+[NotInParallel("VendorEnvOverrides")]
 public class CursorHookCommandTests {
+    [TempHome] public required TempHome Home { get; init; }
+
+    CursorMarkers Markers => new(Config.Root);
+
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     const string Sid = "8c3276c2c8f743ce98898c2becf5240a";
+
+    // The harness nudge fires unless an on-disk stamp throttles it, and a private root starts with
+    // none — these tests assert on the memory fragment alone. Claim the window explicitly instead of
+    // relying on whichever sibling test happened to claim it in the shared config dir first.
+    static void ThrottleHarnessNudge(ConfigRoot root) =>
+        new HarnessOfferStore(root).TryClaimCheck(HarnessNudgeEmitter.CheckThrottle);
+
+    [Before(Test)]
+    public void ThrottleNudgeForThisRoot() => ThrottleHarnessNudge(Config.Root);
 
     [Test]
     public async Task malformed_stdin_returns_zero() {
-        using var fx   = new Fixture();
+        using var fx   = new Fixture(Config.Root);
         var       exit = await fx.HandleAsync("not a json payload");
         await Assert.That(exit).IsEqualTo(0);
         await Assert.That(fx.Sent).IsEmpty();
@@ -31,7 +44,7 @@ public class CursorHookCommandTests {
 
     [Test]
     public async Task missing_hook_event_name_returns_zero() {
-        using var fx   = new Fixture();
+        using var fx   = new Fixture(Config.Root);
         var       exit = await fx.HandleAsync("""{"session_id":"abc"}""");
         await Assert.That(exit).IsEqualTo(0);
         await Assert.That(fx.Sent).IsEmpty();
@@ -39,7 +52,7 @@ public class CursorHookCommandTests {
 
     [Test]
     public async Task session_id_is_normalised_dashless_in_outgoing_payload() {
-        using var fx = new Fixture();
+        using var fx = new Fixture(Config.Root);
         await fx.HandleAsync("""{"hook_event_name":"sessionStart","session_id":"8c3276c2-c8f7-43ce-9889-8c2becf5240a"}""");
         var sent = fx.SentToHook("session-start/cursor");
 
@@ -53,7 +66,7 @@ public class CursorHookCommandTests {
         Environment.SetEnvironmentVariable("KCAP_AGENT_ID", "host-42");
 
         try {
-            using var fx = new Fixture();
+            using var fx = new Fixture(Config.Root);
             await fx.HandleAsync("""{"hook_event_name":"sessionStart","session_id":"abc"}""");
             var sent = fx.SentToHook("session-start/cursor");
             var node = JsonNode.Parse(sent)!;
@@ -67,20 +80,16 @@ public class CursorHookCommandTests {
     [Test]
     public async Task disabled_session_suppresses_POST() {
         var sid = Guid.NewGuid().ToString("N");
-        DisabledSessions.Mark(sid);
+        DisabledSessions.Mark(sid, Config.Root);
 
-        try {
-            using var fx = new Fixture();
-            await fx.HandleAsync($$"""{"hook_event_name":"sessionStart","session_id":"{{sid}}"}""");
-            await Assert.That(fx.Sent).IsEmpty();
-        } finally {
-            DisabledSessions.RemoveMarker(sid);
-        }
+        using var fx = new Fixture(Config.Root);
+        await fx.HandleAsync($$"""{"hook_event_name":"sessionStart","session_id":"{{sid}}"}""");
+        await Assert.That(fx.Sent).IsEmpty();
     }
 
     [Test]
     public async Task telemetry_events_post_but_do_not_spool_on_failure() {
-        using var fx = new Fixture(postStatus: HttpStatusCode.InternalServerError);
+        using var fx = new Fixture(Config.Root, postStatus: HttpStatusCode.InternalServerError);
         await fx.HandleAsync("""{"hook_event_name":"preToolUse","session_id":"abc","tool_name":"Glob"}""");
         await Assert.That(fx.SpoolFiles).IsEmpty();
     }
@@ -93,7 +102,7 @@ public class CursorHookCommandTests {
     /// </summary>
     [Test, NotInParallel]
     public async Task server_rejected_credential_names_kcap_login_on_stderr() {
-        using var fx = new Fixture(postStatus: HttpStatusCode.Unauthorized);
+        using var fx = new Fixture(Config.Root, postStatus: HttpStatusCode.Unauthorized);
         using var capture = ConsoleOutput.StartErrorCapture("\n");
 
         await fx.HandleAsync($$"""{"hook_event_name":"sessionEnd","session_id":"{{Sid}}"}""");
@@ -105,7 +114,7 @@ public class CursorHookCommandTests {
     /// above is proving 401 recognition rather than that any failure mentions the command.</summary>
     [Test, NotInParallel]
     public async Task server_error_does_not_name_kcap_login_on_stderr() {
-        using var fx = new Fixture(postStatus: HttpStatusCode.InternalServerError);
+        using var fx = new Fixture(Config.Root, postStatus: HttpStatusCode.InternalServerError);
         using var capture = ConsoleOutput.StartErrorCapture("\n");
 
         await fx.HandleAsync($$"""{"hook_event_name":"sessionEnd","session_id":"{{Sid}}"}""");
@@ -115,7 +124,7 @@ public class CursorHookCommandTests {
 
     [Test]
     public async Task canonical_events_spool_on_POST_failure() {
-        using var fx = new Fixture(postStatus: HttpStatusCode.InternalServerError);
+        using var fx = new Fixture(Config.Root, postStatus: HttpStatusCode.InternalServerError);
         await fx.HandleAsync($$"""{"hook_event_name":"sessionEnd","session_id":"{{Sid}}"}""");
         var files = fx.SpoolFiles.ToList();
         await Assert.That(files.Count).IsEqualTo(1);
@@ -124,26 +133,21 @@ public class CursorHookCommandTests {
 
     [Test]
     public async Task spool_drain_runs_before_current_event_under_budget() {
-        using var fx = new Fixture();
+        using var fx = new Fixture(Config.Root);
         fx.Spool.Append(Sid, "session-start/cursor", $$"""{"hook_event_name":"sessionStart","session_id":"{{Sid}}"}""");
         await fx.HandleAsync($$"""{"hook_event_name":"sessionEnd","session_id":"{{Sid}}"}""");
         await Assert.That(fx.RouteOrder).IsEquivalentTo(["session-start/cursor", "session-end/cursor"]);
     }
 
-    // a telemetry-only mapping (postToolUse, SpoolOnFailure=false) must
-    // NOT let the recovery-spawn watcher start while an EARLIER queued canonical event (here:
-    // sessionStart) is still stuck undelivered. Simulate: sessionStart is already spooled from a
-    // prior failed invocation; THIS invocation's generic top-of-method drain retries it and hits
-    // a TRANSIENT failure (503) so it stays queued, while postToolUse's OWN POST succeeds. Before
-    // the fix, postToolUse's SpoolOnFailure=false meant the ordering guard never even looked at
-    // the backlog, and the recovery spawn ran regardless.
+    // A telemetry-only mapping (postToolUse, SpoolOnFailure=false) must not let the
+    // recovery-spawn watcher start while an earlier queued canonical event (here: sessionStart)
+    // is still stuck undelivered. Simulates: sessionStart is already spooled from a prior failed
+    // invocation; this invocation's top-of-method drain retries it and hits a transient failure
+    // (503) so it stays queued, while postToolUse's own POST succeeds.
     [Test]
     public async Task telemetry_hook_does_not_recovery_spawn_while_an_earlier_canonical_event_is_still_stuck() {
         var sid = Guid.NewGuid().ToString("N");
-        using var tmp = new TempDir();
-        Environment.SetEnvironmentVariable("KCAP_CONFIG_DIR", tmp.Path);
-
-        var spool = new HookSpool(tmp.PathTo("spool"));
+        var spool = new HookSpool(Config.PathTo("spool"));
         spool.Append(sid, "session-start/cursor", $$"""{"hook_event_name":"sessionStart","session_id":"{{sid}}"}""");
 
         var spawned = new List<string>();
@@ -161,23 +165,22 @@ public class CursorHookCommandTests {
             });
             using var client = new HttpClient(handler);
 
-            var exit = await CursorHookCommand.HandleCore(
-                client, "http://localhost",
+            var exit = await new CursorHookCommand(Config.Root, Resolutions.At(Fixture.StubUrl, Config.Root), new HookClock(TimeProvider.System), Home).HandleCore(
+                client,
                 new StringReader($$"""{"hook_event_name":"postToolUse","session_id":"{{sid}}","tool_name":"Bash","transcript_path":"/tmp/{{sid}}.jsonl"}"""),
-                spool, TimeSpan.FromSeconds(2));
+                spool);
 
             await Assert.That(exit).IsEqualTo(0);
             await Assert.That(spawned).IsEmpty(); // must NOT spawn while sessionStart is still stuck
             await Assert.That(spool.HasBacklog(sid)).IsTrue(); // confirms the premise: still queued, not delivered
         } finally {
             WatcherManager.SpawnOverrideForTesting = null;
-            Environment.SetEnvironmentVariable("KCAP_CONFIG_DIR", null);
         }
     }
 
     [Test]
     public async Task afterAgentThought_canonical_id_is_stable_across_replays() {
-        using var fx   = new Fixture();
+        using var fx   = new Fixture(Config.Root);
         var       body = """{"hook_event_name":"afterAgentThought","session_id":"abc","generation_id":"gen1","text":"hello"}""";
         await fx.HandleAsync(body);
         await fx.HandleAsync(body);
@@ -197,7 +200,7 @@ public class CursorHookCommandTests {
         // final user line in the transcript would be normalized AFTER the
         // FIFO was wiped and any queued beforeSubmitPrompt attachments would
         // be lost. Verify the order is: transcript batch → session-end.
-        using var fx = new Fixture();
+        using var fx = new Fixture(Config.Root);
 
         await fx.WriteTranscript(
             """{"role":"user","message":{"content":[{"type":"text","text":"final prompt"}]}}"""
@@ -223,7 +226,7 @@ public class CursorHookCommandTests {
         // (here: beforeSubmitPrompt) must keep the existing post-then-backfill
         // ordering so lifecycle metadata reaches the server before any new
         // transcript context.
-        using var fx = new Fixture();
+        using var fx = new Fixture(Config.Root);
 
         await fx.WriteTranscript(
             """{"role":"user","message":{"content":[{"type":"text","text":"hello"}]}}"""
@@ -245,50 +248,50 @@ public class CursorHookCommandTests {
 
     [Test]
     public async Task telemetry_only_hook_touches_the_heartbeat_file() {
-        // Task 8: even a telemetry-only hook (never spooled, lossy on failure) must
-        // touch the per-session heartbeat — it reflects "Cursor is still firing hooks",
-        // independent of whatever the transcript/spool machinery is doing.
-        using var fx = new Fixture();
+        // Even a telemetry-only hook (never spooled, lossy on failure) must touch the
+        // per-session heartbeat — it reflects "Cursor is still firing hooks", independent of
+        // whatever the transcript/spool machinery is doing.
+        using var fx = new Fixture(Config.Root);
         var       sid = Guid.NewGuid().ToString("N");
         var       before = DateTimeOffset.UtcNow;
 
         await fx.HandleAsync($$"""{"hook_event_name":"postToolUse","session_id":"{{sid}}","tool_name":"Bash"}""");
 
-        var heartbeat = WatcherHeartbeat.Read(CursorMarkers.HeartbeatPath(sid));
+        var heartbeat = WatcherHeartbeat.Read(Markers.HeartbeatPath(sid));
         await Assert.That(heartbeat).IsNotNull();
         await Assert.That(heartbeat!.Value).IsGreaterThanOrEqualTo(before);
     }
 
     [Test]
     public async Task beforeSubmitPrompt_clears_its_barrier_once_the_live_POST_succeeds() {
-        using var fx  = new Fixture(); // defaults to HttpStatusCode.OK
+        using var fx  = new Fixture(Config.Root); // defaults to HttpStatusCode.OK
         var       sid = Guid.NewGuid().ToString("N");
 
         await fx.HandleAsync($$"""{"hook_event_name":"beforeSubmitPrompt","session_id":"{{sid}}","prompt":"hi"}""");
 
-        await Assert.That(CursorMarkers.BarrierPending(sid, DateTimeOffset.UtcNow, TimeSpan.FromSeconds(60))).IsFalse();
+        await Assert.That(Markers.BarrierPending(sid, DateTimeOffset.UtcNow, TimeSpan.FromSeconds(60))).IsFalse();
     }
 
     [Test]
     public async Task beforeSubmitPrompt_barrier_stays_pending_when_the_live_POST_fails() {
-        using var fx  = new Fixture(postStatus: HttpStatusCode.InternalServerError);
+        using var fx  = new Fixture(Config.Root, postStatus: HttpStatusCode.InternalServerError);
         var       sid = Guid.NewGuid().ToString("N");
 
         await fx.HandleAsync($$"""{"hook_event_name":"beforeSubmitPrompt","session_id":"{{sid}}","prompt":"hi"}""");
 
-        await Assert.That(CursorMarkers.BarrierPending(sid, DateTimeOffset.UtcNow, TimeSpan.FromSeconds(60))).IsTrue();
+        await Assert.That(Markers.BarrierPending(sid, DateTimeOffset.UtcNow, TimeSpan.FromSeconds(60))).IsTrue();
     }
 
     [Test]
     public async Task sessionEnd_drains_the_hook_spool_before_the_pre_end_transcript_drain_and_clears_the_barrier() {
-        // Task 8: a beforeSubmitPrompt whose live POST previously failed left a barrier
-        // + a spooled user-prompt/cursor entry behind. sessionEnd must deliver that spooled
-        // entry (clearing the barrier) BEFORE running its pre-end transcript drain, so a
-        // transcript line depending on the attachment is never normalized ahead of it.
-        using var fx  = new Fixture();
+        // A beforeSubmitPrompt whose live POST failed leaves a barrier plus a spooled
+        // user-prompt/cursor entry behind. sessionEnd must deliver that spooled entry (clearing
+        // the barrier) before running its pre-end transcript drain, so a transcript line
+        // depending on the attachment is never normalized ahead of it.
+        using var fx  = new Fixture(Config.Root);
         var       sid = Guid.NewGuid().ToString("N");
 
-        CursorMarkers.CreateBarrier(sid, DateTimeOffset.UtcNow);
+        Markers.CreateBarrier(sid, DateTimeOffset.UtcNow);
         fx.Spool.Append(sid, "user-prompt/cursor", $$"""{"hook_event_name":"beforeSubmitPrompt","session_id":"{{sid}}"}""");
 
         await fx.WriteTranscript(
@@ -311,29 +314,55 @@ public class CursorHookCommandTests {
         await Assert.That(promptIdx).IsLessThan(transcriptIdx);
         await Assert.That(transcriptIdx).IsLessThan(sessionEndIdx);
 
-        await Assert.That(CursorMarkers.BarrierPending(sid, DateTimeOffset.UtcNow, TimeSpan.FromSeconds(60))).IsFalse();
+        await Assert.That(Markers.BarrierPending(sid, DateTimeOffset.UtcNow, TimeSpan.FromSeconds(60))).IsFalse();
     }
 
     [Test]
     public async Task null_transcript_path_does_not_trigger_backfill() {
-        using var fx = new Fixture();
+        using var fx = new Fixture(Config.Root);
         await fx.HandleAsync("""{"hook_event_name":"sessionStart","session_id":"abc","transcript_path":null}""");
         await Assert.That(fx.AllSentTo("transcript")).IsEmpty();
     }
 
+    /// The ceiling runs from process entry, so the resolve and the global spool drain are paid out
+    /// of it before the hook is even dispatched. A work budget already spent must still record the
+    /// event — HandleCore's own gates spool it instead of posting — never discard it.
+    [Test]
+    public async Task a_work_budget_spent_before_dispatch_still_spools_the_event() {
+        using var fx = new Fixture(Config.Root);
+
+        // Remaining == 0 while UntilCeiling still has the reserve left: exactly what a slow
+        // pre-dispatch leaves behind.
+        var spent = new FakeTimeProvider();
+        var clock = new HookClock(spent);          // anchors on construction — advance AFTER it
+        spent.Advance(CursorHookCommand.Ceiling - HookBudget.Safety);
+
+        var exit = await new CursorHookCommand(Config.Root, Resolutions.At(Fixture.StubUrl, Config.Root), clock, Home)
+            .HandleWithDeps(
+                new StringReader("""{"hook_event_name":"sessionStart","session_id":"abc"}"""),
+                _ => Task.FromResult((fx.Client, AuthStatus.Ok)),
+                () => fx.Spool);
+
+        await Assert.That(exit).IsEqualTo(0);
+        await Assert.That(fx.Spool.HasBacklog("abc")).IsTrue();
+        await Assert.That(fx.Sent).IsEmpty();   // spooled INSTEAD of posted, not as well as
+    }
+
     [Test]
     public async Task expired_budget_returns_zero_not_throws() {
-        using var fx = new Fixture();
+        using var fx = new Fixture(Config.Root);
 
-        // budgetTotal=0 forces BudgetExpired() true on first check, which can also
-        // propagate as OperationCanceledException from stdin/HTTP. Either way the
+        // A budget already spent before dispatch forces BudgetExpired() true on the first check,
+        // which can also propagate as OperationCanceledException from stdin/HTTP. Either way the
         // dispatcher must fail-open with return 0, never bubble the exception.
-        var exit = await CursorHookCommand.HandleCore(
+        var spent = new FakeTimeProvider();
+        var clock = new HookClock(spent);
+        spent.Advance(CursorHookCommand.Ceiling);
+
+        var exit = await new CursorHookCommand(Config.Root, Resolutions.At(Fixture.StubUrl, Config.Root), clock, Home).HandleCore(
             fx.Client,
-            "http://localhost",
             new StringReader("""{"hook_event_name":"sessionStart","session_id":"abc"}"""),
-            fx.Spool,
-            TimeSpan.Zero
+            fx.Spool
         );
         await Assert.That(exit).IsEqualTo(0);
     }
@@ -369,28 +398,20 @@ public class CursorHookCommandTests {
         // Drain blocks past the budget by parking the POST handler. The
         // dispatcher must spool the fresh sessionEnd that hasn't been
         // POSTed yet instead of losing it.
-        using var fx = new Fixture();
-        fx.HoldOnPost = TimeSpan.FromMilliseconds(50);
+        using var fx = new Fixture(Config.Root);
+        fx.SpendOnPost = CursorHookCommand.Ceiling;
 
         fx.Spool.Append(Sid, "session-start/cursor", $$"""{"hook_event_name":"sessionStart","session_id":"{{Sid}}"}""");
 
-        // 30 ms budget — first drained POST eats most of it, BudgetExpired flips
-        // before the fresh event can post. The fresh sessionEnd must land back
-        // in the spool, replacing the just-delivered sessionStart line.
+        // The first drained POST spends the work budget, so BudgetExpired flips before the fresh
+        // event can post and the fresh sessionEnd must land back in the spool, replacing the
+        // just-delivered sessionStart line. No wall-clock bet: the append is not racing a
+        // cancellation, because the reserve the work budget held back is still on the cap.
         //
-        // Task 2: HandleCore's outer deadline race (§2) can now return to the
-        // caller at the 30ms mark WITHOUT waiting for the still-in-flight drain (holding
-        // the fresh sessionEnd's own append until the delayed POST resolves at ~50ms) —
-        // mirroring the pre-existing top-level WithHardCap's own "abandon, don't cancel"
-        // contract. The append still happens on the abandoned background continuation;
-        // poll briefly for it instead of asserting immediately.
-        var exit = await CursorHookCommand.HandleCore(
-            fx.Client,
-            "http://localhost",
-            new StringReader($$"""{"hook_event_name":"sessionEnd","session_id":"{{Sid}}"}"""),
-            fx.Spool,
-            TimeSpan.FromMilliseconds(30)
-        );
+        // HandleCore's outer deadline can return to the caller without waiting for the
+        // still-in-flight drain; the append still happens on the abandoned background
+        // continuation, so poll briefly for it instead of asserting immediately.
+        var exit = await fx.HandleAsync($$"""{"hook_event_name":"sessionEnd","session_id":"{{Sid}}"}""");
 
         await Assert.That(exit).IsEqualTo(0);
 
@@ -439,23 +460,20 @@ public class CursorHookCommandTests {
         await Assert.That(spoolContent!).Contains("sessionEnd");
     }
 
-    // Task 2: single-writer, deadline-safe stdout emission for Cursor's
-    // sessionStart. Cursor writes zero stdout for every OTHER event, and (until Task 3
-    // wires the real memory fragment) exactly "{}\n" for every resolved sessionStart —
-    // whether at the very end of a normal invocation, at an early fail-open return, at the
-    // dispatcher deadline (kind published but the inner work hasn't finished), or never
-    // (unresolved event / deadline before the event kind is known).
+    // Single-writer, deadline-safe stdout emission for Cursor's sessionStart. Cursor writes
+    // zero stdout for every other event; a resolved sessionStart emits "{}\n" or a memory
+    // fragment, whether at the end of a normal invocation, an early fail-open return, or the
+    // dispatcher deadline (kind published but inner work unfinished) — never anything when the
+    // event kind was never resolved.
 
-    // Every test below that mutates Console.Out is [NotInParallel] with NO group — i.e.
-    // runs strictly alone against the WHOLE suite, not just this class — matching
-    // Codex/CodexHookCommandTests' own precedent: a named group only serializes within
-    // that group, but other files elsewhere in the suite ALSO mutate the same
-    // process-global Console.Out under different (or no) groups, and that cross-group
-    // race is what corrupts captures.
+    // Tests below that mutate Console.Out run [NotInParallel] with no group — alone against the
+    // whole suite, not just this class. Other files also mutate the same process-global
+    // Console.Out under different or no groups, and a named group only serializes within itself,
+    // so a cross-group race would still corrupt captures.
 
     [Test, NotInParallel]
     public async Task SessionStart_emits_empty_object() {
-        using var fx = new Fixture();
+        using var fx = new Fixture(Config.Root);
         using var capture = ConsoleOutput.StartCapture();
         var exit = await fx.HandleAsync("""{"hook_event_name":"sessionStart","session_id":"abc"}""");
         await Assert.That(exit).IsEqualTo(0);
@@ -464,7 +482,7 @@ public class CursorHookCommandTests {
 
     [Test, NotInParallel]
     public async Task NonSessionStart_emits_nothing() {
-        using var fx = new Fixture();
+        using var fx = new Fixture(Config.Root);
         using var capture = ConsoleOutput.StartCapture();
         var exit = await fx.HandleAsync("""{"hook_event_name":"postToolUse","session_id":"abc","tool_name":"Bash"}""");
         await Assert.That(exit).IsEqualTo(0);
@@ -473,12 +491,12 @@ public class CursorHookCommandTests {
 
     [Test, NotInParallel]
     public async Task LinkedChild_sessionStart_emits_empty_object() {
-        using var fx = new Fixture();
+        using var fx = new Fixture(Config.Root);
         var parentId = Guid.NewGuid().ToString("N");
         var childId  = Guid.NewGuid().ToString("N");
         // Force the already-linked-child path directly (as an earlier hook would have
         // persisted it) without needing a real sibling transcript to correlate against.
-        CursorLiveSubagentLinker.SaveLink(childId, parentId, "task");
+        CursorLiveSubagentLinker.SaveLink(Config.Root, childId, parentId, "task");
 
         using var capture = ConsoleOutput.StartCapture();
         var exit = await fx.HandleAsync($$"""{"hook_event_name":"sessionStart","session_id":"{{childId}}"}""");
@@ -488,52 +506,48 @@ public class CursorHookCommandTests {
         await Assert.That(fx.MemoryIndexRequested).IsFalse();
     }
 
-    // Review finding 1: these two guarantees must hold at the level the SINGLE
-    // cap+emitter actually lives — CursorHookCommand.HandleInternal, the whole-dispatch entry
-    // Handle() itself delegates to (client/auth setup THROUGH the recording+memory dispatch,
-    // under exactly one hard-cap deadline). Calling HandleCore directly (as these two tests
-    // used to) only proves the dispatch-body race is internally consistent; it can't catch a
-    // second, independent cap racing ABOVE it — which is exactly the bug this finding fixed
-    // (Handle used to wrap HandleInternal in its own separate WithHardCap(DispatcherBudget),
-    // so that outer timer — started before client/auth setup — could win the race against
-    // HandleCore's own internal deadline and return with no {} for a resolved sessionStart,
-    // while the abandoned HandleCore kept running and could still write late).
+    // These two guarantees must hold at the level where the single cap+emitter actually lives:
+    // client/auth setup through the recording+memory dispatch, under exactly one hard-cap
+    // deadline. Calling HandleCore directly only proves the dispatch body's own race is
+    // internally consistent — it can't catch a second, independent cap racing above it.
     [Test, NotInParallel]
     public async Task HardCap_before_resolve_emits_nothing() {
         using var capture = ConsoleOutput.StartCapture();
         var sw = System.Diagnostics.Stopwatch.StartNew();
-        using var fx = new Fixture();
+        using var fx = new Fixture(Config.Root);
         // Never resolves within the cap regardless of cancellation — proves the single
         // deadline race genuinely abandons the inner work rather than relying on it
         // noticing. clientFactory/spoolFactory stand in for real auth/spool setup so the
         // test stays hermetic while still exercising the REAL entry point's cap+emit logic.
-        var exit = await CursorHookCommand.HandleInternal(
-            "http://localhost", new NeverCompletingReader(), TimeSpan.FromMilliseconds(50),
-            clientFactory: _ => Task.FromResult((fx.Client, AuthStatus.Ok)),
-            spoolFactory: () => fx.Spool);
+        var clock = new FakeTimeProvider();
+        var call  = new CursorHookCommand(Config.Root, Resolutions.At(Fixture.StubUrl, Config.Root), new HookClock(clock), Home)
+            .HandleWithDeps(new NeverCompletingReader(),
+                _ => Task.FromResult((fx.Client, AuthStatus.Ok)),
+                () => fx.Spool);
+
+        // Nothing inside can end this, so spend the ceiling from here: the cap must still return.
+        clock.Advance(CursorHookCommand.Ceiling);
+
+        var exit = await call;
         sw.Stop();
         await Assert.That(exit).IsEqualTo(0);
         await Assert.That(capture.GetCapturedOutput()).IsEqualTo("");
         await Assert.That(sw.Elapsed).IsLessThan(TimeSpan.FromSeconds(2));
     }
 
-    // Qodo #2: on the deadline branch, HandleCore must deterministically Cancel() its own
-    // `cts` rather than merely disposing it and trusting the CTS's own internal budgetTotal
-    // timer to have already fired by coincidence — that internal timer and the Task.Delay
-    // deadline task are two independent timers racing the same wall-clock target, so a
-    // dispose-without-cancel could leave the abandoned inner's cancellation-aware stdin
-    // read/HTTP calls (both bound to cts.Token) never actually observing cancellation. Uses
-    // a reader that only ever completes VIA cancellation (never on its own) — mirroring the
-    // CancelAwareHandler pattern already used for the memory-fetch cancellation test below —
-    // so a prompt, observed cancellation is the only way this test can pass.
+    // On the deadline branch, HandleCore must deterministically Cancel() its own `cts` rather
+    // than merely disposing it and trusting the CTS's internal timer to have already fired —
+    // that timer and the Task.Delay deadline task are two independent timers racing the same
+    // wall-clock target, so a dispose-without-cancel could leave the abandoned inner's
+    // cancellation-aware reads never actually observing cancellation. The reader here only
+    // completes via cancellation, so an observed cancellation is the only way this test can pass.
     [Test, NotInParallel]
     public async Task HandleCore_deadline_win_cancels_the_abandoned_inners_token() {
         using var capture = ConsoleOutput.StartCapture();
-        using var fx = new Fixture();
+        using var fx = new Fixture(Config.Root);
         var reader = new CancelObservingReader();
 
-        var exit = await CursorHookCommand.HandleCore(
-            fx.Client, "http://localhost", reader, fx.Spool, TimeSpan.FromMilliseconds(30));
+        var exit = await new CursorHookCommand(Config.Root, Resolutions.At(Fixture.StubUrl, Config.Root), new HookClock(TimeProvider.System), Home).HandleCore(fx.Client, reader, fx.Spool);
 
         await Assert.That(exit).IsEqualTo(0);
         // The read never resolved (no hook_event_name was ever parsed), so there is
@@ -551,18 +565,16 @@ public class CursorHookCommandTests {
     [Test, NotInParallel]
     public async Task HardCap_after_resolve_sessionStart_emits_empty_once() {
         using var capture = ConsoleOutput.StartCapture();
-        using var fx = new Fixture();
+        using var fx = new Fixture(Config.Root);
         // sessionStart resolves instantly (fast JSON parse) but the live POST hangs well
         // past the 50ms dispatcher deadline.
         fx.HoldOnPost = TimeSpan.FromMilliseconds(300);
 
         var sw = System.Diagnostics.Stopwatch.StartNew();
-        var exit = await CursorHookCommand.HandleInternal(
-            "http://localhost",
+        var exit = await new CursorHookCommand(Config.Root, Resolutions.At(Fixture.StubUrl, Config.Root), new HookClock(TimeProvider.System), Home).HandleWithDeps(
             new StringReader("""{"hook_event_name":"sessionStart","session_id":"abc"}"""),
-            TimeSpan.FromMilliseconds(50),
-            clientFactory: _ => Task.FromResult((fx.Client, AuthStatus.Ok)),
-            spoolFactory: () => fx.Spool);
+            _ => Task.FromResult((fx.Client, AuthStatus.Ok)),
+            () => fx.Spool);
         sw.Stop();
 
         await Assert.That(exit).IsEqualTo(0);
@@ -575,24 +587,27 @@ public class CursorHookCommandTests {
         await Assert.That(capture.GetCapturedOutput()).IsEqualTo("{}\n");
     }
 
-    // Review finding 1: the single cap must ALSO cover client/auth setup itself — the
-    // one piece that sat OUTSIDE HandleCore's own race pre-fix. A client factory that never
-    // completes simulates the documented TokenStore-hang risk (see Handle's doc comment); the
-    // single deadline must still fire, return 0, and never let the abandoned auth attempt
-    // produce a late write even once it eventually "completes" in the background.
+    // The single cap must also cover client/auth setup. A client factory that never completes
+    // simulates a TokenStore hang; the deadline must still fire, return 0, and never let the
+    // abandoned auth attempt produce a late write once it "completes" in the background.
     [Test, NotInParallel]
     public async Task HardCap_during_client_setup_emits_nothing_and_no_late_write() {
         using var capture = ConsoleOutput.StartCapture();
-        using var fx = new Fixture();
+        using var fx = new Fixture(Config.Root);
         var neverAuths = new TaskCompletionSource<(HttpClient, AuthStatus)>();
 
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        var exit = await CursorHookCommand.HandleInternal(
-            "http://localhost",
-            new StringReader("""{"hook_event_name":"sessionStart","session_id":"abc"}"""),
-            TimeSpan.FromMilliseconds(50),
-            clientFactory: _ => neverAuths.Task,
-            spoolFactory: () => fx.Spool);
+        var sw    = System.Diagnostics.Stopwatch.StartNew();
+        var clock = new FakeTimeProvider();
+        var call  = new CursorHookCommand(Config.Root, Resolutions.At(Fixture.StubUrl, Config.Root), new HookClock(clock), Home)
+            .HandleWithDeps(
+                new StringReader("""{"hook_event_name":"sessionStart","session_id":"abc"}"""),
+                _ => neverAuths.Task,
+                () => fx.Spool);
+
+        // The auth attempt never resolves, so spend the ceiling from here: the cap must return.
+        clock.Advance(CursorHookCommand.Ceiling);
+
+        var exit = await call;
         sw.Stop();
 
         await Assert.That(exit).IsEqualTo(0);
@@ -605,30 +620,25 @@ public class CursorHookCommandTests {
         await Assert.That(capture.GetCapturedOutput()).IsEqualTo("");
     }
 
-    // Task 3: the shared memory orchestrator wired in for a top-level (non-child)
-    // sessionStart — fragment, lifecycle, budget, opt-out, and workspace-root behavior.
+    // The shared memory orchestrator for a top-level (non-child) sessionStart — fragment,
+    // lifecycle, budget, opt-out, and workspace-root behavior.
 
     [Test, NotInParallel]
     public async Task Ready_fragment_emitted() {
-        using var fx = new Fixture();
+        using var fx = new Fixture(Config.Root);
         fx.MemoryIndexBody = """[{"memory_id":"m1","slug":"s","audience":"org","description":"d","kind":"preference"}]""";
         var sid = Guid.NewGuid().ToString("N");
 
         using var capture = ConsoleOutput.StartCapture();
-        // A generous budget (well beyond the production 2s) — recording-critical work here
-        // is a handful of in-memory/fake-HTTP steps that normally finish in well under a
-        // millisecond, but memBudget = budgetTotal - elapsed - HookBudget.Safety(1.5s) leaves
-        // only ~0.5s of margin at the production 2s default; under heavy CI/full-suite CPU
-        // contention that margin can occasionally be exhausted by scheduling delays alone,
-        // which would make this assert on the WRONG thing (a legitimate no-budget skip, not
-        // a bug). This test is about the fragment/lifecycle wiring, not the budget math
-        // (NoBudget_skips_provider owns that), so give it comfortable headroom.
-        // A real non-repo workspace root (system temp) is required now that an absent root
-        // skips injection; forward-slashed so it's valid JSON on Windows too.
-        var ws = Path.GetTempPath().Replace('\\', '/').TrimEnd('/');
+        // No budget arithmetic here: the fixture's clock is fake and never advanced, so scheduling
+        // delays cannot turn this into a legitimate no-budget skip and make it assert the wrong
+        // thing. NoBudget_skips_provider owns the budget math.
+        // A real non-repo workspace root is required because an absent root skips injection;
+        // forward-slashed so it's valid JSON on Windows too.
+        using var wsDir = new TempDir("ws");
+        var ws = wsDir.Path.Replace('\\', '/').TrimEnd('/');
         var exit = await fx.HandleAsync(
-            $$"""{"hook_event_name":"sessionStart","session_id":"{{sid}}","workspace_roots":["{{ws}}"]}""",
-            budgetTotal: TimeSpan.FromSeconds(5));
+            $$"""{"hook_event_name":"sessionStart","session_id":"{{sid}}","workspace_roots":["{{ws}}"]}""");
         await Assert.That(exit).IsEqualTo(0);
 
         var stdout = capture.GetCapturedOutput();
@@ -639,155 +649,129 @@ public class CursorHookCommandTests {
         await Assert.That(fragment).Contains("Team memory");
     }
 
-    // Qodo #1: mutates both process-global Console.Out AND AppConfig's resolved state
-    // (ResolvedServerUrl/ResolvedProfile) — [NotInParallel] here matches this file's own
-    // precedent for every other Console.Out-capturing test above (a bare, suite-wide
-    // exclusion, not merely a named group, since other files elsewhere in the process also
-    // mutate the same statics). The resolved state is captured up front and restored in the
-    // finally below rather than being unconditionally reset to a fresh `new Profile()` —
-    // AppConfig.SetResolvedState has no "clear"/"unset" primitive (see
-    // AppConfigResolvedStateTests), so restoring means re-invoking it with the captured
-    // original values, putting back exactly what was there rather than clobbering it.
+    // [NotInParallel] for Console.Out, which the capture below redirects process-wide — matching
+    // this file's precedent for every other capturing test above. The profile setting reaches the
+    // hook through its own resolution, so nothing process-global carries it.
     [Test, NotInParallel]
     public async Task DisableMemoryIndex_emits_empty_and_skips_provider() {
-        using var fx = new Fixture();
+        using var fx = new Fixture(Config.Root, profile: new Profile { DisableMemoryIndex = true });
         fx.MemoryIndexBody = """[{"memory_id":"m1","slug":"s","audience":"org","description":"d","kind":"preference"}]""";
 
-        var originalServerUrl = AppConfig.ResolvedServerUrl;
-        var originalResolved  = AppConfig.ResolvedProfile;
-        AppConfig.SetResolvedState("http://localhost", "default", new Profile { DisableMemoryIndex = true });
-
         using var capture = ConsoleOutput.StartCapture();
-        try {
-            var sid = Guid.NewGuid().ToString("N");
-            var exit = await fx.HandleAsync($$"""{"hook_event_name":"sessionStart","session_id":"{{sid}}"}""");
-
-            await Assert.That(exit).IsEqualTo(0);
-            await Assert.That(capture.GetCapturedOutput()).IsEqualTo("{}\n");
-            await Assert.That(fx.MemoryIndexRequested).IsFalse();
-        } finally {
-            // Restore exactly what was resolved before this test ran. A null original
-            // (AppConfig never touched yet in this process) has no public "unset" to restore
-            // to, so it falls back to the same fresh default this test always used pre-fix.
-            AppConfig.SetResolvedState(
-                originalServerUrl ?? "http://localhost",
-                originalResolved?.ProfileName ?? "default",
-                originalResolved?.Profile ?? new Profile());
-        }
-    }
-
-    [Test, NotInParallel]
-    public async Task NoBudget_skips_provider() {
-        using var fx = new Fixture();
-        fx.MemoryIndexBody = """[{"memory_id":"m1","slug":"s","audience":"org","description":"d","kind":"preference"}]""";
-        var sid = Guid.NewGuid().ToString("N");
-
-        using var capture = ConsoleOutput.StartCapture();
-        // 500ms total is comfortably below HookBudget.Safety (1.5s), so
-        // memBudget = budgetTotal - elapsed - Safety is guaranteed negative regardless
-        // of how fast recording actually completes — no artificial per-POST delay needed.
-        var exit = await fx.HandleAsync(
-            $$"""{"hook_event_name":"sessionStart","session_id":"{{sid}}"}""",
-            budgetTotal: TimeSpan.FromMilliseconds(500));
+        var sid  = Guid.NewGuid().ToString("N");
+        var exit = await fx.HandleAsync($$"""{"hook_event_name":"sessionStart","session_id":"{{sid}}"}""");
 
         await Assert.That(exit).IsEqualTo(0);
         await Assert.That(capture.GetCapturedOutput()).IsEqualTo("{}\n");
         await Assert.That(fx.MemoryIndexRequested).IsFalse();
     }
 
-    // ---------------------------------------------------------------------------------
-    // Measured payload contract. A Cursor sessionStart payload carries a NULL
-    // transcript_path (verified against cursor-agent 2026.07.23-e383d2b; probe logs archived
-    // under docs/probes/2026-07-30-cursor-subagent-hooks/), which is why the transcript-derived
-    // subagent-classification arm has no producer. These pin that contract so the arm cannot be
-    // quietly assumed live again. See
-    // docs/superpowers/specs/2026-07-30-ai1505-cursor-subagent-classification-design.md
-    // ---------------------------------------------------------------------------------
+    [Test, NotInParallel]
+    public async Task NoBudget_skips_provider() {
+        using var fx = new Fixture(Config.Root);
+        fx.MemoryIndexBody = """[{"memory_id":"m1","slug":"s","audience":"org","description":"d","kind":"preference"}]""";
+        var sid = Guid.NewGuid().ToString("N");
+
+        using var capture = ConsoleOutput.StartCapture();
+        // Spend the whole ceiling before dispatching: Remaining is then zero regardless of how fast
+        // recording completes, so the skip is the guard's and not a scheduling accident.
+        fx.Clock.Advance(CursorHookCommand.Ceiling);
+
+        var exit = await fx.HandleAsync(
+            $$"""{"hook_event_name":"sessionStart","session_id":"{{sid}}"}""");
+
+        await Assert.That(exit).IsEqualTo(0);
+        await Assert.That(capture.GetCapturedOutput()).IsEqualTo("{}\n");
+        await Assert.That(fx.MemoryIndexRequested).IsFalse();
+    }
+
+    // Cursor's sessionStart payload carries a null transcript_path, so the transcript-derived
+    // subagent-classification arm has no producer. These tests pin that contract so the arm
+    // cannot be quietly assumed live again.
 
     [Test, NotInParallel]
     public async Task SessionStart_with_null_transcript_path_stays_top_level_and_writes_no_link_marker() {
-        using var fx = new Fixture();
+        using var fx = new Fixture(Config.Root);
         var sid = Guid.NewGuid().ToString("N");
-        var ws  = Path.GetTempPath().Replace('\\', '/').TrimEnd('/');
+        using var wsDir = new TempDir("ws");
+        var ws  = wsDir.Path.Replace('\\', '/').TrimEnd('/');
         // The REAL shape: transcript_path is JSON null at sessionStart.
         var payload = $$"""{"hook_event_name":"sessionStart","session_id":"{{sid}}","transcript_path":null,"workspace_roots":["{{ws}}"]}""";
 
         using (ConsoleOutput.StartCapture()) {
-            var exit = await fx.HandleAsync(payload, budgetTotal: TimeSpan.FromSeconds(5));
+            var exit = await fx.HandleAsync(payload);
             await Assert.That(exit).IsEqualTo(0);
         }
 
-        // No link was persisted, so nothing classified this session as a subagent child. Note
-        // what is NOT claimed: this does not prove ResolveParent/SaveLink went unexecuted —
-        // ResolveParent can run and return null, and SaveLink can run and swallow a write
-        // failure. The assertion is about the persisted outcome only.
-        await Assert.That(CursorLiveSubagentLinker.TryLoadLink(sid)).IsNull();
+        // No link was persisted, so nothing classified this session as a subagent child. This
+        // does not prove ResolveParent/SaveLink went unexecuted — ResolveParent can return null,
+        // and SaveLink can swallow a write failure. The assertion is about the persisted outcome
+        // only.
+        await Assert.That(CursorLiveSubagentLinker.TryLoadLink(Config.Root, sid)).IsNull();
         // ...and it took the ordinary top-level route rather than the subagent divert.
         await Assert.That(fx.RouteOrder).Contains("session-start/cursor");
         await Assert.That(fx.RouteOrder).DoesNotContain("subagent-start");
 
-        // HONEST SCOPE — this is an outcome pin, NOT a mutation-sensitive guard test for the
-        // `!string.IsNullOrEmpty(transcriptPath)` conjunct. Verified by mutation: deleting that
-        // conjunct leaves this test PASSING, because a null path also fails downstream
-        // (DiscoverSiblingTranscripts finds no directory and Correlate cannot read a null path),
-        // so the conjunct is not independently observable under the real payload.
-        // What it does protect: any future change that classifies a sessionStart from some OTHER
-        // source — deriving the transcripts dir from workspace_roots is the obvious candidate —
-        // has to keep this session top-level, or this test fails.
+        // This is an outcome pin, not a mutation-sensitive guard for the
+        // `!string.IsNullOrEmpty(transcriptPath)` conjunct: deleting that conjunct leaves this
+        // test passing, since a null path also fails downstream (no sibling directory, no path to
+        // correlate). It protects against classifying a sessionStart from some other source —
+        // e.g. deriving the transcripts dir from workspace_roots — without keeping the session
+        // top-level.
     }
 
     [Test, NotInParallel]
     public async Task MemoryIndex_is_fetched_only_for_sessionStart() {
         var sid = Guid.NewGuid().ToString("N");
-        var ws  = Path.GetTempPath().Replace('\\', '/').TrimEnd('/');
+        using var wsDir = new TempDir("ws");
+        var ws  = wsDir.Path.Replace('\\', '/').TrimEnd('/');
         const string body = """[{"memory_id":"m1","slug":"s","audience":"org","description":"d","kind":"preference"}]""";
 
         using (ConsoleOutput.StartCapture()) {
             // Positive control FIRST. Without it this test could pass vacuously in an
             // environment where memory injection is disabled outright.
-            using var starting = new Fixture();
+            using var starting = new Fixture(Config.Root);
             starting.MemoryIndexBody = body;
             await starting.HandleAsync(
-                $$"""{"hook_event_name":"sessionStart","session_id":"{{sid}}","workspace_roots":["{{ws}}"]}""",
-                budgetTotal: TimeSpan.FromSeconds(5));
+                $$"""{"hook_event_name":"sessionStart","session_id":"{{sid}}","workspace_roots":["{{ws}}"]}""");
             await Assert.That(starting.MemoryIndexRequested).IsTrue();
 
             // A postToolUse carries workspace_roots too (measured), so the only thing keeping it
             // away from the orchestrator is the call-site guard.
-            using var other = new Fixture();
+            using var other = new Fixture(Config.Root);
             other.MemoryIndexBody = body;
             await other.HandleAsync(
-                $$"""{"hook_event_name":"postToolUse","session_id":"{{Guid.NewGuid():N}}","workspace_roots":["{{ws}}"]}""",
-                budgetTotal: TimeSpan.FromSeconds(5));
+                $$"""{"hook_event_name":"postToolUse","session_id":"{{Guid.NewGuid():N}}","workspace_roots":["{{ws}}"]}""");
             await Assert.That(other.MemoryIndexRequested).IsFalse();
         }
 
-        // NOTE what this does and does not establish. It pins the ORCHESTRATOR CALL-SITE GUARD,
-        // an internal invariant. It does NOT prove ClassificationAuthoritative: true is
-        // warranted — that additionally needs the external fact that a subagent child never
-        // receives sessionStart, which is a vendor behaviour no unit test can establish.
+        // Pins the orchestrator call-site guard, an internal invariant. It does not prove
+        // ClassificationAuthoritative: true is warranted — that additionally needs the external
+        // fact that a subagent child never receives sessionStart, a vendor behaviour no unit test
+        // can establish.
     }
 
     [Test, NotInParallel]
     public async Task OncePerConversation() {
-        using var fx = new Fixture();
+        using var fx = new Fixture(Config.Root);
         fx.MemoryIndexBody = """[{"memory_id":"m1","slug":"s","audience":"org","description":"d","kind":"preference"}]""";
         var sid = Guid.NewGuid().ToString("N");
-        // Real non-repo workspace root (system temp), forward-slashed for cross-platform JSON —
-        // an absent root now skips injection.
-        var ws = Path.GetTempPath().Replace('\\', '/').TrimEnd('/');
+        // A real non-repo workspace root, forward-slashed for cross-platform JSON — an absent
+        // root skips injection.
+        using var wsDir = new TempDir("ws");
+        var ws = wsDir.Path.Replace('\\', '/').TrimEnd('/');
         var payload = $$"""{"hook_event_name":"sessionStart","session_id":"{{sid}}","workspace_roots":["{{ws}}"]}""";
 
         using (var first = ConsoleOutput.StartCapture()) {
             // Generous budget — see Ready_fragment_emitted's comment on the tight ~0.5s margin
             // at the production 2s default under heavy CI/full-suite CPU contention.
-            var exit1 = await fx.HandleAsync(payload, budgetTotal: TimeSpan.FromSeconds(5));
+            var exit1 = await fx.HandleAsync(payload);
             await Assert.That(exit1).IsEqualTo(0);
             await Assert.That(first.GetCapturedOutput()).Contains("additional_context");
         }
 
         using (var second = ConsoleOutput.StartCapture()) {
-            var exit2 = await fx.HandleAsync(payload, budgetTotal: TimeSpan.FromSeconds(5));
+            var exit2 = await fx.HandleAsync(payload);
             await Assert.That(exit2).IsEqualTo(0);
             await Assert.That(second.GetCapturedOutput()).IsEqualTo("{}\n");
         }
@@ -796,23 +780,21 @@ public class CursorHookCommandTests {
     [Test, NotInParallel]
     public async Task AbsentWorkspaceRoot_skips_provider_even_when_process_cwd_is_a_repo() {
         var originalCwd = Environment.CurrentDirectory;
-        using var tmp = new TempDir();
         // A real git repo WITH a remote as the process cwd: were the guard missing, the shared
         // scope resolver's Directory.GetCurrentDirectory() fallback would derive THIS repo's scope
         // and fetch its (unrelated) memories into the Cursor session. The guard must prevent any fetch.
-        var repoDir = MakeTempRepoWithRemote(tmp, "https://github.com/example/leak-check.git");
+        using var repoDir = MakeTempRepoWithRemote("https://github.com/example/leak-check.git");
         using var capture = ConsoleOutput.StartCapture();
         try {
             Environment.CurrentDirectory = repoDir;
-            using var fx = new Fixture();
+            using var fx = new Fixture(Config.Root);
             fx.MemoryIndexBody = "[]"; // decoy — never fetched because the guard short-circuits first
             var sid = Guid.NewGuid().ToString("N");
 
             // No workspace_roots field at all. Generous budget (see Ready_fragment_emitted's note
             // on the tight ~0.5s margin at the 2s default under full-suite CPU contention).
             var exit = await fx.HandleAsync(
-                $$"""{"hook_event_name":"sessionStart","session_id":"{{sid}}"}""",
-                budgetTotal: TimeSpan.FromSeconds(5));
+                $$"""{"hook_event_name":"sessionStart","session_id":"{{sid}}"}""");
 
             await Assert.That(exit).IsEqualTo(0);
             // The guard means the provider is NEVER called when no authoritative workspace root is
@@ -826,31 +808,17 @@ public class CursorHookCommandTests {
 
     // Creates a throwaway git repo with a controlled origin remote so a test can put the process
     // cwd inside a repository the scope resolver would otherwise detect.
-    static string MakeTempRepoWithRemote(TempDir tmp, string originUrl) {
-        var root = tmp.CreateDir("repo");
-        RunGit(root, "init", "-q");
-        RunGit(root, "remote", "add", "origin", originUrl);
-        return root;
-    }
+    static GitRepo MakeTempRepoWithRemote(string originUrl) {
+        var repo = GitRepo.Create();
 
-    static void RunGit(string cwd, params string[] args) {
-        var psi = new System.Diagnostics.ProcessStartInfo("git", args) {
-            WorkingDirectory       = cwd,
-            RedirectStandardOutput = true,
-            RedirectStandardError  = true
-        };
-        using var proc = System.Diagnostics.Process.Start(psi)!;
-        var stdout = proc.StandardOutput.ReadToEndAsync();
-        var stderr = proc.StandardError.ReadToEndAsync();
-        proc.WaitForExit();
-        if (proc.ExitCode != 0)
-            throw new InvalidOperationException($"git {string.Join(' ', args)} failed: {stderr.GetAwaiter().GetResult()}");
-        _ = stdout.GetAwaiter().GetResult();
+        repo.AddRemote(originUrl);
+
+        return repo;
     }
 
     [Test, NotInParallel]
     public async Task NonGuidSessionId_emits_empty() {
-        using var fx = new Fixture();
+        using var fx = new Fixture(Config.Root);
         fx.MemoryIndexBody = """[{"memory_id":"m1","slug":"s","audience":"org","description":"d","kind":"preference"}]""";
 
         using var capture = ConsoleOutput.StartCapture();
@@ -861,50 +829,57 @@ public class CursorHookCommandTests {
 
     [Test, NotInParallel]
     public async Task CancelledFetch_leaves_lease_uncommitted() {
-        using var fx = new Fixture();
+        using var fx = new Fixture(Config.Root);
         var sid = Guid.NewGuid().ToString("N");
-        // Real non-repo workspace root (system temp), forward-slashed for cross-platform JSON —
-        // an absent root now skips injection before the provider is ever reached.
-        var ws = Path.GetTempPath().Replace('\\', '/').TrimEnd('/');
+        // A real non-repo workspace root, forward-slashed for cross-platform JSON — an absent
+        // root skips injection before the provider is ever reached.
+        using var wsDir = new TempDir("ws");
+        var ws = wsDir.Path.Replace('\\', '/').TrimEnd('/');
         var payload = $$"""{"hook_event_name":"sessionStart","session_id":"{{sid}}","workspace_roots":["{{ws}}"]}""";
-        var clock = new ManualTimeProvider();
-        Func<SessionStartMemoryLeaseStore> storeFactory = () => new SessionStartMemoryLeaseStore(fx.MemoryStoreRoot, clock);
+        var clock = new FakeTimeProvider();
 
-        // A memory-index client whose GET never completes on its own — it only ever resolves via
-        // the budget-bound linked token handed to the request itself.
-        var handler = new CancelAwareHandler();
-        using var neverRespondingClient = new HttpClient(handler);
+        // ONE client, hanging only on the memory-index GET — which is what production does: the
+        // memory lane borrows the hook's own client, so a separate one for it would test a wiring
+        // that does not exist. The GET never completes on its own; it only ever resolves via the
+        // budget-bound linked token handed to the request itself.
+        var handler = new HangOnMemoryIndexHandler();
+        using var hangingClient = new HttpClient(handler);
 
-        // Nothing here is wall-clock derived: the override pins the memory stage's budget, the stub
-        // resolver keeps a git spawn out of it, and budgetTotal sits far enough above the inner
-        // phase that the outer deadline can't pre-empt it. The 250ms is the cancellation window.
+        // Deterministic, not wall-clock: the memory stage spends what the ceiling has left once the
+        // spool-and-exit reserve is held back, measured on the hook's own injected clock. So it expires
+        // only when the test advances that clock, after the request has entered the handler
+        // (EnteredSignal), and the cancellation travels the production budget token.
+        // The real scope resolver runs: its git spawn is bounded by a Stopwatch, so its wall-clock
+        // cost cannot eat a budget that only moves when this test says so.
         var elapsed = System.Diagnostics.Stopwatch.StartNew();
-        var exit1 = await CursorHookCommand.HandleCore(
-            fx.Client, "http://localhost", new StringReader(payload), fx.Spool, TimeSpan.FromSeconds(15),
-            memoryClientFactory: (_, _) => Task.FromResult(neverRespondingClient),
-            memoryStoreFactory: storeFactory,
-            memoryBudgetOverride: TimeSpan.FromMilliseconds(250),
-            memoryScopeResolver: new StubScopeResolver());
+        var call = new CursorHookCommand(Config.Root, Resolutions.At(Fixture.StubUrl, Config.Root), new HookClock(clock), Home).HandleCore(
+            hangingClient, new StringReader(payload), fx.Spool);
+
+        // Wait (bounded, real-time) for the request to ENTER the handler, then fire the budget clock.
+        await handler.EnteredSignal.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+        clock.Advance(CursorHookCommand.Ceiling);
+
+        var exit1 = await call;
         elapsed.Stop();
         await Assert.That(exit1).IsEqualTo(0);
-        // Entered rules out a skipped attempt (which would prove nothing); Cancelled rules out the
-        // request being abandoned by a wrapper while it kept running; and returning far inside the
-        // 15s deadline rules that deadline out as the thing that ended it, leaving the 250ms budget.
+        // Cancelled completes only from the handler's cancellation catch, i.e. only because advancing
+        // the budget clock cancelled the request's OWN token — proving the memory-budget token governs
+        // the fetch. Awaited (bounded), not read as a snapshot: the command's return does not order
+        // against the handler observing the token, so a bool read here races that propagation. Entered
+        // rules out a skipped attempt, and returning far inside the 15s outer deadline rules that out.
         await Assert.That(handler.Entered).IsTrue();
-        await Assert.That(handler.Cancelled).IsTrue();
+        await handler.Cancelled.Task.WaitAsync(TimeSpan.FromSeconds(30));
         await Assert.That(elapsed.Elapsed.TotalSeconds).IsLessThan(10);
 
-        // Advance well past the 30s lease duration so the still-"leased" (never committed —
-        // the cancellation raced RetryAsync's own fencing too) record from the first attempt
-        // is superseded rather than fencing a second attempt for 30 real seconds.
+        // Advance well past the 30s lease duration so the still-"leased" (never committed — the
+        // cancellation raced RetryAsync's own fencing too) record from the first attempt is
+        // superseded rather than fencing a second attempt for 30 real seconds.
         clock.Advance(TimeSpan.FromSeconds(31));
         fx.MemoryIndexBody = "[]";
 
-        var exit2 = await CursorHookCommand.HandleCore(
-            fx.Client, "http://localhost", new StringReader(payload), fx.Spool, TimeSpan.FromSeconds(15),
-            memoryStoreFactory: storeFactory,
-            memoryBudgetOverride: TimeSpan.FromSeconds(10),
-            memoryScopeResolver: new StubScopeResolver());
+        var exit2 = await new CursorHookCommand(Config.Root, Resolutions.At(Fixture.StubUrl, Config.Root), new HookClock(clock), Home).HandleCore(
+            fx.Client, new StringReader(payload), fx.Spool);
         await Assert.That(exit2).IsEqualTo(0);
         // The index GET fires again on fx.Client — proving the first, cancelled attempt's
         // lease was never spent as "completed".
@@ -915,39 +890,36 @@ public class CursorHookCommandTests {
     // fetch, and the sessionStart still emits its single {}.
     [Test, NotInParallel]
     public async Task ExhaustedMemoryBudget_skips_the_fetch_and_still_emits() {
-        using var fx = new Fixture();
+        using var fx = new Fixture(Config.Root);
         var sid = Guid.NewGuid().ToString("N");
-        var ws = Path.GetTempPath().Replace('\\', '/').TrimEnd('/');
+        using var wsDir = new TempDir("ws");
+        var ws = wsDir.Path.Replace('\\', '/').TrimEnd('/');
         var payload = $$"""{"hook_event_name":"sessionStart","session_id":"{{sid}}","workspace_roots":["{{ws}}"]}""";
         fx.MemoryIndexBody = """[{"memory_id":"m1","slug":"s","audience":"org","description":"d","kind":"preference"}]""";
 
-        var storeBuilt = false;
-
         using var capture = ConsoleOutput.StartCapture();
-        var exit = await CursorHookCommand.HandleCore(
-            fx.Client, "http://localhost", new StringReader(payload), fx.Spool, TimeSpan.FromSeconds(15),
-            memoryStoreFactory: () => {
-                storeBuilt = true;
-                return new SessionStartMemoryLeaseStore(fx.MemoryStoreRoot, new ManualTimeProvider());
-            },
-            memoryBudgetOverride: TimeSpan.Zero);
+        // The recording POST spends the whole budget, which is how production reaches this guard:
+        // the memory stage runs last, on what is left, and here nothing is.
+        fx.SpendOnPost = CursorHookCommand.Ceiling;
+
+        var exit = await fx.HandleAsync(payload);
 
         await Assert.That(exit).IsEqualTo(0);
         await Assert.That(fx.MemoryIndexRequested).IsFalse();
         await Assert.That(capture.GetCapturedOutput()).IsEqualTo("{}\n");
         // Pins THIS guard specifically: the provider would also decline a zero budget, but only
-        // the orchestration guard returns before the store is built.
-        await Assert.That(storeBuilt).IsFalse();
+        // the orchestration guard returns before the store is built — and the store creates its
+        // root on construction, so an absent directory is that guard having returned.
+        await Assert.That(MemoryStoreProbe.WasBuilt(Config.Root)).IsFalse();
     }
 
-    // Task 1: the fixture must be able to serve GET /api/memories/index
-    // distinctly from the generic transcript-watermark GET (which stays 404) — the
-    // seam later tasks rely on to fake the memory-index endpoint. No production
-    // wiring exists yet (HandleCore doesn't call this route on its own); this only
-    // proves the test double is capable of it.
+    // The fixture must serve GET /api/memories/index distinctly from the generic
+    // transcript-watermark GET (which stays 404). This test only proves the double is capable
+    // of it — it drives a sessionStart and calls the endpoint directly rather than exercising
+    // HandleCore's own automatic fetch.
     [Test]
     public async Task memory_index_endpoint_is_routed_distinctly_from_the_watermark_GET() {
-        using var fx = new Fixture();
+        using var fx = new Fixture(Config.Root);
         fx.MemoryIndexBody = """[{"memory_id":"m1","slug":"s","audience":"org","description":"d","kind":"preference"}]""";
 
         // Drive a sessionStart through the normal fixture path — no behavior change yet.
@@ -982,10 +954,7 @@ public class CursorHookCommandTests {
     }
 
     sealed class Fixture : IDisposable {
-        readonly string _tmpHome = Path.Combine(
-            Path.GetTempPath(),
-            $"kcap-cursor-hook-test-{Guid.NewGuid().ToString("N")[..8]}"
-        );
+        readonly TempHome _home = new("cursor-hook");
 
         readonly string _spoolPath;
         readonly string _transcriptPath;
@@ -993,7 +962,13 @@ public class CursorHookCommandTests {
         public List<string> Sent       { get; } = [];
         public List<string> RouteOrder { get; } = [];
         public HookSpool    Spool      { get; }
+        public ConfigRoot   Config     { get; }
         public TimeSpan     HoldOnPost { get; set; } = TimeSpan.Zero;
+
+        /// <summary>How much of the hook's budget a POST consumes. The deterministic stand-in for
+        /// slow recording work: advancing the fake clock is what makes BudgetExpired flip, where a
+        /// real delay only hoped the runner was slow enough.</summary>
+        public TimeSpan     SpendOnPost { get; set; } = TimeSpan.Zero;
 
         // Lets a test fake the shared SessionStart memory-index endpoint
         // distinctly from the generic transcript-watermark GET (which stays 404).
@@ -1005,20 +980,32 @@ public class CursorHookCommandTests {
         public HttpClient Client                { get; }
         public string     TranscriptPathEscaped => _transcriptPath.Replace(@"\", @"\\");
 
-        // Task 10: the backfill now holds a non-newline-terminated final line on every
-        // mid-session (Hold-policy) call — a real Cursor transcript line is newline-terminated
-        // once flushed, so tests write content the same way rather than exercising the
-        // holdback edge case incidentally.
+        // The backfill holds a non-newline-terminated final line on every mid-session
+        // (Hold-policy) call. A real Cursor transcript line is newline-terminated once flushed,
+        // so tests write content the same way rather than exercising the holdback edge case
+        // incidentally.
         public Task WriteTranscript(string content) =>
             File.WriteAllTextAsync(_transcriptPath, content.EndsWith('\n') ? content : content + "\n");
 
         public IEnumerable<string> SpoolFiles =>
             Directory.Exists(_spoolPath) ? Directory.EnumerateFiles(_spoolPath, "*.jsonl") : [];
 
-        public Fixture(HttpStatusCode postStatus = HttpStatusCode.OK) {
-            Directory.CreateDirectory(_tmpHome);
-            _spoolPath      = Path.Combine(_tmpHome, "spool");
-            _transcriptPath = Path.Combine(_tmpHome, "transcript.jsonl");
+        /// <summary>The resolution the hook reads its per-profile settings through. A test that
+        /// needs a setting honoured passes the profile here rather than steering process-global
+        /// state.</summary>
+        public const string StubUrl = "http://localhost";
+
+        public ProfileContext Profiles { get; }
+
+        public Fixture(ConfigRoot config, HttpStatusCode postStatus = HttpStatusCode.OK, Profile? profile = null) {
+            _spoolPath      = _home.PathTo("spool");
+            _transcriptPath = _home.PathTo("transcript.jsonl");
+            Config          = config;
+            // The stub handler answers regardless of host, so any absolute URL will do — it has to be
+            // absolute because the real POST helpers refuse a scheme-less one.
+            Profiles        = profile is null
+                ? Resolutions.At(StubUrl, config)
+                : Resolutions.Of(profile, serverUrl: StubUrl);
             Spool           = new HookSpool(_spoolPath);
 
             var handler = new StubHandler(async req => {
@@ -1044,6 +1031,8 @@ public class CursorHookCommandTests {
                     // tripping the fail-open path.
                     if (req.Method == HttpMethod.Get) return new HttpResponseMessage(HttpStatusCode.NotFound);
 
+                    if (SpendOnPost > TimeSpan.Zero) Clock.Advance(SpendOnPost);
+
                     if (HoldOnPost > TimeSpan.Zero) {
                         await Task.Delay(HoldOnPost);
                     }
@@ -1054,24 +1043,15 @@ public class CursorHookCommandTests {
             Client = new HttpClient(handler);
         }
 
-        // Isolate every fixture-routed test's SessionStart memory lease store to its own
-        // temp dir (mirrors ClaudeHookCommandTests.Fixture) — otherwise a successful
-        // sessionStart with a GUID session_id would touch the real per-machine default
-        // store root. Exposed so a test needing a controllable clock (e.g. a lease that
-        // must be treated as expired without a real 30s wait) can build its own store
-        // against the SAME root with a custom TimeProvider.
-        public string MemoryStoreRoot => Path.Combine(_tmpHome, "memory");
+        /// <summary>The hook's one clock. Fake, so its budget expires only when a test advances
+        /// this — no test here can lose its budget to a loaded runner's scheduling.</summary>
+        public FakeTimeProvider Clock { get; } = new();
 
-        public Task<int> HandleAsync(string stdin, TimeSpan? budgetTotal = null,
-                Func<SessionStartMemoryLeaseStore>? memoryStoreFactory = null) =>
-            CursorHookCommand.HandleCore(
+        public Task<int> HandleAsync(string stdin) =>
+            new CursorHookCommand(Config, Profiles, new HookClock(Clock), _home).HandleCore(
                 Client,
-                baseUrl: "http://localhost",
                 stdin: new StringReader(stdin),
-                spool: Spool,
-                budgetTotal: budgetTotal ?? TimeSpan.FromSeconds(2),
-                memoryStoreFactory: memoryStoreFactory ?? (() => new SessionStartMemoryLeaseStore(MemoryStoreRoot))
-            );
+                spool: Spool);
 
         public string SentToHook(string segment) =>
             Sent.First(s => s.StartsWith($"/hooks/{segment}", StringComparison.Ordinal)).Split('|', 2)[1];
@@ -1081,7 +1061,7 @@ public class CursorHookCommandTests {
 
         public void Dispose() {
             Client.Dispose();
-            try { Directory.Delete(_tmpHome, true); } catch { }
+            _home.Dispose();
         }
     }
 
@@ -1115,39 +1095,34 @@ public class CursorHookCommandTests {
         }
     }
 
-    // Settable clock for SessionStartMemoryLeaseStore tests — lets a test fast-forward past
-    // a 30s lease-expiry fence without a real wait. A local, test-file-scoped equivalent of
-    // the foundation suite's own private ManualTimeProvider (that one isn't shared/exported).
-    sealed class ManualTimeProvider : TimeProvider {
-        DateTimeOffset _now = DateTimeOffset.UtcNow;
-        public override DateTimeOffset GetUtcNow() => _now;
-        public void Advance(TimeSpan by) => _now += by;
-    }
-
-    // Resolves instantly to a fixed scope. The real resolver spawns git, whose wall-clock cost
-    // would otherwise come out of the memory budget a test is trying to spend on the fetch.
-    sealed class StubScopeResolver : ISessionStartMemoryScopeResolver {
-        public Task<SessionStartMemoryScope> ResolveAsync(string? cwd, TimeSpan budget, CancellationToken ct) =>
-            Task.FromResult(new SessionStartMemoryScope(RepoHash: null, MachineTag: "test-machine"));
-    }
-
-    // A GET that never resolves on its own — it only ends via the caller's own
-    // cancellation, honoured properly (unlike StubHandler, which ignores its ct). Used to
-    // prove a memory fetch cancelled at the budget deadline leaves the lease uncommitted
-    // rather than committing a spurious "completed" record.
-    sealed class CancelAwareHandler : HttpMessageHandler {
+    // The memory-index GET never resolves on its own — it only ends via the caller's own
+    // cancellation, honoured properly (unlike StubHandler, which ignores its ct). Used to prove a
+    // memory fetch cancelled at the budget deadline leaves the lease uncommitted rather than
+    // committing a spurious "completed" record. Every other route answers as the fixture's stub
+    // does, so the one client the hook is handed serves the lifecycle POST too. Entry is signalled
+    // so the test advances the budget clock strictly after the request has entered.
+    sealed class HangOnMemoryIndexHandler : HttpMessageHandler {
         volatile bool _entered;
-        volatile bool _cancelled;
-        // Separate "never fetched at all", "fetched and abandoned", and "fetched and cancelled".
+        // Separate "never fetched at all", "fetched and abandoned", and "fetched and cancelled":
+        // Entered distinguishes the first; Cancelled, completed only from the cancellation catch below,
+        // the last. A signal rather than a bool snapshot so a caller awaits the handler actually
+        // observing the token — the command's return is not ordered against that field being set.
         public bool Entered => _entered;
-        public bool Cancelled => _cancelled;
+        public TaskCompletionSource Cancelled { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        // Fires the moment SendAsync is entered, so the test advances the budget clock only after entry.
+        public TaskCompletionSource EnteredSignal { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) {
+            if (request.RequestUri!.AbsolutePath != "/api/memories/index")
+                return new HttpResponseMessage(
+                    request.Method == HttpMethod.Get ? HttpStatusCode.NotFound : HttpStatusCode.OK);
+
             _entered = true;
+            EnteredSignal.TrySetResult();
             try {
                 await Task.Delay(Timeout.InfiniteTimeSpan, ct);
             } catch (OperationCanceledException) {
-                _cancelled = true;
+                Cancelled.TrySetResult();
                 throw;
             }
             return new HttpResponseMessage(HttpStatusCode.OK);

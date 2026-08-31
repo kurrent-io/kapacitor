@@ -8,6 +8,8 @@ using WireMock.Server;
 namespace Capacitor.Cli.Tests.Integration;
 
 public class EvalCatalogFetchTests : IDisposable {
+    [TempHome] public required TempHome Home { get; init; }
+
     readonly WireMockServer _server = WireMockServer.Start();
     public void Dispose() => _server.Stop();
 
@@ -54,7 +56,7 @@ public class EvalCatalogFetchTests : IDisposable {
             .ToList();
 
         var ctx = await EvalService.PrepareAsync(
-            _server.Url!, http, "sess-1", selected, catalog, chain: false, thresholdBytes: null,
+            _server.Url!, http, profile: null, Home, "sess-1", selected, catalog, chain: false, thresholdBytes: null,
             observer, CancellationToken.None, model: "sonnet", evalRunId: "run-1");
 
         await Assert.That(ctx).IsNotNull();

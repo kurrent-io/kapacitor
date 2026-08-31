@@ -1,19 +1,23 @@
 using System.Text;
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Config;
 
 // ReSharper disable MethodHasAsyncOverload
 
 namespace Capacitor.Cli.Commands;
 
-static class PermissionRequestCommand {
-    public static Task<int> Handle(string baseUrl) =>
-        Handle(baseUrl, body: null);
+class PermissionRequestCommand(ConfigRoot config, ProfileContext profiles) {
+    readonly WatcherManager _watchers = new(config, profiles);
+
+    string Url => profiles.Resolution.ServerUrl!;
+
+    public Task<int> Handle() => Handle(body: null);
 
     // selfHealWatcher is false when the caller determined the session is excluded
     // (excluded_repos/excluded_paths): we still handle the permission decision, but must NOT
     // spawn a transcript-uploading watcher for a project the user opted out of recording.
-    public static async Task<int> Handle(string baseUrl, string? body, bool selfHealWatcher = true, TextWriter? stdout = null) {
+    public async Task<int> Handle(string? body, bool selfHealWatcher = true, TextWriter? stdout = null) {
         body ??= await Console.In.ReadToEndAsync();
 
         JsonNode? node;
@@ -43,20 +47,20 @@ static class PermissionRequestCommand {
         // one is already running. Skipped for excluded sessions (the caller passes
         // selfHealWatcher: false) so exclusions are honored just like at session-start.
         if (selfHealWatcher) {
-            await TryEnsureWatcher(baseUrl, sessionId, node);
+            await TryEnsureWatcher(sessionId, node);
         }
 
         var isRenderedAgent = Environment.GetEnvironmentVariable("KCAP_RENDERED_AGENT") is "1";
 
         if (isRenderedAgent) {
-            return await HandleRenderedAgent(baseUrl, node, sessionId, stdout);
+            return await HandleRenderedAgent(node, sessionId, stdout);
         }
 
         // Non-rendered agent: record the permission event and return immediately
-        return await HandleRecordOnly(baseUrl, node, sessionId);
+        return await HandleRecordOnly(node, sessionId);
     }
 
-    static async Task<int> HandleRenderedAgent(string baseUrl, JsonNode node, string sessionId, TextWriter? stdout = null) {
+    async Task<int> HandleRenderedAgent(JsonNode node, string sessionId, TextWriter? stdout = null) {
         var toolName    = node["tool_name"]?.GetValue<string>() ?? "Unknown";
         var toolInput   = node["tool_input"];
         var suggestions = node["permission_suggestions"];
@@ -78,10 +82,11 @@ static class PermissionRequestCommand {
         // auth, so an accidentally / maliciously set non-loopback value would leak the
         // hook payload (tool name, raw tool input) to an arbitrary endpoint.
         if (TryGetLoopbackDaemonUrl(out var daemonUrl)) {
-            return await PostAsync(daemonUrl + "/claude/permission-request", payload, authenticated: false, stdout);
+            var bridgePayload = BuildBridgePayload(node, sessionId, HookAgentId.FromEnvironment());
+            return await PostAsync(daemonUrl + "/claude/permission-request", bridgePayload, authenticatedBase: null, stdout);
         }
 
-        return await PostAsync(baseUrl + "/hooks/permission-request", payload, authenticated: true, stdout);
+        return await PostAsync(Url + "/hooks/permission-request", payload, Url, stdout);
     }
 
     /// <summary>
@@ -94,7 +99,7 @@ static class PermissionRequestCommand {
     /// marks a subagent tool call, whose watcher uses a distinct key + transcript and is
     /// ensured at subagent-start. Best-effort: never throws into the hook path.
     /// </summary>
-    internal static async Task TryEnsureWatcher(string baseUrl, string sessionId, JsonNode node) {
+    internal async Task TryEnsureWatcher(string sessionId, JsonNode node) {
         try {
             if (GetString(node, "agent_id") is { Length: > 0 }) {
                 return;
@@ -106,8 +111,7 @@ static class PermissionRequestCommand {
                 return;
             }
 
-            await WatcherManager.EnsureWatcherRunning(
-                baseUrl, sessionId, transcriptPath, agentId: null, cwd: GetString(node, "cwd"));
+            await _watchers.EnsureWatcherRunning(sessionId, transcriptPath, agentId: null, cwd: GetString(node, "cwd"));
         } catch (Exception ex) {
             await Console.Error.WriteLineAsync($"[kcap] permission-request watcher self-heal failed: {ex.Message}");
         }
@@ -131,9 +135,24 @@ static class PermissionRequestCommand {
         return false;
     }
 
-    static async Task<int> PostAsync(string url, JsonObject payload, bool authenticated, TextWriter? stdout = null) {
-        using var client = authenticated
-            ? await HttpClientExtensions.CreateAuthenticatedClientAsync()
+    /// The server payload plus what the daemon's attribution ladder reads: agent_id when this
+    /// process runs inside a hosted agent, and the hook's cwd. The server-bound payload never
+    /// carries either.
+    internal static JsonObject BuildBridgePayload(JsonNode node, string sessionId, string? agentId) {
+        var payload = new JsonObject {
+            ["session_id"]             = sessionId,
+            ["tool_name"]              = node["tool_name"]?.GetValue<string>() ?? "Unknown",
+            ["tool_input"]             = node["tool_input"]?.DeepClone(),
+            ["permission_suggestions"] = node["permission_suggestions"]?.DeepClone(),
+        };
+        if (agentId is not null) payload["agent_id"] = agentId;
+        if (node["cwd"] is JsonValue cwd && cwd.TryGetValue<string>(out var c)) payload["cwd"] = c;
+        return payload;
+    }
+
+    async Task<int> PostAsync(string url, JsonObject payload, string? authenticatedBase, TextWriter? stdout = null) {
+        using var client = authenticatedBase is not null
+            ? await HttpClientExtensions.CreateAuthenticatedClientAsync(config, profiles, authenticatedBase)
             : new HttpClient();
 
         // The server-side long-poll waits up to 10 hours for the user to decide; the
@@ -167,11 +186,11 @@ static class PermissionRequestCommand {
         }
     }
 
-    static async Task<int> HandleRecordOnly(string baseUrl, JsonNode node, string sessionId) {
+    async Task<int> HandleRecordOnly(JsonNode node, string sessionId) {
         var toolName  = node["tool_name"]?.GetValue<string>() ?? "Unknown";
         var toolInput = node["tool_input"];
 
-        using var client = await HttpClientExtensions.CreateAuthenticatedClientAsync();
+        using var client = await HttpClientExtensions.CreateAuthenticatedClientAsync(config, profiles, Url);
         client.Timeout = TimeSpan.FromSeconds(2);
 
         var payload = new JsonObject {
@@ -183,7 +202,7 @@ static class PermissionRequestCommand {
         using var content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json");
 
         try {
-            using var response = await client.PostAsync($"{baseUrl}/hooks/permission-record", content);
+            using var response = await client.PostAsync($"{Url}/hooks/permission-record", content);
         } catch {
             // Silently ignore — don't block Claude Code for recording failures
         }

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Config;
 
 namespace Capacitor.Cli.Commands.Harness;
 
@@ -30,7 +31,9 @@ namespace Capacitor.Cli.Commands.Harness;
 /// dropped final assistant turn when <c>session.shutdown</c> never lands
 /// (e.g. Copilot crash).
 /// </remarks>
-static class CopilotFinalizeDrainCommand {
+sealed class CopilotFinalizeDrainCommand(ConfigRoot config, ProfileContext profiles) {
+    readonly WatcherManager _watchers = new(config, profiles);
+
     // The hook spawns this FIRST — before its capped pre-drain and the retrying
     // session-end POST — so the budget must outlast the worst-case hook lifetime
     // (PreHookDrainCap + Copilot's hook timeout, ~30s by default) and still be
@@ -44,12 +47,12 @@ static class CopilotFinalizeDrainCommand {
     /// <summary>
     /// Process entry point: <c>kcap copilot-finalize &lt;sessionId&gt; &lt;transcriptPath&gt;</c>.
     /// </summary>
-    public static async Task<int> Run(string baseUrl, string sessionId, string transcriptPath) {
+    public async Task<int> Run(string sessionId, string transcriptPath) {
         // The spawning hook closes our redirected std streams the instant it
         // starts us; writing to the dead pipe would fault. Redirect to a
         // per-session log file, mirroring WatchCommand.
         try {
-            var logDir = PathHelpers.ConfigPath("logs");
+            var logDir = config.Path("logs");
             Directory.CreateDirectory(logDir);
             var logWriter = new StreamWriter(Path.Combine(logDir, $"{sessionId}-finalize.log"), append: true) { AutoFlush = true };
             Console.SetOut(logWriter);
@@ -62,7 +65,7 @@ static class CopilotFinalizeDrainCommand {
         // after the session ends does not deliver SIGHUP before the tail lands.
         ProcessHelpers.DetachFromControllingTerminal();
 
-        await RunAsync(baseUrl, sessionId, transcriptPath, DefaultPollBudget, DefaultPollInterval);
+        await RunAsync(sessionId, transcriptPath, DefaultPollBudget, DefaultPollInterval);
 
         return 0;
     }
@@ -72,8 +75,7 @@ static class CopilotFinalizeDrainCommand {
     /// <paramref name="pollBudget"/>), then deliver the tail exactly once. No
     /// process detachment or log redirection, so tests drive it directly.
     /// </summary>
-    internal static async Task RunAsync(
-            string   baseUrl,
+    internal async Task RunAsync(
             string   sessionId,
             string   transcriptPath,
             TimeSpan pollBudget,
@@ -106,7 +108,7 @@ static class CopilotFinalizeDrainCommand {
 
         // Idempotent: resumes from the server watermark; deterministic event ids
         // dedupe anything the hook's inline-drain already delivered.
-        await WatcherManager.InlineDrainAsync(baseUrl, sessionId, transcriptPath, agentId: null, vendor: "copilot");
+        await _watchers.InlineDrainAsync(sessionId, transcriptPath, agentId: null, vendor: "copilot");
     }
 
     /// <summary>

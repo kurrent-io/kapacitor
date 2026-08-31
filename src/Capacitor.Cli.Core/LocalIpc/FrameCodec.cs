@@ -7,7 +7,7 @@ namespace Capacitor.Cli.Core.LocalIpc;
 /// JSON — AOT-safe and allocation-light. Spawn/Attached have structured payloads
 /// (helpers below); other frames are trivial.
 public static class FrameCodec {
-    const int MaxPayload = 8 * 1024 * 1024; // hard cap; oversized => protocol error
+    internal const int MaxPayload = 8 * 1024 * 1024; // hard cap; oversized => protocol error
 
     public static async Task WriteAsync(Stream s, LocalFrame f, CancellationToken ct) {
         var payload = Encode(f);
@@ -55,7 +55,9 @@ public static class FrameCodec {
             or FrameType.ConsentSubscribeV2 or FrameType.ConsentResolveV2
             or FrameType.ConsentRulesGet or FrameType.ConsentRulesPut or FrameType.ConsentRulesPutV2
             or FrameType.ConsentPending or FrameType.ConsentRules
-            or FrameType.ConsentAck or FrameType.DaemonStatus => Encoding.UTF8.GetBytes(f.Text),
+            or FrameType.ConsentAck or FrameType.DaemonStatus
+            or FrameType.PermissionSubscribe or FrameType.PermissionResolve
+            or FrameType.PermissionPending or FrameType.PermissionResolved or FrameType.PermissionAck => Encoding.UTF8.GetBytes(f.Text),
         FrameType.Attached or FrameType.Spawn
             or FrameType.StopV2 or FrameType.AttachedReadOnly => f.Bytes, // pre-encoded by the helpers below
         _ => throw new InvalidDataException($"unencodable frame {f.Type}"),
@@ -74,7 +76,9 @@ public static class FrameCodec {
             or FrameType.ConsentSubscribeV2 or FrameType.ConsentResolveV2
             or FrameType.ConsentRulesGet or FrameType.ConsentRulesPut or FrameType.ConsentRulesPutV2
             or FrameType.ConsentPending or FrameType.ConsentRules
-            or FrameType.ConsentAck or FrameType.DaemonStatus => new(t) { Text = Encoding.UTF8.GetString(p) },
+            or FrameType.ConsentAck or FrameType.DaemonStatus
+            or FrameType.PermissionSubscribe or FrameType.PermissionResolve
+            or FrameType.PermissionPending or FrameType.PermissionResolved or FrameType.PermissionAck => new(t) { Text = Encoding.UTF8.GetString(p) },
         FrameType.Attached or FrameType.Spawn
             or FrameType.StopV2 or FrameType.AttachedReadOnly => new(t) { Bytes = p },
         _ => throw new InvalidDataException($"undecodable frame {t}"),

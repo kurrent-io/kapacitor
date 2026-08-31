@@ -4,14 +4,18 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading.Channels;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Harness;
+using Capacitor.Cli.Core.Harness.Claude;
 using Capacitor.Cli.Core.Config;
+using Capacitor.Cli.Core.FirstRun;
+using Capacitor.Cli.Core.RepoEvidence;
 using Capacitor.Cli.Harness.Claude;
 using Capacitor.Cli.Harness.Cursor;
 using Spectre.Console;
 
 namespace Capacitor.Cli.Commands;
 
-static class ImportCommand {
+class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
     /// <summary>
     /// Maximum parallel worker count for the Importing phase. Both the
     /// channel-based dispatcher in ImportChainsAsync and the TTY slot-row
@@ -286,9 +290,9 @@ static class ImportCommand {
         public required SessionMetadata      Meta       { get; init; }
         public required ClassificationStatus Status     { get; init; }
 
-        /// <summary>"claude" (default) or "codex" — picks the matching metadata extractor,
-        /// title extractor, session-start hook shape, and TranscriptBatch.Vendor tag.</summary>
-        public string Vendor { get; init; } = "claude";
+        /// <summary>Picks the matching metadata extractor, title extractor, session-start hook
+        /// shape, and TranscriptBatch.Vendor tag.</summary>
+        public HarnessId Vendor { get; init; } = HarnessId.Claude;
 
         /// <summary>Only populated when Status == Partial.</summary>
         public int ResumeFromLine { get; init; }
@@ -597,15 +601,55 @@ static class ImportCommand {
     }
 
     /// <summary>
+    /// How a run ended, for a caller that has to say so.
+    /// </summary>
+    /// <remarks>
+    /// <b>The exit code cannot answer this.</b> <c>HandleImport</c> returns 0 for a run whose sessions
+    /// failed — import is best-effort and the Done grid is where that is reported — so a caller
+    /// deriving success from the exit code calls a partial or total failure a success.
+    /// </remarks>
+    /// <summary>Reports a run that deliberately moved nothing: it reached a decision, and the decision
+    /// was that there was nothing to do.</summary>
+    static void ReportNothing(Action<ImportRunOutcome>? onFinished) =>
+        onFinished?.Invoke(new ImportRunOutcome(
+            new FinalCounts(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, RanBackground: false,
+                            RequestedSummaries: false),
+            VisibilityFailures: 0));
+
+    internal sealed record ImportRunOutcome(FinalCounts Counts, int VisibilityFailures) {
+        /// <summary>Anything the user asked for that did not happen.</summary>
+        internal bool AnythingFailed => Counts.Failed > 0 || VisibilityFailures > 0;
+    }
+
+    /// <summary>
+    /// What a discovery run produced.
+    /// </summary>
+    /// <param name="ScannedVendors">The sources actually walked — what was asked for, intersected with
+    /// what this machine has. A caller reporting figures upstream needs this rather than its own
+    /// request, or it claims to have looked somewhere it did not.</param>
+    internal sealed record ImportDiscoveryResult(
+        ImportDiscoverySummary   Summary,
+        IReadOnlyList<HarnessId> ScannedVendors);
+
+    /// <summary>
     /// Every "found nothing" exit still reports. Zero sessions is an answer; no output at all is
     /// indistinguishable from the process having died.
     /// </summary>
-    static int WriteEmptyDiscoveryReport(bool asJson) {
-        WriteDiscoveryReport(
-            ImportDiscoverySummary.Build([], new Dictionary<string, (string, string)?>(), DiscoveryWindows()),
-            asJson);
+    static int WriteEmptyDiscoveryReport(
+            Action<ImportDiscoveryResult> sink, IReadOnlyList<HarnessId> scanned, DateTimeOffset? windowsAsOf) {
+        sink(new ImportDiscoveryResult(
+            ImportDiscoverySummary.Build(
+                [], new Dictionary<string, (string, string)?>(), DiscoveryWindows(windowsAsOf)),
+            scanned));
 
         return 0;
+    }
+
+    /// <summary>In registry order, so two runs of an unchanged machine report the same list.</summary>
+    static IReadOnlyList<HarnessId> ScannedVendors(IReadOnlyList<IImportSource> sources) {
+        var walked = sources.Select(s => s.Vendor).ToHashSet();
+
+        return [.. HarnessRegistry.Identities.Select(h => h.Id).Where(walked.Contains)];
     }
 
     static void WriteDiscoveryReport(ImportDiscoverySummary summary, bool asJson) =>
@@ -615,13 +659,14 @@ static class ImportCommand {
 
     /// <summary>
     /// The <c>--since</c> windows discovery reports totals for, newest first, ending in "everything".
-    /// Callers that offer a different set pass their own to
-    /// <see cref="ImportDiscoverySummary.Build"/> — these are the defaults the CLI itself offers.
+    /// The same keys the first-run flow reports under, so the picker there and this command's own
+    /// output cannot offer different windows.
     /// </summary>
-    internal static IReadOnlyList<DateOnly?> DiscoveryWindows(DateTimeOffset? now = null) {
+    internal static IReadOnlyList<ImportDiscoveryWindow> DiscoveryWindows(DateTimeOffset? now = null) {
         var today = DateOnly.FromDateTime((now ?? DateTimeOffset.UtcNow).UtcDateTime);
 
-        return [today.AddDays(-30), today.AddDays(-90), null];
+        return [.. FirstRunImportWindows.All.Select(
+            key => new ImportDiscoveryWindow(key, FirstRunImportWindows.Since(key, today)))];
     }
 
     /// <summary>
@@ -644,8 +689,7 @@ static class ImportCommand {
     internal static string FormatLoadedSummaryMarkup(string sessionId, int lines, string verb) =>
         $"[green]✓[/] Loading [cyan]{Markup.Escape(sessionId)}[/]... {lines} lines [[{Markup.Escape(verb)}]]";
 
-    public static async Task<int> HandleImport(
-            string                        baseUrl,
+    public async Task<int> HandleImport(
             string?                       filterCwd,
             string?                       filterSession           = null,
             int                           minLines                = 15,
@@ -656,7 +700,6 @@ static class ImportCommand {
             ImportScope?                  scope                   = null,
             bool                          skipConfirmation        = false,
             bool                          forcePrivate            = false,
-            string                        activeProfile           = "default",
             (string Owner, string Name)?  currentRepo             = null,
             bool                          needOrgPick             = false,
             string?                       storedOrg               = null,
@@ -664,21 +707,31 @@ static class ImportCommand {
             string?                       defaultVisibility       = null,
             bool                          reimport                = false,
             bool                          skipTitle               = false,
+            bool                          shareWithOrg            = false,
             bool                          discoverOnly            = false,
-            bool                          discoverJson            = false
+            bool                          discoverJson            = false,
+            DateTimeOffset?               windowsAsOf             = null,
+            Action<ImportRunOutcome>?     onFinished              = null,
+            Action<ImportDiscoveryResult>? onDiscovered           = null
         ) {
+        // A caller that wants the figures rather than the rendering says so by handing one over; the
+        // console is the default consumer, not the only one.
+        var discoverySink = onDiscovered ?? (result => WriteDiscoveryReport(result.Summary, discoverJson));
+        // Discovery never calls the server and is reached with none configured.
+        var baseUrl = profiles.Resolution.ServerUrl ?? "";
+
         // Discovery is a local scan and never touches this client, so building the authenticated one
         // would probe the server and warn an unauthenticated user about a command that needs neither.
         using var httpClient = discoverOnly
             ? new HttpClient()
-            : await HttpClientExtensions.CreateAuthenticatedClientAsync(baseUrl);
+            : await HttpClientExtensions.CreateAuthenticatedClientAsync(config, profiles, baseUrl);
         var       display    = ImportDisplay.Create(quiet: discoverJson);
 
         // --- Sources ---
         // Back-compat: a null caller (legacy or test) means "Claude only". Once
         // Program.cs migrates in E3, every production caller passes sources
         // explicitly.
-        sources ??= [new ClaudeImportSource()];
+        sources ??= [new ClaudeImportSource(config, ClaudeHarness.FromEnvironment(home).Paths.Projects)];
 
         // --- No-source exit policy ---
         var available = sources.Where(s => s.IsAvailable).ToList();
@@ -686,7 +739,7 @@ static class ImportCommand {
 
         if (available.Count == 0) {
             if (explicitVendorSelection) {
-                var flagList = string.Join(", ", missing.Select(v => "--" + v));
+                var flagList = string.Join(", ", missing.Select(v => v.Flag));
 
                 await Console.Error.WriteLineAsync(
                     $"{flagList} specified but no matching installation detected on this machine."
@@ -695,16 +748,20 @@ static class ImportCommand {
                 return 1;
             }
 
-            if (discoverOnly) return WriteEmptyDiscoveryReport(discoverJson);
+            if (discoverOnly) return WriteEmptyDiscoveryReport(discoverySink, [], windowsAsOf);
 
             display.Line("No coding-agent sessions found. Install Claude, Codex, or Cursor and try again.");
+
+            // Zero is an answer, and a caller that hears nothing cannot tell it from a run that died
+            // before it got here — the same rule the discovery report already follows.
+            ReportNothing(onFinished);
 
             return 0;
         }
 
         if (explicitVendorSelection) {
             foreach (var v in missing) {
-                await Console.Error.WriteLineAsync($"Skipping {v} (not detected on this machine).");
+                await Console.Error.WriteLineAsync($"Skipping {v.VendorId} (not detected on this machine).");
             }
         }
 
@@ -729,7 +786,7 @@ static class ImportCommand {
 
         for (var i = 0; i < sources.Count; i++) {
             var count = discoveriesPerSource[i].Count;
-            display.Line($"Found {count} {sources[i].Vendor} session{(count == 1 ? "" : "s")}.");
+            display.Line($"Found {count} {sources[i].Vendor.VendorId} session{(count == 1 ? "" : "s")}.");
         }
 
         var totalDiscovered = discoveriesPerSource.Sum(d => d.Count);
@@ -740,22 +797,26 @@ static class ImportCommand {
             // Keep the message aligned with the dead branch lower in this method
             // (cleanup follow-up) so downstream tooling sees consistent output.
             if (filterSession is not null) {
-                if (discoverOnly) return WriteEmptyDiscoveryReport(discoverJson);
+                if (discoverOnly) return WriteEmptyDiscoveryReport(discoverySink, ScannedVendors(sources), windowsAsOf);
 
                 await Console.Error.WriteLineAsync($"Session not found: {NormalizeGuid(filterSession)}");
 
                 return 1;
             }
 
-            if (discoverOnly) return WriteEmptyDiscoveryReport(discoverJson);
+            if (discoverOnly) return WriteEmptyDiscoveryReport(discoverySink, ScannedVendors(sources), windowsAsOf);
 
             display.Line("No transcript files found.");
+
+            // Zero is an answer, and a caller that hears nothing cannot tell it from a run that died
+            // before it got here — the same rule the discovery report already follows.
+            ReportNothing(onFinished);
 
             return 0;
         }
 
         // Build a vendor → source map for downstream lookups.
-        var byVendor = sources.ToDictionary(s => s.Vendor, StringComparer.Ordinal);
+        var byVendor = sources.ToDictionary(s => s.Vendor);
 
         // --- Cwd resolution for scope filtering ---
         // For file-based sources (Claude/Codex) extract cwd from the transcript.
@@ -764,7 +825,7 @@ static class ImportCommand {
         // per-source: file-based sources project their DiscoveredSessions into
         // (SessionId, FilePath, EncodedCwd) tuples; for Cursor we resolve cwd→repo
         // directly here.
-        var allFileTuples = new List<(string SessionId, string FilePath, string EncodedCwd, string Vendor)>();
+        var allFileTuples = new List<(string SessionId, string FilePath, string EncodedCwd, HarnessId Vendor)>();
         var cursorCwds    = new Dictionary<string, string?>(StringComparer.Ordinal); // sessionId → workspace path
 
         for (var i = 0; i < sources.Count; i++) {
@@ -788,13 +849,13 @@ static class ImportCommand {
         // vendor and merge. User-configured cwd remaps let historic transcripts
         // referencing since-renamed local repo paths still resolve to a real
         // git directory.
-        var profileConfig      = await AppConfig.LoadProfileConfig();
+        var profileConfig      = profiles.Snapshot;
         var cwdRemap           = profileConfig.CwdRemap;
         var resolved           = new Dictionary<string, (string Owner, string Name)?>(StringComparer.Ordinal);
         var sessionCwds        = new Dictionary<string, string>(StringComparer.Ordinal);
         var worktreeAttributed = new HashSet<string>(StringComparer.Ordinal);
 
-        foreach (var vendor in new[] { "claude", "codex" }) {
+        foreach (var vendor in new[] { HarnessId.Claude, HarnessId.Codex }) {
             var slice = allFileTuples
                 .Where(t => t.Vendor == vendor)
                 .Select(t => (t.SessionId, t.FilePath, t.EncodedCwd))
@@ -802,7 +863,7 @@ static class ImportCommand {
 
             if (slice.Count == 0) continue;
 
-            var partial                                  = await ResolveTranscriptReposAsync(slice, codex: vendor == "codex", display, cwdRemap, sessionCwds, worktreeAttributed);
+            var partial                                  = await ResolveTranscriptReposAsync(slice, codex: vendor is HarnessId.Codex, display, cwdRemap, sessionCwds, worktreeAttributed);
             foreach (var kv in partial) resolved[kv.Key] = kv.Value;
         }
 
@@ -839,7 +900,7 @@ static class ImportCommand {
                     async (cwd, _) => {
                         try {
                             // Import only needs owner/repo here — skip the PR/MR provider round-trip.
-                            var repo = await RepositoryDetection.DetectRepositoryAsync(cwd, detectPullRequest: false);
+                            var repo = await RepositoryDetection.DetectRepositoryAsync(config, cwd, detectPullRequest: false);
                             repoByCwd[cwd] = repo is { Owner: { } o, RepoName: { } n } ? (o, n) : null;
                         } catch {
                             repoByCwd[cwd] = null;
@@ -858,24 +919,24 @@ static class ImportCommand {
         // disk so the user understands why some sessions won't match an org or
         // repo scope, and can fix it by adding cwd_remap entries.
         ReportWorktreeAttributions(worktreeAttributed.Count, display);
-        ReportMissingCwds(sessionCwds, cwdRemap, display);
+        ReportMissingCwds(sessionCwds, cwdRemap, display, home);
 
         if (discoverOnly) {
-            WriteDiscoveryReport(
+            discoverySink(new ImportDiscoveryResult(
                 ImportDiscoverySummary.Build(
                     // Each source dates its own sessions: the rule differs per vendor and only the
                     // source knows which one its --since applies.
                     sources.SelectMany((src, i) =>
                         discoveriesPerSource[i].Select(d => (d.SessionId, src.DiscoveryAge(d)))),
                     resolved,
-                    DiscoveryWindows()),
-                discoverJson);
+                    DiscoveryWindows(windowsAsOf)),
+                ScannedVendors(sources)));
 
             return 0;
         }
 
         // --- Scope picker ---
-        var profile = await AppConfig.GetActiveProfileAsync();
+        var profile = profiles.Effective;
 
         if (scope is null) {
             var distinct = resolved.Values
@@ -905,7 +966,7 @@ static class ImportCommand {
         // later bare `kcap import --org` reuses it without re-prompting.
         if (scope is ImportScope.Org chosenOrg &&
             !string.Equals(chosenOrg.OrgLogin, storedOrg, StringComparison.OrdinalIgnoreCase)) {
-            await PersistImportOrgAsync(activeProfile, chosenOrg.OrgLogin);
+            await PersistImportOrgAsync(profiles.Name, chosenOrg.OrgLogin);
         }
 
         // --- Per-source scope filtering ---
@@ -972,6 +1033,10 @@ static class ImportCommand {
         if (totalAfterScope == 0) {
             display.Line("No sessions match the selected scope.");
 
+            // Zero is an answer, and a caller that hears nothing cannot tell it from a run that died
+            // before it got here — the same rule the discovery report already follows.
+            ReportNothing(onFinished);
+
             return 0;
         }
 
@@ -1001,6 +1066,7 @@ static class ImportCommand {
             MinLines: minLines,
             ExcludedRepos: excludedRepos,
             ExcludedPaths: excludedPaths,
+            Home: home,
             Reimport: reimport
         );
 
@@ -1050,9 +1116,9 @@ static class ImportCommand {
             for (var i = 0; i < sources.Count; i++) {
                 // Skip Codex (already pruned in CodexPaths.Discover) and Cursor
                 // (no FilePath to stat). Only Claude needs the post-classify mtime
-                // fallback. Detect this by vendor string to keep the orchestrator
-                // agnostic of source-implementation details.
-                if (sources[i].Vendor != "claude") continue;
+                // fallback. Asked by identity, so the orchestrator stays agnostic of
+                // source-implementation details.
+                if (sources[i].Vendor is not HarnessId.Claude) continue;
 
                 classificationsPerSource[i] = [
                     .. classificationsPerSource[i]
@@ -1140,8 +1206,8 @@ static class ImportCommand {
 
         if (sources.Count > 1) {
             planBySource = classifications
-                .GroupBy(c => c.Vendor, StringComparer.Ordinal)
-                .ToDictionary(g => g.Key, g => ComputeCounts(g.ToList()), StringComparer.Ordinal);
+                .GroupBy(c => c.Vendor)
+                .ToDictionary(g => g.Key.VendorId, g => ComputeCounts(g.ToList()), StringComparer.Ordinal);
         }
 
         display.BeginPhase("Plan");
@@ -1277,7 +1343,8 @@ static class ImportCommand {
                             await concurrencyLimit.WaitAsync();
 
                             try {
-                                var rc = await WhatsDoneCommand.GenerateForSessionAsync(baseUrl, sid, _ => { }, vnd);
+                                var rc = await new WhatsDoneCommand(config, profiles, home)
+                                    .GenerateForSessionAsync(baseUrl, sid, _ => { }, vnd.VendorId);
 
                                 if (rc == 0) Interlocked.Increment(ref summariesGenerated);
                                 else {
@@ -1304,7 +1371,7 @@ static class ImportCommand {
         // routedLoaded/routedExcluded/routedErrored above remain authoritative
         // for the totals row; this tracker is what feeds doneBySource so the
         // sub-grid attributes Skipped-at-import to Excluded (not Errored).
-        var routedOutcomesByVendor = new ConcurrentDictionary<string, (int Loaded, int Skipped, int Failed)>(StringComparer.Ordinal);
+        var routedOutcomesByVendor = new ConcurrentDictionary<HarnessId, (int Loaded, int Skipped, int Failed)>();
 
         // A SEPARATE tracker from `importedSessionIds`, feeding ONLY the --private pass and never
         // the Done-grid counting. Membership in `importedSessionIds` keys off the raw
@@ -1325,11 +1392,22 @@ static class ImportCommand {
         // deliberately a separate issue, not something this gate covers.
         var privateScopeSessionIds = new ConcurrentBag<string>();
 
+        // Every in-scope session the server already has, captured before the import rather than from
+        // its outcome. A stamp cannot narrow a session that already exists, and importedSessionIds
+        // gains one only where this run did new work — so for anything this run merely revisits, the
+        // explicit write is the only mechanism there is, and an outcome must not decide whether the
+        // visibility the user chose is applied.
+        var scopedSessionIds = new ConcurrentBag<string>();
+
+        // Sessions whose explicit visibility write was lost — part of the run's outcome, because one
+        // the user chose a visibility for that still carries the old one is a failure of the thing
+        // they asked for, whatever the transcript did.
+        var visibilityFailures = 0;
         // Read-only inside the parallel loops below; resolved from the sources actually in play.
         var replayChildContentVendors = byVendor.Values
             .Where(s => s.AttachesChildContentOnReplay)
             .Select(s => s.Vendor)
-            .ToHashSet(StringComparer.Ordinal);
+            .ToHashSet();
 
         static (int Loaded, int Skipped, int Failed) AddRoutedOutcome(
                 (int Loaded, int Skipped, int Failed) prev,
@@ -1340,14 +1418,82 @@ static class ImportCommand {
             _                                             => (prev.Loaded, prev.Skipped, prev.Failed + 1),
         };
 
-        // The chain path builds its own New-session-start payload (ImportSingleSessionAsync)
-        // and has no ImportContext/ForcePrivate of its own to guard against — so the
-        // force-private precedence is enforced HERE, up front, rather than via a per-call
-        // invariant. Zeroing it out before a New session's session-start POST guarantees a
-        // force-private import never stamps a non-private default, even if the session later
-        // fails mid-stream (before session-end / importedSessionIds, i.e. before the post-hoc
-        // SetVisibilityNoneForAll below would ever see it).
-        var chainDefaultVisibility = forcePrivate ? null : defaultVisibility;
+        // ImportContext.VisibilityStampFor's rule, for the one path that has no ImportContext. A
+        // stamp and not an omission: an absent default_visibility coalesces to org_public.
+        //
+        // It only decides a session's visibility AT CREATION. The read model's import-overlap branch
+        // omits default_visibility from its update, so a stamp on a session that already exists is
+        // discarded — which is why scopedSessionIds above, and not this, is what privacy rests on
+        // for anything this run only revisits.
+        var chainDefaultVisibility = forcePrivate ? "private" : defaultVisibility;
+
+        // Close the window before anything is uploaded into it.
+        //
+        // A stamp cannot narrow a session that already exists, so for one this run revisits the only
+        // way to avoid publishing new content into a session the user just asked to be private is to
+        // make it private FIRST. New sessions are absent on purpose: they do not exist yet, so there
+        // is nothing to narrow and their creation stamp is the mechanism that works.
+        //
+        // The closing pass stays, as recovery for a session created during the run.
+        //
+        // <b>Fail-closed per session.</b> The write is best-effort — it logs and swallows — so awaiting
+        // it does not establish that anything is private. A session whose write was lost is dropped
+        // from this run instead: uploading into it would publish new content to exactly the audience
+        // the user just excluded, which is worse than not importing it at all.
+        if (forcePrivate) {
+            var existing = classifications
+                .Where(c => c.Status is ClassificationStatus.Partial
+                                     or ClassificationStatus.AlreadyLoaded)
+                .Select(c => c.SessionId)
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
+
+            if (existing.Count > 0) {
+                display.BeginPhase("Making existing sessions private");
+
+                var unprivatized = await SetVisibilityNoneForAll(httpClient, baseUrl, existing);
+
+                if (unprivatized.Count > 0) {
+                    var blocked = unprivatized.ToHashSet(StringComparer.Ordinal);
+
+                    visibilityFailures += blocked.Count;
+
+                    chains = [
+                        .. chains
+                            .Select(chain => chain.Where(c => !blocked.Contains(c.SessionId)).ToList())
+                            .Where(chain => chain.Count > 0)
+                    ];
+
+                    routed = [.. routed.Where(c => !blocked.Contains(c.SessionId))];
+
+                    foreach (var sessionId in blocked) {
+                        await Console.Error.WriteLineAsync(
+                            $"  ! skipping {sessionId}: could not make it private first, and importing "
+                          + "into it would publish new content to the audience it already has");
+                    }
+                }
+            }
+        }
+
+        // The shared stop only, because it is the only one with nothing else: there is no pass above it
+        // (sharing widens, so it opens no window to close) and no stamp it can use, since org_public as
+        // a default lands in `default:org` rather than the class the predicate admits unconditionally.
+        // Under --private this would add writes and no protection — New is private from creation and
+        // everything else was narrowed above.
+        //
+        // Status carries both filters by this point: the scope filter ran before classification, and an
+        // excluded source had its status flipped to Excluded — so these three statuses are exactly the
+        // sessions the user selected AND the server already has. AlreadyLoaded is the one that matters:
+        // it reaches neither chains nor routed for a file-based source, so nothing else would see it.
+        if (shareWithOrg) {
+            foreach (var c in classifications) {
+                if (c.Status is ClassificationStatus.New
+                             or ClassificationStatus.Partial
+                             or ClassificationStatus.AlreadyLoaded) {
+                    scopedSessionIds.Add(c.SessionId);
+                }
+            }
+        }
 
         if (chains.Count > 0) {
             display.BeginPhase($"Importing {chains.Sum(c => c.Count)} sessions");
@@ -1582,7 +1728,7 @@ static class ImportCommand {
                                         case ImportOutcome.Loaded:
                                         case ImportOutcome.Resumed:
                                             AnsiConsole.MarkupLine(
-                                                $"[green]✓[/] Loading [cyan]{Markup.Escape(c.SessionId)}[/] ({Markup.Escape(c.Vendor)})"
+                                                $"[green]✓[/] Loading [cyan]{Markup.Escape(c.SessionId)}[/] ({c.Vendor.VendorId})"
                                             );
 
                                             break;
@@ -1631,7 +1777,7 @@ static class ImportCommand {
                         switch (resolved) {
                             case ImportOutcome.Loaded:
                             case ImportOutcome.Resumed:
-                                display.Line($"Loading {c.SessionId} ({c.Vendor})");
+                                display.Line($"Loading {c.SessionId} ({c.Vendor.VendorId})");
 
                                 break;
                             case ImportOutcome.Skipped:
@@ -1657,22 +1803,33 @@ static class ImportCommand {
             }
         }
 
-        // --- --private: mark all imported sessions owner-only ---
+        // --- An explicit visibility for everything this run touched ---
         //
-        // the privatize set is importedSessionIds (chain-phase +
-        // routed-phase "real new work") UNIONED with privateScopeSessionIds (every routed
-        // classification touched this run under --private whose source can attach child content
-        // on a replay, regardless of outcome — see its declaration above). The union — not a
-        // replacement — keeps chain-phase and other routed privatization exactly as before; it
-        // only widens what those sources contribute so privacy no longer depends on the
-        // Loaded/Failed/AlreadyLoaded/SentChildContent accounting used for import counts.
-        if (forcePrivate) {
-            var toPrivatize = new HashSet<string>(importedSessionIds, StringComparer.Ordinal);
-            toPrivatize.UnionWith(privateScopeSessionIds);
+        // Both stops need one, and for the same reason: the profile default cannot express either.
+        // `none` because an omitted default_visibility coalesces to org-public; `org` because the
+        // default's own `default:org` class is admitted only where the repository's owner matches the
+        // tenant's configured org, which is empty on every provider but GitHubApp — so leaning on it
+        // promises a workspace can read this and delivers owner-only nearly everywhere.
+        //
+        // The set unions three: importedSessionIds (what did new work), privateScopeSessionIds
+        // (routed classifications under --private whose source can attach child content on a replay),
+        // and scopedSessionIds (every in-scope session the server has). Widening, never replacing —
+        // an outcome must not decide whether the visibility the user chose is applied.
+        //
+        // For the private stop this is recovery only: New sessions are private from creation, existing
+        // ones were narrowed before any content moved, and what is left here is a retry for a write
+        // that pass lost. scopedSessionIds is therefore empty under --private, by design.
+        if (ExplicitVisibility(forcePrivate, shareWithOrg) is { } explicitVisibility) {
+            var touched = new HashSet<string>(importedSessionIds, StringComparer.Ordinal);
+            touched.UnionWith(privateScopeSessionIds);
+            touched.UnionWith(scopedSessionIds);
 
-            if (toPrivatize.Count > 0) {
-                display.BeginPhase("Marking imported sessions private");
-                await SetVisibilityNoneForAll(httpClient, baseUrl, [.. toPrivatize]);
+            if (touched.Count > 0) {
+                display.BeginPhase(forcePrivate
+                    ? "Marking imported sessions private"
+                    : "Sharing imported sessions with your workspace");
+                visibilityFailures += (await SetVisibilityForAll(
+                    httpClient, baseUrl, [.. touched], explicitVisibility)).Count;
             }
         }
 
@@ -1770,9 +1927,9 @@ static class ImportCommand {
             var importedSet = importedSessionIds.ToHashSet(StringComparer.Ordinal);
 
             doneBySource = classifications
-                .GroupBy(c => c.Vendor, StringComparer.Ordinal)
+                .GroupBy(c => c.Vendor)
                 .ToDictionary(
-                    g => g.Key,
+                    g => g.Key.VendorId,
                     g => {
                         var slice    = g.ToList();
                         var imported = slice.Count(c => importedSet.Contains(c.SessionId));
@@ -1790,6 +1947,8 @@ static class ImportCommand {
         }
 
         display.WriteDoneGrid(final, doneBySource);
+
+        onFinished?.Invoke(new ImportRunOutcome(final, visibilityFailures));
 
         return 0;
     }
@@ -2174,6 +2333,60 @@ static class ImportCommand {
     }
 
     /// <summary>
+    /// Whole-transcript version of the live watcher's evidence scan (see
+    /// <c>RepoEvidenceScanner</c>): feeds every line through the two-slot mutation/read rule,
+    /// then promotes the read fallback if no mutation ever attributed. Import has no live tail
+    /// to keep scanning, so — unlike the watcher's one-shot prefix scan — this always runs to
+    /// end of file. <paramref name="findRoot"/>/<paramref name="detect"/> are injected so the
+    /// D1 gating in <see cref="ImportSingleSessionAsync"/> is unit-testable without disk.
+    /// </summary>
+    internal static async Task<JsonObject?> TryBuildEvidenceRepositoryNodeAsync(
+            string                                 vendor,
+            IEnumerable<string>                    transcriptLines,
+            Func<string, string?>                  findRoot,
+            Func<string, Task<RepositoryPayload?>> detect
+        ) {
+        try {
+            var scanner = new RepoEvidenceScanner<RepositoryPayload>(
+                findRoot, detect, p => p.Owner is not null && p.RepoName is not null);
+
+            foreach (var line in transcriptLines) {
+                if (await scanner.OnLineAsync(vendor, line) is { } attributed) {
+                    return RepositoryDetection.BuildRepositoryNode(attributed);
+                }
+            }
+
+            if (await scanner.PromoteReadFallbackAsync() is { } fallback) {
+                return RepositoryDetection.BuildRepositoryNode(fallback);
+            }
+
+            return null;
+        } catch {
+            return null; // fail-open: a bad transcript must never break import
+        }
+    }
+
+    /// <summary>
+    /// Path-based overload: reads the transcript INSIDE this method's own try, so an
+    /// invalid/empty path degrades to "no evidence" here too, instead of throwing as a bare call
+    /// argument at the caller, outside any try/catch. Uses <c>File.ReadLinesShared</c>
+    /// (see <see cref="SharedFileText"/>), not <c>File.ReadLines</c>, whose FileShare.Read is
+    /// Windows-mandatory and denies the write handle a still-flushing agent owns on its transcript.
+    /// </summary>
+    internal static async Task<JsonObject?> TryBuildEvidenceRepositoryNodeAsync(
+            string                                 vendor,
+            string                                 transcriptPath,
+            Func<string, string?>                  findRoot,
+            Func<string, Task<RepositoryPayload?>> detect
+        ) {
+        try {
+            return await TryBuildEvidenceRepositoryNodeAsync(vendor, File.ReadLinesShared(transcriptPath), findRoot, detect);
+        } catch {
+            return null; // fail-open: an unreadable/invalid path must never break import
+        }
+    }
+
+    /// <summary>
     /// Build a SessionId → repo lookup for every discovered transcript. Repo
     /// detection (git + `gh pr view`) is the slow part of the discovery phase
     /// and previously ran sequentially per-session, making `kcap import`
@@ -2208,12 +2421,12 @@ static class ImportCommand {
     /// not abort the import. Creates the profile entry if it doesn't exist yet (e.g. the
     /// <c>default</c> profile), so the org is remembered even without a tenant-bound profile.
     /// </summary>
-    static async Task PersistImportOrgAsync(string profileName, string org) {
+    async Task PersistImportOrgAsync(string profileName, string org) {
         if (string.IsNullOrWhiteSpace(org)) return;
         org = org.Trim();
 
         try {
-            await ConfigMutator.MutateAsync(c => {
+            await ConfigMutator.MutateAsync(config, c => {
                 var profile = c.Profiles.GetValueOrDefault(profileName) ?? new Core.Config.Profile();
 
                 return c with {
@@ -2230,7 +2443,8 @@ static class ImportCommand {
     internal static void ReportMissingCwds(
             IReadOnlyDictionary<string, string> sessionCwds,
             IReadOnlyList<CwdRemap>?            cwdRemap,
-            ImportDisplay                       display
+            ImportDisplay                       display,
+            UserHome                            home
         ) {
         if (sessionCwds.Count == 0) return;
 
@@ -2245,14 +2459,13 @@ static class ImportCommand {
 
         var sessionsAffected = sessionCwds.Values.Count(missing.Contains);
         var sortedRoots      = roots.OrderBy(c => c, StringComparer.Ordinal).ToList();
-        var home             = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
 
         var sessionWord = sessionsAffected == 1 ? "session references" : "sessions reference";
         var pathWord    = sortedRoots.Count == 1 ? "path that no longer exists" : "distinct paths that no longer exist";
         display.Line($"{sessionsAffected} {sessionWord} {sortedRoots.Count} {pathWord} on disk:");
 
         const int sampleSize = 5;
-        foreach (var cwd in sortedRoots.Take(sampleSize)) display.Line($"  {ShortenHome(cwd, home)}");
+        foreach (var cwd in sortedRoots.Take(sampleSize)) display.Line($"  {ShortenHome(cwd, home.Path)}");
 
         if (sortedRoots.Count > sampleSize) {
             display.Line($"  ... and {sortedRoots.Count - sampleSize} more");
@@ -2341,13 +2554,13 @@ static class ImportCommand {
     /// <c>.../&lt;project&gt;/.claude/worktrees/&lt;slug&gt;</c>) to
     /// <c>&lt;project&gt;</c> when the worktree itself no longer exists.
     /// </summary>
-    static string ResolveCwd(
+    string ResolveCwd(
             string                   raw,
             IReadOnlyList<CwdRemap>? cwdRemap,
             ISet<string>?            worktreeAttributed,
             string                   sessionId
         ) {
-        var remapped              = CwdRemapper.Apply(raw, cwdRemap);
+        var remapped              = CwdRemapper.Apply(raw, cwdRemap, home);
         var (final, wasStripped) = WorktreePathResolver.Resolve(remapped);
 
         if (wasStripped) worktreeAttributed?.Add(sessionId);
@@ -2355,7 +2568,7 @@ static class ImportCommand {
         return final;
     }
 
-    internal static async Task<Dictionary<string, (string Owner, string Name)?>> ResolveTranscriptReposAsync(
+    internal async Task<Dictionary<string, (string Owner, string Name)?>> ResolveTranscriptReposAsync(
             IReadOnlyList<(string SessionId, string FilePath, string EncodedCwd)> transcripts,
             bool                                                                  codex,
             ImportDisplay                                                         display,
@@ -2419,7 +2632,7 @@ static class ImportCommand {
 
             async ValueTask DetectOne(string cwd) {
                 // Import only needs owner/repo here — skip the PR/MR provider round-trip.
-                var repo = await RepositoryDetection.DetectRepositoryAsync(cwd, detectPullRequest: false);
+                var repo = await RepositoryDetection.DetectRepositoryAsync(config, cwd, detectPullRequest: false);
                 repoByCwd[cwd] = repo is { Owner: { } o, RepoName: { } n } ? (o, n) : null;
             }
 
@@ -2530,9 +2743,9 @@ static class ImportCommand {
     internal static string NormalizeGuid(string value) =>
         Guid.TryParse(value, out var guid) ? guid.ToString("N") : value;
 
-    static async Task<TitleResult> GenerateTitleForImportAsync(HttpClient httpClient, string baseUrl, string sessionId, string filePath, string vendor) {
+    async Task<TitleResult> GenerateTitleForImportAsync(HttpClient httpClient, string baseUrl, string sessionId, string filePath, HarnessId vendor) {
         try {
-            var (userText, assistantText) = vendor == "codex"
+            var (userText, assistantText) = vendor is HarnessId.Codex
                 ? TitleGenerator.ExtractCodexTitleContext(filePath)
                 : TitleGenerator.ExtractTitleContext(filePath);
 
@@ -2540,7 +2753,8 @@ static class ImportCommand {
                 return TitleResult.Skipped;
             }
 
-            var result = await TitleGenerator.GenerateAsync(userText, assistantText, _ => { }, vendor);
+            var result = await TitleGenerator.GenerateAsync(
+                userText, assistantText, _ => { }, profiles.Resolution.Profile, home, vendor.VendorId);
 
             if (result is null) {
                 return TitleResult.Skipped;
@@ -2610,7 +2824,7 @@ static class ImportCommand {
         public bool TrackPerSessionProgress { get; init; }
 
         /// <summary>Fired when a successfully-imported session is ready for title generation.</summary>
-        public required Action<(string SessionId, string FilePath, string? PreviousSessionId, string Vendor)> OnTitleTaskReady { get; init; }
+        public required Action<(string SessionId, string FilePath, string? PreviousSessionId, HarnessId Vendor)> OnTitleTaskReady { get; init; }
 
         /// <summary>
         /// Fired when a session's session-end hook returned, signalling that the
@@ -2618,7 +2832,7 @@ static class ImportCommand {
         /// Renamed from the previous `OnSessionEnded` to disambiguate from the
         /// slot-aware lifecycle event above.
         /// </summary>
-        public required Action<(string SessionId, bool GenerateWhatsDone, string Vendor)> OnBackgroundWorkReady { get; init; }
+        public required Action<(string SessionId, bool GenerateWhatsDone, HarnessId Vendor)> OnBackgroundWorkReady { get; init; }
     }
 
     /// <summary>
@@ -2626,7 +2840,7 @@ static class ImportCommand {
     /// serially. Thread-safe: counters use Interlocked, callbacks must be
     /// thread-safe (production wiring uses AnsiConsole + ConcurrentBag).
     /// </summary>
-    internal static async Task<ImportChainsResult> ImportChainsAsync(
+    internal async Task<ImportChainsResult> ImportChainsAsync(
             HttpClient                        httpClient,
             string                            baseUrl,
             List<List<SessionClassification>> chains,
@@ -2712,7 +2926,7 @@ static class ImportCommand {
             ? resolvedCwd
             : session.Meta.Cwd ?? SessionImporter.DecodeCwdFromDirName(session.EncodedCwd);
 
-    static async Task<(SessionImportOutcome Outcome, int LinesSent)> ImportSingleSessionAsync(
+    async Task<(SessionImportOutcome Outcome, int LinesSent)> ImportSingleSessionAsync(
             HttpClient            httpClient,
             string                baseUrl,
             SessionClassification session,
@@ -2776,7 +2990,8 @@ static class ImportCommand {
                 if (resumeLastTs is not null) resumeEndHook["ended_at"] = resumeLastTs.Value.ToString("O");
 
                 using var endContent = new StringContent(resumeEndHook.ToJsonString(), Encoding.UTF8, "application/json");
-                using var endResp    = await httpClient.PostWithRetryAsync($"{baseUrl}/hooks/session-end/{session.Vendor}", endContent, ct: ct);
+                using var endResp    = await httpClient.PostWithRetryAsync(
+                    $"{baseUrl}/hooks/session-end/{session.Vendor.VendorId}", endContent, ct: ct, retryStatuses: true);
 
                 if (!endResp.IsSuccessStatusCode) {
                     events.OnSessionErrored(slot, session.SessionId, $"resume session-end failed: HTTP {(int)endResp.StatusCode}");
@@ -2815,9 +3030,7 @@ static class ImportCommand {
         if (meta.FirstTimestamp is not null) startHook["started_at"]                = meta.FirstTimestamp.Value.ToString("O");
         if (session.PreviousSessionId is not null) startHook["previous_session_id"] = session.PreviousSessionId;
         if (meta.Slug is not null) startHook["slug"]                                = meta.Slug;
-        // Step 3 visibility stamp (New-only — this branch only runs for ClassificationStatus.New;
-        // Partial returned above). The caller (HandleImport) already zeroed this out under
-        // forcePrivate, so no separate check is needed here.
+        // New-only: this branch runs only for ClassificationStatus.New, Partial having returned above.
         if (defaultVisibility is not null) startHook["default_visibility"]          = defaultVisibility;
 
         // best-effort git-root discovery from the (already remap-resolved) cwd, so
@@ -2833,12 +3046,12 @@ static class ImportCommand {
         // RepositoryDetection probe (which reads the live git config and might disagree
         // with what was true when the rollout was recorded). Detection still runs as a
         // fallback for fields the rollout omits (user_name / user_email).
-        var codexRepo = session.Vendor == "codex" ? ExtractCodexGitInfo(session.FilePath) : null;
+        var codexRepo = session.Vendor is HarnessId.Codex ? ExtractCodexGitInfo(session.FilePath) : null;
 
         if (cwd is not null) {
             // The imported session-start payload carries no PR fields (only owner/repo/branch/user),
             // so skip the PR/MR provider round-trip.
-            var repo = await RepositoryDetection.DetectRepositoryAsync(cwd, detectPullRequest: false);
+            var repo = await RepositoryDetection.DetectRepositoryAsync(config, cwd, detectPullRequest: false);
 
             if (repo is not null || codexRepo is not null) {
                 var repoNode = new JsonObject();
@@ -2864,6 +3077,22 @@ static class ImportCommand {
             }
         }
 
+        // D1: the cwd itself isn't inside any git repo (or is missing entirely), so neither
+        // workspace_root above nor the cwd-based repository detection could find anything —
+        // fall back to scanning the transcript's own tool-use paths for a resolvable git root,
+        // same evidence rule the live watcher applies for sessions launched outside a repo.
+        if (session.Vendor is HarnessId.Claude
+            && !startHook.ContainsKey("repository")
+            && (cwd is null || GitRepository.FindRoot(cwd) is null)) {
+            var evidenceNode = await TryBuildEvidenceRepositoryNodeAsync(
+                session.Vendor.VendorId,
+                session.FilePath,
+                GitRepository.FindRoot,
+                root => RepositoryDetection.DetectRepositoryAsync(config, root, detectPullRequest: false));
+
+            if (evidenceNode is not null) startHook["repository"] = evidenceNode;
+        }
+
         // The /hooks/session-start route binds vendor from the URL path
         // (/session-start/{vendor=claude}); a body-level `vendor` field is
         // ignored. Codex history imports that posted to /hooks/session-start
@@ -2872,7 +3101,8 @@ static class ImportCommand {
         // claude even though the transcript was a codex rollout.
         try {
             using var startContent = new StringContent(startHook.ToJsonString(), Encoding.UTF8, "application/json");
-            using var startResp    = await httpClient.PostWithRetryAsync($"{baseUrl}/hooks/session-start/{session.Vendor}", startContent, ct: ct);
+            using var startResp    = await httpClient.PostWithRetryAsync(
+                $"{baseUrl}/hooks/session-start/{session.Vendor.VendorId}", startContent, ct: ct, retryStatuses: true);
 
             if (!startResp.IsSuccessStatusCode) {
                 events.OnSessionErrored(slot, session.SessionId, $"session-start failed: HTTP {(int)startResp.StatusCode}");
@@ -2924,7 +3154,8 @@ static class ImportCommand {
         // session-start comment above) — symmetric route, same default of claude.
         try {
             using var endContent = new StringContent(endHook.ToJsonString(), Encoding.UTF8, "application/json");
-            using var endResp    = await httpClient.PostWithRetryAsync($"{baseUrl}/hooks/session-end/{session.Vendor}", endContent, ct: ct);
+            using var endResp    = await httpClient.PostWithRetryAsync(
+                    $"{baseUrl}/hooks/session-end/{session.Vendor.VendorId}", endContent, ct: ct, retryStatuses: true);
 
             if (endResp.IsSuccessStatusCode) {
                 try {
@@ -2972,35 +3203,75 @@ static class ImportCommand {
     }
 
     /// <summary>
-    /// PUT visibility=none for every imported session id. Failures are logged
-    /// inline (one line per session) but never throw — the import already
-    /// succeeded; users can re-run `kcap hide` for any that failed.
+    /// The visibility to write explicitly over what this run imported, or null to leave each session
+    /// on whatever its <c>default_visibility</c> resolved to.
     /// </summary>
-    internal static async Task SetVisibilityNoneForAll(
+    /// <remarks>
+    /// Refuses both at once rather than picking: they are opposite promises, and a caller asking for
+    /// both has a bug that silently choosing one would hide.
+    ///
+    /// <para><c>org</c> and not the profile default, because leaning on <c>org_public</c> produces the
+    /// <c>default:org</c> class, which the visibility predicate admits only where the repository's
+    /// owner matches the tenant's configured org — empty on every provider but <c>GitHubApp</c>. So the
+    /// default route promises a team can read this and delivers owner-only on most tenants;
+    /// <c>explicit:org</c> is admitted unconditionally.</para>
+    /// </remarks>
+    internal static string? ExplicitVisibility(bool forcePrivate, bool shareWithOrg) {
+        if (forcePrivate && shareWithOrg)
+            throw new ArgumentException("An import cannot be both private and shared with the org.", nameof(shareWithOrg));
+
+        return forcePrivate ? "none" : shareWithOrg ? "org" : null;
+    }
+
+    /// <summary>PUT visibility=none for every imported session id.</summary>
+    internal static Task<IReadOnlyList<string>> SetVisibilityNoneForAll(
             HttpClient            httpClient,
             string                baseUrl,
             IReadOnlyList<string> sessionIds
+        ) => SetVisibilityForAll(httpClient, baseUrl, sessionIds, "none");
+
+    /// <summary>
+    /// Failures are logged inline (one line per session) but never throw — the import already
+    /// succeeded; users can re-run `kcap hide` or `kcap share` for any that failed. <b>Returns the ids
+    /// it could not write</b>, because a caller cannot report the run a success while a session the
+    /// user chose a visibility for still carries the old one — and a caller writing BEFORE the content
+    /// has to know which sessions it must now leave alone.
+    /// </summary>
+    internal static async Task<IReadOnlyList<string>> SetVisibilityForAll(
+            HttpClient            httpClient,
+            string                baseUrl,
+            IReadOnlyList<string> sessionIds,
+            string                visibility
         ) {
+        var lost = new List<string>();
+
         foreach (var sessionId in sessionIds) {
-            var       payload = new JsonObject { ["visibility"] = "none" };
+            var       payload = new JsonObject { ["visibility"] = visibility };
             using var content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json");
 
             try {
                 using var resp = await httpClient.PutWithRetryAsync(
                     $"{baseUrl}/api/sessions/{sessionId}/visibility",
-                    content
+                    content,
+                    retryStatuses: true
                 );
 
                 if (!resp.IsSuccessStatusCode) {
+                    lost.Add(sessionId);
+
                     await Console.Error.WriteLineAsync(
-                        $"  ! visibility=none failed for {sessionId}: HTTP {(int)resp.StatusCode}"
+                        $"  ! visibility={visibility} failed for {sessionId}: HTTP {(int)resp.StatusCode}"
                     );
                 }
             } catch (Exception ex) {
+                lost.Add(sessionId);
+
                 await Console.Error.WriteLineAsync(
-                    $"  ! visibility=none failed for {sessionId}: {ex.Message}"
+                    $"  ! visibility={visibility} failed for {sessionId}: {ex.Message}"
                 );
             }
         }
+
+        return lost;
     }
 }

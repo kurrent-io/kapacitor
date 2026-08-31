@@ -53,7 +53,8 @@ internal partial class AgentOrchestrator {
                 // (ModelSelectionLaunchPolicy.Evaluate treats blank as Honor, i.e. pass-through
                 // unchanged) — but the wire contract pins absent = null. Normalize here, at the
                 // wire boundary, rather than changing what AgentInstance stores.
-                string.IsNullOrWhiteSpace(a.Model) ? null : a.Model, a.RequesterDisplay))];
+                string.IsNullOrWhiteSpace(a.Model) ? null : a.Model, a.RequesterDisplay,
+                HasTerminal: a.Runtime.EmitsTerminalOutput, Title: a.Title, TranscriptPath: a.TranscriptPath))];
 
     /// <summary>
     /// Serves the legacy <c>Stop</c> frame from older clients that predate --force. That frame
@@ -157,6 +158,7 @@ internal partial class AgentOrchestrator {
 
         var           agentId       = Guid.NewGuid().ToString("N");
         AgentInstance agent;
+        DateTime      spawnedAtUtc;
         WorktreeInfo? ownedWorktree = null; // tracked so a failure after creation cleans it up
 
         try {
@@ -191,6 +193,7 @@ internal partial class AgentOrchestrator {
                 if (_permissionBridge.BaseUrl is { } bridgeUrl) env["KCAP_DAEMON_URL"] = bridgeUrl;
             }
 
+            spawnedAtUtc = DateTime.UtcNow;
             var pty     = _ptyFactory.Spawn(launcher.CliPath, built.Args, worktree.Path, env, cols, rows);
             var runtime = new PtyHostedAgentRuntime(vendor, pty);
 
@@ -225,6 +228,7 @@ internal partial class AgentOrchestrator {
         catch (Exception ex) { LogLocalRegisterFailed(ex, agentId); }
 
         _ = ReadAgentOutputAsync(agent);
+        _ = DetectSessionIdAsync(agent, vendor, spawnedAtUtc);
         await AttachClientLoopAsync(agent, stream, ct);
     }
 

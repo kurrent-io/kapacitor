@@ -11,6 +11,14 @@ public sealed record ProvisionRequest {
     [JsonPropertyName("orgName")] public required string OrgName { get; init; }
     [JsonPropertyName("slug")]    public required string Slug    { get; init; }
     [JsonPropertyName("tier")]    public string          Tier    { get; init; } = "free";
+
+    // The per-auth-run correlation key (Telemetry/SetupJoin.cs). WhenWritingNull, not merely
+    // nullable: this context sets no global DefaultIgnoreCondition, so a bare property would ship
+    // "joinId":null on every opted-out run and every pre-key build. An absent key must be an absent
+    // member, so the body stays exactly what it was.
+    [JsonPropertyName("joinId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? JoinId { get; init; }
 }
 
 // POST /api/signup/provision response (202/200/400/409 bodies unioned; fields optional)

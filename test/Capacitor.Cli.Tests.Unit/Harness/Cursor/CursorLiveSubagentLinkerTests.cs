@@ -3,6 +3,8 @@ using Capacitor.Cli.Harness.Cursor;
 namespace Capacitor.Cli.Tests.Unit.Harness.Cursor;
 
 public class CursorLiveSubagentLinkerTests {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     [Test]
     public async Task resolves_child_to_parent_by_prompt_hash() {
         using var tmp = new TempDir();
@@ -61,8 +63,9 @@ public class CursorLiveSubagentLinkerTests {
 
     [Test]
     public async Task discover_siblings_is_fail_open_for_a_missing_transcripts_root() {
+        using var tmp = new TempDir();
         var siblings = CursorLiveSubagentLinker.DiscoverSiblingTranscripts(
-            Path.Combine(Path.GetTempPath(), $"kcap-curs-missing-{Guid.NewGuid():N}", "sid", "sid.jsonl"));
+            tmp.PathTo("missing", "sid", "sid.jsonl"));
 
         await Assert.That(siblings).IsEmpty();
     }
@@ -74,22 +77,22 @@ public class CursorLiveSubagentLinkerTests {
     public async Task save_and_load_link_round_trips() {
         var sid = $"marker-{Guid.NewGuid():N}";
         try {
-            await Assert.That(CursorLiveSubagentLinker.TryLoadLink(sid)).IsNull();
+            await Assert.That(CursorLiveSubagentLinker.TryLoadLink(Config.Root, sid)).IsNull();
 
-            CursorLiveSubagentLinker.SaveLink(sid, "parent-sid", "researcher");
+            CursorLiveSubagentLinker.SaveLink(Config.Root, sid, "parent-sid", "researcher");
 
-            var loaded = CursorLiveSubagentLinker.TryLoadLink(sid);
+            var loaded = CursorLiveSubagentLinker.TryLoadLink(Config.Root, sid);
             await Assert.That(loaded).IsNotNull();
             await Assert.That(loaded!.Value.ParentSessionId).IsEqualTo("parent-sid");
             await Assert.That(loaded.Value.SubagentType).IsEqualTo("researcher");
         } finally {
-            try { File.Delete(Path.Combine(Capacitor.Cli.Core.PathHelpers.ConfigPath("cursor-subagent-links"), sid)); } catch { }
+            try { File.Delete(Path.Combine(Config.PathTo("cursor-subagent-links"), sid)); } catch { }
         }
     }
 
     [Test]
     public async Task load_link_returns_null_for_an_unknown_session() {
-        var loaded = CursorLiveSubagentLinker.TryLoadLink($"never-saved-{Guid.NewGuid():N}");
+        var loaded = CursorLiveSubagentLinker.TryLoadLink(Config.Root, $"never-saved-{Guid.NewGuid():N}");
         await Assert.That(loaded).IsNull();
     }
 

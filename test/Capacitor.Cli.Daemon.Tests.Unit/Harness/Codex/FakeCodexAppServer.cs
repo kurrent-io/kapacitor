@@ -47,6 +47,11 @@ sealed class FakeCodexAppServer : IAsyncDisposable {
     public readonly List<string>       ReceivedMethods    = [];
     public readonly List<string>       InitializeOptOuts  = [];
     public string?                     LastThreadStartSandbox;
+    public bool                        LastThreadStartHadModel;
+    public string?                     LastThreadStartModel;
+    public bool                        LastTurnStartHadModel;
+    public string?                     LastTurnStartModel;
+    public string?                     LastResumeThreadId; // §2.7 B4: the threadId carried on thread/resume
     public string?                     LastTurnApprovalPolicy;
     public string?                     LastTurnEffort;
     public string?                     LastSteerExpectedTurnId;
@@ -114,12 +119,27 @@ sealed class FakeCodexAppServer : IAsyncDisposable {
             case "thread/start":
                 if (@params.ValueKind == JsonValueKind.Object && @params.TryGetProperty("sandbox", out var sb))
                     LastThreadStartSandbox = sb.ValueKind == JsonValueKind.String ? sb.GetString() : null;
+                LastThreadStartHadModel = @params.Prop("model") is not null;
+                LastThreadStartModel    = @params.Str("model");
                 await RespondAsync(id, new JsonObject {
                     ["thread"]        = new JsonObject { ["id"] = ThreadId, ["sessionId"] = ThreadId, ["path"] = "/tmp/r.jsonl" },
                     ["model"]         = Model,
                     ["modelProvider"] = "openai",
                 }, ct);
                 break;
+
+            case "thread/resume": {
+                // §2.7 B4 resume-by-thread_id: echo the requested thread id back (response.thread.id ==
+                // the requested id, per the app-server schema). The daemon reads it exactly as thread/start.
+                LastResumeThreadId = Str(@params, "threadId");
+                var resumedId = LastResumeThreadId ?? ThreadId;
+                await RespondAsync(id, new JsonObject {
+                    ["thread"]        = new JsonObject { ["id"] = resumedId, ["sessionId"] = resumedId, ["path"] = "/tmp/r.jsonl" },
+                    ["model"]         = Model,
+                    ["modelProvider"] = "openai",
+                }, ct);
+                break;
+            }
 
             case "turn/start": {
                 _turnStartCount++;
@@ -131,6 +151,8 @@ sealed class FakeCodexAppServer : IAsyncDisposable {
                     LastTurnApprovalPolicy = ap.GetString();
                 if (@params.ValueKind == JsonValueKind.Object && @params.TryGetProperty("effort", out var ef))
                     LastTurnEffort = ef.GetString();
+                LastTurnStartHadModel = @params.Prop("model") is not null;
+                LastTurnStartModel    = @params.Str("model");
 
                 var turnId = "turn-" + _turnStartCount;
                 _lastTurnId = turnId;

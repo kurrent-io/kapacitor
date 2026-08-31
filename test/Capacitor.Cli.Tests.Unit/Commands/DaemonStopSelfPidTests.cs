@@ -34,7 +34,9 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 /// it does — a future reader deleting one layer will not be told by this test.</para>
 /// </summary>
 public class DaemonStopSelfPidTests {
-    [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
+    [TempDaemonPaths]  public required TempDaemonStore Daemons { get; init; }
+    [TempConfigRoot]   public required TempConfigRoot  Config  { get; init; }
+    [TempHome]         public required TempHome        Home    { get; init; }
 
     [Test]
     public async Task Stop_refuses_to_kill_a_pid_file_naming_the_current_process() {
@@ -56,7 +58,7 @@ public class DaemonStopSelfPidTests {
         // matters less than the fact that it RETURNS: an unhandled exception here takes down
         // whichever unrelated test happens to be running — which is exactly how it showed up in
         // CI, as a random UninstallCommandTests failure.
-        var exit = await new DaemonCommands(Daemons.Store).HandleAsync(["daemon", "stop", "--name", "self", "--yes"]);
+        var exit = await new DaemonCommands(Daemons.Store, Config.Root, Resolutions.None(Config.Root), Home).HandleAsync(["daemon", "stop", "--name", "self", "--yes"]);
 
         await Assert.That(exit).IsEqualTo(1);
     }

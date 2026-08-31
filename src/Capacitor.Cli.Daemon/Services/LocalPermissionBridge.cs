@@ -6,10 +6,14 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.LocalIpc;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
 namespace Capacitor.Cli.Daemon.Services;
+
+internal readonly record struct PermissionAttribution(string? AgentId, string SessionId, string? Cwd);
+internal readonly record struct AttributedAgent(string AgentId);
 
 /// <summary>
 /// Localhost-only HTTP bridge that fronts the server's permission flow for spawned
@@ -25,10 +29,40 @@ namespace Capacitor.Cli.Daemon.Services;
 /// </summary>
 internal sealed partial class LocalPermissionBridge(
         ServerConnection               server,
-        ILogger<LocalPermissionBridge> logger
+        ILogger<LocalPermissionBridge> logger,
+        PermissionPromptBroker?        broker      = null,
+        PermissionDecisionLog?         decisionLog = null
     ) : IHostedService, IAsyncDisposable {
     const int    MaxBindAttempts = 15;
     const string PathSuffix      = "/permission-request";
+
+    internal static readonly TimeSpan ResponseWriteTimeout = TimeSpan.FromSeconds(2);
+    internal static readonly TimeSpan RequestReadTimeout   = TimeSpan.FromSeconds(2);
+    internal static readonly TimeSpan ShutdownDrain        = TimeSpan.FromSeconds(2);
+
+    readonly PermissionPromptBroker _broker      = broker ?? new();
+    readonly PermissionDecisionLog? _decisionLog = decisionLog;
+    int _serverLegsInFlight;
+
+    // One gate owns admission and the in-flight count together, so a snapshot taken under it
+    // is exact: nothing admitted after it, nothing admitted before it invisible.
+    readonly object _admission = new();
+    bool _admitting = true;
+    int  _inFlight;
+
+    internal int  InFlightHandlersForTest => Volatile.Read(ref _inFlight);
+    internal bool AdmittingForTest { get { lock (_admission) return _admitting; } }
+    internal Func<Task>? BeforeHandlerRunsForTest { get; set; }
+
+    internal PermissionPromptBroker BrokerForTest => _broker;
+    internal PermissionDecisionLog? DecisionLogForTest => _decisionLog;
+
+    /// Assigned by the orchestrator after construction (it takes this bridge in its own
+    /// constructor, so the dependency cannot point the other way). Null = every request is
+    /// unattributed and takes the server-only path.
+    internal Func<PermissionAttribution, AttributedAgent?>? AttributeHandler { get; set; }
+
+    internal int ServerLegsInFlightForTest => Volatile.Read(ref _serverLegsInFlight);
 
     // Revoked reviewer prefixes are intentionally retained (see RevokeReviewerToken), so the
     // listener's prefix set only grows over a daemon's lifetime, bounded by the reviewer-launch
@@ -39,6 +73,12 @@ internal sealed partial class LocalPermissionBridge(
     /// <summary>Cap on a reviewer submission body. The poster is a sandboxed vendor child, so an
     /// unbounded read is a memory-exhaustion lever.</summary>
     internal const int MaxSubmitBodyBytes = 1024 * 1024;
+
+    /// <summary>Cap on a permission-request body posted by the local hook. Tool input and
+    /// suggestions are each already bounded to <see cref="PermissionWire.MaxElementBytes"/> on the
+    /// wire, so a well-formed request never approaches this; the extra bytes cover the surrounding
+    /// envelope (session_id, tool_name, agent_id, cwd).</summary>
+    internal const int MaxPermissionRequestBodyBytes = PermissionWire.MaxElementBytes * 2 + 4096;
 
     static readonly object       PortClaimsLock = new();
     static readonly HashSet<int>  ClaimedPorts   = [];
@@ -104,6 +144,7 @@ internal sealed partial class LocalPermissionBridge(
                 listener.Start();
                 _listener    = listener;
                 _listenerClosed = 0;
+                _admitting   = true;
                 _sharedToken = token;
                 _port        = port;
                 BaseUrl      = $"http://127.0.0.1:{port}/{token}";
@@ -167,6 +208,12 @@ internal sealed partial class LocalPermissionBridge(
             try { await cts.CancelAsync(); }
             catch (ObjectDisposedException) { /* already stopped and disposed — nothing to cancel */ }
         }
+
+        // Closing the listener before the drain would abort the very responses the claims promised.
+        lock (_admission) _admitting = false;
+        var drainDeadline = DateTime.UtcNow + ShutdownDrain;
+        while (Volatile.Read(ref _inFlight) > 0 && DateTime.UtcNow < drainDeadline)
+            await Task.Delay(10, CancellationToken.None);
 
         // Close exactly once, before awaiting the accept loop. Stop() alone releases the port but
         // leaves HttpListener's prefix registered until a later Close(); another bridge can claim
@@ -328,9 +375,27 @@ internal sealed partial class LocalPermissionBridge(
                 break;
             }
 
-            // Fire-and-forget — each request is independent and the SignalR
-            // round-trip blocks until the user decides (potentially hours).
-            _ = Task.Run(() => HandleAsync(context, ct), ct);
+            bool admitted;
+            lock (_admission) {
+                admitted = _admitting;
+                if (admitted) _inFlight++;
+            }
+            if (!admitted) {
+                try { context.Response.StatusCode = 503; context.Response.Close(); } catch { /* peer gone */ }
+                continue;
+            }
+            // CancellationToken.None on the Task.Run scheduling token, deliberately: a delegate
+            // cancelled before it starts never runs its finally, and the count would never reach zero.
+            _ = Task.Run(() => RunTrackedAsync(context, ct), CancellationToken.None);
+        }
+    }
+
+    async Task RunTrackedAsync(HttpListenerContext context, CancellationToken ct) {
+        try {
+            if (BeforeHandlerRunsForTest is { } hold) await hold();
+            await HandleAsync(context, ct);
+        } finally {
+            lock (_admission) _inFlight--;
         }
     }
 
@@ -391,7 +456,7 @@ internal sealed partial class LocalPermissionBridge(
                         // A reviewer mid-delivery is alive; reaping it here would discard the result.
                         submitGrant.ActivityClock?.Advance();
 
-                        var submitBody = await ReadCappedBodyAsync(context.Request.InputStream, ct);
+                        var submitBody = await ReadCappedBodyAsync(context.Request.InputStream, MaxSubmitBodyBytes, ct);
                         if (submitBody is null) {
                             context.Response.StatusCode = 413;
                             context.Response.Close();
@@ -461,8 +526,19 @@ internal sealed partial class LocalPermissionBridge(
                 return;
             }
 
-            using var reader = new StreamReader(context.Request.InputStream, Encoding.UTF8);
-            var       body   = await reader.ReadToEndAsync(ct);
+            // Not bound to ct: a handler admitted before shutdown must still reach its own claim
+            // below, so this reads under its own bounded RequestReadTimeout instead. Capped at
+            // MaxPermissionRequestBodyBytes so an unbounded read from the local hook can't exhaust
+            // the daemon's memory.
+            using var readCts = new CancellationTokenSource(RequestReadTimeout);
+            var       body    = await ReadCappedBodyAsync(context.Request.InputStream, MaxPermissionRequestBodyBytes, readCts.Token);
+
+            if (body is null) {
+                context.Response.StatusCode = 413;
+                context.Response.Close();
+
+                return;
+            }
 
             JsonNode? node;
 
@@ -501,13 +577,8 @@ internal sealed partial class LocalPermissionBridge(
             var toolInput   = ExtractElement(node, "tool_input");
             var suggestions = ExtractElement(node, "permission_suggestions");
 
-            // The HttpListener API doesn't expose a per-request "client disconnected" token,
-            // so the SignalR call is bound to the daemon-shutdown token only. RequestPermissionAsync
-            // now retries across reconnects, so if Claude exits mid-wait the server hub call can
-            // stay open across reconnects until the user decides or the daemon shuts down — it is
-            // NOT bounded by a single connection's lifetime (the hook client's ~10h timeout is the
-            // practical end-to-end ceiling). Switching to Kestrel + HttpContext.RequestAborted
-            // would give us per-request cancellation; out of scope for this PR.
+            // HttpListener exposes no per-request "client disconnected" token: every leg below is
+            // bound to the daemon-lifetime token, not the connection.
             PermissionDecision decision;
 
             if (isReviewer) {
@@ -543,26 +614,52 @@ internal sealed partial class LocalPermissionBridge(
                     decision = new PermissionDecision("deny", null, null);
                 }
             } else {
-                // Shared (interactive) token → the server permission path, unchanged. This
-                // deliberately includes the reserved channel's own tool names: an interactive
-                // session never legitimately carries that server, so an identically-named tool
-                // here is untrusted and takes the normal prompt.
-                try {
-                    decision = await server.RequestPermissionAsync(sessionId, toolName, toolInput, suggestions, ct);
-                } catch (Exception ex) {
-                    LogRequestPermissionFailed(logger, ex, sessionId);
-                    decision = new PermissionDecision("deny", null, null);
+                // Shared (interactive) token: the reserved channel's tool names are not special-cased
+                // here — an interactive session never legitimately carries that server, so an
+                // identically-named tool is untrusted and takes the normal prompt.
+                var canonicalSessionId = PermissionWire.Canonical(sessionId);
+                var attributed = canonicalSessionId is null ? null : AttributeHandler?.Invoke(new PermissionAttribution(
+                    node["agent_id"]?.GetValue<string>(), canonicalSessionId, node["cwd"]?.GetValue<string>()));
+                var pending = attributed is { } a
+                    ? BuildPending(Guid.NewGuid().ToString("N"), a.AgentId, canonicalSessionId!, vendor, toolName, toolInput, suggestions,
+                        DateTimeOffset.UtcNow.ToString("O"))
+                    : null;
+
+                if (pending is null) {
+                    // Server-only path.
+                    if (attributed is not null) LogPendingOutOfBounds(logger, sessionId);
+                    try {
+                        decision = await server.RequestPermissionAsync(sessionId, toolName, toolInput, suggestions, ct);
+                    } catch (Exception ex) {
+                        LogRequestPermissionFailed(logger, ex, sessionId);
+                        decision = new PermissionDecision("deny", null, null);
+                    }
+                } else {
+                    var settlementTask = _broker.Register(pending);
+                    _ = RunServerLegAsync(pending, toolName, toolInput, suggestions, settlementTask, ct);
+
+                    PermissionSettlement settlement;
+                    try {
+                        settlement = await settlementTask.WaitAsync(ct);
+                    } catch (OperationCanceledException) {
+                        // Shutdown: claim rather than inspect. Losing means another party settled first.
+                        if (_broker.TrySettle(pending.RequestId, PermissionSettlements.DenyDecision,
+                                PermissionSettlements.Deny, PermissionSettlements.SourceDaemonShutdown)) {
+                            await WriteResponseAsync(context, BuildHookResponseJson(PermissionSettlements.DenyDecision, vendor));
+                            return;
+                        }
+                        settlement = await settlementTask;
+                    }
+
+                    _decisionLog?.Record(new PermissionDecisionRecord(
+                        DateTimeOffset.UtcNow.ToString("O"), pending.AgentId, pending.SessionId, pending.Vendor,
+                        pending.ToolName, settlement.Outcome, settlement.Source));
+                    await WriteResponseAsync(context, BuildHookResponseJson(settlement.Decision, vendor));
+                    return;
                 }
             }
 
-            var responseJson = BuildHookResponseJson(decision, vendor);
-            var bytes        = Encoding.UTF8.GetBytes(responseJson);
-
-            context.Response.ContentType     = "application/json";
-            context.Response.StatusCode      = 200;
-            context.Response.ContentLength64 = bytes.LongLength;
-            await context.Response.OutputStream.WriteAsync(bytes, ct);
-            context.Response.Close();
+            await WriteResponseAsync(context, BuildHookResponseJson(decision, vendor));
         } catch (Exception ex) {
             LogBridgeHandlerError(logger, ex);
 
@@ -572,6 +669,101 @@ internal sealed partial class LocalPermissionBridge(
             } catch {
                 /* response already closed */
             }
+        }
+    }
+
+    /// Written under a bounded token of its own, never the bridge token: shutdown cancels that
+    /// token before the drain, and a claimed answer must still reach the hook. A failed write
+    /// aborts the connection rather than leaving it open for the caller's Close() to fault on
+    /// already-sent headers.
+    static async Task WriteResponseAsync(HttpListenerContext context, string responseJson) {
+        using var writeCts = new CancellationTokenSource(ResponseWriteTimeout);
+        var bytes = Encoding.UTF8.GetBytes(responseJson);
+        context.Response.ContentType     = "application/json";
+        context.Response.StatusCode      = 200;
+        context.Response.ContentLength64 = bytes.LongLength;
+        try {
+            await context.Response.OutputStream.WriteAsync(bytes, writeCts.Token);
+            context.Response.Close();
+        } catch {
+            context.Response.Abort();
+            throw;
+        }
+    }
+
+    internal static PermissionPendingDto? BuildPending(
+            string requestId, string agentId, string sessionId, string vendor, string? toolName,
+            JsonElement? toolInput, JsonElement? suggestions, string requestedAt) {
+        var name = toolName ?? "";
+        if (Encoding.UTF8.GetByteCount(name) > PermissionWire.MaxToolNameBytes) return null;
+        if (Encoding.UTF8.GetByteCount(agentId) > PermissionWire.MaxAgentIdBytes) return null;
+        var (input, inputOmitted)   = Bound(toolInput);
+        var (sugg,  suggOmitted)    = Bound(suggestions);
+        return new PermissionPendingDto(requestId, agentId, sessionId, vendor, name, input, sugg, inputOmitted, suggOmitted, requestedAt);
+
+        static (JsonElement?, bool) Bound(JsonElement? el) =>
+            el is { } e && Encoding.UTF8.GetByteCount(e.GetRawText()) > PermissionWire.MaxElementBytes ? (null, true) : (el, false);
+    }
+
+    /// Everything that touches the server for one request. Total: every exit returns normally
+    /// and the bridge never awaits it. The settlement continuation only WAKES a wait — the
+    /// broker's TCS runs continuations asynchronously — while the `abandoned` predicate, read
+    /// synchronously before the hub invoke, is what keeps a settled request off the wire.
+    async Task RunServerLegAsync(
+            PermissionPendingDto pending, string? toolName, JsonElement? toolInput, JsonElement? suggestions,
+            Task<PermissionSettlement> settlement, CancellationToken daemonToken) {
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(daemonToken);
+        _ = settlement.ContinueWith(_ => { try { cts.Cancel(); } catch (ObjectDisposedException) { } }, TaskScheduler.Default);
+        try {
+            Interlocked.Increment(ref _serverLegsInFlight);
+            string serverRequestId;
+            try {
+                serverRequestId = await server.BeginPermissionRequestAsync(
+                    pending.SessionId, toolName, toolInput, suggestions, cts.Token, () => settlement.IsCompleted);
+            } catch (OperationCanceledException) {
+                return; // shutdown, or the settlement woke the readiness wait: no server request exists
+            } catch (PermissionRequestAbandonedException) {
+                return;
+            } catch (Exception ex) {
+                LogServerLegBeginFailed(logger, ex, pending.RequestId);
+                _broker.TrySettleIfNoSubscriber(pending.RequestId, PermissionSettlements.DenyDecision,
+                    PermissionSettlements.Deny, PermissionSettlements.SourceNoUi);
+                return;
+            }
+
+            if (settlement.IsCompleted) {
+                await RelaySettlementAsync(pending, serverRequestId, settlement.Result);
+                return;
+            }
+
+            PermissionDecision decision;
+            try {
+                decision = await server.AwaitPermissionDecisionAsync(serverRequestId, cts.Token);
+            } catch (OperationCanceledException) {
+                if (daemonToken.IsCancellationRequested) return;
+                await RelaySettlementAsync(pending, serverRequestId, await settlement);
+                return;
+            }
+
+            if (!_broker.TrySettle(pending.RequestId, decision, decision.Behavior, PermissionSettlements.SourceServer))
+                LogServerDecisionArrivedLate(logger, pending.RequestId, (await settlement).Decision.Behavior);
+        } catch (Exception ex) {
+            LogServerLegFaulted(logger, ex, pending.RequestId);
+        } finally {
+            Interlocked.Decrement(ref _serverLegsInFlight);
+        }
+    }
+
+    async Task RelaySettlementAsync(PermissionPendingDto pending, string serverRequestId, PermissionSettlement settlement) {
+        if (settlement.Source == PermissionSettlements.SourceServer) return;
+        var outcome = await server.RespondToPermissionAsync(pending.SessionId, serverRequestId, settlement.Decision);
+        switch (outcome.Kind) {
+            case ServerConnection.RespondOutcomeKind.NotPending:
+                LogServerNoLongerHeld(logger, pending.RequestId, settlement.Decision.Behavior);
+                break;
+            case ServerConnection.RespondOutcomeKind.Failed:
+                LogRespondFailed(logger, pending.RequestId, outcome.Reason ?? "");
+                break;
         }
     }
 
@@ -654,12 +846,12 @@ internal sealed partial class LocalPermissionBridge(
         return false;
     }
 
-    /// <summary>Reads at most <see cref="MaxSubmitBodyBytes"/>, returning null when the body exceeds
+    /// <summary>Reads at most <paramref name="maxBytes"/>, returning null when the body exceeds
     /// it. Bounded on BYTES ACTUALLY READ rather than Content-Length, which a chunked or hostile
     /// client need not send truthfully — checking the header alone would be a guard the attacker
     /// controls. One byte past the cap is enough to reject, so an oversized body is never fully
     /// buffered.</summary>
-    static async Task<string?> ReadCappedBodyAsync(Stream input, CancellationToken ct) {
+    static async Task<string?> ReadCappedBodyAsync(Stream input, int maxBytes, CancellationToken ct) {
         var buffer = new byte[8192];
         using var accumulated = new MemoryStream();
 
@@ -667,7 +859,7 @@ internal sealed partial class LocalPermissionBridge(
             var read = await input.ReadAsync(buffer, ct);
             if (read == 0) break;
 
-            if (accumulated.Length + read > MaxSubmitBodyBytes) return null;
+            if (accumulated.Length + read > maxBytes) return null;
 
             accumulated.Write(buffer, 0, read);
         }
@@ -743,4 +935,22 @@ internal sealed partial class LocalPermissionBridge(
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Local permission bridge has {PrefixCount} listener prefixes; revoked reviewer prefixes are retained until the daemon stops")]
     static partial void LogReviewerPrefixHighWater(ILogger logger, int prefixCount);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Permission request for session {SessionId} was attributed but exceeds the pending bounds; server-only path")]
+    static partial void LogPendingOutOfBounds(ILogger logger, string sessionId);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Server leg for permission request {RequestId} could not begin")]
+    static partial void LogServerLegBeginFailed(ILogger logger, Exception exception, string requestId);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Server leg for permission request {RequestId} faulted")]
+    static partial void LogServerLegFaulted(ILogger logger, Exception exception, string requestId);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Server decision for permission request {RequestId} arrived after it was settled locally; the hook received {Behavior}")]
+    static partial void LogServerDecisionArrivedLate(ILogger logger, string requestId, string behavior);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "The server no longer held permission request {RequestId} when the local decision was relayed; the hook received {Behavior}")]
+    static partial void LogServerNoLongerHeld(ILogger logger, string requestId, string behavior);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Relaying the local decision for permission request {RequestId} to the server failed: {Reason}")]
+    static partial void LogRespondFailed(ILogger logger, string requestId, string reason);
 }

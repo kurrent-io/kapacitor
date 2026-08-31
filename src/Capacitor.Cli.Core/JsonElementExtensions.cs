@@ -2,7 +2,7 @@ using System.Text.Json;
 
 namespace Capacitor.Cli.Core;
 
-static class JsonElementExtensions {
+public static class JsonElementExtensions {
     extension(JsonElement el) {
         // The one primitive the property accessors below cannot express: whether the element ITSELF
         // is an object. They all answer about a named property, so a caller guarding a document root
@@ -35,5 +35,10 @@ static class JsonElementExtensions {
         public JsonElement? Obj(string property) => el.IsObject && el.TryGetProperty(property, out var v) && v.IsObject ? v : null;
 
         public JsonElement? Arr(string property) => el.IsObject && el.TryGetProperty(property, out var v) && v.ValueKind == JsonValueKind.Array ? v : null;
+
+        // The property as-is, whatever its kind — for the one caller that has to copy a value
+        // verbatim (a non-object tool input wrapped into an object). Every other read wants a
+        // typed accessor above; this one deliberately answers "present" for JSON null too.
+        public JsonElement? Prop(string property) => el.IsObject && el.TryGetProperty(property, out var v) ? v : null;
     }
 }

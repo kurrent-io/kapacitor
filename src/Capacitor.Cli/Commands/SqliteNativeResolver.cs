@@ -1,6 +1,7 @@
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
+using Capacitor.Cli.Core;
 
 namespace Capacitor.Cli.Commands;
 
@@ -84,9 +85,10 @@ internal static class SqliteNativeResolver {
         return NativeLibrary.Load(path);
     }
 
+    // Reads the home itself because it feeds a process-global DllImport resolver installed from a
+    // static ctor — there is no caller to inject one from.
     internal static string DefaultCacheRoot() =>
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                     ".cache", "kcap", "native", LibraryName);
+        Path.Combine(UserHome.FromEnvironment().Path, ".cache", "kcap", "native", LibraryName);
 
     /// <summary>
     /// Ensure the verified native library exists in the cache and return its path,

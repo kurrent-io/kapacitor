@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Text;
 using Capacitor.Cli.Daemon.Services;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -18,29 +17,27 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 public class BorrowedSnapshotExclusionScopeTests {
     // ---------- fixture ----------
 
-    sealed record Fixture(TempDir Tmp, TempDirHandle Source, TempDirHandle SnapshotRoot) : IDisposable {
-        public void Dispose() => Tmp.Dispose();
+    // SnapshotRoot is where WorktreeManager builds its snapshot, so it must not sit inside Source.
+    sealed record Fixture(GitRepo Source, TempDir SnapshotRoot) : IDisposable {
+        public void Dispose() {
+            Source.Dispose();
+            SnapshotRoot.Dispose();
+        }
     }
 
     static Fixture NewFixture(params (string Path, string Content)[] tracked) {
-        var tmp = new TempDir();
-        var source = tmp.CreateDir("source");
-        var snapshotRoot = tmp.CreateDir("snapshot");
+        var repo = GitRepo.Create();
 
-        Git(source, "init", "-q");
-        Git(source, "config", "user.email", "test@example.com");
-        Git(source, "config", "user.name", "Test");
         // A file at the root so the repo has content independent of the paths under test.
-        source.CreateFile("README.md", "readme");
-        foreach (var (path, content) in tracked) source.CreateFile(path.Replace('/', Path.DirectorySeparatorChar), content);
-        Git(source, "add", "-A");
-        Git(source, "commit", "-q", "-m", "fixture");
+        repo.CreateFile("README.md", "readme");
+        foreach (var (path, content) in tracked) repo.CreateFile(path.Replace('/', Path.DirectorySeparatorChar), content);
+        repo.CommitAll("fixture");
 
-        return new Fixture(tmp, source, snapshotRoot);
+        return new Fixture(repo, new TempDir("snapshot"));
     }
 
     static WorktreeManager NewManager(Fixture fixture) =>
-        new(new DaemonConfig { WorktreeRoot = fixture.SnapshotRoot },
+        new(new DaemonConfig { WorktreeRoot = fixture.SnapshotRoot.Path },
             NullLogger<WorktreeManager>.Instance);
 
     static async Task<WorktreeInfo> SnapshotAsync(Fixture fixture, string relativeCwd) =>
@@ -54,27 +51,6 @@ public class BorrowedSnapshotExclusionScopeTests {
     static bool ExistsInSnapshot(WorktreeInfo snapshot, string relative) =>
         File.Exists(Path.Combine(
             snapshot.SnapshotRoot!, relative.Replace('/', Path.DirectorySeparatorChar)));
-
-    static void Git(string cwd, params string[] args) {
-        var psi = new ProcessStartInfo("git", args) {
-            WorkingDirectory = cwd, RedirectStandardOutput = true, RedirectStandardError = true
-        };
-        using var proc = Process.Start(psi)!;
-        proc.WaitForExit();
-        if (proc.ExitCode != 0)
-            throw new InvalidOperationException(
-                $"git {string.Join(' ', args)} failed: {proc.StandardError.ReadToEnd()}");
-    }
-
-    static string GitCapture(string cwd, params string[] args) {
-        var psi = new ProcessStartInfo("git", args) {
-            WorkingDirectory = cwd, RedirectStandardOutput = true, RedirectStandardError = true
-        };
-        using var proc = Process.Start(psi)!;
-        var stdout = proc.StandardOutput.ReadToEnd();
-        proc.WaitForExit();
-        return stdout;
-    }
 
     /// <summary>Whether the volume backing the temp directory distinguishes case. Probed, never inferred
     /// from the OS: a case-sensitive APFS volume on macOS and a case-insensitive mount on Linux both
@@ -122,7 +98,7 @@ public class BorrowedSnapshotExclusionScopeTests {
 
         // The control is on the SOURCE side: prove the file is really tracked and would be copied,
         // rather than inferring it from a surviving sibling (which only proves .github/ was populated).
-        await Assert.That(GitCapture(fixture.Source, "ls-files", "-co", "--exclude-standard"))
+        await Assert.That(GitRepo.At(fixture.Source).Try("ls-files", "-co", "--exclude-standard").Text)
             .Contains(".github/mcp.json");
 
         var snapshot = await SnapshotAsync(fixture, "");
@@ -173,7 +149,7 @@ public class BorrowedSnapshotExclusionScopeTests {
         } finally { await WorktreeManager.RemoveAsync(snapshot); }
     }
 
-    // ---------- 5. case-sensitive sibling AND the collision it used to cause ----------
+    // ---------- 5. case-sensitive sibling and the collision case-folding would cause ----------
 
     [Test]
     public async Task Case_varying_sibling_survives_and_the_build_succeeds_on_a_case_sensitive_volume() {
@@ -185,10 +161,10 @@ public class BorrowedSnapshotExclusionScopeTests {
 
         using var fixture = NewFixture(("a/.mcp.json", "{}"), ("A/.mcp.json", "{}"));
 
-        // Both tracked deliberately. An earlier revision folded ASCII case unconditionally, which
-        // collapsed these onto ONE canonical candidate and made the review-context collision check
-        // refuse every launch of the repository — a launch-refusal primitive handed to a hostile branch.
-        // Tracking only `A` would not reproduce that.
+        // Both tracked deliberately: folding ASCII case unconditionally would collapse these onto ONE
+        // canonical candidate and trip the review-context collision check, refusing every launch of the
+        // repository — a launch-refusal primitive a hostile branch could trigger at will. Tracking only
+        // `A` would not exercise that collapse.
         var snapshot = await SnapshotAsync(fixture, "a");
         try {
             await Assert.That(ExistsInSnapshot(snapshot, "a/.mcp.json")).IsFalse();
@@ -209,7 +185,7 @@ public class BorrowedSnapshotExclusionScopeTests {
 
         // The oracle is git's OWN listing, not our plan builder — a builder validated against itself
         // would pass with an identically wrong derivation.
-        await Assert.That(GitCapture(fixture.Source, "ls-files", "-co", "--exclude-standard"))
+        await Assert.That(GitRepo.At(fixture.Source).Try("ls-files", "-co", "--exclude-standard").Text)
             .Contains(prefix + "/keep.txt");
     }
 
@@ -312,7 +288,7 @@ public class BorrowedSnapshotExclusionScopeTests {
             await Assert.That(ExistsInSnapshot(snapshot, "src/.mcp.json")).IsFalse();
             // The skip-worktree bit is what keeps the reviewer's `git status` clean; without it the
             // reviewer sees a deletion kcap performed and can legitimately file a finding about it.
-            await Assert.That(GitCapture(snapshot.SnapshotRoot!, "status", "--porcelain").Trim())
+            await Assert.That(GitRepo.At(snapshot.SnapshotRoot!).Try("status", "--porcelain").Text.Trim())
                 .IsEqualTo("");
         } finally { await WorktreeManager.RemoveAsync(snapshot); }
     }
@@ -324,7 +300,7 @@ public class BorrowedSnapshotExclusionScopeTests {
         // checked out at HEAD. Intersecting the skip-worktree batch against the SOURCE index instead
         // would batch this path and fail update-index on a perfectly legitimate snapshot.
         fixture.Source.CreateFile("src/.mcp.json", "{}");
-        Git(fixture.Source, "add", "src/.mcp.json");
+        GitRepo.At(fixture.Source).Do("add", "src/.mcp.json");
 
         var snapshot = await SnapshotAsync(fixture, "src");
         try {
@@ -430,14 +406,14 @@ public class BorrowedSnapshotExclusionScopeTests {
             var target = snapshot.SnapshotRoot!;
 
             fixture.Source.CreateFile(".mcp.json/child", "{}");
-            Git(fixture.Source, "add", "-A");
-            Git(fixture.Source, "commit", "-q", "-m", "config as a directory");
+            GitRepo.At(fixture.Source).Do("add", "-A");
+            GitRepo.At(fixture.Source).Do("commit", "-q", "-m", "config as a directory");
 
             await manager.SyncFromSourceAsync(
                 fixture.Source, fixture.Source, target, [], CancellationToken.None);
 
             await Assert.That(File.Exists(Path.Combine(target, ".mcp.json", "child"))).IsFalse();
-            await Assert.That(GitCapture(target, "status", "--porcelain").Trim()).IsEqualTo("");
+            await Assert.That(GitRepo.At(target).Try("status", "--porcelain").Text.Trim()).IsEqualTo("");
         } finally { await WorktreeManager.RemoveAsync(snapshot); }
     }
 
@@ -451,7 +427,7 @@ public class BorrowedSnapshotExclusionScopeTests {
         // and matching one against the other is exactly the invariant this derivation exists to hold.
         var nested = fixture.Source.PathTo("vendored");
         Directory.CreateDirectory(nested);
-        Git(nested, "init", "-q");
+        GitRepo.At(nested).Do("init", "-q");
 
         await Assert.That(async () => await NewManager(fixture).CreateBorrowedSnapshotAsync(
                 fixture.Source, nested, null, CancellationToken.None))
@@ -493,9 +469,8 @@ public class BorrowedSnapshotExclusionScopeTests {
 
         var snapshot = await SnapshotAsync(fixture, "src");
         try {
-            // Re-sync through the public overload, which now REQUIRES a source-side cwd. The overloads
-            // it replaced took only a target-side path, leaving no way to obtain the git prefix except
-            // by re-deriving it from the target filesystem.
+            // The public overload requires a source-side cwd: the git prefix cannot be re-derived
+            // from the target filesystem alone.
             await manager.SyncFromSourceAsync(
                 fixture.Source, fixture.Source.PathTo("src"),
                 snapshot.SnapshotRoot!, [], CancellationToken.None);
@@ -520,8 +495,8 @@ public class BorrowedSnapshotExclusionScopeTests {
             // using the prefix computed at CREATION, since it has only a target-side path of its own.
             fixture.Source.CreateFile("src/.mcp.json", "{}");
             fixture.Source.CreateFile(".mcp.json", "{}");
-            Git(fixture.Source, "add", "-A");
-            Git(fixture.Source, "commit", "-q", "-m", "adds config");
+            GitRepo.At(fixture.Source).Do("add", "-A");
+            GitRepo.At(fixture.Source).Do("commit", "-q", "-m", "adds config");
 
             await manager.SyncBorrowedSnapshotFromSourceAsync(
                 fixture.Source, snapshot.SnapshotRoot!, snapshot.GitRelativeCwd!,

@@ -16,6 +16,10 @@ namespace Capacitor.Cli.Tests.Integration;
 /// append — the CLI must keep sending the hook regardless. Models on <see cref="CursorImportPrTests"/>.
 /// </summary>
 public class CursorSuppressedRepoImportTests : IDisposable {
+    [TempHome] public required TempHome Home { get; init; }
+
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     readonly WireMockServer _server  = WireMockServer.Start();
     readonly TempDir        _tmp     = new();
 
@@ -58,7 +62,7 @@ public class CursorSuppressedRepoImportTests : IDisposable {
         _server.Given(Request.Create().WithPath("/hooks/session-end/cursor").UsingPost())
             .RespondWith(Response.Create().WithStatusCode(200));
 
-        var source = new CursorImportSource(
+        var source = new CursorImportSource(Config.Root, 
             WriteOneCursorSessionWithWorkspace(),
             WorkspaceStorageDir,
             repoDetector: _ => Task.FromResult<RepositoryPayload?>(
@@ -71,7 +75,7 @@ public class CursorSuppressedRepoImportTests : IDisposable {
 
         var classified = await source.ClassifyAsync(
             discovered,
-            new ClassifyContext(client, _server.Url!, MinLines: 0, ExcludedRepos: null, ExcludedPaths: null),
+            new ClassifyContext(client, _server.Url!, MinLines: 0, ExcludedRepos: null, ExcludedPaths: null, Home: Home),
             CancellationToken.None);
         await Assert.That(classified.Count).IsEqualTo(1);
         await Assert.That(classified[0].Status).IsEqualTo(ImportCommand.ClassificationStatus.AlreadyLoaded);

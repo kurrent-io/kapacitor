@@ -6,6 +6,10 @@ using Capacitor.Cli.Harness.Cursor;
 namespace Capacitor.Cli.Tests.Unit.Harness.Cursor;
 
 public class CursorTranscriptBackfillTests {
+    CursorMarkers Markers => new(Config.Root);
+
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     static string NewSessionId() => Guid.NewGuid().ToString("N");
 
     [Test]
@@ -24,6 +28,7 @@ public class CursorTranscriptBackfillTests {
         using var client = new HttpClient(handler);
 
         var stats = await CursorTranscriptBackfill.RunAsync(
+            Markers,
             client, "http://s", NewSessionId(), transcript, () => false, CancellationToken.None, finalDrain: false);
 
         var lines = JsonNode.Parse(postedBody!)!["lines"]!.AsArray();
@@ -50,6 +55,7 @@ public class CursorTranscriptBackfillTests {
         using var client = new HttpClient(handler);
 
         var stats = await CursorTranscriptBackfill.RunAsync(
+            Markers,
             client, "http://s", NewSessionId(), transcript, () => false, CancellationToken.None, finalDrain: true);
 
         var lines = JsonNode.Parse(postedBody!)!["lines"]!.AsArray();
@@ -63,11 +69,11 @@ public class CursorTranscriptBackfillTests {
         using var tmp = new TempDir();
         var transcript = tmp.PathTo("t.jsonl");
         await File.WriteAllTextAsync(transcript, "{\"role\":\"user\",\"message\":{\"content\":[]}}\n");
-        CursorMarkers.Quarantine(sessionId, "rewrite detected");
+        Markers.Quarantine(sessionId, "rewrite detected");
 
         var postCount = 0;
         using var client = new HttpClient(new RecordingHandler(_ => null, (_, _) => { postCount++; return new HttpResponseMessage(HttpStatusCode.OK); }));
-        var stats = await CursorTranscriptBackfill.RunAsync(client, "http://s", sessionId, transcript, () => false, CancellationToken.None);
+        var stats = await CursorTranscriptBackfill.RunAsync(Markers, client, "http://s", sessionId, transcript, () => false, CancellationToken.None);
 
         await Assert.That(stats.LinesPosted).IsEqualTo(0);
         await Assert.That(postCount).IsEqualTo(0);
@@ -79,13 +85,13 @@ public class CursorTranscriptBackfillTests {
         using var tmp = new TempDir();
         var transcript = tmp.PathTo("t.jsonl");
         await File.WriteAllTextAsync(transcript, "{\"role\":\"user\",\"message\":{\"content\":[]}}\n");
-        CursorMarkers.CreateBarrier(sessionId, DateTimeOffset.UtcNow);
+        Markers.CreateBarrier(sessionId, DateTimeOffset.UtcNow);
 
         var postCount = 0;
         using var client = new HttpClient(new RecordingHandler(
             r => r.RequestUri!.AbsolutePath.EndsWith("/last-line", StringComparison.Ordinal) ? new HttpResponseMessage(HttpStatusCode.NoContent) : null,
             (_, _) => { postCount++; return new HttpResponseMessage(HttpStatusCode.OK); }));
-        var stats = await CursorTranscriptBackfill.RunAsync(client, "http://s", sessionId, transcript, () => false, CancellationToken.None);
+        var stats = await CursorTranscriptBackfill.RunAsync(Markers, client, "http://s", sessionId, transcript, () => false, CancellationToken.None);
 
         await Assert.That(stats.LinesPosted).IsEqualTo(0);
         await Assert.That(postCount).IsEqualTo(0);
@@ -111,7 +117,7 @@ public class CursorTranscriptBackfillTests {
                     // A concurrent watcher-side rewrite-guard trip lands exactly here — between
                     // the early check (already passed, since the marker didn't exist yet) and
                     // the POST below.
-                    CursorMarkers.Quarantine(sessionId, "rewrite detected mid-flight");
+                    Markers.Quarantine(sessionId, "rewrite detected mid-flight");
                     return new HttpResponseMessage(HttpStatusCode.NoContent);
                 }
                 return null;
@@ -119,7 +125,7 @@ public class CursorTranscriptBackfillTests {
             postCapture: (_, _) => { postCount++; return new HttpResponseMessage(HttpStatusCode.OK); });
         using var client = new HttpClient(handler);
 
-        var stats = await CursorTranscriptBackfill.RunAsync(client, "http://s", sessionId, transcript, () => false, CancellationToken.None);
+        var stats = await CursorTranscriptBackfill.RunAsync(Markers, client, "http://s", sessionId, transcript, () => false, CancellationToken.None);
 
         await Assert.That(postCount).IsEqualTo(0);
         await Assert.That(stats.LinesPosted).IsEqualTo(0);
@@ -138,7 +144,7 @@ public class CursorTranscriptBackfillTests {
                 if (r.RequestUri!.AbsolutePath.EndsWith("/last-line", StringComparison.Ordinal)) {
                     // A concurrent beforeSubmitPrompt hook creates its ordering barrier exactly
                     // here — after the early check, before the POST.
-                    CursorMarkers.CreateBarrier(sessionId, DateTimeOffset.UtcNow);
+                    Markers.CreateBarrier(sessionId, DateTimeOffset.UtcNow);
                     return new HttpResponseMessage(HttpStatusCode.NoContent);
                 }
                 return null;
@@ -146,7 +152,7 @@ public class CursorTranscriptBackfillTests {
             postCapture: (_, _) => { postCount++; return new HttpResponseMessage(HttpStatusCode.OK); });
         using var client = new HttpClient(handler);
 
-        var stats = await CursorTranscriptBackfill.RunAsync(client, "http://s", sessionId, transcript, () => false, CancellationToken.None);
+        var stats = await CursorTranscriptBackfill.RunAsync(Markers, client, "http://s", sessionId, transcript, () => false, CancellationToken.None);
 
         await Assert.That(postCount).IsEqualTo(0);
         await Assert.That(stats.LinesPosted).IsEqualTo(0);
@@ -159,6 +165,7 @@ public class CursorTranscriptBackfillTests {
         using var client  = new HttpClient(handler);
 
         var stats = await CursorTranscriptBackfill.RunAsync(
+            Markers,
             client, "http://localhost", sessionId: "abc",
             transcriptPath: null, budget: () => false, CancellationToken.None);
 
@@ -188,6 +195,7 @@ public class CursorTranscriptBackfillTests {
         using var client = new HttpClient(handler);
 
         var stats = await CursorTranscriptBackfill.RunAsync(
+            Markers,
             client, "http://localhost", sessionId: "abc",
             transcriptPath: transcript, budget: () => false, CancellationToken.None);
 
@@ -221,6 +229,7 @@ public class CursorTranscriptBackfillTests {
         using var client = new HttpClient(handler);
 
         var stats = await CursorTranscriptBackfill.RunAsync(
+            Markers,
             client, "http://localhost", sessionId: "abc",
             transcriptPath: transcript, budget: () => false, CancellationToken.None);
 
@@ -244,6 +253,7 @@ public class CursorTranscriptBackfillTests {
         using var client = new HttpClient(handler);
 
         var stats = await CursorTranscriptBackfill.RunAsync(
+            Markers,
             client, "http://localhost", sessionId: "abc",
             transcriptPath: transcript,
             budget: () => true,
@@ -267,6 +277,7 @@ public class CursorTranscriptBackfillTests {
         using var client = new HttpClient(handler);
 
         var stats = await CursorTranscriptBackfill.RunAsync(
+            Markers,
             client, "http://localhost", sessionId: "abc",
             transcriptPath: transcript, budget: () => false, CancellationToken.None);
 
@@ -286,6 +297,7 @@ public class CursorTranscriptBackfillTests {
         using var client = new HttpClient(handler);
 
         var stats = await CursorTranscriptBackfill.RunAsync(
+            Markers,
             client, "http://localhost", sessionId: "abc",
             transcriptPath: transcript, budget: () => false, CancellationToken.None);
 

@@ -1,5 +1,7 @@
 using Capacitor.Cli.Commands.Harness;
+using Capacitor.Cli.Commands;
 using Capacitor.Cli.SessionStartMemory;
+using Capacitor.Cli.Core.Harness;
 
 namespace Capacitor.Cli.Tests.Unit.Harness.Pi;
 
@@ -11,6 +13,17 @@ namespace Capacitor.Cli.Tests.Unit.Harness.Pi;
 /// proves model receipt.
 /// </summary>
 public class PiSessionStartMemoryTests {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+    [TempHome] public required TempHome Home { get; init; }
+
+
+    // Instance, not static: the hook writes under the config dir (the repo-detection cache,
+    // the lease store), so it must be handed this test's own root — which a static helper
+    // cannot see, TUnit injecting it after construction.
+    // The server URL is the resolution's, so a test proving the url guard fires hands in the bad one
+    // here rather than as an argument.
+    PiHookCommand Hook(string serverUrl = "http://localhost:5100") =>
+        new(Config.Root, Resolutions.At(serverUrl, Config.Root), new HookClock(TimeProvider.System), Home);
     static string Render(string? fragment) => PiHookCommand.RenderMemoryOutput(fragment);
 
     // Byte-identical to pre-feature behaviour on every no-index path (opt-out, failure, spent lease):
@@ -40,10 +53,11 @@ public class PiSessionStartMemoryTests {
     // new one (new file ⇒ new identity ⇒ fresh eligibility, exactly the design's fork semantics).
     [Test]
     public async Task Lifecycle_keys_on_the_rooted_session_file_path() {
-        var file = Path.Combine(Path.GetTempPath(), "sessions", "20260807T101010_0a1b2c3d-1111-2222-3333-444455556666.jsonl");
+        using var tmp = new TempDir();
+        var file = tmp.PathTo("sessions", "20260807T101010_0a1b2c3d-1111-2222-3333-444455556666.jsonl");
         var lifecycle = PiHookCommand.LifecycleFor(file, "startup");
 
-        await Assert.That(lifecycle.Harness).IsEqualTo(SessionStartHarness.Pi);
+        await Assert.That(lifecycle.Harness).IsEqualTo(HarnessId.Pi);
         await Assert.That(lifecycle.SessionId).IsEqualTo(file);
         await Assert.That(lifecycle.IsTopLevel).IsTrue();
         await Assert.That(lifecycle.ClassificationAuthoritative).IsTrue();
@@ -76,7 +90,8 @@ public class PiSessionStartMemoryTests {
     [Arguments(null, SessionLifecycleReason.RepeatedTurnCallback)]
     [Arguments("someday-a-new-reason", SessionLifecycleReason.RepeatedTurnCallback)]
     internal async Task Pi_reasons_map_onto_the_shared_vocabulary(string? reason, SessionLifecycleReason expected) {
-        var file = Path.Combine(Path.GetTempPath(), "s", "20260807T101010_0a1b2c3d-1111-2222-3333-444455556666.jsonl");
+        using var tmp = new TempDir();
+        var file = tmp.PathTo("s", "20260807T101010_0a1b2c3d-1111-2222-3333-444455556666.jsonl");
         await Assert.That(PiHookCommand.LifecycleFor(file, reason).Reason).IsEqualTo(expected);
     }
 
@@ -98,17 +113,14 @@ public class PiSessionStartMemoryTests {
     public async Task Memory_task_short_circuits_without_prerequisites() {
         // The url / scope / budget guards suppress even with guidelines ENABLED; disabled alone
         // does not (a single lane off still fetches the other) — both off is required.
-        await Assert.That(await PiHookCommand.StartMemoryIndexTask(
-            "not a url", "/abs/file.jsonl", "/scope", disabled: false, guidelinesDisabled: false,
-            TimeSpan.FromSeconds(2), null, null)).IsNull();
-        await Assert.That(await PiHookCommand.StartMemoryIndexTask(
-            "http://localhost:5100", "/abs/file.jsonl", scopeRoot: null, disabled: false, guidelinesDisabled: false,
-            TimeSpan.FromSeconds(2), null, null)).IsNull();
-        await Assert.That(await PiHookCommand.StartMemoryIndexTask(
-            "http://localhost:5100", "/abs/file.jsonl", "/scope", disabled: true, guidelinesDisabled: true,
-            TimeSpan.FromSeconds(2), null, null)).IsNull();
-        await Assert.That(await PiHookCommand.StartMemoryIndexTask(
-            "http://localhost:5100", "/abs/file.jsonl", "/scope", disabled: false, guidelinesDisabled: false,
-            TimeSpan.Zero, null, null)).IsNull();
+        await Assert.That(await Hook("not a url").StartMemoryIndexTask(
+            "/abs/file.jsonl", "/scope", disabled: false, guidelinesDisabled: false,
+            TimeSpan.FromSeconds(2), null)).IsNull();
+        await Assert.That(await Hook().StartMemoryIndexTask("/abs/file.jsonl", scopeRoot: null, disabled: false, guidelinesDisabled: false,
+            TimeSpan.FromSeconds(2), null)).IsNull();
+        await Assert.That(await Hook().StartMemoryIndexTask("/abs/file.jsonl", "/scope", disabled: true, guidelinesDisabled: true,
+            TimeSpan.FromSeconds(2), null)).IsNull();
+        await Assert.That(await Hook().StartMemoryIndexTask("/abs/file.jsonl", "/scope", disabled: false, guidelinesDisabled: false,
+            TimeSpan.Zero, null)).IsNull();
     }
 }

@@ -1,5 +1,7 @@
 using System.Text;
 using System.Text.Json.Nodes;
+using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Core.Harness.Antigravity;
 using Capacitor.Cli.Core.Harness.Claude;
 using Capacitor.Cli.Core.Harness.Codex;
@@ -9,7 +11,6 @@ using Capacitor.Cli.Core.Harness.Gemini;
 using Capacitor.Cli.Core.Harness.Kiro;
 using Capacitor.Cli.Core.Harness.OpenCode;
 using Capacitor.Cli.Core.Harness.Pi;
-using Capacitor.Cli.SessionStartMemory;
 
 namespace Capacitor.Cli;
 
@@ -33,24 +34,22 @@ namespace Capacitor.Cli;
 static class WorkItemsNudgeAvailability {
     const string ServerName = "kcap-workitems";
 
-    /// <param name="home">Overrides the user home root for the JSON/Pi path helpers (test seam).</param>
     /// <param name="codexConfigPath">Overrides the Codex <c>config.toml</c> path (test seam); null uses the default.</param>
-    public static bool IsRegisteredFor(SessionStartHarness harness, string? home = null, string? codexConfigPath = null) {
+    public static bool IsRegisteredFor(HarnessId harness, UserHome home, string? codexConfigPath = null) {
         try {
             return harness switch {
                 // Claude carries kcap-workitems in the plugin's bundled .mcp.json, so it is available
                 // exactly when that plugin is effectively installed (enabled + its .mcp.json present).
-                SessionStartHarness.Claude      => ClaudePluginInstaller.IsEffectivelyInstalled(
-                                                       Path.Combine(ClaudePaths.Home(home), "settings.json")),
-                SessionStartHarness.Codex       => CodexHasWorkItems(codexConfigPath),
-                SessionStartHarness.Cursor      => JsonBlockHasServer(CursorPaths.UserMcpJson(home), "mcpServers"),
-                SessionStartHarness.Copilot     => JsonBlockHasServer(CopilotPaths.McpConfigJson(home), "mcpServers"),
-                SessionStartHarness.Gemini      => JsonBlockHasServer(GeminiPaths.SettingsJson(home), "mcpServers"),
-                SessionStartHarness.Kiro        => JsonBlockHasServer(KiroPaths.SettingsMcpJson(home), "mcpServers"),
+                HarnessId.Claude  => ClaudePluginInstaller.IsEffectivelyInstalled(ClaudeHarness.FromEnvironment(home).Paths.UserSettings),
+                HarnessId.Codex   => CodexHasWorkItems(codexConfigPath ?? CodexHarness.FromEnvironment(home).Paths.ConfigToml),
+                HarnessId.Cursor  => JsonBlockHasServer(CursorHarness.FromEnvironment(home).Paths.UserMcpJson, "mcpServers"),
+                HarnessId.Copilot => JsonBlockHasServer(CopilotHarness.FromEnvironment(home).Paths.McpConfigJson, "mcpServers"),
+                HarnessId.Gemini  => JsonBlockHasServer(GeminiHarness.FromEnvironment(home).Paths.SettingsJson, "mcpServers"),
+                HarnessId.Kiro    => JsonBlockHasServer(KiroHarness.FromEnvironment(home).Paths.SettingsMcpJson, "mcpServers"),
                 // OpenCode's block key is `mcp`, not `mcpServers`.
-                SessionStartHarness.OpenCode    => JsonBlockHasServer(OpenCodePaths.McpConfigJson(home), "mcp"),
-                SessionStartHarness.Antigravity => JsonBlockHasServer(AntigravityPaths.McpConfigJson(home), "mcpServers"),
-                SessionStartHarness.Pi          => PiHasWorkItems(home),
+                HarnessId.OpenCode    => JsonBlockHasServer(OpenCodeHarness.FromEnvironment(home).Paths.McpConfigJson, "mcp"),
+                HarnessId.Antigravity => JsonBlockHasServer(AntigravityHarness.Over(GeminiHarness.FromEnvironment(home)).Paths.McpConfigJson, "mcpServers"),
+                HarnessId.Pi          => PiHasWorkItems(home),
                 _ => false
             };
         } catch {
@@ -58,7 +57,7 @@ static class WorkItemsNudgeAvailability {
         }
     }
 
-    static bool CodexHasWorkItems(string? codexConfigPath) {
+    static bool CodexHasWorkItems(string codexConfigPath) {
         try {
             // ReadMcpServerCommands requires each returned table to carry a `command` string, so a
             // malformed/command-less [mcp_servers.kcap-workitems] table does NOT count (fail-closed).
@@ -70,9 +69,9 @@ static class WorkItemsNudgeAvailability {
         }
     }
 
-    static bool PiHasWorkItems(string? home) {
+    static bool PiHasWorkItems(UserHome home) {
         try {
-            var path = PiPaths.KcapMcpExtension(home);
+            var path = PiHarness.FromEnvironment(home).Paths.KcapMcpExtension;
             if (!File.Exists(path)) return false;
             // Strip JS comments FIRST so a commented-out `KCAP_MCP_SERVERS = [...]` before the real
             // declaration can't be matched, then find the real `KCAP_MCP_SERVERS = [ … ]` array and

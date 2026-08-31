@@ -1,34 +1,27 @@
 using System.Text.Json.Nodes;
+using Capacitor.Cli.Core.Harness.Claude;
 using Capacitor.Cli.Daemon.Harness.Claude;
 
 namespace Capacitor.Cli.Tests.Unit.Harness.Claude;
 
 /// <summary>
-/// Pins that <see cref="Cli.Daemon.Harness.Claude.ClaudeLauncher.WriteMcpConfig"/> reads the source repo's
-/// MCP servers from <c>~/.claude.json</c> under Claude Code's normalised
-/// <c>projects[]</c> key (forward slashes on Windows — see
-/// <see cref="Cli.Daemon.Harness.Claude.ClaudeLauncher.NormalizeClaudeProjectKey"/>), with a raw-path
-/// fallback for entries written by older builds or by hand. Before the fix the
-/// lookup used the raw Windows backslash path, missed the normalised entry, and
-/// silently skipped copying the user's MCP servers into the hosted worktree.
+/// Pins that <see cref="Cli.Daemon.Harness.Claude.ClaudeLauncher.WriteMcpConfig"/> reads the source
+/// repo's MCP servers from <c>.claude.json</c>, where Claude Code keys <c>projects[]</c> by the
+/// normalised path (forward slashes on Windows — see
+/// <see cref="Cli.Daemon.Harness.Claude.ClaudeLauncher.NormalizeClaudeProjectKey"/>) and kcap also
+/// accepts the raw path, and that it copies only what the worktree should inherit.
 /// </summary>
-[NotInParallel("HomeEnvVarMutation")]
 public class ClaudeLauncherWriteMcpConfigTests {
+    [TempHome] public required TempHome Home { get; init; }
+    [TempDir]  public required TempDir  Tmp  { get; init; }
 
-    static async Task RunWithRelocatedConfigAsync(Func<string, string, string, Task> body) {
-        var original = Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR");
-        using var tmp = new TempDir();
+    /// <summary>A relocated Claude config dir plus the two repos, all under one throwaway tree.</summary>
+    (ClaudePaths Paths, string ConfigDir, string SourceRepo, string Worktree) Seed() {
+        string configDir  = Tmp.CreateDir("claude-cfg");
+        string sourceRepo = Tmp.CreateDir("source-repo");
+        string worktree   = Tmp.CreateDir("worktree");
 
-        var configDir  = tmp.CreateDir("claude-cfg");
-        var sourceRepo = tmp.CreateDir("source-repo");
-        var worktree   = tmp.CreateDir("worktree");
-
-        try {
-            Environment.SetEnvironmentVariable("CLAUDE_CONFIG_DIR", configDir);
-            await body(configDir, sourceRepo, worktree);
-        } finally {
-            Environment.SetEnvironmentVariable("CLAUDE_CONFIG_DIR", original);
-        }
+        return (new ClaudePaths(Home, configDir), configDir, sourceRepo, worktree);
     }
 
     static void WriteClaudeJson(string configDir, string projectKey) {
@@ -64,51 +57,48 @@ public class ClaudeLauncherWriteMcpConfigTests {
     /// </summary>
     [Test]
     public async Task Finds_servers_under_normalized_project_key() {
-        await RunWithRelocatedConfigAsync(async (configDir, sourceRepo, worktree) => {
-            WriteClaudeJson(configDir, ClaudeLauncher.NormalizeClaudeProjectKey(sourceRepo));
+        var (paths, configDir, sourceRepo, worktree) = Seed();
 
-            ClaudeLauncher.WriteMcpConfig(sourceRepo, worktree);
+        WriteClaudeJson(configDir, ClaudeLauncher.NormalizeClaudeProjectKey(sourceRepo));
 
-            var servers = ReadWorktreeMcpServers(worktree);
-            await Assert.That(servers).IsNotNull();
-            await Assert.That(servers!.ContainsKey("my-server")).IsTrue();
+        ClaudeLauncher.WriteMcpConfig(sourceRepo, worktree, paths);
 
-            // env must be stripped from the copied server definition.
-            await Assert.That(servers["my-server"]!.AsObject().ContainsKey("env")).IsFalse();
-        });
+        var servers = ReadWorktreeMcpServers(worktree);
+        await Assert.That(servers).IsNotNull();
+        await Assert.That(servers!.ContainsKey("my-server")).IsTrue();
+
+        // env must be stripped from the copied server definition.
+        await Assert.That(servers["my-server"]!.AsObject().ContainsKey("env")).IsFalse();
     }
 
     /// <summary>
-    /// Backward compatibility: an entry stored under the raw (unnormalised)
-    /// path — e.g. written by an older kcap build on Windows — is still found
-    /// via the fallback lookup.
+    /// Backward compatibility: an entry stored under the raw (unnormalised) path — as an older
+    /// build on Windows or a hand edit leaves it — is still found via the fallback lookup.
     /// </summary>
     [Test]
     public async Task Falls_back_to_raw_project_key() {
-        await RunWithRelocatedConfigAsync(async (configDir, sourceRepo, worktree) => {
-            WriteClaudeJson(configDir, sourceRepo);
+        var (paths, configDir, sourceRepo, worktree) = Seed();
 
-            ClaudeLauncher.WriteMcpConfig(sourceRepo, worktree);
+        WriteClaudeJson(configDir, sourceRepo);
 
-            var servers = ReadWorktreeMcpServers(worktree);
-            await Assert.That(servers).IsNotNull();
-            await Assert.That(servers!.ContainsKey("my-server")).IsTrue();
-        });
+        ClaudeLauncher.WriteMcpConfig(sourceRepo, worktree, paths);
+
+        var servers = ReadWorktreeMcpServers(worktree);
+        await Assert.That(servers).IsNotNull();
+        await Assert.That(servers!.ContainsKey("my-server")).IsTrue();
     }
 
     /// <summary>No project entry under either key → no .mcp.json written.</summary>
     [Test]
     public async Task No_matching_project_entry_writes_nothing() {
-        await RunWithRelocatedConfigAsync(async (configDir, sourceRepo, worktree) => {
-            WriteClaudeJson(configDir, Path.Combine(Path.GetTempPath(), "some-other-repo"));
+        var (paths, configDir, sourceRepo, worktree) = Seed();
 
-            ClaudeLauncher.WriteMcpConfig(sourceRepo, worktree);
+        WriteClaudeJson(configDir, Tmp.PathTo("some-other-repo"));
 
-            await Assert.That(File.Exists(Path.Combine(worktree, ".mcp.json"))).IsFalse();
-        });
+        ClaudeLauncher.WriteMcpConfig(sourceRepo, worktree, paths);
+
+        await Assert.That(File.Exists(Path.Combine(worktree, ".mcp.json"))).IsFalse();
     }
-
-    // ── Phase-1 dedupe: don't propagate plugin-shadowed kcap entries ────────────
 
     static void WriteClaudeJsonWithServers(string configDir, string projectKey, JsonObject servers) {
         var json = new JsonObject {
@@ -122,9 +112,8 @@ public class ClaudeLauncherWriteMcpConfigTests {
 
     static void MarkClaudePluginInstalled(string configDir) {
         // The merge-skip gates on ClaudePluginInstaller.IsEffectivelyInstalled: an enabled
-        // registration in settings.json ($CLAUDE_CONFIG_DIR/settings.json here) AND the enabled
-        // plugin's INSTALLED payload — resolved via plugins/installed_plugins.json the way
-        // Claude loads it, never a marketplace source dir.
+        // registration in settings.json AND the enabled plugin's INSTALLED payload — resolved via
+        // plugins/installed_plugins.json the way Claude loads it, never a marketplace source dir.
         var installPath = Path.Combine(configDir, "plugins", "cache", "kcap", "kcap", "1.0.0");
         Directory.CreateDirectory(installPath);
         File.WriteAllText(Path.Combine(installPath, ".mcp.json"), "{}");
@@ -153,23 +142,23 @@ public class ClaudeLauncherWriteMcpConfigTests {
     /// </summary>
     [Test]
     public async Task Skips_canonical_kcap_duplicate_but_keeps_divergent_and_custom_servers() {
-        await RunWithRelocatedConfigAsync(async (configDir, sourceRepo, worktree) => {
-            MarkClaudePluginInstalled(configDir);
-            WriteClaudeJsonWithServers(configDir, ClaudeLauncher.NormalizeClaudeProjectKey(sourceRepo),
-                new JsonObject {
-                    ["kcap-flows"]    = KcapEntry("flows"),                          // canonical → skipped
-                    ["kcap-sessions"] = KcapEntry("sessions", "/custom/build/kcap"), // divergent → kept
-                    ["my-custom"]     = new JsonObject { ["command"] = "some-mcp" }  // foreign → kept
-                });
+        var (paths, configDir, sourceRepo, worktree) = Seed();
 
-            ClaudeLauncher.WriteMcpConfig(sourceRepo, worktree);
+        MarkClaudePluginInstalled(configDir);
+        WriteClaudeJsonWithServers(configDir, ClaudeLauncher.NormalizeClaudeProjectKey(sourceRepo),
+            new JsonObject {
+                ["kcap-flows"]    = KcapEntry("flows"),                          // canonical → skipped
+                ["kcap-sessions"] = KcapEntry("sessions", "/custom/build/kcap"), // divergent → kept
+                ["my-custom"]     = new JsonObject { ["command"] = "some-mcp" }  // foreign → kept
+            });
 
-            var servers = ReadWorktreeMcpServers(worktree);
-            await Assert.That(servers).IsNotNull();
-            await Assert.That(servers!.ContainsKey("kcap-flows")).IsFalse();
-            await Assert.That(servers.ContainsKey("kcap-sessions")).IsTrue();
-            await Assert.That(servers.ContainsKey("my-custom")).IsTrue();
-        });
+        ClaudeLauncher.WriteMcpConfig(sourceRepo, worktree, paths);
+
+        var servers = ReadWorktreeMcpServers(worktree);
+        await Assert.That(servers).IsNotNull();
+        await Assert.That(servers!.ContainsKey("kcap-flows")).IsFalse();
+        await Assert.That(servers.ContainsKey("kcap-sessions")).IsTrue();
+        await Assert.That(servers.ContainsKey("my-custom")).IsTrue();
     }
 
     /// <summary>
@@ -178,16 +167,16 @@ public class ClaudeLauncherWriteMcpConfigTests {
     /// </summary>
     [Test]
     public async Task Merges_canonical_kcap_entry_when_plugin_not_installed() {
-        await RunWithRelocatedConfigAsync(async (configDir, sourceRepo, worktree) => {
-            WriteClaudeJsonWithServers(configDir, ClaudeLauncher.NormalizeClaudeProjectKey(sourceRepo),
-                new JsonObject { ["kcap-flows"] = KcapEntry("flows") });
+        var (paths, configDir, sourceRepo, worktree) = Seed();
 
-            ClaudeLauncher.WriteMcpConfig(sourceRepo, worktree);
+        WriteClaudeJsonWithServers(configDir, ClaudeLauncher.NormalizeClaudeProjectKey(sourceRepo),
+            new JsonObject { ["kcap-flows"] = KcapEntry("flows") });
 
-            var servers = ReadWorktreeMcpServers(worktree);
-            await Assert.That(servers).IsNotNull();
-            await Assert.That(servers!.ContainsKey("kcap-flows")).IsTrue();
-        });
+        ClaudeLauncher.WriteMcpConfig(sourceRepo, worktree, paths);
+
+        var servers = ReadWorktreeMcpServers(worktree);
+        await Assert.That(servers).IsNotNull();
+        await Assert.That(servers!.ContainsKey("kcap-flows")).IsTrue();
     }
 
     /// <summary>
@@ -197,21 +186,21 @@ public class ClaudeLauncherWriteMcpConfigTests {
     /// </summary>
     [Test]
     public async Task Version_marker_alone_does_not_authorize_the_merge_skip() {
-        await RunWithRelocatedConfigAsync(async (configDir, sourceRepo, worktree) => {
-            File.WriteAllText(Path.Combine(configDir, ".kcap-plugin-version"), "9.9.9");
-            WriteClaudeJsonWithServers(configDir, ClaudeLauncher.NormalizeClaudeProjectKey(sourceRepo),
-                new JsonObject { ["kcap-flows"] = KcapEntry("flows") });
+        var (paths, configDir, sourceRepo, worktree) = Seed();
 
-            ClaudeLauncher.WriteMcpConfig(sourceRepo, worktree);
+        File.WriteAllText(Path.Combine(configDir, ".kcap-plugin-version"), "9.9.9");
+        WriteClaudeJsonWithServers(configDir, ClaudeLauncher.NormalizeClaudeProjectKey(sourceRepo),
+            new JsonObject { ["kcap-flows"] = KcapEntry("flows") });
 
-            var servers = ReadWorktreeMcpServers(worktree);
-            await Assert.That(servers).IsNotNull();
-            await Assert.That(servers!.ContainsKey("kcap-flows")).IsTrue(); // still merged
-        });
+        ClaudeLauncher.WriteMcpConfig(sourceRepo, worktree, paths);
+
+        var servers = ReadWorktreeMcpServers(worktree);
+        await Assert.That(servers).IsNotNull();
+        await Assert.That(servers!.ContainsKey("kcap-flows")).IsTrue(); // still merged
     }
 
     /// <summary>
-    /// ALL kcap writers of ~/.claude.json share one cross-process lock (ConfigFileLock): the
+    /// ALL kcap writers of <c>.claude.json</c> share one cross-process lock (ConfigFileLock): the
     /// daemon's trust write must not be able to commit between doctor --clean's inside-lock
     /// re-read and its rename, where the rename would silently overwrite it. The doctor is
     /// parked inside its lock via a test hook; the trust write started there must block until
@@ -221,29 +210,29 @@ public class ClaudeLauncherWriteMcpConfigTests {
     /// </summary>
     [Test]
     public async Task Trust_write_during_a_parked_doctor_clean_cannot_be_lost() {
-        await RunWithRelocatedConfigAsync(async (configDir, sourceRepo, worktree) => {
-            var cfgPath  = Path.Combine(configDir, ".claude.json");
-            var snapshot = """{ "mcpServers": { "kcap-flows": { "command": "kcap", "args": ["mcp","flows"] } } }""";
-            File.WriteAllText(cfgPath, snapshot);
+        var (paths, configDir, _, worktree) = Seed();
 
-            Task? trust = null;
-            var outcome = Capacitor.Cli.Commands.McpDoctorSection.TryCleanClaudeConfig(
-                cfgPath, snapshot, null, out _,
-                afterReReadForTesting: () => {
-                    trust = Task.Run(() => ClaudeLauncher.TrustWorktreeInClaudeConfig(worktree));
-                    // With the shared lock the trust writer blocks here (this thread holds the
-                    // lock), so the bounded wait elapses. Without it, the trust write finishes
-                    // NOW, and the doctor's rename below deterministically overwrites it.
-                    trust.Wait(TimeSpan.FromSeconds(2));
-                });
-            await trust!;
+        var cfgPath  = Path.Combine(configDir, ".claude.json");
+        var snapshot = """{ "mcpServers": { "kcap-flows": { "command": "kcap", "args": ["mcp","flows"] } } }""";
+        File.WriteAllText(cfgPath, snapshot);
 
-            await Assert.That(outcome).IsEqualTo(Capacitor.Cli.Commands.McpDoctorSection.CleanOutcome.Cleaned);
-            var root = (JsonObject)JsonNode.Parse(File.ReadAllText(cfgPath))!;
-            await Assert.That(((JsonObject)root["mcpServers"]!).ContainsKey("kcap-flows")).IsFalse(); // clean applied
-            var trustKey = ClaudeLauncher.NormalizeClaudeProjectKey(worktree);
-            await Assert.That((bool)root["projects"]![trustKey]!["hasTrustDialogAccepted"]!).IsTrue(); // trust survived
-        });
+        Task? trust = null;
+        var outcome = Capacitor.Cli.Commands.McpDoctorSection.TryCleanClaudeConfig(
+            cfgPath, snapshot, null, out _,
+            afterReReadForTesting: () => {
+                trust = Task.Run(() => ClaudeLauncher.TrustWorktreeInClaudeConfig(worktree, paths));
+                // With the shared lock the trust writer blocks here (this thread holds the
+                // lock), so the bounded wait elapses. Without it, the trust write finishes
+                // NOW, and the doctor's rename below deterministically overwrites it.
+                trust.Wait(TimeSpan.FromSeconds(2));
+            });
+        await trust!;
+
+        await Assert.That(outcome).IsEqualTo(Capacitor.Cli.Commands.McpDoctorSection.CleanOutcome.Cleaned);
+        var root = (JsonObject)JsonNode.Parse(File.ReadAllText(cfgPath))!;
+        await Assert.That(((JsonObject)root["mcpServers"]!).ContainsKey("kcap-flows")).IsFalse(); // clean applied
+        var trustKey = ClaudeLauncher.NormalizeClaudeProjectKey(worktree);
+        await Assert.That((bool)root["projects"]![trustKey]!["hasTrustDialogAccepted"]!).IsTrue(); // trust survived
     }
 
     /// <summary>
@@ -253,21 +242,21 @@ public class ClaudeLauncherWriteMcpConfigTests {
     /// </summary>
     [Test]
     public async Task Skips_canonical_absolute_path_entry_when_the_cli_path_is_supplied() {
-        await RunWithRelocatedConfigAsync(async (configDir, sourceRepo, worktree) => {
-            MarkClaudePluginInstalled(configDir);
-            var cliPath = Path.Combine(configDir, "bin", "kcap"); // deterministic, never this test host
-            WriteClaudeJsonWithServers(configDir, ClaudeLauncher.NormalizeClaudeProjectKey(sourceRepo),
-                new JsonObject {
-                    ["kcap-flows"]    = KcapEntry("flows", cliPath),          // canonical at the CLI path → skipped
-                    ["kcap-sessions"] = KcapEntry("sessions", "/other/kcap")  // different binary → conflict, kept
-                });
+        var (paths, configDir, sourceRepo, worktree) = Seed();
 
-            ClaudeLauncher.WriteMcpConfig(sourceRepo, worktree, nativeKcapPath: cliPath);
+        MarkClaudePluginInstalled(configDir);
+        var cliPath = Path.Combine(configDir, "bin", "kcap"); // deterministic, never this test host
+        WriteClaudeJsonWithServers(configDir, ClaudeLauncher.NormalizeClaudeProjectKey(sourceRepo),
+            new JsonObject {
+                ["kcap-flows"]    = KcapEntry("flows", cliPath),          // canonical at the CLI path → skipped
+                ["kcap-sessions"] = KcapEntry("sessions", "/other/kcap")  // different binary → conflict, kept
+            });
 
-            var servers = ReadWorktreeMcpServers(worktree);
-            await Assert.That(servers).IsNotNull();
-            await Assert.That(servers!.ContainsKey("kcap-flows")).IsFalse();
-            await Assert.That(servers.ContainsKey("kcap-sessions")).IsTrue();
-        });
+        ClaudeLauncher.WriteMcpConfig(sourceRepo, worktree, paths, nativeKcapPath: cliPath);
+
+        var servers = ReadWorktreeMcpServers(worktree);
+        await Assert.That(servers).IsNotNull();
+        await Assert.That(servers!.ContainsKey("kcap-flows")).IsFalse();
+        await Assert.That(servers.ContainsKey("kcap-sessions")).IsTrue();
     }
 }

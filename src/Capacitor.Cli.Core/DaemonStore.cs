@@ -8,8 +8,8 @@ namespace Capacitor.Cli.Core;
 /// Passed explicitly to everything that needs it — there is no ambient default.
 ///
 /// <para>The production directory is a <b>fixed location</b> under the home directory
-/// (<c>~/.config/kcap/daemons/</c>) regardless of <c>KCAP_CONFIG_DIR</c>. The previous layout used
-/// <c>PathHelpers.ConfigPath</c>, so two daemons with different <c>KCAP_CONFIG_DIR</c>s (e.g. an
+/// (<c>~/.config/kcap/daemons/</c>) regardless of <c>KCAP_CONFIG_DIR</c>. The previous layout
+/// derived it from the config directory, so two daemons with different <c>KCAP_CONFIG_DIR</c>s (e.g. an
 /// Aspire-spawned dev daemon using <c>.dev/kcap</c> alongside a user-launched daemon using
 /// <c>~/.config/kcap</c>) wrote to different files, never saw each other, and could authenticate as
 /// the same GitHub ID and oscillate the server-side <c>DaemonRegistry</c> slot. Pinning the location
@@ -26,18 +26,14 @@ public sealed partial class DaemonStore(string directory) {
     public string Directory { get; } = directory;
 
     /// <summary>The context for this process. Call once, in <c>Main</c> or the composition root.</summary>
-    public static DaemonStore FromEnvironment() =>
-        new(ResolveDefaultDir(Environment.GetEnvironmentVariable(DaemonsDirEnvVar)));
+    public static DaemonStore FromEnvironment() {
+        if (Environment.GetEnvironmentVariable(DaemonsDirEnvVar) is { Length: > 0 } configured)
+            return new(configured);
 
-    /// <summary>Env-free so a test can assert the production fallback without mutating the
-    /// environment.</summary>
-    internal static string ResolveDefaultDir(string? envValue) =>
-        !string.IsNullOrEmpty(envValue)
-            ? envValue
-            : Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                ".config", "kcap", "daemons"
-            );
+        var home = UserHome.FromEnvironment().Path;
+
+        return new(Path.Combine(home, ".config", "kcap", "daemons"));
+    }
 
     [GeneratedRegex(@"[^a-z0-9._-]")]
     private static partial Regex DisallowedChars();

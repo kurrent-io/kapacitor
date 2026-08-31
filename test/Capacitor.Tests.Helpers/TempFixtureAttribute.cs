@@ -32,8 +32,34 @@ public sealed class TempDirAttribute(string? hint = null) : TempFixtureAttribute
     protected override TempDir Create(string name) => new(name);
 }
 
+/// <summary><c>[TempConfigRoot] public required TempConfigRoot Config { get; init; }</c></summary>
+public sealed class TempConfigRootAttribute(string? hint = null)
+        : TempFixtureAttribute<TempConfigRoot>(hint) {
+    protected override TempConfigRoot Create(string name) => new(name);
+}
+
+/// <summary><c>[TempHome] public required TempHome Home { get; init; }</c></summary>
+public sealed class TempHomeAttribute(string? hint = null) : TempFixtureAttribute<TempHome>(hint) {
+    protected override TempHome Create(string name) =>
+        Shared == SharedType.None
+            ? new(name)
+            // Sharing is sound only for a class that never writes into the home, and nothing here
+            // checks that yet.
+            : throw new NotSupportedException(
+                "TempHome is per-test: a shared lifetime needs a write check that does not exist yet.");
+}
+
 /// <summary><c>[TempDaemonPaths] public required TempDaemonPaths Daemons { get; init; }</c></summary>
 public sealed class TempDaemonPathsAttribute(string? hint = null)
         : TempFixtureAttribute<TempDaemonStore>(hint) {
     protected override TempDaemonStore Create(string name) => new(name);
+}
+
+/// <summary><c>[GitRepo] public required GitRepo Repo { get; init; }</c> — for a class whose every
+/// test runs against a repository, typically as the working directory of a spawned process.</summary>
+public sealed class GitRepoAttribute(string? hint = null) : TempFixtureAttribute<GitRepo>(hint) {
+    protected override GitRepo Create(string name) =>
+        Shared == SharedType.None
+            ? GitRepo.Create(name)
+            : throw new NotSupportedException("GitRepo is per-test: a git repository is never a read-only fixture.");
 }

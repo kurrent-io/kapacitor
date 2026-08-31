@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text.Json;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Harness;
 
 namespace Capacitor.Cli.Commands;
 
@@ -8,18 +9,20 @@ namespace Capacitor.Cli.Commands;
 /// HEAD-probes the server for each transcript to decide New / Partial /
 /// AlreadyLoaded / TooShort / Excluded / ProbeError. Used by both
 /// ClaudeImportSource and CodexImportSource — the only difference between
-/// them is the metadata extractor, which is selected internally via the
-/// <c>vendor</c> string (today: "claude" or "codex").
+/// them is the metadata extractor, which is selected internally from
+/// <c>vendor</c>.
 /// </summary>
 internal static class TranscriptFileClassification {
     public static async Task<List<ImportCommand.SessionClassification>> ClassifyAsync(
+            ConfigRoot                                                   config,
+            UserHome                                                     home,
             HttpClient                                                   httpClient,
             string                                                       baseUrl,
             List<(string SessionId, string FilePath, string EncodedCwd)> transcripts,
             int                                                          minLines,
             string[]?                                                    excludedRepos,
             CancellationToken                                            ct,
-            string                                                       vendor        = "claude",
+            HarnessId                                                    vendor        = HarnessId.Claude,
             Action?                                                      onProbed      = null,
             string[]?                                                    excludedPaths = null
         ) {
@@ -27,7 +30,7 @@ internal static class TranscriptFileClassification {
         var       tasks     = new List<Task<ImportCommand.SessionClassification>>(transcripts.Count);
 
         foreach (var (sessionId, filePath, encodedCwd) in transcripts) {
-            tasks.Add(ClassifyOneAsync(httpClient, baseUrl, sessionId, filePath, encodedCwd, minLines, excludedRepos, excludedPaths, probeGate, vendor, onProbed, ct));
+            tasks.Add(ClassifyOneAsync(config, home, httpClient, baseUrl, sessionId, filePath, encodedCwd, minLines, excludedRepos, excludedPaths, probeGate, vendor, onProbed, ct));
         }
 
         var results = await Task.WhenAll(tasks);
@@ -36,6 +39,8 @@ internal static class TranscriptFileClassification {
     }
 
     static async Task<ImportCommand.SessionClassification> ClassifyOneAsync(
+            ConfigRoot        config,
+            UserHome          home,
             HttpClient        httpClient,
             string            baseUrl,
             string            sessionId,
@@ -45,18 +50,20 @@ internal static class TranscriptFileClassification {
             string[]?         excludedRepos,
             string[]?         excludedPaths,
             SemaphoreSlim     probeGate,
-            string            vendor,
+            HarnessId         vendor,
             Action?           onProbed,
             CancellationToken ct
         ) {
         try {
-            return await ClassifyOneCoreAsync(httpClient, baseUrl, sessionId, filePath, encodedCwd, minLines, excludedRepos, excludedPaths, probeGate, vendor, ct);
+            return await ClassifyOneCoreAsync(config, home, httpClient, baseUrl, sessionId, filePath, encodedCwd, minLines, excludedRepos, excludedPaths, probeGate, vendor, ct);
         } finally {
             onProbed?.Invoke();
         }
     }
 
     static async Task<ImportCommand.SessionClassification> ClassifyOneCoreAsync(
+            ConfigRoot        config,
+            UserHome          home,
             HttpClient        httpClient,
             string            baseUrl,
             string            sessionId,
@@ -66,10 +73,10 @@ internal static class TranscriptFileClassification {
             string[]?         excludedRepos,
             string[]?         excludedPaths,
             SemaphoreSlim     probeGate,
-            string            vendor,
+            HarnessId         vendor,
             CancellationToken ct
         ) {
-        var isCodex = vendor == "codex";
+        var isCodex = vendor is HarnessId.Codex;
         var meta    = isCodex ? ImportCommand.ExtractCodexSessionMetadata(filePath) : ImportCommand.ExtractSessionMetadata(filePath);
 
         switch (isCodex) {
@@ -194,7 +201,7 @@ internal static class TranscriptFileClassification {
             if (cwd is not null) {
                 if (excludedRepos is { Length: > 0 }) {
                     // Classification only needs owner/repo for the exclusion key — skip PR detection.
-                    var repo = await RepositoryDetection.DetectRepositoryAsync(cwd, detectPullRequest: false);
+                    var repo = await RepositoryDetection.DetectRepositoryAsync(config, cwd, detectPullRequest: false);
 
                     if (repo?.Owner is not null && repo.RepoName is not null) {
                         var key = $"{repo.Owner}/{repo.RepoName}";
@@ -207,8 +214,8 @@ internal static class TranscriptFileClassification {
 
                 if (excludedPathKey is null && excludedPaths is { Length: > 0 }) {
                     foreach (var entry in excludedPaths) {
-                        if (PathExclusion.IsExcluded(cwd, [entry])) {
-                            excludedPathKey = PathExclusion.Normalize(entry);
+                        if (PathExclusion.IsExcluded(cwd, [entry], home)) {
+                            excludedPathKey = PathExclusion.Normalize(entry, home);
                             break;
                         }
                     }

@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Core.Harness.Copilot;
 
 namespace Capacitor.Cli.Harness.Copilot;
@@ -26,18 +27,16 @@ namespace Capacitor.Cli.Harness.Copilot;
 /// </para>
 /// </summary>
 internal sealed class CopilotImportSource : IImportSource {
-    readonly string                                 _sessionStateDir;
-    readonly string                                 _legacySessionStateDir;
+    readonly CopilotPaths                          _paths;
     readonly Func<string, Task<RepositoryPayload?>> _repoDetector;
 
     public CopilotImportSource(
-        string?                                 sessionStateDirOverride = null,
-        string?                                 legacyDirOverride       = null,
-        Func<string, Task<RepositoryPayload?>>? repoDetector            = null
+        ConfigRoot                              config,
+        CopilotPaths                            paths,
+        Func<string, Task<RepositoryPayload?>>? repoDetector = null
     ) {
-        _sessionStateDir       = sessionStateDirOverride ?? CopilotPaths.SessionStateDir();
-        _legacySessionStateDir = legacyDirOverride       ?? CopilotPaths.LegacySessionStateDir();
-        _repoDetector          = repoDetector ?? (cwd => RepositoryDetection.DetectRepositoryAsync(cwd, detectPullRequest: false));
+        _paths        = paths;
+        _repoDetector = repoDetector ?? (cwd => RepositoryDetection.DetectRepositoryAsync(config, cwd, detectPullRequest: false));
     }
 
     static StringComparison PathComparison =>
@@ -53,9 +52,9 @@ internal sealed class CopilotImportSource : IImportSource {
         }
     }
 
-    public string Vendor => "copilot";
+    public HarnessId Vendor => HarnessId.Copilot;
 
-    public bool IsAvailable => Directory.Exists(_sessionStateDir) || Directory.Exists(_legacySessionStateDir);
+    public bool IsAvailable => _paths.SessionStateDirs.Any(Directory.Exists);
 
     /// <summary>
     /// False — Copilot names every session itself (workspace.yaml <c>name</c>);
@@ -75,15 +74,15 @@ internal sealed class CopilotImportSource : IImportSource {
         var result = new List<DiscoveredSession>();
         var seen   = new HashSet<string>(StringComparer.Ordinal);
 
-        // Current root first — when a pre-GA session was migrated on resume it
-        // exists in both roots, and session-state/ has the longer transcript.
-        foreach (var root in new[] { _sessionStateDir, _legacySessionStateDir }) {
+        // Current root first — when a pre-GA session was migrated on resume it exists in both
+        // roots, and session-state/ has the longer transcript.
+        foreach (var root in _paths.SessionStateDirs) {
             if (!Directory.Exists(root)) continue;
 
             foreach (var sessionDir in Directory.EnumerateDirectories(root)) {
                 try {
                     var dirName = Path.GetFileName(sessionDir);
-                    var jsonl   = CopilotPaths.EventsJsonl(root, dirName);
+                    var jsonl   = _paths.EventsJsonl(root, dirName);
 
                     // Dirs without events.jsonl are failed-startup scaffolding
                     // (workspace.yaml + checkpoints only) — nothing to import.
@@ -95,7 +94,7 @@ internal sealed class CopilotImportSource : IImportSource {
                     if (sessionFilter is not null && !string.Equals(dashless, sessionFilter, StringComparison.Ordinal))
                         continue;
 
-                    var meta = CopilotWorkspaceYaml.TryRead(CopilotPaths.WorkspaceYaml(root, dirName));
+                    var meta = CopilotWorkspaceYaml.TryRead(_paths.WorkspaceYaml(root, dirName));
 
                     if (normalizedCwd is not null
                      && (meta?.Cwd is null
@@ -276,10 +275,8 @@ internal sealed class CopilotImportSource : IImportSource {
         // permanently lifecycle-less. Re-runs are idempotent server-side
         // (deterministic lifecycle event ids).
         var startPayload = BuildSessionStartPayload(classification.SessionId, cwd, classification.Meta.FirstTimestamp);
-        // Step 3 visibility stamp — New-only, and never overrides an existing force-private
-        // choice (Copilot has none of its own today; this guard keeps it that way).
-        if (!ctx.ForcePrivate && classification.Status == ImportCommand.ClassificationStatus.New && ctx.DefaultVisibility is not null) {
-            startPayload["default_visibility"] = ctx.DefaultVisibility;
+        if (ctx.VisibilityStampFor(classification.Status) is { } visibility) {
+            startPayload["default_visibility"] = visibility;
         }
 
         var startOk = await PostSyntheticHookAsync(
@@ -398,7 +395,7 @@ internal sealed class CopilotImportSource : IImportSource {
         EncodedCwd       = "",
         Meta             = meta,
         Status           = status,
-        Vendor           = "copilot",
+        Vendor           = HarnessId.Copilot,
         ProbeErrorReason = probeErrorReason,
         TotalLines       = totalLines,
         SourceMeta       = s.SourceMeta,
@@ -489,8 +486,8 @@ internal sealed class CopilotImportSource : IImportSource {
         string? excludedPathKey = null;
         if (cwd is not null && ctx.ExcludedPaths is { Count: > 0 } paths) {
             foreach (var entry in paths) {
-                if (PathExclusion.IsExcluded(cwd, [entry])) {
-                    excludedPathKey = PathExclusion.Normalize(entry);
+                if (PathExclusion.IsExcluded(cwd, [entry], ctx.Home)) {
+                    excludedPathKey = PathExclusion.Normalize(entry, ctx.Home);
                     break;
                 }
             }

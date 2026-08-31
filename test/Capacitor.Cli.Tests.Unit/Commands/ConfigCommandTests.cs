@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Config;
 
 namespace Capacitor.Cli.Tests.Unit.Commands;
@@ -214,6 +215,50 @@ public class ConfigCommandTests {
 
         await Assert.That(() => ConfigCommand.ApplySet(profile, "default_visibility", "team"))
             .Throws<ArgumentException>();
+    }
+
+    // ── skills.auto_sync ─────────────────────────────────────────────────────
+
+    [Test]
+    public async Task Set_WithBlankActiveProfile_WritesTheDefaultProfile() {
+        // Runtime profile resolution normalizes a blank active_profile to "default"; the write
+        // path must land on the SAME identity, or the set reports success while the effective
+        // profile never sees the value.
+        using var tmp  = new TempDir();
+        var root = new ConfigRoot(tmp.Path);
+        Directory.CreateDirectory(tmp.Path);
+        await File.WriteAllTextAsync(AppConfig.GetConfigPath(root), """{"active_profile":"","profiles":{}}""");
+
+        await new ConfigCommand(root).HandleAsync(["config", "set", "skills.auto_sync", "true"]);
+
+        var cfg = await AppConfig.LoadProfileConfig(root);
+        await Assert.That(cfg.Profiles.ContainsKey("")).IsFalse();
+        await Assert.That(cfg.Profiles["default"].Skills!.AutoSync!.Value).IsTrue();
+
+        await new ConfigCommand(root).HandleAsync(["config", "unset", "skills.auto_sync"]);
+        var after = await AppConfig.LoadProfileConfig(root);
+        await Assert.That(after.Profiles["default"].Skills!.AutoSync).IsNull();
+    }
+
+    [Test]
+    public async Task ApplySet_SkillsAutoSync_ParsesBoolean() {
+        var updated = ConfigCommand.ApplySet(new Profile(), "skills.auto_sync", "true");
+        await Assert.That(updated.Skills!.AutoSync!.Value).IsTrue();
+        var off = ConfigCommand.ApplySet(updated, "skills.auto_sync", "false");
+        await Assert.That(off.Skills!.AutoSync!.Value).IsFalse();
+    }
+
+    [Test]
+    public async Task ApplySet_SkillsAutoSync_RejectsNonBoolean() {
+        await Assert.That(() => ConfigCommand.ApplySet(new Profile(), "skills.auto_sync", "yes"))
+            .Throws<ArgumentException>();
+    }
+
+    [Test]
+    public async Task ApplyUnset_SkillsAutoSync_ClearsTheKey() {
+        var set = ConfigCommand.ApplySet(new Profile(), "skills.auto_sync", "true");
+        var cleared = ConfigCommand.ApplyUnset(set, "skills.auto_sync");
+        await Assert.That(cleared.Skills!.AutoSync).IsNull();
     }
 
     // ── flows.reviewer_vendor ────────────────────────────────────────────────

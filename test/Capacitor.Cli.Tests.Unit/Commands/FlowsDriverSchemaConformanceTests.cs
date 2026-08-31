@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Harness.Antigravity;
@@ -30,6 +31,11 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 /// but cannot express it: a harness whose registration drifts to a different command, or a tool that
 /// quietly gains or loses <c>vendor</c>, leaves a caller believing it named a reviewer when it sent
 /// nothing. A stale-schema driver must never be able to claim it launched the named vendor.</para>
+///
+/// <para><b>The one tolerated variation</b> is the <c>--driver &lt;vendor&gt;</c> stamp the six JSON
+/// harnesses carry on their <c>kcap-flows</c> args (see <see cref="KcapMcpServers.ForHarness"/>). It
+/// reaches the same subcommand and therefore the same schema — it is not command drift — and each
+/// harness must stamp its OWN vendor, which the arms below assert rather than merely tolerate.</para>
 /// </summary>
 public class FlowsDriverSchemaConformanceTests {
     // ── the canonical descriptor ──────────────────────────────────────────────────────────────
@@ -187,21 +193,6 @@ public class FlowsDriverSchemaConformanceTests {
 
     /// <summary>Every environment variable any kcap path resolver consults. Kept together so a new
     /// override cannot be added without this list being the obvious place to add it.</summary>
-    static readonly string[] PathOverrideVariables = [
-        "CODEX_HOME",            // CodexPaths
-        "COPILOT_HOME",          // CopilotPaths
-        "GEMINI_CLI_HOME",       // GeminiPaths — and AntigravityPaths, which reuses GeminiPaths.Root
-        "KIRO_HOME",             // KiroPaths
-        "OPENCODE_CONFIG_DIR",   // OpenCodePaths
-        "XDG_CONFIG_HOME",       // OpenCodePaths fallback
-        "XDG_DATA_HOME",         // OpenCodePaths plugin dir fallback
-    ];
-
-    sealed class EnvScopes(IEnumerable<string> keys) : IDisposable {
-        readonly List<EnvScope> _scopes = [.. keys.Select(k => new EnvScope(k, null))];
-        public void Dispose() { foreach (var s in _scopes) s.Dispose(); }
-    }
-
     /// <summary>Deterministic native-binary path injected into every installer arm. Registration
     /// writes the resolved binary as the command (default: Environment.ProcessPath) — under the
     /// test host that default would be the test-runner executable, so the suite injects its own
@@ -209,8 +200,9 @@ public class FlowsDriverSchemaConformanceTests {
     internal const string InjectedBinaryPath = "/opt/conformance/bin/kcap";
 
     static PluginEnvironment TestEnv(string home, string? pluginRoot = null) =>
-        new(HomeDirectory: home, ResolvePluginPath: () => pluginRoot,
+        new(Home: new(home), Profiles: new ProfileConfig(), ResolvePluginPath: () => pluginRoot,
             Stdout: TextWriter.Null, Stderr: TextWriter.Null) {
+            Paths = TestHarnessPaths.NoOverrides(new(home)),
             ResolveMcpBinaryPath = () => InjectedBinaryPath
         };
 
@@ -257,43 +249,43 @@ public class FlowsDriverSchemaConformanceTests {
     static readonly Arm[] Arms = [
         new("Cursor", "--cursor",
             env => {
-                Directory.CreateDirectory(Path.GetDirectoryName(env.CursorUserHooksJson)!);
-                File.WriteAllText(env.CursorUserHooksJson,
+                Directory.CreateDirectory(Path.GetDirectoryName(env.Paths.Cursor.UserHooksJson)!);
+                File.WriteAllText(env.Paths.Cursor.UserHooksJson,
                     """{"version":1,"hooks":{"sessionStart":[{"command":"kcap hook --cursor"}]}}""");
             },
-            env => env.CursorMcpJson, Json("Cursor", "mcpServers")),
+            env => env.Paths.Cursor.UserMcpJson, Json("Cursor", "mcpServers")),
 
         new("Copilot", "--copilot",
-            env => { PluginCommand.InstallCopilotHooks(env.CopilotKcapHooksJson);
-                     CopilotHooksInstaller.DeleteMarker(env.CopilotKcapHooksJson); },
-            env => env.CopilotMcpConfigJson, Json("Copilot", "mcpServers")),
+            env => { PluginCommand.InstallCopilotHooks(env.Paths.Copilot.KcapHooksJson);
+                     CopilotHooksInstaller.DeleteMarker(env.Paths.Copilot.KcapHooksJson); },
+            env => env.Paths.Copilot.McpConfigJson, Json("Copilot", "mcpServers")),
 
         new("Gemini", "--gemini",
-            env => { PluginCommand.InstallGeminiHooks(env.GeminiSettingsJson);
-                     GeminiHooksInstaller.DeleteMarker(env.GeminiSettingsJson); },
-            env => env.GeminiSettingsJson, Json("Gemini", "mcpServers")),
+            env => { PluginCommand.InstallGeminiHooks(env.Paths.Gemini.SettingsJson);
+                     GeminiHooksInstaller.DeleteMarker(env.Paths.Gemini.SettingsJson); },
+            env => env.Paths.Gemini.SettingsJson, Json("Gemini", "mcpServers")),
 
         new("Kiro", "--kiro",
-            env => { Directory.CreateDirectory(Path.GetDirectoryName(env.KiroKcapAgentJson)!);
-                     File.WriteAllText(env.KiroKcapAgentJson, """{"name":"kcap","hooks":{}}""");
-                     KiroHooksInstaller.WriteMarker(env.KiroKcapAgentJson, "kiro_default"); },
-            env => env.KiroMcpJson, Json("Kiro", "mcpServers")),
+            env => { Directory.CreateDirectory(Path.GetDirectoryName(env.Paths.Kiro.KcapAgentJson)!);
+                     File.WriteAllText(env.Paths.Kiro.KcapAgentJson, """{"name":"kcap","hooks":{}}""");
+                     KiroHooksInstaller.WriteMarker(env.Paths.Kiro.KcapAgentJson, "kiro_default"); },
+            env => env.Paths.Kiro.SettingsMcpJson, Json("Kiro", "mcpServers")),
 
         new("Antigravity", "--antigravity",
-            env => { AntigravityHooksInstaller.Install(env.AntigravityHooksJson);
-                     File.WriteAllText(Path.Combine(Path.GetDirectoryName(env.AntigravityHooksJson)!,
+            env => { AntigravityHooksInstaller.Install(env.Paths.Antigravity.GlobalHooksJson);
+                     File.WriteAllText(Path.Combine(Path.GetDirectoryName(env.Paths.Antigravity.GlobalHooksJson)!,
                          AntigravityHooksInstaller.MarkerFileName), "0.0.0-stale"); },
-            env => env.AntigravityMcpConfigJson, Json("Antigravity", "mcpServers")),
+            env => env.Paths.Antigravity.McpConfigJson, Json("Antigravity", "mcpServers")),
 
         new("OpenCode", "--opencode",
-            env => { Directory.CreateDirectory(Path.GetDirectoryName(env.OpenCodeKcapPlugin)!);
-                     File.WriteAllText(env.OpenCodeKcapPlugin, "// stale"); },
-            env => env.OpenCodeMcpConfigJson, Json("OpenCode", "mcp", argvArray: true)),
+            env => { Directory.CreateDirectory(Path.GetDirectoryName(env.Paths.OpenCode.KcapPlugin)!);
+                     File.WriteAllText(env.Paths.OpenCode.KcapPlugin, "// stale"); },
+            env => env.Paths.OpenCode.McpConfigJson, Json("OpenCode", "mcp", argvArray: true)),
 
         // Codex installs unconditionally rather than through the `--if-installed` refresh branch, so
         // it takes the bare-install path and needs a planted plugin root. Flagged here rather than
         // hidden, because it is the one arm whose invocation differs.
-        new("Codex", "--codex", _ => { }, env => env.CodexConfigTomlPath, FromToml,
+        new("Codex", "--codex", _ => { }, env => env.Paths.Codex.ConfigToml, FromToml,
             BareInstall: true),
     ];
 
@@ -309,8 +301,7 @@ public class FlowsDriverSchemaConformanceTests {
         // against a pre-existing entry. The names are easy to get individually wrong (GeminiPaths
         // reads GEMINI_CLI_HOME, not GEMINI_HOME; OpenCode falls back to XDG_CONFIG_HOME; CodexPaths
         // gives ambient CODEX_HOME precedence), which is exactly why the list is not per-arm.
-        using var overrides = new EnvScopes(PathOverrideVariables);
-        using var home      = new FakeUserHome();
+        using var home      = new TempHome();
         var env = TestEnv(home.Path, arm.BareInstall ? PlantFakePlugin() : null);
 
         arm.OptIn(env);
@@ -320,7 +311,7 @@ public class FlowsDriverSchemaConformanceTests {
             // rewriting the profile's network-access config.
             ? ["plugin", "install", arm.Flag, "--skip-codex-network-access"]
             : ["plugin", "install", arm.Flag, "--if-installed"];
-        var exit = await PluginCommand.HandleAsync(argv, env);
+        var exit = await new PluginCommand(env).HandleAsync(argv);
         if (exit != 0) throw new InvalidOperationException($"{arm.Name}: installer exited {exit}");
 
         var path = arm.ConfigPath(env);
@@ -333,17 +324,23 @@ public class FlowsDriverSchemaConformanceTests {
         Arms.Select(a => (Func<Arm>)(() => a));
 
     [Test]
-    [NotInParallel("HomeEnvVarMutation")]
     [MethodDataSource(nameof(InstallerArms))]
     public async Task Every_installed_driver_launches_the_same_flows_server(Arm arm) {
         var p = await InstallAndRead(arm);
 
         await Assert.That(p.Command).IsEqualTo(InjectedBinaryPath)
             .Because($"{p.Harness} must launch the same executable as every other driver");
+        // Every driver reaches the SAME `mcp flows` subcommand (hence the same tool schema). The six
+        // JSON harnesses additionally stamp `--driver <their own vendor>`, the only per-process signal
+        // of who is driving; Codex installs unstamped and infers its vendor from env. The stamp does
+        // not change the subcommand or the schema — it must be the harness's OWN vendor, never another.
         // ORDERED: argv order is semantic. An unordered comparison passes ["flows","mcp"], which
         // launches nothing.
-        await Assert.That(p.Args).IsEquivalentTo(new[] { "mcp", "flows" }, CollectionOrdering.Matching)
-            .Because($"{p.Harness} must reach the same subcommand, and therefore the same tool schema");
+        var expectedArgs = arm.BareInstall
+            ? new[] { "mcp", "flows" }
+            : new[] { "mcp", "flows", "--driver", arm.Flag.TrimStart('-') };
+        await Assert.That(p.Args).IsEquivalentTo(expectedArgs, CollectionOrdering.Matching)
+            .Because($"{p.Harness} must reach the same subcommand and stamp its own driver vendor");
     }
 
     // The two bundled static files are not written by an installer — Claude Code and Codex's native
@@ -409,7 +406,9 @@ public class FlowsDriverSchemaConformanceTests {
 
         await Assert.That(flows).IsNotNull()
             .Because($"{projection.Harness} would silently lose the ability to start a flow");
-        await Assert.That(flows!.Args).IsEquivalentTo(new[] { "mcp", "flows" }, CollectionOrdering.Matching);
+        // Each JSON projection stamps its OWN vendor — the harness string is the driver vendor.
+        await Assert.That(flows!.Args)
+            .IsEquivalentTo(new[] { "mcp", "flows", "--driver", projection.Harness }, CollectionOrdering.Matching);
         // Flows launches a PAID hosted reviewer, so it must never be auto-approved on registration.
         await Assert.That(flows.ReadOnly).IsFalse();
     }
@@ -424,14 +423,18 @@ public class FlowsDriverSchemaConformanceTests {
     public async Task A_registered_harness_config_is_fully_unregistered_again(HarnessMcpProjection projection) {
         var dir  = Scratch($"roundtrip-{projection.Harness}-");
         var path = Path.Combine(dir.FullName, "config.json");
+        // The scratch dir is inside the repo, so the marker lands in the central store rather than
+        // beside the config — under this throwaway home, never the developer's own.
+        using var homeDir = new TempDir("mcp-home");
+        var home = new UserHome(homeDir.Path);
         try {
-            projection.Register(path, cwd: "/repo");
-            await Assert.That(projection.OwnsAnything(path)).IsTrue()
+            projection.Register(path, home, cwd: "/repo");
+            await Assert.That(projection.OwnsAnything(path, home)).IsTrue()
                 .Because("the probe must see what the writer just wrote");
 
-            projection.Unregister(path);
+            projection.Unregister(path, home);
 
-            await Assert.That(projection.OwnsAnything(path)).IsFalse();
+            await Assert.That(projection.OwnsAnything(path, home)).IsFalse();
             var root = (JsonObject)JsonNode.Parse(File.ReadAllText(path))!;
             var left = (root[projection.Shape.BlockKey] as JsonObject)?.Count ?? 0;
             await Assert.That(left).IsEqualTo(0)

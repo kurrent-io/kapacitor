@@ -1,5 +1,6 @@
 using System.Reactive.Threading.Tasks;
 using Avalonia.Controls;
+using Avalonia.Media;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
 using Capacitor.App.Services;
@@ -7,6 +8,7 @@ using Capacitor.App.ViewModels;
 using Capacitor.App.Views;
 using Capacitor.Cli.Core.LocalIpc;
 using DynamicData;
+using Microsoft.Extensions.Time.Testing;
 using static Capacitor.App.Tests.Unit.FakeDaemonClientService;
 
 namespace Capacitor.App.Tests.Unit;
@@ -26,9 +28,15 @@ public class MainWindowSmokeTests {
         return (actions, notifier);
     }
 
+    /// A real WorkspaceViewModel over the fake service and scripted attach/surface fakes — same
+    /// pieces MainWindowViewModelTests wires, over the actions this file's NewActions built.
+    static WorkspaceViewModel NewWorkspace(FakeDaemonClientService service, AgentActionService actions, string agentId) =>
+        new(agentId, service, actions, new FakeTerminalAttachClientFactory().Factory,
+            () => new FakeTerminalSurface(), new FakeTimeProvider(), new RecordingOpener(), new FakePermissionService());
+
     [Test]
     [NotInParallel("AvaloniaSession")]
-    public async Task MainWindow_renders_daemon_identity_server_url_and_agent_count() {
+    public async Task MainWindow_renders_the_connection_word_and_tenant_not_the_identity_block() {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var rendered = await AvaloniaSession.DispatchAsync(() => {
                 var service = new FakeDaemonClientService();
@@ -38,7 +46,8 @@ public class MainWindowSmokeTests {
                 service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, null));
 
                 var (actions, _) = NewActions(service);
-                var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None, TestActivity.New());
+                var vm = new MainWindowViewModel(service, CancellationToken.None, TestActivity.New(),
+                    tenantName: "kurrent");
                 var window = new MainWindow { DataContext = vm };
                 window.Show();
                 // Control.Loaded is POSTED at DispatcherPriority.Loaded (Avalonia defers it, it
@@ -57,10 +66,13 @@ public class MainWindowSmokeTests {
                 return texts;
             });
 
-            await Assert.That(rendered).Contains("daemon-a");
-            await Assert.That(rendered).Contains("1.2.3");
-            await Assert.That(rendered).Contains("http://localhost:9999");
-            await Assert.That(rendered).Contains("1 of 5 agents");
+            // The rail footer is the one daemon indicator: word + tenant on screen, the identity
+            // block (name/version/URL) demoted to its hover tooltip — rendered text must NOT
+            // carry it.
+            await Assert.That(rendered).Contains("Connected");
+            await Assert.That(rendered).Contains("kurrent");
+            await Assert.That(rendered).DoesNotContain("daemon-a");
+            await Assert.That(rendered).DoesNotContain("http://localhost:9999");
         });
     }
 
@@ -84,7 +96,7 @@ public class MainWindowSmokeTests {
         var (thrown, startEnabledAfter) = await AvaloniaSession.DispatchAsync(() => {
             var service = new FakeDaemonClientService();
             var (actions, _) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None, TestActivity.New());
+            var vm = new MainWindowViewModel(service, CancellationToken.None, TestActivity.New());
             var window = new MainWindow { DataContext = vm };
             window.Show();
             Dispatcher.UIThread.RunJobs();
@@ -139,7 +151,7 @@ public class MainWindowSmokeTests {
 
             var shutdown = new CancellationTokenSource();
             var (actions, _) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), shutdown.Token, TestActivity.New());
+            var vm = new MainWindowViewModel(service, shutdown.Token, TestActivity.New());
             var window = new MainWindow { DataContext = vm };
             window.Show();
             Dispatcher.UIThread.RunJobs();
@@ -181,76 +193,6 @@ public class MainWindowSmokeTests {
         await Assert.That(completed).IsTrue();
     }
 
-    /// Spec §8 empty state: "No agents running" renders only while Connected AND the Agents
-    /// cache is empty. Deliberately NOT wrapped in WithImmediateRxScheduler: no agent is ever
-    /// added to service.Agents here, so the injected FakeTicker is never subscribed either way —
-    /// but the real dispatcher is what MainWindowViewModel's own production ctor is meant to run
-    /// under, so this stays close to that path.
-    [Test]
-    [NotInParallel("AvaloniaSession")]
-    public async Task Empty_agents_grid_shows_no_agents_running_while_connected() {
-        var (rendered, emptyStateVisible) = await AvaloniaSession.DispatchAsync(() => {
-            var service = new FakeDaemonClientService();
-            service.SnapshotsSubject.OnNext(Snap(connection: "connected"));
-            service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, null));
-
-            var (actions, _) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None, TestActivity.New());
-            var window = new MainWindow { DataContext = vm };
-            window.Show();
-            Dispatcher.UIThread.RunJobs();
-
-            var emptyState = window.GetVisualDescendants().OfType<TextBlock>()
-                .FirstOrDefault(t => t.Name == "EmptyStateText");
-            var texts = string.Join('\n', window.GetVisualDescendants().OfType<TextBlock>().Select(t => t.Text ?? ""));
-
-            window.Close();
-            Dispatcher.UIThread.RunJobs();
-
-            return (texts, emptyState is { IsVisible: true });
-        });
-
-        await Assert.That(rendered).Contains("No agents running");
-        await Assert.That(emptyStateVisible).IsTrue();
-    }
-
-    /// Fix-round 2: the column-header row (Kind/Vendor/Repo/...) rendered even with zero agents
-    /// and read as noise above "No agents running". Hidden while the Agents collection is empty,
-    /// visible as soon as a row exists — the "Agents" section title and the empty-state line both
-    /// stay either way (spec §8, Converters.cs HeaderRowVisibleConverter doc comment).
-    [Test]
-    [NotInParallel("AvaloniaSession")]
-    public async Task Agents_grid_header_hidden_when_empty_and_visible_once_a_row_exists() {
-        var (headerVisibleEmpty, headerVisibleWithRow) = await AvaloniaSession.DispatchAsync(() => {
-            var service = new FakeDaemonClientService();
-            service.SnapshotsSubject.OnNext(Snap(connection: "connected"));
-            service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, null));
-
-            var (actions, _) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None, TestActivity.New());
-            var window = new MainWindow { DataContext = vm };
-            window.Show();
-            Dispatcher.UIThread.RunJobs();
-
-            Grid Header() => window.GetVisualDescendants().OfType<Grid>().First(g => g.Name == "AgentsGridHeader");
-
-            var emptyVisible = Header().IsVisible;
-
-            service.Agents.AddOrUpdate(new AgentStatusDto(
-                "a", "agent", "claude", "/repos/kcap-cli", "Running", null, null, null, DateTime.UtcNow, null, null));
-            Dispatcher.UIThread.RunJobs();
-            var withRowVisible = Header().IsVisible;
-
-            window.Close();
-            Dispatcher.UIThread.RunJobs();
-
-            return (emptyVisible, withRowVisible);
-        });
-
-        await Assert.That(headerVisibleEmpty).IsFalse();
-        await Assert.That(headerVisibleWithRow).IsTrue();
-    }
-
     /// StartMessageText/ReasonText must not reserve dead space when there is nothing to say
     /// (spec: "collapse when empty"): both start out empty (Connecting, no failed attempt yet),
     /// then Reason appears on Unreachable and StartMessage appears once a start attempt fails.
@@ -261,7 +203,7 @@ public class MainWindowSmokeTests {
             await AvaloniaSession.DispatchAsync(async () => {
                 var service = new FakeDaemonClientService();
                 var (actions, _) = NewActions(service);
-                var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None, TestActivity.New());
+                var vm = new MainWindowViewModel(service, CancellationToken.None, TestActivity.New());
                 var window = new MainWindow { DataContext = vm };
                 window.Show();
                 Dispatcher.UIThread.RunJobs();
@@ -304,7 +246,7 @@ public class MainWindowSmokeTests {
         var rendered = await AvaloniaSession.DispatchAsync(() => {
             var service = new FakeDaemonClientService();
             var (actions, notifier) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None, TestActivity.New());
+            var vm = new MainWindowViewModel(service, CancellationToken.None, TestActivity.New());
             var window = new MainWindow { DataContext = vm, Notifier = notifier };
             window.Show();
             Dispatcher.UIThread.RunJobs();
@@ -324,57 +266,254 @@ public class MainWindowSmokeTests {
         await Assert.That(rendered).Contains("Couldn't stop agent-a");
     }
 
-    // ---- Activity tab visibility wiring (spec §7) ----
+    // ---- Activity gate (spec §4) ----
     //
-    // Proves the real production wiring end to end — MainWindow.axaml's TabControl selection and
-    // the window's own IsVisible (Show()/Hide()) both drive ActivityViewModel.OnTabVisibleChanged
-    // through the code-behind, not just that the ViewModel reacts correctly in isolation
-    // (ActivityViewModelTests already covers that). Selecting Agents leaves the read count
-    // unchanged; each TRUE transition (select Activity, then re-Show after a Hide) issues exactly
-    // one more immediate read; Hide is a FALSE transition and reads nothing. Each TRUE transition
-    // is awaited via PendingRefreshForTesting — the VM's stat+read now hops off the UI thread,
-    // so RunJobs() alone no longer guarantees the read has landed.
+    // Proves the real production wiring end to end — the Activity flyout's open state, the
+    // launcher pane being on screen (Sessions surface with NO workspace open), and the window's
+    // own IsVisible (Show()/Hide()) all drive ActivityViewModel.OnTabVisibleChanged through the
+    // code-behind, not just that the ViewModel reacts correctly in isolation
+    // (ActivityViewModelTests already covers that). Each gate flips the polling off on its own;
+    // each TRUE transition issues exactly one more immediate read, awaited via
+    // PendingRefreshForTesting — the VM's stat+read hops off the UI thread, so RunJobs() alone no
+    // longer guarantees the read has landed. Swapping the pane under the popup (leaving Sessions,
+    // or opening a workspace) CLOSES the flyout, so coming back does not auto-resume — the feed
+    // reopens by click.
     [Test]
     [NotInParallel("AvaloniaSession")]
-    public async Task Activity_tab_visibility_follows_selection_and_window_IsVisible() {
-        var (afterAgents, afterActivity, afterHide, afterReshow) = await AvaloniaSession.DispatchAsync(async () => {
+    public async Task Activity_polls_only_while_open_on_the_launcher_pane_in_a_visible_window() {
+        var reads = await AvaloniaSession.DispatchAsync(async () => {
             var service = new FakeDaemonClientService();
             var (actions, _) = NewActions(service);
             var reader = new ScriptedReader();
             reader.Set(new ConsentLogReadResult([], true));
             var activity = new ActivityViewModel(reader.Read, () => "k", new FakeTicker());
-            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None, activity);
+            var attach = new FakeTerminalAttachClientFactory();
+            var vm = new MainWindowViewModel(
+                service, CancellationToken.None, activity,
+                workspaceFactory: agentId => new WorkspaceViewModel(
+                    agentId, service, actions, attach.Factory, () => new FakeTerminalSurface(), new FakeTimeProvider(), new RecordingOpener(), new FakePermissionService()));
             var window = new MainWindow { DataContext = vm };
             window.Show();
             Dispatcher.UIThread.RunJobs();
 
-            var readsAgents = reader.ReadCalls; // Agents tab selected by default — no Activity read
+            var button = window.GetVisualDescendants().OfType<Button>().First(b => b.Name == "ActivityButton");
+            var flyout = button.Flyout!;
+            var closed = reader.ReadCalls; // starts closed — no read
 
-            var tabs = window.GetVisualDescendants().OfType<TabControl>().First(t => t.Name == "MainTabs");
-            var activityTab = window.GetVisualDescendants().OfType<TabItem>().First(t => t.Name == "ActivityTabItem");
-            tabs.SelectedItem = activityTab;
+            flyout.ShowAt(button);
             Dispatcher.UIThread.RunJobs();
             await activity.PendingRefreshForTesting!;
-            var readsActivity = reader.ReadCalls;
+            var opened = reader.ReadCalls;
+
+            vm.ShowHomeCommand.Execute().Subscribe(); // off the Sessions surface (hidden Home)
+            Dispatcher.UIThread.RunJobs();
+            var onHome = reader.ReadCalls;
+
+            vm.ShowSessionsCommand.Execute().Subscribe();
+            Dispatcher.UIThread.RunJobs();
+            var backClosed = reader.ReadCalls; // the swap closed the feed — no auto-resume
+
+            flyout.ShowAt(button);
+            Dispatcher.UIThread.RunJobs();
+            await activity.PendingRefreshForTesting!;
+            var reopened = reader.ReadCalls;
+
+            vm.OpenSession("0123456789abcdef0123456789abcdef"); // workspace replaces the launcher
+            Dispatcher.UIThread.RunJobs();
+            var workspaceOpen = reader.ReadCalls;
+
+            vm.CloseWorkspace();
+            Dispatcher.UIThread.RunJobs();
+            var launcherBack = reader.ReadCalls; // closed by the swap — still off
+
+            flyout.ShowAt(button);
+            Dispatcher.UIThread.RunJobs();
+            await activity.PendingRefreshForTesting!;
+            var afterReopen = reader.ReadCalls;
 
             window.Hide();
             Dispatcher.UIThread.RunJobs();
-            var readsHidden = reader.ReadCalls;
+            var afterHide = reader.ReadCalls;
 
+            // Whether the popup survived the window hide is platform detail: Show() alone resumes
+            // a surviving flyout, ShowAt() reopens a closed one, and a repeated true is not a
+            // transition — either way exactly one more read lands.
             window.Show();
             Dispatcher.UIThread.RunJobs();
+            flyout.ShowAt(button);
+            Dispatcher.UIThread.RunJobs();
             await activity.PendingRefreshForTesting!;
-            var readsReshown = reader.ReadCalls;
+            var afterReshow = reader.ReadCalls;
 
             window.Close();
             Dispatcher.UIThread.RunJobs();
 
-            return (readsAgents, readsActivity, readsHidden, readsReshown);
+            return (closed, opened, onHome, backClosed, reopened, workspaceOpen, launcherBack, afterReopen, afterHide, afterReshow);
         });
 
-        await Assert.That(afterAgents).IsEqualTo(0);
-        await Assert.That(afterActivity).IsEqualTo(1); // selecting Activity: one immediate read
-        await Assert.That(afterHide).IsEqualTo(1); // hiding is a FALSE transition — no read
-        await Assert.That(afterReshow).IsEqualTo(2); // re-showing: another TRUE transition
+        await Assert.That(reads.closed).IsEqualTo(0);
+        await Assert.That(reads.opened).IsEqualTo(1); // opening on the launcher: one immediate read
+        await Assert.That(reads.onHome).IsEqualTo(1); // leaving Sessions is a FALSE transition
+        await Assert.That(reads.backClosed).IsEqualTo(1);
+        await Assert.That(reads.reopened).IsEqualTo(2);
+        await Assert.That(reads.workspaceOpen).IsEqualTo(2); // a workspace opening is a FALSE transition
+        await Assert.That(reads.launcherBack).IsEqualTo(2);
+        await Assert.That(reads.afterReopen).IsEqualTo(3);
+        await Assert.That(reads.afterHide).IsEqualTo(3); // hiding is a FALSE transition
+        await Assert.That(reads.afterReshow).IsEqualTo(4);
+    }
+
+    /// The surface swap itself (spec §3) — the XAML side of what WorkspaceNavigationTests pins on
+    /// the ViewModel. WorkspaceView is materialized from a template rather than always present, so
+    /// this also proves the terminal control is CONSTRUCTED only once a workspace exists; closing
+    /// it lands on the Sessions surface's placeholder, never back on Home.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Opening_a_session_swaps_the_launcher_pane_for_the_workspace() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var swap = await AvaloniaSession.DispatchAsync(() => {
+                var service = new FakeDaemonClientService();
+                var (actions, _) = NewActions(service);
+                var attach = new FakeTerminalAttachClientFactory();
+                var vm = new MainWindowViewModel(
+                    service, CancellationToken.None, TestActivity.New(),
+                    workspaceFactory: agentId => new WorkspaceViewModel(
+                        agentId, service, actions, attach.Factory, () => new FakeTerminalSurface(), new FakeTimeProvider(), new RecordingOpener(), new FakePermissionService()));
+                var window = new MainWindow { DataContext = vm };
+                window.Show();
+                Dispatcher.UIThread.RunJobs();
+
+                Control Surface(string name) =>
+                    window.GetVisualDescendants().OfType<Control>().First(c => c.Name == name);
+
+                var bootsOnSessions = Surface("SessionsSurface").IsVisible;
+                var homeHiddenAtBoot = Surface("HomeSurface").IsVisible;
+                var launcherAtBoot = Surface("LauncherPane").IsVisible;
+                var workspacesBefore = window.GetVisualDescendants().OfType<WorkspaceView>().Count();
+
+                vm.OpenSession("0123456789abcdef0123456789abcdef");
+                Dispatcher.UIThread.RunJobs();
+                var launcherGone = Surface("LauncherPane").IsVisible;
+                var opened = window.GetVisualDescendants().OfType<WorkspaceView>().ToList();
+                // Read NOW, not in the return tuple: closing below detaches the view and clears the
+                // very DataContext this is asserting on.
+                var boundToWorkspace = opened.FirstOrDefault()?.DataContext is WorkspaceViewModel;
+
+                vm.CloseWorkspace();
+                Dispatcher.UIThread.RunJobs();
+                var stillSessions = Surface("SessionsSurface").IsVisible;
+                var launcherBack = Surface("LauncherPane").IsVisible;
+                var workspacesAfter = window.GetVisualDescendants().OfType<WorkspaceView>().Count();
+
+                window.Close();
+                Dispatcher.UIThread.RunJobs();
+
+                return (bootsOnSessions, homeHiddenAtBoot, launcherAtBoot, workspacesBefore, launcherGone,
+                    OpenedCount: opened.Count, boundToWorkspace, stillSessions, launcherBack, workspacesAfter);
+            });
+
+            await Assert.That(swap.bootsOnSessions).IsTrue();
+            await Assert.That(swap.homeHiddenAtBoot).IsFalse(); // Home stays in the tree, hidden
+            await Assert.That(swap.launcherAtBoot).IsTrue(); // the empty state IS the launcher
+            await Assert.That(swap.workspacesBefore).IsEqualTo(0); // nothing terminal-shaped until a session is opened
+            await Assert.That(swap.launcherGone).IsFalse();
+            await Assert.That(swap.OpenedCount).IsEqualTo(1);
+            await Assert.That(swap.boundToWorkspace).IsTrue();
+            await Assert.That(swap.stillSessions).IsTrue();
+            await Assert.That(swap.launcherBack).IsTrue();
+            await Assert.That(swap.workspacesAfter).IsEqualTo(0);
+        });
+    }
+
+    /// The rail's own click path (spec §3): a session row rendered by SessionRailView carries the
+    /// VM's OpenCommand, and executing it opens that agent's workspace on the Sessions surface.
+    ///
+    /// Also pins the selection highlight as RENDERED state, not just as a bound class. A row's
+    /// resting Background must come from the `railRow` class style: a local `Background` attribute
+    /// on the Button would be a LocalValue, outrank the `.selected`/`.holdsSelected` style
+    /// triggers, and leave the highlight permanently invisible while still passing any
+    /// class-membership assertion. Comparing the opened row's alpha against its sibling's is what
+    /// fails if a future local value defeats the style again.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Rail_click_opens_the_workspace_and_highlights_the_open_row() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var opened = await AvaloniaSession.DispatchAsync(() => {
+                var service = new FakeDaemonClientService();
+                service.SnapshotsSubject.OnNext(Snap());
+                service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, null));
+                service.Agents.AddOrUpdate(new AgentStatusDto(
+                    "a1", "agent", "claude", "/dev/alpha/wt/feature-x", "Running",
+                    null, null, null, DateTime.UtcNow, null, null, Title: "Fix the flaky test"));
+                service.Agents.AddOrUpdate(new AgentStatusDto(
+                    "a2", "agent", "claude", "/dev/alpha/wt/feature-x", "Running",
+                    null, null, null, DateTime.UtcNow, null, null, Title: "Leave this one alone"));
+
+                var (actions, _) = NewActions(service);
+                MainWindowViewModel? vm = null;
+                var rail = new SessionRailViewModel(service, id => vm!.OpenSession(id),
+                    p => p.Contains("/wt/", StringComparison.Ordinal)
+                        ? p[..p.IndexOf("/wt/", StringComparison.Ordinal)]
+                        : p);
+                vm = new MainWindowViewModel(service, CancellationToken.None, TestActivity.New(),
+                    workspaceFactory: id => NewWorkspace(service, actions, id), rail: rail);
+                var window = new MainWindow { DataContext = vm };
+                window.Show();
+                Dispatcher.UIThread.RunJobs();
+
+                vm.ShowSessionsCommand.Execute().Subscribe();
+                Dispatcher.UIThread.RunJobs();
+
+                Button Row(string text) => window.GetVisualDescendants().OfType<Button>()
+                    .First(b => b.GetVisualDescendants().OfType<TextBlock>().Any(t => t.Text == text));
+                byte Alpha(Button b) => (b.Background as ISolidColorBrush)?.Color.A ?? 0;
+
+                Row("Fix the flaky test").Command!.Execute(null);
+                Dispatcher.UIThread.RunJobs();
+
+                var result = (vm.IsSessionsView, vm.CurrentWorkspace?.AgentId,
+                    SelectedClass: Row("Fix the flaky test").Classes.Contains("selected"),
+                    SelectedAlpha: Alpha(Row("Fix the flaky test")),
+                    SiblingAlpha: Alpha(Row("Leave this one alone")),
+                    // The worktree header row carries the same hazard through holdsSelected.
+                    WorktreeAlpha: Alpha(Row("feature-x")));
+                window.Close();
+                Dispatcher.UIThread.RunJobs();
+                return result;
+            });
+            await Assert.That(opened.Item1).IsTrue();
+            await Assert.That(opened.Item2).IsEqualTo("a1");
+            await Assert.That(opened.SelectedClass).IsTrue();
+            await Assert.That(opened.SelectedAlpha).IsGreaterThan((byte)0); // the highlight actually paints
+            await Assert.That(opened.SiblingAlpha).IsEqualTo((byte)0); // an unopened row stays transparent
+            await Assert.That(opened.WorktreeAlpha).IsGreaterThan((byte)0);
+        });
+    }
+
+    /// The tabless boot (spec §3, revised): the window opens on the Sessions surface — rail plus
+    /// the launcher pane — with no TabControl anywhere in its visual tree; the rail's New session
+    /// row is the deselect-to-launcher affordance.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Window_boots_tabless_on_the_sessions_surface() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var ok = await AvaloniaSession.DispatchAsync(() => {
+                var service = new FakeDaemonClientService();
+                service.SnapshotsSubject.OnNext(Snap());
+                var (actions, _) = NewActions(service);
+                var vm = new MainWindowViewModel(service, CancellationToken.None, TestActivity.New());
+                var window = new MainWindow { DataContext = vm };
+                window.Show();
+                Dispatcher.UIThread.RunJobs();
+
+                var noTabs = !window.GetVisualDescendants().OfType<TabControl>().Any();
+                var railPresent = window.GetVisualDescendants().OfType<SessionRailView>().Any();
+                var newSessionRow = window.GetVisualDescendants().OfType<Button>().Any(b => b.Name == "RailNewSessionButton");
+                window.Close();
+                Dispatcher.UIThread.RunJobs();
+                return noTabs && railPresent && newSessionRow;
+            });
+            await Assert.That(ok).IsTrue();
+        });
     }
 }

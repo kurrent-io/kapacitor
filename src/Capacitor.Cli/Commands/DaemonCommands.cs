@@ -2,15 +2,14 @@ using System.Diagnostics;
 using System.Net.Sockets;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Config;
-using Capacitor.Cli.Core.Harness.Claude;
-using Capacitor.Cli.Core.Harness.Codex;
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Core.LocalIpc;
 using Capacitor.Cli.Services;
 
 namespace Capacitor.Cli.Commands;
 
-public sealed class DaemonCommands(DaemonStore store) {
-    static readonly string LogPath = PathHelpers.ConfigPath("daemon.log");
+public sealed class DaemonCommands(DaemonStore store, ConfigRoot config, ProfileContext profiles, UserHome home) {
+    string LogPath { get; } = config.Path("daemon.log");
 
     public async Task<int> HandleAsync(string[] args) {
         if (args.Length < 2) {
@@ -29,15 +28,15 @@ public sealed class DaemonCommands(DaemonStore store) {
             "status"  => await Status(remaining),
             "logs"    => await Logs(),
             "doctor"  => await DoctorAsync(remaining),
-            "service" => await DaemonServiceCommands.DispatchAsync(store, remaining),
-            "consent" => await DaemonConsentCommand.HandleAsync(store, remaining),
-            "reviewer" => await DaemonReviewerCommand.HandleAsync(store, remaining),
+            "service" => await DaemonServiceCommands.DispatchAsync(store, config, profiles, home, remaining),
+            "shim"    => await DaemonShimCommands.DispatchAsync(remaining),
+            "consent" => await DaemonConsentCommand.HandleAsync(store, profiles, remaining),
+            "reviewer" => await DaemonReviewerCommand.HandleAsync(store, profiles, remaining),
             _         => PrintUsage()
         };
     }
 
-    internal static string ResolveName(string[] args) =>
-        DaemonNameResolver.Resolve(args, AppConfig.ResolvedProfile?.Profile?.Daemon?.Name);
+    string ResolveName(string[] args) => DaemonNameResolver.Resolve(args, profiles.DaemonName);
 
     async Task<int> StartAsync(string[] args) {
         var detached = args.Contains("-d") || args.Contains("--detach");
@@ -113,12 +112,10 @@ public sealed class DaemonCommands(DaemonStore store) {
             CreateNoWindow  = true
         };
 
-        // Pin only what the child could not work out for itself: an env-sourced store already
-        // travels by inheritance, and the default resolves the same on both sides. Writing it
-        // unconditionally would plant the variable in every descendant — agents, vendor CLIs — that
-        // has no business seeing it.
-        if (DaemonStore.FromEnvironment().Directory != store.Directory)
-            psi.Environment[DaemonStore.DaemonsDirEnvVar] = store.Directory;
+        // Written, not left to the child to derive: a derived root is one HOME change away from a
+        // different one, and the sandboxes that do rewrite HOME name their own root anyway.
+        psi.Environment[DaemonStore.DaemonsDirEnvVar] = store.Directory;
+        psi.Environment[ConfigRoot.ConfigDirEnvVar]   = config.Directory;
 
         foreach (var arg in args) {
             psi.ArgumentList.Add(arg);
@@ -204,12 +201,10 @@ public sealed class DaemonCommands(DaemonStore store) {
         psi.ArgumentList.Add("--log-file");
         psi.ArgumentList.Add(LogPath);
 
-        // Pin only what the child could not work out for itself: an env-sourced store already
-        // travels by inheritance, and the default resolves the same on both sides. Writing it
-        // unconditionally would plant the variable in every descendant — agents, vendor CLIs — that
-        // has no business seeing it.
-        if (DaemonStore.FromEnvironment().Directory != store.Directory)
-            psi.Environment[DaemonStore.DaemonsDirEnvVar] = store.Directory;
+        // Written, not left to the child to derive: a derived root is one HOME change away from a
+        // different one, and the sandboxes that do rewrite HOME name their own root anyway.
+        psi.Environment[DaemonStore.DaemonsDirEnvVar] = store.Directory;
+        psi.Environment[ConfigRoot.ConfigDirEnvVar]   = config.Directory;
 
         // we close the daemon's std pipes just below (anti-hang), which
         // means a runtime/native fatal message written straight to fd 2 would be
@@ -656,14 +651,16 @@ public sealed class DaemonCommands(DaemonStore store) {
     async Task<int> DoctorAsync(string[] args) {
         var clean = args.Contains("--clean");
 
+        var paths = HarnessPaths.FromEnvironment(home);
+
         // MCP-registrations audit runs BEFORE the daemon-file early return below — a machine
         // with no daemon state still has registrations worth checking (duplicate Claude-scope
         // entries cost one extra server process per session; a stale absolute binary path
         // breaks the servers outright after an npm re-layout).
         await McpDoctorSection.RunAsync(Console.Out, clean,
-            ClaudePaths.UserConfigJson(), ClaudePaths.UserSettings,
-            McpDoctorSection.DefaultJsonRegistrations(),
-            Path.Combine(CodexPaths.Home(), "config.toml"),
+            paths.Claude.UserConfigJson, paths.Claude.UserSettings,
+            McpDoctorSection.DefaultJsonRegistrations(paths),
+            paths.Codex.ConfigToml,
             Environment.ProcessPath);
         await Console.Out.WriteLineAsync();
 
@@ -851,7 +848,7 @@ public sealed class DaemonCommands(DaemonStore store) {
         return null;
     }
 
-    static async Task<int> Logs() {
+    async Task<int> Logs() {
         if (!File.Exists(LogPath)) {
             await Console.Error.WriteLineAsync("No log file found.");
 
@@ -873,8 +870,8 @@ public sealed class DaemonCommands(DaemonStore store) {
     // ── service evidence for status/doctor (the verbs live in DaemonServiceCommands) ──
 
     /// <summary>Service manager for this OS, or null if the OS is unsupported.</summary>
-    static IServiceManager? TryServiceManager() {
-        try { return ServiceManagerFactory.ForCurrentOs(); }
+    IServiceManager? TryServiceManager() {
+        try { return ServiceManagerFactory.ForCurrentOs(config, home); }
         catch (PlatformNotSupportedException) { return null; }
     }
 
@@ -883,7 +880,7 @@ public sealed class DaemonCommands(DaemonStore store) {
     /// path no longer exists (e.g. a moved npm prefix — fixed by re-running
     /// <c>kcap daemon service install</c>). No-op on unsupported OSes / when none.
     /// </summary>
-    static async Task ReportInstalledServices() {
+    async Task ReportInstalledServices() {
         var manager = TryServiceManager();
         if (manager is null) return;
 
@@ -904,7 +901,7 @@ public sealed class DaemonCommands(DaemonStore store) {
         $"kcap-daemon binary not found next to {AppContext.BaseDirectory}. Reinstall the kcap package.";
 
     static int PrintUsage() {
-        Console.Error.WriteLine("Usage: kcap daemon <start|stop|restart|status|logs|doctor|service|consent>");
+        Console.Error.WriteLine("Usage: kcap daemon <start|stop|restart|status|logs|doctor|service|shim|consent|reviewer>");
         Console.Error.WriteLine();
         Console.Error.WriteLine("  start [-d] [--name <n>]    Start the daemon (foreground, or -d for background)");
         Console.Error.WriteLine("  stop [--name <n>] [--yes]  Stop a running daemon (prompts on multi unless --yes)");
@@ -932,11 +929,11 @@ public sealed class DaemonCommands(DaemonStore store) {
 /// http/https), so the CLI rejects before the transaction destroys anything what the daemon would only
 /// reject at startup.</summary>
 static class ServiceInstallViability {
-    public static async Task<bool> PinnedProfileServerUrlValidAsync(IReadOnlyDictionary<string, string> env) {
+    public static async Task<bool> PinnedProfileServerUrlValidAsync(IReadOnlyDictionary<string, string> env, ConfigRoot root) {
         var envUrl     = env.GetValueOrDefault("KCAP_URL");
         var envProfile = env.GetValueOrDefault("KCAP_PROFILE");
 
-        var config   = await AppConfig.LoadProfileConfig();
+        var config   = await AppConfig.LoadProfileConfig(root);
         var resolver = new ProfileResolver(config, cliServerUrl: null, envUrl, envProfile,
             repoConfig: null, repoRemoteUrls: [], repoPath: null);
         var url = resolver.Resolve().ServerUrl;

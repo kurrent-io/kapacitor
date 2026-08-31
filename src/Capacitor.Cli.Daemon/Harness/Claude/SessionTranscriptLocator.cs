@@ -3,28 +3,21 @@ using System.Text.Json.Nodes;
 namespace Capacitor.Cli.Daemon.Harness.Claude;
 
 /// <summary>
-/// Discovers the session id of a freshly spawned hosted Claude agent by scanning the
-/// Claude Code project directory for the transcript file the agent writes.
+/// Locates the transcript a freshly spawned hosted Claude agent writes — and with it the agent's
+/// session id — by scanning the Claude Code project directory. The daemon reports the id over its
+/// own authenticated connection, so the server's link to the session does not depend on the
+/// agent's session-start hook reaching it.
 ///
-/// Why this exists: the web chat can only attach to a hosted agent once the server's
-/// registry entry has a SessionId, and until now the ONLY source of that link was the
-/// spawned Claude's session-start hook POSTing to <c>/hooks/session-start</c>. When that
-/// hook fails (e.g. an expired kcap token → 401), the link is never made and the agent
-/// page shows "Waiting for session to start..." forever even though the terminal works.
-/// The daemon itself can make the link instead: Claude Code writes its transcript to
-/// <c>{ClaudePaths.Projects}/{project-dir-hash}/{session-id}.jsonl</c>, so polling that
-/// directory and reporting the discovered id over the daemon's own (authenticated)
-/// SignalR connection is a hook-independent fallback.
+/// Disambiguation: the daemon symlinks the worktree's project dir to the SOURCE repo's project
+/// dir (see <c>ClaudeLauncher.SymlinkClaudeProjectDir</c>), which is shared with the user's own
+/// sessions in that repo — so a new <c>.jsonl</c> there is not necessarily this agent's.
+/// Candidates are verified by reading the first lines of the file and requiring the JSON
+/// <c>"cwd"</c> field to equal the agent's worktree path (the worktree is created per-agent, so a
+/// cwd match is definitive).
 ///
-/// Disambiguation: the daemon symlinks the worktree's project dir to the SOURCE repo's
-/// project dir (see <c>ClaudeLauncher.SymlinkClaudeProjectDir</c>), which is shared with
-/// the user's own sessions in that repo — so a new <c>.jsonl</c> there is not necessarily
-/// this agent's. Candidates are verified by reading the first lines of the file and
-/// requiring the JSON <c>"cwd"</c> field to equal the agent's worktree path (the worktree
-/// is created per-agent, so a cwd match is definitive).
-///
-/// The decision logic (cwd matching, filename → session id parsing, timestamp filtering)
-/// is pure and unit-tested without a filesystem; only <see cref="TryLocate"/> touches disk.
+/// The decision logic (cwd matching, filename → session id parsing, timestamp filtering) is pure
+/// and unit-tested without a filesystem; only <see cref="TryLocateWinner"/> — and
+/// <see cref="TryLocate"/> through it — touches disk.
 /// </summary>
 internal static class SessionTranscriptLocator {
     /// <summary>
@@ -43,11 +36,20 @@ internal static class SessionTranscriptLocator {
     static readonly TimeSpan FileTimeSkewTolerance = TimeSpan.FromSeconds(5);
 
     /// <summary>
+    /// The normalized (dashless, lowercase) session id of the transcript
+    /// <see cref="TryLocateWinner"/> picks, or null when no candidate matches yet.
+    /// </summary>
+    public static string? TryLocate(string projectDir, string worktreePath, DateTime spawnedAtUtc, ISet<string>? ruledOut = null) =>
+        TryLocateWinner(projectDir, worktreePath, spawnedAtUtc, ruledOut)?.SessionId;
+
+    /// <summary>
     /// Scans <paramref name="projectDir"/> for a transcript written at/after
     /// <paramref name="spawnedAtUtc"/> whose early lines report <c>cwd</c> equal to
-    /// <paramref name="worktreePath"/>. Returns the normalized (dashless, lowercase)
-    /// session id, or null when no candidate matches yet. Best-effort: unreadable or
-    /// malformed candidates are skipped, never thrown.
+    /// <paramref name="worktreePath"/>, and returns its normalized (dashless, lowercase) session
+    /// id together with its path — link-resolved, because the per-worktree project dir is a
+    /// symlink the launcher deletes at cleanup and a path through it would die with the process
+    /// while the file lives on in the source repo's project dir. Null when no candidate matches
+    /// yet. Best-effort: unreadable or malformed candidates are skipped, never thrown.
     /// </summary>
     /// <param name="ruledOut">
     /// Optional set of file paths already confirmed to belong to another session (or to not be a
@@ -58,7 +60,7 @@ internal static class SessionTranscriptLocator {
     /// Files with no <c>cwd</c> yet (still being written) are left out so the agent's own
     /// freshly-created transcript is always re-checked.
     /// </param>
-    public static string? TryLocate(string projectDir, string worktreePath, DateTime spawnedAtUtc, ISet<string>? ruledOut = null) {
+    internal static (string SessionId, string Path)? TryLocateWinner(string projectDir, string worktreePath, DateTime spawnedAtUtc, ISet<string>? ruledOut = null) {
         if (!Directory.Exists(projectDir)) return null;
 
         foreach (var file in Directory.EnumerateFiles(projectDir, "*.jsonl")) {
@@ -73,7 +75,7 @@ internal static class SessionTranscriptLocator {
                 if (!IsNewEnough(File.GetCreationTimeUtc(file), File.GetLastWriteTimeUtc(file), spawnedAtUtc)) continue;
 
                 switch (MatchTranscript(ReadFirstLines(file), worktreePath, DefaultPathComparison)) {
-                    case CwdMatch.Yes: return sessionId;
+                    case CwdMatch.Yes: return (sessionId, Path.Combine(ResolveDirectory(projectDir), Path.GetFileName(file)));
                     case CwdMatch.No:  ruledOut?.Add(file); break; // another session's transcript — cwd is fixed
                     // CwdMatch.Unknown: no cwd yet (file still being written) — leave uncached, re-check next tick.
                 }
@@ -84,6 +86,15 @@ internal static class SessionTranscriptLocator {
         }
 
         return null;
+    }
+
+    /// <summary>The directory a symlinked project dir points at (final target), or the directory itself.</summary>
+    internal static string ResolveDirectory(string projectDir) {
+        try {
+            return new DirectoryInfo(projectDir).ResolveLinkTarget(returnFinalTarget: true)?.FullName ?? projectDir;
+        } catch (IOException) {
+            return projectDir;
+        }
     }
 
     /// <summary>

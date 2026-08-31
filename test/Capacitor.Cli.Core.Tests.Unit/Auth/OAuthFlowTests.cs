@@ -170,7 +170,7 @@ public class OAuthFlowTests {
             .RespondWith(Response.Create().WithStatusCode(200).WithBody("""{"access_token":"gho_abc"}"""));
 
         var token = await OAuthLoginFlow.RunGitHubBrowserFlowAsync(
-            "Iv1.abc", $"{server.Urls[0]}/code-exchange", FakeBrowser.WithCode("the_code"));
+            "Iv1.abc", $"{server.Urls[0]}/code-exchange", new RecordingBrowser(), FakeBrowser.WithCode("the_code"));
 
         await Assert.That(token).IsEqualTo("gho_abc");
     }
@@ -182,7 +182,7 @@ public class OAuthFlowTests {
             .RespondWith(Response.Create().WithStatusCode(200).WithBody("""{"access_token":"nope"}"""));
 
         var token = await OAuthLoginFlow.RunGitHubBrowserFlowAsync(
-            "Iv1.abc", $"{server.Urls[0]}/code-exchange",
+            "Iv1.abc", $"{server.Urls[0]}/code-exchange", new RecordingBrowser(),
             FakeBrowser.WithRawQuery("?code=the_code&state=attacker"));
 
         await Assert.That(token).IsNull();
@@ -195,8 +195,8 @@ public class OAuthFlowTests {
         var progress = new RecordingAuthProgress();
 
         var token = await OAuthLoginFlow.RunGitHubBrowserFlowAsync(
-            "Iv1.abc", "http://unused.test/code-exchange", FakeBrowser.NonSuccess(BrowserResultType.Timeout),
-            progress: progress);
+            "Iv1.abc", "http://unused.test/code-exchange", new RecordingBrowser(),
+            FakeBrowser.NonSuccess(BrowserResultType.Timeout), progress: progress);
 
         await Assert.That(token).IsNull();
         // The independent timeout keeps its classification and its message.
@@ -211,8 +211,8 @@ public class OAuthFlowTests {
         var       progress = new RecordingAuthProgress();
 
         await Assert.That(async () => await OAuthLoginFlow.RunGitHubBrowserFlowAsync(
-                "Iv1.abc", "http://unused.test/code-exchange", FakeBrowser.CancellingCaller(cts),
-                ct: cts.Token, progress: progress))
+                "Iv1.abc", "http://unused.test/code-exchange", new RecordingBrowser(),
+                FakeBrowser.CancellingCaller(cts), ct: cts.Token, progress: progress))
             .Throws<OperationCanceledException>();
 
         await Assert.That(progress.Errors).IsEmpty();
@@ -304,5 +304,26 @@ public class OAuthFlowTests {
     public async Task ChooseGitHubFlow_returns_browser_when_interactive_and_server_supports_it() {
         var choice = OAuthLoginFlow.ChooseGitHubFlow(forceDevice: false, isHeadless: false, hasExchangeUrl: true);
         await Assert.That(choice).IsEqualTo(GitHubFlow.Browser);
+    }
+
+    // ── the /auth/token error body WriteExchangeError renders from ──
+
+    [Test]
+    public async Task Installation_message_extracted_from_not_installed_error() {
+        var msg = OAuthLoginFlow.TryParseInstallationMessage(
+            """{"error":"The Kurrent Capacitor GitHub App is not installed on your organization."}""");
+
+        await Assert.That(msg).IsEqualTo("The Kurrent Capacitor GitHub App is not installed on your organization.");
+    }
+
+    [Test]
+    public async Task Installation_message_null_for_unrelated_error() {
+        await Assert.That(OAuthLoginFlow.TryParseInstallationMessage("""{"error":"invalid_token"}""")).IsNull();
+    }
+
+    [Test]
+    public async Task Installation_message_null_for_non_json_body() {
+        await Assert.That(OAuthLoginFlow.TryParseInstallationMessage("Unauthorized")).IsNull();
+        await Assert.That(OAuthLoginFlow.TryParseInstallationMessage("")).IsNull();
     }
 }

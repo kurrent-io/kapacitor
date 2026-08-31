@@ -1,0 +1,72 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="clr-namespace:Capacitor.App.ViewModels"
+             xmlns:views="clr-namespace:Capacitor.App.Views"
+             x:Class="Capacitor.App.Views.HomeView"
+             x:DataType="vm:HomeViewModel"
+             Background="{StaticResource KcapCanvasBrush}">
+    <UserControl.Styles>
+        <!-- A session card is a Button purely so the whole card is a click target; every piece of
+             chrome the theme would paint (its own background/border, and the hover and pressed
+             fills it puts on PART_ContentPresenter) is neutralized here, so the card renders exactly
+             as it did before it became clickable. Style setters outrank the control theme's. -->
+        <Style Selector="Button.sessionCard">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="Cursor" Value="Hand" />
+        </Style>
+        <Style Selector="Button.sessionCard /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+        </Style>
+    </UserControl.Styles>
+
+    <ScrollViewer>
+        <StackPanel Margin="28" Spacing="20" MaxWidth="960" HorizontalAlignment="Stretch">
+            <StackPanel Spacing="3">
+                <TextBlock Text="Home" FontSize="22" FontWeight="Bold" Foreground="{StaticResource KcapTextBrush}" />
+                <TextBlock Text="Here's where your work is moving." FontSize="12" Foreground="{StaticResource KcapMutedBrush}" />
+            </StackPanel>
+
+            <!-- The launcher moved to LauncherPaneView (the Sessions surface's empty state);
+                 this hidden surface keeps only the greeting and the cards. -->
+
+            <!-- Active sessions. -->
+            <TextBlock Text="Active sessions" FontSize="16" FontWeight="Bold" Foreground="{StaticResource KcapTextBrush}" />
+
+            <TextBlock x:Name="NoSessionsText" Text="No active sessions" FontSize="12" Foreground="{StaticResource KcapMutedBrush}"
+                       IsVisible="{Binding Sessions.Count, Converter={x:Static views:CountIsZeroConverter.Instance}}" />
+
+            <ItemsControl x:Name="SessionCards" ItemsSource="{Binding Sessions}">
+                <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <WrapPanel ItemSpacing="12" LineSpacing="12" />
+                    </ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate x:DataType="vm:SessionCardViewModel">
+                        <Button Classes="sessionCard" Click="OnSessionCardClick" ToolTip.Tip="Open this session">
+                            <Border Width="260" Background="{StaticResource KcapSurfaceBrush}" BorderBrush="{StaticResource KcapBorderBrush}"
+                                    BorderThickness="1" CornerRadius="10" Padding="14">
+                                <StackPanel Spacing="8">
+                                    <StackPanel Orientation="Horizontal" Spacing="7">
+                                        <Ellipse Width="8" Height="8" Fill="{Binding StatusDot}" VerticalAlignment="Center" />
+                                        <TextBlock Text="{Binding Title}" FontWeight="Bold" Foreground="{StaticResource KcapTextBrush}"
+                                                   TextTrimming="CharacterEllipsis" />
+                                    </StackPanel>
+                                    <TextBlock Text="{Binding RepoFull}" FontSize="11" Foreground="{StaticResource KcapMutedBrush}"
+                                               ToolTip.Tip="{Binding RepoFull}" TextTrimming="CharacterEllipsis" />
+                                    <Grid ColumnDefinitions="*,Auto">
+                                        <TextBlock Text="{Binding StatusText}" FontSize="11" Foreground="{StaticResource KcapPurpleBrush}" />
+                                        <TextBlock Grid.Column="1" Text="{Binding Age}" FontSize="10" Foreground="{StaticResource KcapMutedBrush}" />
+                                    </Grid>
+                                </StackPanel>
+                            </Border>
+                        </Button>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>

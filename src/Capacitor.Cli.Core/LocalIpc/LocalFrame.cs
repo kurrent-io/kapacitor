@@ -35,4 +35,8 @@ public sealed record LocalFrame(FrameType Type) {
     /// Constructs a DaemonStatus frame, whose payload is UTF-8 JSON
     /// (snake_case via StatusIpcJsonContext) carried in Text — see StatusIpc.cs.
     public static LocalFrame StatusJson(FrameType type, string json) => new(type) { Text = json };
+
+    /// Constructs any of the permission control frames, whose payload is UTF-8 JSON
+    /// (snake_case via PermissionIpcJsonContext) carried in Text — see PermissionIpc.cs.
+    public static LocalFrame PermissionJson(FrameType type, string json) => new(type) { Text = json };
 }

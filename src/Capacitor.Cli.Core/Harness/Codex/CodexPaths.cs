@@ -1,18 +1,17 @@
 namespace Capacitor.Cli.Core.Harness.Codex;
 
-public static class CodexPaths {
-    // CODEX_HOME (when set) replaces ~/.codex wholesale — Codex's own
-    // find_codex_home() reads it first. Lazy so test HOME injection re-evaluates.
-    public static string Home(string? home = null, string? codexHome = null) {
-        codexHome ??= Environment.GetEnvironmentVariable("CODEX_HOME");
-        if (!string.IsNullOrWhiteSpace(codexHome)) return codexHome;
+public sealed class CodexPaths {
+    // CODEX_HOME (when set) replaces ~/.codex wholesale — Codex's own find_codex_home() reads it first.
+    public CodexPaths(UserHome home, string? codexHome) =>
+        Home = !string.IsNullOrWhiteSpace(codexHome) ? codexHome : Path.Combine(home.Path, ".codex");
 
-        home ??= PathHelpers.HomeDirectory;
-        return Path.Combine(home, ".codex");
-    }
 
-    public static string Sessions      => Path.Combine(Home(), "sessions");
-    public static string UserHooksJson => Path.Combine(Home(), "hooks.json");
+    public string Home { get; }
+
+    public string Sessions      => Path.Combine(Home, "sessions");
+    public string UserHooksJson => Path.Combine(Home, "hooks.json");
+    public string ConfigToml    => Path.Combine(Home, "config.toml");
+    public string SkillsDir     => Path.Combine(Home, "skills");
 
     /// <summary>
     /// Matches Codex's own <c>[projects."&lt;path&gt;"]</c> key form: absolute, and on Windows
@@ -38,15 +37,14 @@ public static class CodexPaths {
     /// produce a misleading relative cwd if <c>session_meta</c> parsing fails.
     /// Empty makes the decoder return null and callers degrade to "no cwd" cleanly.
     /// </summary>
-    /// <param name="sessionsDir">Override of the <c>~/.codex/sessions</c> root, primarily for tests.</param>
+    /// <param name="sessionsDir">The <c>~/.codex/sessions</c> root to walk.</param>
     /// <param name="since">Inclusive lower bound — files in date directories before this are skipped.</param>
-    public static List<(string SessionId, string FilePath, string EncodedCwd)> Discover(string? sessionsDir = null, DateOnly? since = null) {
-        var root    = sessionsDir ?? Sessions;
+    public static List<(string SessionId, string FilePath, string EncodedCwd)> Discover(string sessionsDir, DateOnly? since = null) {
         var results = new List<(string, string, string)>();
 
-        if (!Directory.Exists(root)) return results;
+        if (!Directory.Exists(sessionsDir)) return results;
 
-        foreach (var year in EnumerateNumericDirs(root, since?.Year)) {
+        foreach (var year in EnumerateNumericDirs(sessionsDir, since?.Year)) {
             foreach (var month in EnumerateNumericDirs(year.Path, MonthBound(since, year.Value))) {
                 foreach (var day in EnumerateNumericDirs(month.Path, DayBound(since, year.Value, month.Value))) {
                     foreach (var jsonl in Directory.GetFiles(day.Path, "rollout-*.jsonl")) {

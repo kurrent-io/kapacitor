@@ -15,6 +15,9 @@ namespace Capacitor.Cli.Tests.Integration;
 /// against a stub server, mirroring <see cref="PiImportSourceImportTests"/>.
 /// </summary>
 public class CursorImportPrTests : IDisposable {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+    [TempHome] public required TempHome Home { get; init; }
+
     readonly WireMockServer _server  = WireMockServer.Start();
     readonly TempDir        _tmp     = new();
     readonly string         _tempDir;
@@ -68,7 +71,7 @@ public class CursorImportPrTests : IDisposable {
         // FetchServerLastLineAsync treats as "no watermark" → classification New.
 
         var detectCalls = 0;
-        var source = new CursorImportSource(
+        var source = new CursorImportSource(Config.Root, 
             WriteTwoCursorSessionsInSameCwd(),
             WorkspaceStorageDir,
             repoDetector: _ => {
@@ -84,7 +87,7 @@ public class CursorImportPrTests : IDisposable {
 
         var classified = await source.ClassifyAsync(
             discovered,
-            new ClassifyContext(client, _server.Url!, MinLines: 0, ExcludedRepos: null, ExcludedPaths: null),
+            new ClassifyContext(client, _server.Url!, MinLines: 0, ExcludedRepos: null, ExcludedPaths: null, Home: Home),
             CancellationToken.None);
         await Assert.That(classified.Count).IsEqualTo(2);
 

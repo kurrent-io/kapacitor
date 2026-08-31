@@ -5,6 +5,7 @@ using Capacitor.Cli.Daemon.Pty;
 using Capacitor.Cli.Daemon.Services;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
+using TUnit.Core.Enums;
 
 namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 
@@ -14,7 +15,11 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 /// directory, socket-file poll, Windows guard) as a style-copy rather than a shared helper, per
 /// that file's own note about not disturbing its structure.
 /// </summary>
+[ExcludeOn(OS.Windows)] // Unix-domain socket path
 public class LocalControlProbeTests {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+    [TempHome] public required TempHome Home { get; init; }
+
     sealed class NoopHostLifetime : IHostApplicationLifetime {
         public CancellationToken ApplicationStarted  => CancellationToken.None;
         public CancellationToken ApplicationStopping => CancellationToken.None;
@@ -39,7 +44,7 @@ public class LocalControlProbeTests {
 
     sealed record Harness(TempDaemonStore Daemons, LocalControlServer Server, AgentOrchestrator Orchestrator, ServerConnection Connection, DaemonConfig Config, string SockPath);
 
-    static async Task<Harness> StartAsync(string daemonName, CancellationToken ct) {
+    async Task<Harness> StartAsync(string daemonName, CancellationToken ct) {
         var daemons     = new TempDaemonStore();
         var stateRoot   = daemons.Store.StateDirectory(daemonName);
         var store       = new LaunchConsentStore(stateRoot, NullLogger.Instance);
@@ -61,14 +66,16 @@ public class LocalControlProbeTests {
         var permissionBridge = new LocalPermissionBridge(connection, NullLogger<LocalPermissionBridge>.Instance);
 
         var orchestrator = new AgentOrchestrator(
-            config, connection, worktreeManager, repoMatcher, new NoopPtyProcessFactory(), new NoopHttpClientFactory(),
+            config, Config.Root, Home, connection, worktreeManager, repoMatcher,
+            new NoopPtyProcessFactory(), new NoopHttpClientFactory(),
             permissionBridge, new Dictionary<string, IHostedAgentLauncher>(),
             new Dictionary<string, IHostedAgentRuntimeFactory>(), new NoopHostLifetime(),
             NullLogger<AgentOrchestrator>.Instance, gate);
 
+        var permissionIpc = new PermissionIpc(new PermissionPromptBroker(), NullLogger<PermissionIpc>.Instance);
         var statusIpc = new DaemonStatusIpc(config, orchestrator, connection, new DaemonStatusNotifier());
         var restart = RestartCoordinator.ForTest(daemons.Store, daemonName, daemonName, new NoopRestartStrategy());
-        var server = new LocalControlServer(config, orchestrator, restart, consentIpc, statusIpc, NullLogger<LocalControlServer>.Instance);
+        var server = new LocalControlServer(config, orchestrator, restart, consentIpc, permissionIpc, statusIpc, NullLogger<LocalControlServer>.Instance);
         await server.StartAsync(ct);
 
         var sockPath = daemons.Store.SocketPath(daemonName);
@@ -89,7 +96,7 @@ public class LocalControlProbeTests {
     /// Wraps a test body with the harness lifecycle, mirroring LocalControlHelloTests's RunAsync.
     /// The harness owns its own daemons directory, so nothing here is shared between tests; each
     /// [Test] still carries its own Windows guard, which must be visible on the test method itself.
-    static async Task RunAsync(string daemonName, Func<Harness, CancellationToken, Task> body) {
+    async Task RunAsync(string daemonName, Func<Harness, CancellationToken, Task> body) {
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
 
         Harness? h = null;
@@ -104,8 +111,6 @@ public class LocalControlProbeTests {
 
     [Test]
     public async Task Probe_returns_hello_and_first_snapshot_with_consistent_identity() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         await RunAsync("probe-a", async (h, ct) => {
             h.Config.InstanceId = "inst-p1";
             var r = await LocalControlProbe.ProbeAsync(h.Daemons.Store, "probe-a", TimeSpan.FromSeconds(5), ct);
@@ -119,8 +124,6 @@ public class LocalControlProbeTests {
 
     [Test]
     public async Task Probe_on_missing_socket_reports_unreachable_without_throwing() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         using var daemons = new TempDaemonStore();
 
         var r = await LocalControlProbe.ProbeAsync(daemons.Store, "no-such-daemon-xyz", TimeSpan.FromMilliseconds(500));
@@ -173,8 +176,6 @@ public class LocalControlProbeTests {
 
     [Test]
     public async Task Probe_treats_a_structurally_degenerate_snapshot_as_a_snapshot_failure_not_a_throw() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         using var daemons = new TempDaemonStore();
         var name = "probe-degenerate";
         var helloJson = JsonSerializer.Serialize(
@@ -215,8 +216,6 @@ public class LocalControlProbeTests {
     /// process.</summary>
     [Test]
     public async Task Hello_without_ids_is_never_consistent_even_with_a_valid_snapshot() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         using var daemons = new TempDaemonStore();
         var name = "probe-noids";
         var helloJson = JsonSerializer.Serialize(

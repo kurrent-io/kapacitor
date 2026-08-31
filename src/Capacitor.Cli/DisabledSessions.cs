@@ -16,19 +16,19 @@ namespace Capacitor.Cli;
 /// re-enliven a session the user just deleted.
 /// </remarks>
 internal static class DisabledSessions {
-    static string GetDisabledDir() => PathHelpers.ConfigPath("disabled");
+    static string GetDisabledDir(ConfigRoot config) => config.Path("disabled");
 
-    internal static bool IsDisabled(string sessionId) =>
-        File.Exists(Path.Combine(GetDisabledDir(), sessionId));
+    internal static bool IsDisabled(string sessionId, ConfigRoot config) =>
+        File.Exists(Path.Combine(GetDisabledDir(config), sessionId));
 
-    internal static void Mark(string sessionId) {
-        var dir = GetDisabledDir();
+    internal static void Mark(string sessionId, ConfigRoot config) {
+        var dir = GetDisabledDir(config);
         Directory.CreateDirectory(dir);
         File.WriteAllText(Path.Combine(dir, sessionId), "");
     }
 
-    internal static void RemoveMarker(string sessionId) {
-        var path = Path.Combine(GetDisabledDir(), sessionId);
+    internal static void RemoveMarker(string sessionId, ConfigRoot config) {
+        var path = Path.Combine(GetDisabledDir(config), sessionId);
 
         try { File.Delete(path); } catch {
             /* ignore */

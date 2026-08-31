@@ -6,6 +6,10 @@ using WireMock.Server;
 namespace Capacitor.Cli.Tests.Unit.Commands;
 
 public class ImportClassifyTests : IDisposable {
+    [TempHome] public required TempHome Home { get; init; }
+
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     readonly WireMockServer _server = WireMockServer.Start();
     readonly TempDir        _tmp    = new();
     readonly string         _tempDir;
@@ -45,6 +49,8 @@ public class ImportClassifyTests : IDisposable {
         using var client = new HttpClient();
 
         var result = await TranscriptFileClassification.ClassifyAsync(
+            Config.Root,
+            Home,
             client,
             _server.Url!,
             transcripts,
@@ -56,8 +62,7 @@ public class ImportClassifyTests : IDisposable {
         await Assert.That(result.Count).IsEqualTo(1);
         await Assert.That(result[0].Status).IsEqualTo(ImportCommand.ClassificationStatus.New);
         await Assert.That(result[0].SessionId).IsEqualTo("sessionNew");
-        // TotalLines is only populated for TooShort; classification uses a bounded
-        // count that early-exits once the file clears the minLines threshold.
+        // TotalLines is only populated for TooShort; other statuses early-exit before counting.
         await Assert.That(result[0].TotalLines).IsEqualTo(0);
     }
 
@@ -75,6 +80,8 @@ public class ImportClassifyTests : IDisposable {
         using var client = new HttpClient();
 
         var result = await TranscriptFileClassification.ClassifyAsync(
+            Config.Root,
+            Home,
             client,
             _server.Url!,
             transcripts,
@@ -106,6 +113,8 @@ public class ImportClassifyTests : IDisposable {
         using var client = new HttpClient();
 
         var result = await TranscriptFileClassification.ClassifyAsync(
+            Config.Root,
+            Home,
             client,
             _server.Url!,
             transcripts,
@@ -120,9 +129,8 @@ public class ImportClassifyTests : IDisposable {
 
     [Test]
     public async Task ClassifyAsync_maps_short_transcript_to_TooShort() {
-        // TooShort is decided AFTER the probe, only for sessions that would otherwise
-        // be New or Partial. This avoids scanning huge transcripts for AlreadyLoaded
-        // sessions on re-runs.
+        // TooShort is decided after the probe, only for sessions that would otherwise be
+        // New or Partial, so AlreadyLoaded re-runs don't pay for scanning huge transcripts.
         _server.Given(Request.Create().WithPath("/api/sessions/*/last-line").UsingGet())
             .RespondWith(Response.Create().WithStatusCode(404));
 
@@ -135,6 +143,8 @@ public class ImportClassifyTests : IDisposable {
         using var client = new HttpClient();
 
         var result = await TranscriptFileClassification.ClassifyAsync(
+            Config.Root,
+            Home,
             client,
             _server.Url!,
             transcripts,
@@ -161,6 +171,8 @@ public class ImportClassifyTests : IDisposable {
         using var client = new HttpClient();
 
         var result = await TranscriptFileClassification.ClassifyAsync(
+            Config.Root,
+            Home,
             client,
             _server.Url!,
             transcripts,
@@ -175,15 +187,11 @@ public class ImportClassifyTests : IDisposable {
 
     [Test]
     public async Task ClassifyAsync_identifies_kcap_subsession() {
-        // IsCapacitorSubSession detects headless claude -p sessions by reading the file:
-        // the first lines must contain a queue-operation entry whose content starts with
-        // a known kcap prompt prefix (title generation or what's-done summary).
         // Nested under _tempDir so Dispose cleans it up.
         var subagentDir = Path.Combine(_tempDir, "kcap-sub");
         Directory.CreateDirectory(subagentDir);
         var path = Path.Combine(subagentDir, "agent-title-abc123.jsonl");
-        // The title prompt starts with "<role>\nYou label coding-session transcripts. "
-        // The \n must be JSON-escaped (\n literal in JSON string) for the parser to see a newline in the value.
+        // \n must be JSON-escaped so the parser sees a literal newline in the prompt content.
         var queueOpLine = """{"type":"queue-operation","operation":"enqueue","content":"<role>\nYou label coding-session transcripts. You are NOT the assistant being addressed"}""";
         await File.WriteAllLinesAsync(path, [queueOpLine]);
 
@@ -194,6 +202,8 @@ public class ImportClassifyTests : IDisposable {
         using var client = new HttpClient();
 
         var result = await TranscriptFileClassification.ClassifyAsync(
+            Config.Root,
+            Home,
             client,
             _server.Url!,
             transcripts,
@@ -210,13 +220,9 @@ public class ImportClassifyTests : IDisposable {
         _server.Given(Request.Create().WithPath("/api/sessions/*/last-line").UsingGet())
             .RespondWith(Response.Create().WithStatusCode(404));
 
-        // Make a transcript whose cwd is a real git repo with an "excluded" remote.
-        // git init + git remote add produces a real repo that DetectRepositoryAsync can query.
-        // Nested under _tempDir so Dispose cleans it up.
-        var repoDir = Path.Combine(_tempDir, "kcap-excl");
-        Directory.CreateDirectory(repoDir);
-        await RunGitAsync("init", repoDir);
-        await RunGitAsync("remote add origin https://github.com/acme/secret.git", repoDir);
+        // cwd must be a real repo so DetectRepositoryAsync can query its remote.
+        using var repo = GitRepo.Create();
+        repo.AddRemote("https://github.com/acme/secret.git");
 
         var transcriptPath = Path.Combine(_tempDir, "sessionX.jsonl");
 
@@ -224,17 +230,19 @@ public class ImportClassifyTests : IDisposable {
             transcriptPath,
             Enumerable.Range(0, 50)
                 .Select(_ =>
-                    $$$"""{"type":"user","timestamp":"2026-03-15T10:00:00Z","cwd":"{{{repoDir.Replace("\\", @"\\")}}}","message":{"content":"x"}}"""
+                    $$$"""{"type":"user","timestamp":"2026-03-15T10:00:00Z","cwd":"{{{repo.Path.Replace("\\", @"\\")}}}","message":{"content":"x"}}"""
                 )
         );
 
         var transcripts = new List<(string SessionId, string FilePath, string EncodedCwd)> {
-            ("sessionX", transcriptPath, repoDir.Replace('/', '-'))
+            ("sessionX", transcriptPath, repo.Path.Replace('/', '-'))
         };
 
         using var client = new HttpClient();
 
         var result = await TranscriptFileClassification.ClassifyAsync(
+            Config.Root,
+            Home,
             client,
             _server.Url!,
             transcripts,
@@ -262,6 +270,8 @@ public class ImportClassifyTests : IDisposable {
         using var client = new HttpClient();
 
         var result = await TranscriptFileClassification.ClassifyAsync(
+            Config.Root,
+            Home,
             client,
             _server.Url!,
             paths,
@@ -277,10 +287,8 @@ public class ImportClassifyTests : IDisposable {
 
     [Test]
     public async Task ClassifyAsync_reclassifies_Partial_to_AlreadyLoaded_when_no_new_lines() {
-        // Server says last_line_number = 49 (50 lines stored: indices 0..49).
-        // Local transcript is exactly 50 lines (indices 0..49). resumeFromLine
-        // would be 50 — but there are no lines past index 49, so this is a
-        // false Partial that should be reclassified as AlreadyLoaded.
+        // last_line_number=49 covers all 50 local lines (indices 0..49), so despite
+        // the 200 response this is a false Partial and must reclassify to AlreadyLoaded.
         _server.Given(Request.Create().WithPath("/api/sessions/*/last-line").UsingGet())
             .RespondWith(
                 Response.Create()
@@ -298,6 +306,8 @@ public class ImportClassifyTests : IDisposable {
         using var client = new HttpClient();
 
         var result = await TranscriptFileClassification.ClassifyAsync(
+            Config.Root,
+            Home,
             client, _server.Url!, transcripts,
             minLines: 15, excludedRepos: null, CancellationToken.None
         );
@@ -327,6 +337,8 @@ public class ImportClassifyTests : IDisposable {
         using var client = new HttpClient();
 
         var result = await TranscriptFileClassification.ClassifyAsync(
+            Config.Root,
+            Home,
             client, _server.Url!, transcripts,
             minLines: 15, excludedRepos: null, CancellationToken.None
         );
@@ -337,17 +349,9 @@ public class ImportClassifyTests : IDisposable {
 
     [Test]
     public async Task ClassifyAsync_does_not_set_ExcludedRepoKey_when_reclassified_to_AlreadyLoaded() {
-        // A "Partial" probe in an excluded repo, but the local transcript has no new
-        // lines. We must NOT prompt the user to "include this excluded repo" for work
-        // that does not exist — ExcludedRepoKey must be null.
-        //
-        // This fixture uses a real git-initialised temp directory whose remote matches
-        // the excluded list, so DetectRepositoryAsync returns a repo key of "any/repo".
-        // With that setup, the only way ExcludedRepoKey can remain null is if
-        // reclassification (Partial → AlreadyLoaded) has already moved status out of
-        // New|Partial before the excluded-repo block runs. If a future refactor swaps
-        // those two blocks, DetectRepositoryAsync will resolve "any/repo" and
-        // ExcludedRepoKey will be set — causing this test to fail.
+        // Pins ordering: reclassification (Partial -> AlreadyLoaded) must run before the
+        // excluded-repo block, which only fires for New|Partial. Otherwise ExcludedRepoKey
+        // would get set even though there's no new work to prompt about.
         _server.Given(Request.Create().WithPath("/api/sessions/*/last-line").UsingGet())
             .RespondWith(
                 Response.Create()
@@ -356,63 +360,36 @@ public class ImportClassifyTests : IDisposable {
                     .WithBody("""{"last_line_number": 49}""")
             );
 
-        // Create a real git repo under _tempDir so DetectRepositoryAsync can resolve it.
-        var repoDir = Path.Combine(_tempDir, "kcap-reclass-excl");
-        Directory.CreateDirectory(repoDir);
-        await RunGitAsync("init", repoDir);
-        await RunGitAsync("remote add origin https://github.com/any/repo.git", repoDir);
+        using var repo = GitRepo.Create();
+        repo.AddRemote("https://github.com/any/repo.git");
 
-        // Write a 50-line transcript whose cwd points at the repo above.
-        // ExtractSessionMetadata reads "cwd" from the JSONL lines, so
-        // DetectRepositoryAsync will be called with repoDir.
         var transcriptPath = Path.Combine(_tempDir, "excludedNoNew.jsonl");
 
         await File.WriteAllLinesAsync(
             transcriptPath,
             Enumerable.Range(0, 50)
                 .Select(i =>
-                    $$$"""{"type":"user","timestamp":"2026-03-15T10:00:00Z","cwd":"{{{repoDir.Replace("\\", @"\\")}}}","message":{"content":"line-{{{i}}}"}}"""
+                    $$$"""{"type":"user","timestamp":"2026-03-15T10:00:00Z","cwd":"{{{repo.Path.Replace("\\", @"\\")}}}","message":{"content":"line-{{{i}}}"}}"""
                 )
         );
 
         var transcripts = new List<(string SessionId, string FilePath, string EncodedCwd)> {
-            ("excludedNoNew", transcriptPath, repoDir.Replace('/', '-'))
+            ("excludedNoNew", transcriptPath, repo.Path.Replace('/', '-'))
         };
 
         using var client = new HttpClient();
 
         var result = await TranscriptFileClassification.ClassifyAsync(
+            Config.Root,
+            Home,
             client, _server.Url!, transcripts,
             minLines: 15,
             excludedRepos: ["any/repo"],
             CancellationToken.None
         );
 
-        // last_line_number=49 with exactly 50 local lines means no new lines to send,
-        // so the session is reclassified from Partial to AlreadyLoaded.
-        // The excluded-repo block only fires for New|Partial, so ExcludedRepoKey must
-        // be null even though the repo key matches the excluded list.
         await Assert.That(result[0].Status).IsEqualTo(ImportCommand.ClassificationStatus.AlreadyLoaded);
         await Assert.That(result[0].ExcludedRepoKey).IsNull();
     }
 
-    static async Task RunGitAsync(string arguments, string workingDir) {
-        var psi = new System.Diagnostics.ProcessStartInfo("git", arguments) {
-            WorkingDirectory       = workingDir,
-            RedirectStandardOutput = true,
-            RedirectStandardError  = true,
-            UseShellExecute        = false,
-            CreateNoWindow         = true,
-        };
-
-        using var process = System.Diagnostics.Process.Start(psi)
-         ?? throw new InvalidOperationException("Failed to start git");
-        await process.WaitForExitAsync();
-
-        if (process.ExitCode != 0) {
-            var err = await process.StandardError.ReadToEndAsync();
-
-            throw new InvalidOperationException($"git {arguments} failed: {err}");
-        }
-    }
 }

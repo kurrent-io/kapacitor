@@ -387,61 +387,58 @@ public class AcpLaunchStageOrchestratorTests {
 
     [Test]
     public async Task Wedged_initialize_reaches_LaunchFailed_through_the_orchestrator_not_a_silent_hang() {
-        var (repoPath, cleanup) = GitRepoHarness.CreateGitRepo();
+        using var repoPath = GitRepo.CreateWithCommit();
 
-        try {
-            var server  = new CaptureServerConnection();
-            var fake    = new FakeAcpAgent();
-            var process = new StageTimeoutFakeAcpProcess();
-            var time    = new FakeTimeProvider();
+        var server  = new CaptureServerConnection();
+        var fake    = new FakeAcpAgent();
+        var process = new StageTimeoutFakeAcpProcess();
+        var time    = new FakeTimeProvider();
 
-            fake.HoldInitializeResponse = new TaskCompletionSource();
+        fake.HoldInitializeResponse = new TaskCompletionSource();
 
-            var cursorFactory = new AcpHostedAgentRuntimeFactory(
-                descriptor: AcpVendorDescriptors.Cursor,
-                config: new DaemonConfig { CursorPath = "cursor-agent" },
-                loggerFactory: NullLoggerFactory.Instance,
-                connection: server,
-                connectionSource: _ => (fake.ClientWriteStream, fake.ClientReadStream, process),
-                timeProvider: time);
+        var cursorFactory = new AcpHostedAgentRuntimeFactory(
+            descriptor: AcpVendorDescriptors.Cursor,
+            config: new DaemonConfig { CursorPath = "cursor-agent" },
+            loggerFactory: NullLoggerFactory.Instance,
+            connection: server,
+            connectionSource: _ => (fake.ClientWriteStream, fake.ClientReadStream, process),
+            timeProvider: time);
 
-            await using var orch = AgentOrchestratorHarness.BuildOrchestrator(
-                server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>(),
-                allowedRepoPath: repoPath, extraRuntimeFactories: [cursorFactory]
-            );
+        await using var orch = AgentOrchestratorHarness.BuildOrchestrator(
+            server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>(),
+            allowedRepoPath: repoPath, extraRuntimeFactories: [cursorFactory]
+        );
 
-            using var fakeCts = new CancellationTokenSource();
-            var fakeRunTask = fake.RunAsync(fakeCts.Token);
+        using var fakeCts = new CancellationTokenSource();
+        var fakeRunTask = fake.RunAsync(fakeCts.Token);
 
-            var cmd = AgentOrchestratorHarness.NewCursorLaunch("agent-orch-wedge", repoPath);
+        var cmd = AgentOrchestratorHarness.NewCursorLaunch("agent-orch-wedge", repoPath);
 
-            // Fired without awaiting: HandleLaunchAgentForTest awaits the whole launch — including the
-            // wedged initialize — to completion, so it must not be awaited until the clock advances.
-            var launchTask = orch.HandleLaunchAgentForTest(cmd);
+        // Fired without awaiting: HandleLaunchAgentForTest awaits the whole launch — including the
+        // wedged initialize — to completion, so it must not be awaited until the clock advances.
+        var launchTask = orch.HandleLaunchAgentForTest(cmd);
 
-            var deadline = DateTime.UtcNow + WaitHarness.AcpHangGuard;
-            while (!fake.ReceivedCalls.Any(c => c.Method == "initialize") && DateTime.UtcNow < deadline)
-                await Task.Delay(5);
+        var deadline = DateTime.UtcNow + WaitHarness.AcpHangGuard;
+        while (!fake.ReceivedCalls.Any(c => c.Method == "initialize") && DateTime.UtcNow < deadline)
+            await Task.Delay(5);
 
-            time.Advance(TimeSpan.FromSeconds(91));
+        time.Advance(TimeSpan.FromSeconds(91));
 
-            await launchTask.WaitAsync(WaitHarness.AcpHangGuard);
+        await launchTask.WaitAsync(WaitHarness.AcpHangGuard);
 
-            await Assert.That(server.LaunchFailedCalls.Count).IsEqualTo(1);
-            await Assert.That(server.LaunchFailedCalls[0].AgentId).IsEqualTo("agent-orch-wedge");
-            await Assert.That(server.LaunchFailedCalls[0].Reason).StartsWith("acp_launch_stage_timeout:initialized");
-            await Assert.That(process.TerminateCalls).IsGreaterThanOrEqualTo(1);
+        await Assert.That(server.LaunchFailedCalls.Count).IsEqualTo(1);
+        await Assert.That(server.LaunchFailedCalls[0].AgentId).IsEqualTo("agent-orch-wedge");
+        await Assert.That(server.LaunchFailedCalls[0].Reason).StartsWith("acp_launch_stage_timeout:initialized");
+        await Assert.That(process.TerminateCalls).IsGreaterThanOrEqualTo(1);
 
-            // Never reached PublishAgent — the defect this task fixes is exactly that a wedged
-            // handshake used to be invisible to every reaper because it never got this far.
-            await Assert.That(orch.GetAgentForTest("agent-orch-wedge")).IsNull();
+        // Never reached PublishAgent — the defect this task fixes is exactly that a wedged
+        // handshake used to be invisible to every reaper because it never got this far.
+        await Assert.That(orch.GetAgentForTest("agent-orch-wedge")).IsNull();
 
-            fakeCts.Cancel();
-            try { await fakeRunTask.WaitAsync(WaitHarness.AcpHangGuard); } catch (OperationCanceledException) { }
-            await fake.DisposeAsync();
-        } finally {
-            cleanup();
-        }
+        fakeCts.Cancel();
+        try { await fakeRunTask.WaitAsync(WaitHarness.AcpHangGuard); } catch (OperationCanceledException) { }
+        await fake.DisposeAsync();
+
     }
 
     /// <summary><see cref="IHostedAgentRuntimeFactory"/> test double that — unlike
@@ -475,43 +472,40 @@ public class AcpLaunchStageOrchestratorTests {
 
     [Test]
     public async Task ClearLaunchStage_runs_once_the_agent_flips_to_Running() {
-        var (repoPath, cleanup) = GitRepoHarness.CreateGitRepo();
+        using var repoPath = GitRepo.CreateWithCommit();
 
-        try {
-            var server        = new CaptureServerConnection();
-            var ptyFactory    = new SpyPtyProcessFactory();
-            var cursorFactory = new StageStampingAcpRuntimeFactory();
+        var server        = new CaptureServerConnection();
+        var ptyFactory    = new SpyPtyProcessFactory();
+        var cursorFactory = new StageStampingAcpRuntimeFactory();
 
-            await using var orch = AgentOrchestratorHarness.BuildOrchestrator(
-                server, ptyFactory, new Dictionary<string, IHostedAgentLauncher>(),
-                allowedRepoPath: repoPath, extraRuntimeFactories: [cursorFactory]
-            );
+        await using var orch = AgentOrchestratorHarness.BuildOrchestrator(
+            server, ptyFactory, new Dictionary<string, IHostedAgentLauncher>(),
+            allowedRepoPath: repoPath, extraRuntimeFactories: [cursorFactory]
+        );
 
-            var cmd = AgentOrchestratorHarness.NewCursorLaunch("agent-clear-stage", repoPath);
+        var cmd = AgentOrchestratorHarness.NewCursorLaunch("agent-clear-stage", repoPath);
 
-            await orch.HandleLaunchAgentForTest(cmd);
+        await orch.HandleLaunchAgentForTest(cmd);
 
-            var agent = orch.GetAgentForTest("agent-clear-stage");
-            await Assert.That(agent).IsNotNull();
-            await Assert.That(agent!.Status).IsEqualTo("Running");
+        var agent = orch.GetAgentForTest("agent-clear-stage");
+        await Assert.That(agent).IsNotNull();
+        await Assert.That(agent!.Status).IsEqualTo("Running");
 
-            // The factory's write really reached a real clock, and read back "model_set" right after
-            // — proving SetLaunchStage genuinely ran (not merely "some clock existed somewhere").
-            await Assert.That(cursorFactory.ObservedClock).IsNotNull();
-            await Assert.That(cursorFactory.StageRightAfterSet).IsEqualTo("model_set");
+        // The factory's write really reached a real clock, and read back "model_set" right after
+        // — proving SetLaunchStage genuinely ran (not merely "some clock existed somewhere").
+        await Assert.That(cursorFactory.ObservedClock).IsNotNull();
+        await Assert.That(cursorFactory.StageRightAfterSet).IsEqualTo("model_set");
 
-            // The SAME instance the factory wrote to is the one the orchestrator owns on AgentInstance
-            // — the Task 13 wiring-order fix (RuntimeStartContext.ActivityClock threaded to the
-            // factory) is what makes this a single shared object, not two independent clocks.
-            await Assert.That(ReferenceEquals(cursorFactory.ObservedClock, agent!.ActivityClock)).IsTrue();
+        // The SAME instance the factory wrote to is the one the orchestrator owns on AgentInstance
+        // — the Task 13 wiring-order fix (RuntimeStartContext.ActivityClock threaded to the
+        // factory) is what makes this a single shared object, not two independent clocks.
+        await Assert.That(ReferenceEquals(cursorFactory.ObservedClock, agent!.ActivityClock)).IsTrue();
 
-            // Only now is "null after Running" a real assertion about ClearLaunchStage, rather than
-            // the vacuous "it was always null" the seq-only check above could not rule out.
-            await Assert.That(agent.ActivityClock.LaunchStage).IsNull();
+        // Only now is "null after Running" a real assertion about ClearLaunchStage, rather than
+        // the vacuous "it was always null" the seq-only check above could not rule out.
+        await Assert.That(agent.ActivityClock.LaunchStage).IsNull();
 
-            await orch.HandleStopAgentForTest("agent-clear-stage");
-        } finally {
-            cleanup();
-        }
+        await orch.HandleStopAgentForTest("agent-clear-stage");
+
     }
 }

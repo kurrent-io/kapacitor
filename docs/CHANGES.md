@@ -7,6 +7,192 @@ Not release notes. Each entry is written as of the change that produced it and i
 code moves on; where an entry disagrees with the code, the code wins.
 
 
+## The import outcome reaches the first-run flow
+
+The flow's `import-outcome` route folded a report into `FirstRunFlowState.ImportOutcome` and had no
+caller, so the Done screen's counts caption was unreachable — and since the outcome is also the signal
+that the run finished, the screen could not tell a working import from a stalled one.
+
+`FinalCounts` already carried the route's three counts, so nothing is re-derived. Two things it did not
+carry: a session the `--private` preflight held back never reaches the upload and so appears in none of
+the three, and folds into `failed` (re-running retries exactly it); and a pass that threw leaves its
+sessions unaccounted, which **three counts cannot express**, so nothing at all is reported for that run.
+Sending the surviving pass's figures would state a clean import over a run that lost one.
+
+**Null is not `(0,0,0)`.** Three zeroes are also a clean run over an already-loaded history, so a refusal
+carries a coded token — `no_readable_agents`, or `decision_unreadable` — and the server rejects a token
+on an outcome that moved something.
+
+**An empty answer has two causes and only one is a decline.** `Choices` is empty both when the user asked
+for nothing and when every level in the decision was unreadable here; `IsDecline` already drew that line,
+and reporting the second as a clean zero would tell the screen "you chose not to" about a user who chose
+otherwise. Relatedly, `HandleImport` had three "found nothing" exits that returned 0 without reaching
+`onFinished`, so a clean run over an out-of-scope selection looked like a lost pass and reported nothing —
+they now report a measured zero, the rule the discovery report in the same file already followed.
+
+The retry is **not** credited against the poll budget, unlike the scan and the import. It runs on every
+tick for as long as the report is refused, so crediting it would let a server that never accepts it
+stretch the flow's own 30-minute backstop into hours.
+
+That second token had no producer, and the branch that should raise it was worse than silent: a decision
+naming a window this build cannot map returned early **without stamping the cursor**, re-evaluating the
+same answer on every tick for the life of the flow. Polling cannot make a newer server's vocabulary
+readable, so it is reported and the cursor moves.
+
+`decided_at` cannot be wrong inside the lane — the answer is built from the view's own stamp, so they are
+one value. The reachable hazard is the retry: the report is held across ticks, and `DeliverOutcomeAsync`
+takes no view, so it cannot re-stamp a held report with whatever is standing.
+
+**Retrying a retryable status is opt-in.** `SendWithRetryAsync` retried transport faults but returned any
+completed response, so one 503 cost a session with no second attempt while an unreachable server got
+thirty seconds of trying — which is what made `failed` too weak to show. It is now retried like a
+transport fault (408, 429, 5xx; `Retry-After` honoured, capped by the remaining budget) but only where the
+call site asks. Every hook, watch, daemon and MCP path shares that helper and their budgets assume one
+attempt; changing it for all of them in service of one caption is not the trade. An exhausted budget
+returns the status rather than throwing — the call sites catch `HttpRequestException` only, so a throw
+would turn a 503 into a crash mid-import.
+
+
+## Secret redaction is structural
+
+`SecretRedactor.RedactLine` walks the line token by token and rewrites one JSON value at a time.
+Scanning the serialized line cannot be made safe: `AuthHeaderRegex`'s value class excludes `"` and
+`\` but not `{`, `}`, `[`, `]`, `,` or `:`, so a header-named key carrying an object or a number had
+the match run past the value and swallow the structure after it. The server drops a line it cannot
+parse without saying so, which is what made the damage invisible.
+
+Decoding first keeps a serialized tool result carried as a string in scope, and lets the key
+vocabularies run against a real JSON property name — which no text pattern can see, the key and the
+value being separate tokens. A secret-bearing key arms every leaf beneath it, so
+`{"auth":["b1","b2"]}` redacts both elements and keeps the array. Numbers are exempt whatever the
+key: the keyword vocabulary matches anywhere in a name, so `token_count` and `input_tokens` — read
+as metrics, and present on nearly every model turn — would otherwise be rewritten. The all-digit
+credential is the deliberate price, and a header value arrives as a string. A name that is itself a
+credential is replaced outright and numbered, since two siblings sharing one marker would collide
+into a duplicate key.
+
+Every token goes straight back out through a `Utf8JsonWriter`, so a mangled document is not
+representable. The reader's depth limit is System.Text.Json's own ceiling, which is also the
+writer's: anything the reader accepts the writer can emit, leaving the whole-line pipeline only
+input no reader would take — where re-checking the result would mean re-parsing what just failed to
+parse. A comment is dropped rather than re-emitted, since strict JSON has none; the drop counts as
+a change on its own, or a line whose values are clean would ride the unchanged path still carrying
+it.
+
+A line whose values all survive is handed back as it arrived rather than as the writer re-encoded
+it, so the common case reaches the wire byte for byte. Once anything is redacted that no longer
+holds: the whole line is the writer's, escaping and spacing normalised.
+
+## The Agents screen's visibility answer reaches the profile
+
+The flow asked who may read future sessions, recorded it on `FirstRunAgentsDecidedEvent`, served it on
+the poll as `default_visibility` — and no CLI read it. The field was absent from the wire models
+entirely, so it was dropped at deserialisation and `kcap setup`'s step 3 prompted unconditionally and
+wrote its own answer over it. The one place in the flow that asked a question and discarded the answer.
+
+It rides the Agents decision, so it is read off the same answer and gated the same way, and it is
+validated against `AppConfig.ValidVisibilities` rather than forwarded: the value lands in profile
+config and is stamped on every session afterwards, so a stop a newer server invented would be written
+to a file this build owns and read back by something that may not mean the same by it. A dropped value
+degrades to null, which leaves the profile as it was — the same outcome as never having asked.
+
+**The two nulls are not the same.** The field is null both when the step is unanswered and when it was
+answered and left unset, and only the first should reach the prompt: the prompt's cursor starts on
+`org_public`, so a Return on a re-run would widen an existing `private` on a question the user had
+already answered. An answered-but-unset screen therefore re-writes what the profile already holds,
+which is the lane's contract for a null answer and a no-op for everything downstream. Whether the step
+settled is what separates them, and `SetupCommand.DecideVisibility` is the one place that decides.
+
+Declining every harness while still choosing an audience is coherent, so `IsDecline` says nothing about
+the visibility. No precedence question against `--default-visibility` arises: that flag is read only
+under `--no-prompt`, where the browser leg never runs.
+
+## `--private` stamps a value
+
+An omitted `default_visibility` is not "no default": the server's generated column reads
+`COALESCE(default_visibility,'org_public') = 'org_public'`, so a session-start that says nothing
+lands as `default:org` — a class two `VisibilitySql` arms admit, one of them provider-independent.
+Six of the nine import sources omitted the field under `--private` and left privacy to the closing
+`SetVisibilityNoneForAll` pass, which meant minutes of org-visibility on a large import and
+permanent exposure for any session whose PUT failed, since those failures are swallowed by design.
+The other three stamped `"private"` in their own payload builder, which is why checking one source
+found it correct.
+
+`ImportContext.VisibilityStampFor(status)` is now the only place that decides the stamp, and the
+chain path resolves the same rule into `chainDefaultVisibility`. The Step-3 default lands on `New`
+alone, while `private` is sent on every status because it costs nothing.
+
+**A stamp only decides visibility at creation.** The read model's import-overlap branch — the one a
+re-import of an already-closed session takes — omits `default_visibility` from its update, so
+re-asserting `private` on a session that already exists is discarded. For anything a run merely
+revisits, the closing `visibility=none` pass is the only mechanism, which is why membership in it is
+now the in-scope classification set rather than whatever the import concluded: `importedSessionIds`
+gains a session only where new work happened, and `privateScopeSessionIds` excludes Copilot, Kiro, Pi
+and OpenCode, so a failed routed replay or a chain resume whose session-end POST failed was
+privatised by nothing. The bound is status — the scope filter runs before classification and an
+excluded source has its status flipped — so `New | Partial | AlreadyLoaded` is the selected-and-
+present set and a too-short session is left alone.
+
+**And it happens before the content, not after.** A closing pass guarantees a revisited session ends
+up owner-only; it does not stop what this run uploads into it being readable meanwhile, which is the
+window the defect is named after. So the in-scope `Partial` and `AlreadyLoaded` sessions are narrowed
+ahead of both import phases — `New` is excluded, having nothing to narrow and no row to name — and the
+closing pass becomes recovery for a session created during the run.
+
+That pass is fail-closed per session: the write logs and swallows its failures, so a session it could
+not narrow is dropped from `chains` and `routed` and counted as a failure, rather than replayed into
+while still carrying the audience the user just excluded.
+
+The 2026-07-20 unified-import spec scoped this expansion out while already arguing that post-hoc
+privatisation is unsafe for a session that fails mid-stream; this is that argument applied to the
+eight other paths.
+
+## The first-run flow's import lane
+
+`kcap setup`'s browser leg now feeds and reads the Import screen. Discovery reports per repository AND
+per window, because "how many sessions will this selection import" is a cell and neither margin of a
+table gives you one; `ImportDiscoverySummary` buckets both from one pass, and windows are keyed off the
+same constant the report travels under, so `--discover`'s own windows and the screen's picker are one
+list.
+
+The vendor filter is applied to the sources scanned rather than to the counts afterwards, which is what
+makes every reported figure already scoped. **Only an explicit refusal drops a vendor:** the server
+normalises an untouched harness out of the decision, so refused and never-offered look identical on the
+wire, but this machine knows what it reported — `FirstRunMachineReport.Detected` is the set the screen
+could offer, and anything outside it was never offered to refuse.
+
+The scan is gated on the Agents step settling, since its answer is the filter. It runs once; the POST
+is retried until the server takes it. The decision then runs two passes, because `--private` is per
+invocation, with the shared one followed by an explicit `visibility=org` write — the profile default
+produces `default:org`, which is admitted only where the repository owner matches the configured org,
+so the default route promises a team can read this and delivers owner-only nearly everywhere.
+
+Polling stops while the import runs, because two live Spectre renderables cannot share a terminal, and
+both lanes add their elapsed time back to the poll budget: that budget catches a terminal nobody is
+sitting at, and a scan or an upload is work. The decision's timestamp is a cursor rather than a flag,
+so widening the window on a second answer runs the wider import while re-confirming runs nothing.
+`FirstRunImportAnswer.NoReadableVendors` covers the one otherwise-silent failure — repositories chosen
+but no vendor this build can read, where running would report success for history that never moved.
+
+Whether a pass succeeded is read off `ImportRunOutcome`, not the exit code: `HandleImport` returns 0
+for a run whose sessions failed, because import is best-effort and the Done grid is where that is
+reported. The outcome carries the run's counts plus lost explicit-visibility writes, since a session
+the user chose an audience for that still carries the old one is a failure of what they asked for.
+
+## Claude SessionEnd hand-off
+
+Claude Code computes the grace it gives SessionEnd hooks from `settings.json` timeouts only; a
+plugin's `hooks.json` timeout is used for matching but never for that computation, so kcap's
+SessionEnd hook gets the 1.5 s floor and is killed — after it has already killed the watcher whose
+parent-exit watchdog would otherwise have ended the session. The hook therefore reads its payload,
+re-invokes itself with `--detached`, pipes the payload to that child and exits, all before the
+server-URL git probes and the global spool drain that `Program.cs` runs ahead of every hook. The
+continuation runs the unchanged session-end path — spool fallback and `ended_at` idempotency
+included — under the 15 s `HookBudget` that used to be the hook's, with its output in the session
+log and its own session so neither Claude's abort nor a closing terminal can reach it. Only
+SessionEnd is handed off: SubagentStop is already `async` in `hooks.json`, and the others honour
+their timeouts.
+
 ## Review flows and reviewer selection
 
 Review flows use a vendor-neutral catalog-start v2 protocol: reserved `spec-review`/`code-review`
@@ -123,6 +309,81 @@ daemon graph, no tray) and hands the outcome channel to the normal graph's consu
 `OutcomeChannel.TransferConsumer` once the sign-in lane cancels/quiesces, closing auto-actions
 permanently past the quiesce cap (decision 2/§6a). The §7 streaming `IProcessRunner` backs the
 Import step's live, bounded-tail log pane.
+
+## Session workspace terminal
+
+**AI-2195** (spec: `docs/superpowers/specs/2026-08-24-ai2195-session-workspace-terminal-design.md`)
+attaches a live terminal to the session workspace. `TerminalTabViewModel` opens every workspace in
+`Resolving` and **never constructs an attach client until the session's first matching
+`AgentStatusDto` arrives**: attaching optimistically would race the has_terminal gate and show a
+spurious "no such agent" flash before a genuinely no-terminal session's note could render. `has_terminal`
+is authoritative when the daemon sends it; `HostedHarnessCatalog`'s vendor-transport map is only the
+fallback for an older daemon that sent null. `AgentAttachClient` linearizes every termination race
+through one atomic cause slot, and **detach intent is recorded, never itself a cause**: a terminal
+frame the pump already read wins even with a detach pending, so a daemon `Exited` racing a client
+`Detach` still resolves `Exited`, not `Detached`; only EOF with detach intent pending settles
+`Detached`. Teardown spends at most its first second on the (best-effort, unacknowledged) `Detach`
+write, then force-closes the socket regardless of whether that write landed — the tmux-style PTY
+dimension clamp is guaranteed to release by roughly that one-second mark on every exit path, not
+contingent on graceful pump completion. `WorkspaceTeardownTracker` seals atomically at the shutdown
+drain (registration and seal cannot race past the final snapshot); a post-seal `Track` is executed
+and observed rather than refused, so a workspace a coordinator builds between the two shutdown passes
+still cannot hold a socket open past the drain. The companion guard lives in `NavigationGate`: its
+first shutdown pass latches (which also bumps the generation), so `OpenSession` — card click or launch
+auto-open alike — rejects from then on in every window, current or later-built.
+The feed into the embedded emulator is rewritten first (`TerminalFeedSanitizer`): XTerm.NET
+dispatches a CSI on its final byte alone, so xterm's modifyOtherKeys set — `CSI > 4 ; 2 m`, which
+Claude Code sends on every return to raw mode — reaches the SGR handler as "underline on, dim on",
+and agent renderers close styles one at a time and never send the full reset that would clear it;
+every private-parameter sequence ending in `m` is dropped. The same handler has no arm for the
+underline-colour selectors 58/59, whose arguments are read as attribute codes, and drops any
+parameter with colon sub-parameters, losing `4:0` and the colon truecolour form.
+`KCAP_APP_PTY_DUMP=<file>` appends every fed frame as received, the only record of what the
+emulator was given.
+
+## Session chat
+
+**AI-2196** (spec: `docs/superpowers/specs/2026-08-26-ai2196-chat-for-pty-harnesses-design.md`)
+renders a Claude or interactive Codex session's own transcript as the workspace's Chat tab and sends
+composer text to the PTY. **The daemon, not the app, knows where the transcript is**: every PTY launch
+runs the same transcript discovery the server-driven path used, and the link-resolved path rides
+`AgentStatusDto.transcript_path` — link-resolved because the per-worktree Claude project dir is a
+symlink the launcher deletes at cleanup. Discovery runs until the *path* is known and pulses the
+status notifier before any server report. Every transcript open shares read/write/delete; the tail
+promises only length-regression reset. **Composer sends are accepted, never acknowledged**, and one
+at a time: bracketed paste, a 150 ms wait past Codex's post-paste Enter suppression, then one CR —
+only if the terminal's opening token is unchanged. The token advances only through `BeginAttempt`
+(after the attach lane is won) and `Invalidate` (detach, teardown, removal, every terminal outcome);
+an attempt's own `Connecting`/`Attached` publishes never advance it, and a stale token discards a
+late `Attached`, so a queued attach callback cannot reopen a terminal the daemon already dropped.
+`TerminalHost` stays laid out under the Chat tab (faded, disabled, reported offscreen) so the PTY
+clamp sees the real pane size; everything else collapses with `IsVisible`. Links open only through
+`LinkPolicy` (absolute http/https) via one tab-level command. **Markdown never emits a `LineBreak`
+inline or a newline inside a `Run`**: Avalonia 12's line breaker never finishes laying one out under a
+height-unconstrained parent (any `StackPanel` or `ScrollViewer`), so a soft break is a space and a
+hard break splits the paragraph into stacked text blocks; the pipeline carries precise source
+locations only so an unmapped inline can degrade to its own source text rather than a type name.
+
+## Permission prompts in the desktop app
+
+**AI-2308** (spec: `docs/superpowers/specs/2026-08-28-ai2308-permission-prompts-daemon-bridge-design.md`)
+surfaces a PTY-hosted Claude/Codex session's permission prompt as a card on the Chat tab, with the
+rail pip and tray Attention derived from the same cache. The local control socket gains the
+append-only frames `PermissionSubscribe = 20` / `PermissionResolve = 21` and `PermissionPending = 77` /
+`PermissionResolved = 78` / `PermissionAck = 79`, advertised as `permission/1`. **The daemon's
+`PermissionPromptBroker` is the one claim point**: the app's resolve, the server's push, an agent's
+withdrawal, the no-UI deny and the shutdown claim all settle a request through `TrySettle`, and the
+hook's answer, the ack, the log record and the `Resolved` push all derive from the claimed
+settlement — so `Ok=true` is the decision the hook receives. The bridge registers the request
+locally BEFORE the server leg dials; the leg feeds the server's decision into the same claim, and a
+local win is relayed through the hub's own `RespondToPermission` so the web card clears. A settled
+request's server invoke is kept off the wire by a predicate the invoke lambda reads synchronously
+(`PermissionRequestAbandonedException`, deliberately not one of the exception types
+`ConnectionRetry` retries). The bridge drains admitted handlers before closing its listener; the
+tracked wrapper is scheduled with no cancellation token, because a delegate cancelled before it
+starts never runs its `finally`. Every caller-controlled wire string is bounded (`PermissionWire`),
+ids are canonicalized by GUID parse, and a request kept for a subscriber that then leaves has no
+clock — it lives until the agent exits, the same stale card a TUI answer leaves.
 
 ## Launch and stop command routing
 

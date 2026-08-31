@@ -8,7 +8,6 @@ namespace Capacitor.Cli.Tests.Unit.Services;
 /// a malformed or unreadable on-disk unit escape the start gate as an uncoded failure — end to end
 /// through the REAL manager, complementing <see cref="ServiceVerifyStartTests"/>'s stubbed-seam
 /// coverage of the same contract.</summary>
-[NotInParallel(["HomeEnvVarMutation"])]
 public class ServiceVerifyStartGateProductionPathTests {
     const string Id = "prodpath";
 
@@ -38,6 +37,8 @@ public class ServiceVerifyStartGateProductionPathTests {
         readonly ProdPathFixture _core = new(Id);
 
         public DaemonStore Store => _core.Store;
+        public ConfigRoot Config => _core.Config;
+        public UserHome Home => _core.Home;
         public string PlistPath => _core.PlistPath;
         public LaunchdServiceManager Manager => _core.Manager;
 
@@ -45,7 +46,7 @@ public class ServiceVerifyStartGateProductionPathTests {
             Task.FromResult(new HelloProbeResult(true, 1, "1.2.3", "kcap-daemon"));
 
         public async Task<(int Exit, string[] StdErrLines)> RunStartVerifiedAsync() {
-            var sut = new ServiceVerify(Store, Manager, _ => 4242, Hello, TimeProvider.System,
+            var sut = new ServiceVerify(Store, Config, Manager, _ => 4242, Hello, TimeProvider.System,
                 gateEnv: k => k == "KCAP_CONSENT_SEED_DEFAULT" ? "prompt" : null);
 
             using var capture = ConsoleOutput.StartErrorCapture();
@@ -64,7 +65,7 @@ public class ServiceVerifyStartGateProductionPathTests {
         Skip.When(OperatingSystem.IsWindows(), "launchd/HOME-based plist resolution is POSIX-only");
 
         using var fx = new Fixture();
-        Directory.CreateDirectory(LaunchdUnit.AgentsDir());
+        Directory.CreateDirectory(LaunchdUnit.AgentsDir(fx.Home));
         File.WriteAllText(fx.PlistPath, DuplicateKeyPlist);
 
         // The `service status --json` style call: Query must NOT throw on this exact malformed
@@ -88,7 +89,7 @@ public class ServiceVerifyStartGateProductionPathTests {
         Skip.When(OperatingSystem.IsWindows(), "launchd/HOME-based plist resolution and Unix file modes are POSIX-only");
 
         using var fx = new Fixture();
-        Directory.CreateDirectory(LaunchdUnit.AgentsDir());
+        Directory.CreateDirectory(LaunchdUnit.AgentsDir(fx.Home));
         File.WriteAllText(fx.PlistPath, DuplicateKeyPlist); // content is irrelevant — the read never succeeds
         File.SetUnixFileMode(fx.PlistPath, UnixFileMode.None);
 
@@ -116,7 +117,7 @@ public class ServiceVerifyStartGateProductionPathTests {
         Skip.When(OperatingSystem.IsWindows(), "launchd/HOME-based plist resolution is POSIX-only");
 
         using var fx = new Fixture();
-        Directory.CreateDirectory(LaunchdUnit.AgentsDir());
+        Directory.CreateDirectory(LaunchdUnit.AgentsDir(fx.Home));
         Directory.CreateDirectory(fx.PlistPath); // a DIRECTORY sits at the plist path, not a file
 
         // The unit-level presence signal Query reports must stay true even though
@@ -139,8 +140,8 @@ public class ServiceVerifyStartGateProductionPathTests {
         Skip.When(OperatingSystem.IsWindows(), "launchd/HOME-based plist resolution is POSIX-only");
 
         using var fx = new Fixture();
-        Directory.CreateDirectory(LaunchdUnit.AgentsDir());
-        File.CreateSymbolicLink(fx.PlistPath, Path.Combine(LaunchdUnit.AgentsDir(), "never-created-target"));
+        Directory.CreateDirectory(LaunchdUnit.AgentsDir(fx.Home));
+        File.CreateSymbolicLink(fx.PlistPath, Path.Combine(LaunchdUnit.AgentsDir(fx.Home), "never-created-target"));
 
         var (exit, lines) = await fx.RunStartVerifiedAsync();
 
@@ -157,7 +158,7 @@ public class ServiceVerifyStartGateProductionPathTests {
         Skip.When(OperatingSystem.IsWindows(), "launchd/HOME-based plist resolution is POSIX-only");
 
         using var fx = new Fixture();
-        var home = PathHelpers.HomeDirectory;
+        var home = fx.Home.Path;
         var library = Path.Combine(home, "Library");
         File.CreateSymbolicLink(library, Path.Combine(home, "never-created-target"));
 

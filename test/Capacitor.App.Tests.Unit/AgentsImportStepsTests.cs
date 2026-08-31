@@ -6,26 +6,23 @@ using Avalonia.VisualTree;
 using Capacitor.App.Services;
 using Capacitor.App.ViewModels.Onboarding;
 using Capacitor.App.Views.Onboarding;
-using Capacitor.Cli.Core.Setup;
+using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Harness;
 using TUnit.Assertions.Enums;
 
 namespace Capacitor.App.Tests.Unit;
 
 /// Shared vendor-detection fixture builder for the Agents/Import step tests below.
 static class VendorDetection {
-    public static AgentDetectionResult Build(params string[] detected) {
-        DetectedAgent Agent(string label) => new(detected.Contains(label), false);
-
-        return new(
-            Claude: Agent("claude"), Codex: Agent("codex"), Cursor: Agent("cursor"), Copilot: Agent("copilot"),
-            Gemini: Agent("gemini"), Kiro: Agent("kiro"), Pi: Agent("pi"), OpenCode: Agent("opencode"),
-            Antigravity: Agent("antigravity"), Dsh: Agent("dsh"));
-    }
+    public static IReadOnlySet<HarnessId> Build(params string[] detectedVendorIds) =>
+        detectedVendorIds.Select(v => HarnessId.From(v)!.Value).ToHashSet();
 }
 
-/// spec §8/decision 8: the app's detection feed overrides the process PATH with the login-shell
-/// terminal PATH when the probe resolves one. Pure static helper — no AvaloniaSession needed.
+/// The app's detection feed overrides the process PATH with the login-shell terminal PATH when the
+/// probe resolves one. Pure static helper — no AvaloniaSession needed.
 public class AgentDetectionFeedTests {
+    [TempHome] public required TempHome Home { get; init; }
+
     [Test]
     [UnsupportedOSPlatform("windows")]
     public async Task Uses_the_probed_terminal_PATH_not_the_process_PATH() {
@@ -41,36 +38,37 @@ public class AgentDetectionFeedTests {
         // Same probe, two different crafted PATHs: the outcome must track the probe, not
         // whatever the real process PATH happens to contain on this machine.
         var probe = new FakeLoginShellProbe { TerminalPathBehavior = _ => Task.FromResult<string?>(emptyDir) };
-        var withoutClaude = await AgentsStepViewModel.BuildDetectionFeed(probe)(CancellationToken.None);
+        var withoutClaude = await AgentsStepViewModel.BuildDetectionFeed(probe, Home)(CancellationToken.None);
 
         probe.TerminalPathBehavior = _ => Task.FromResult<string?>(claudeDir);
-        var withClaude = await AgentsStepViewModel.BuildDetectionFeed(probe)(CancellationToken.None);
+        var withClaude = await AgentsStepViewModel.BuildDetectionFeed(probe, Home)(CancellationToken.None);
 
-        await Assert.That(withoutClaude.Claude.Detected).IsFalse();
-        await Assert.That(withClaude.Claude.Detected).IsTrue();
+        await Assert.That(withoutClaude.Contains(HarnessId.Claude)).IsFalse();
+        await Assert.That(withClaude.Contains(HarnessId.Claude)).IsTrue();
     }
 
     [Test]
     public async Task Falls_back_to_the_process_PATH_when_the_probe_is_inconclusive() {
         var probe = new FakeLoginShellProbe { TerminalPathBehavior = _ => Task.FromResult<string?>(null) };
 
-        var actual   = await AgentsStepViewModel.BuildDetectionFeed(probe)(CancellationToken.None);
-        var expected = AgentDetection.Detect(AgentDetection.FromEnvironment());
+        var actual    = await AgentsStepViewModel.BuildDetectionFeed(probe, Home)(CancellationToken.None);
+        var harnesses = HarnessRegistry.FromEnvironment(Home);
+        var expected  = harnesses.Where(h => harnesses.Detected(h.Id)).Select(h => h.Id);
 
-        await Assert.That(actual).IsEqualTo(expected);
+        await Assert.That(actual).IsEquivalentTo(expected);
     }
 }
 
-/// spec §3 step 5 / decision 8. Owns ReactiveCommands (per-row Retry + Install), so every test
-/// runs through the real headless session like ShimStepViewModel/SignInStepViewModel.
+/// Owns ReactiveCommands (per-row Retry + Install), so every test runs through the real headless
+/// session like ShimStepViewModel/SignInStepViewModel.
 public class AgentsStepViewModelTests {
     sealed class Harness {
         public readonly FakeKcapCli Cli = new();
-        public readonly AgentDetectionResult Detected;
+        public readonly IReadOnlySet<HarnessId> Detected;
         public int DetectCallCount;
         public readonly AgentsStepViewModel Vm;
 
-        public Harness(AgentDetectionResult? detected = null) {
+        public Harness(IReadOnlySet<HarnessId>? detected = null) {
             Detected = detected ?? VendorDetection.Build();
             Vm = new AgentsStepViewModel(Cli, ct => {
                 DetectCallCount++;
@@ -260,15 +258,14 @@ public class AgentsStepViewModelTests {
     }
 }
 
-/// spec §3 step 6 / decision 6. Owns ReactiveCommands too, so also runs through the real headless
-/// session.
+/// Owns ReactiveCommands too, so also runs through the real headless session.
 public class ImportStepViewModelTests {
     sealed class Harness {
         public readonly FakeKcapCli Cli = new();
-        public readonly AgentDetectionResult Detected;
+        public readonly IReadOnlySet<HarnessId> Detected;
         public readonly ImportStepViewModel Vm;
 
-        public Harness(AgentDetectionResult? detected = null) {
+        public Harness(IReadOnlySet<HarnessId>? detected = null) {
             Detected = detected ?? VendorDetection.Build();
             Vm = new ImportStepViewModel(Cli, ct => Task.FromResult(Detected), action => action());
         }
@@ -615,7 +612,7 @@ public class AgentsImportTemplateTests {
     public async Task The_window_selects_a_template_for_Agents_and_Import_steps() {
         var result = await AvaloniaSession.DispatchAsync(async () => {
             var cli    = new FakeKcapCli();
-            var detect = new Func<CancellationToken, Task<AgentDetectionResult>>(_ => Task.FromResult(VendorDetection.Build("claude")));
+            var detect = new Func<CancellationToken, Task<IReadOnlySet<HarnessId>>>(_ => Task.FromResult(VendorDetection.Build("claude")));
 
             var agents = new AgentsStepViewModel(cli, detect);
             var import = new ImportStepViewModel(cli, detect, action => action());

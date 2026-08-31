@@ -26,7 +26,7 @@ namespace Capacitor.Cli.Commands;
 /// is the remedy for — see the per-vendor exception on <see cref="ReviewerVersionStore"/>.</para>
 /// </summary>
 public static class DaemonReviewerCommand {
-    public static Task<int> HandleAsync(DaemonStore daemonStore, string[] args) {
+    public static Task<int> HandleAsync(DaemonStore daemonStore, ProfileContext profiles, string[] args) {
         if (args.Length == 0 || args[0] != "affirm")
             return Task.FromResult(Usage());
 
@@ -42,7 +42,7 @@ public static class DaemonReviewerCommand {
             return Task.FromResult(1);
         }
 
-        var name     = DaemonNameResolver.Resolve(args, AppConfig.ResolvedProfile?.Profile?.Daemon?.Name);
+        var name     = DaemonNameResolver.Resolve(args, profiles.DaemonName);
         // DaemonConfig.StateDir has no profile or env binding, so the default root is the only one
         // a running daemon can be using.
         var stateDir = daemonStore.StateDirectory(name);

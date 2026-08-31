@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Capacitor.Cli.Core;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -16,11 +17,15 @@ internal sealed partial class SessionStartMemoryLeaseStore {
     readonly TimeProvider _time;
     readonly Action<string>? _diagnostic;
 
-    public SessionStartMemoryLeaseStore(string? root = null, TimeProvider? time = null, Action<string>? diagnostic = null) {
-        _root = SessionStartMemoryStorePaths.ValidateRoot(root ?? SessionStartMemoryStorePaths.DefaultRoot);
+    /// <summary>The store at this config dir's default root — what every hook adapter builds.</summary>
+    public static SessionStartMemoryLeaseStore Create(ConfigRoot config, TimeProvider time) =>
+        new(SessionStartMemoryStorePaths.DefaultRoot(config), time);
+
+    public SessionStartMemoryLeaseStore(string root, TimeProvider time, Action<string>? diagnostic = null) {
+        _root = SessionStartMemoryStorePaths.ValidateRoot(root);
         _lockPath = Path.Combine(_root, "store.lock");
         _metadataPath = Path.Combine(_root, MetadataName);
-        _time = time ?? TimeProvider.System;
+        _time = time;
         _diagnostic = diagnostic;
     }
 

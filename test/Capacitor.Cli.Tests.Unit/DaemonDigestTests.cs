@@ -26,6 +26,8 @@ public class DaemonDigestTests {
     [Test]
     public async Task Matches_returns_false_for_a_nonexistent_file_even_when_usable() {
         if (!DaemonDigest.IsUsable) return; // only meaningful when a real digest is embedded
-        await Assert.That(DaemonDigest.Matches(Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N")))).IsFalse();
+        using var tmp = TempDir.WithPathTo("digest", out var missing);
+
+        await Assert.That(DaemonDigest.Matches(missing)).IsFalse();
     }
 }

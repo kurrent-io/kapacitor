@@ -1,4 +1,5 @@
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.Core.Harness;
 
 namespace Capacitor.Cli.Tests.Unit.Commands;
 
@@ -15,7 +16,7 @@ public class VendorSelectionTests {
         var r = VendorSelection.Parse(["--claude"]);
         await Assert.That(r.HasError).IsFalse();
         await Assert.That(r.Vendors.Count).IsEqualTo(1);
-        await Assert.That(r.Vendors.Contains("claude")).IsTrue();
+        await Assert.That(r.Vendors.Contains(HarnessId.Claude)).IsTrue();
     }
 
     [Test]
@@ -23,7 +24,7 @@ public class VendorSelectionTests {
         var r = VendorSelection.Parse(["--codex"]);
         await Assert.That(r.HasError).IsFalse();
         await Assert.That(r.Vendors.Count).IsEqualTo(1);
-        await Assert.That(r.Vendors.Contains("codex")).IsTrue();
+        await Assert.That(r.Vendors.Contains(HarnessId.Codex)).IsTrue();
     }
 
     [Test]
@@ -31,7 +32,7 @@ public class VendorSelectionTests {
         var r = VendorSelection.Parse(["--cursor"]);
         await Assert.That(r.HasError).IsFalse();
         await Assert.That(r.Vendors.Count).IsEqualTo(1);
-        await Assert.That(r.Vendors.Contains("cursor")).IsTrue();
+        await Assert.That(r.Vendors.Contains(HarnessId.Cursor)).IsTrue();
     }
 
     [Test]
@@ -39,7 +40,7 @@ public class VendorSelectionTests {
         var r = VendorSelection.Parse(["--kiro"]);
         await Assert.That(r.HasError).IsFalse();
         await Assert.That(r.Vendors.Count).IsEqualTo(1);
-        await Assert.That(r.Vendors.Contains("kiro")).IsTrue();
+        await Assert.That(r.Vendors.Contains(HarnessId.Kiro)).IsTrue();
     }
 
     [Test]
@@ -47,8 +48,8 @@ public class VendorSelectionTests {
         var r = VendorSelection.Parse(["--claude", "--codex"]);
         await Assert.That(r.HasError).IsFalse();
         await Assert.That(r.Vendors.Count).IsEqualTo(2);
-        await Assert.That(r.Vendors.Contains("claude")).IsTrue();
-        await Assert.That(r.Vendors.Contains("codex")).IsTrue();
+        await Assert.That(r.Vendors.Contains(HarnessId.Claude)).IsTrue();
+        await Assert.That(r.Vendors.Contains(HarnessId.Codex)).IsTrue();
     }
 
     [Test]
@@ -56,14 +57,14 @@ public class VendorSelectionTests {
         var r = VendorSelection.Parse(["--pi"]);
         await Assert.That(r.HasError).IsFalse();
         await Assert.That(r.Vendors.Count).IsEqualTo(1);
-        await Assert.That(r.Vendors.Contains("pi")).IsTrue();
+        await Assert.That(r.Vendors.Contains(HarnessId.Pi)).IsTrue();
     }
 
     [Test]
     public async Task parses_opencode_flag() {
         var r = VendorSelection.Parse(new[] { "import", "--opencode" });
         await Assert.That(r.HasError).IsFalse();
-        await Assert.That(r.Vendors).Contains("opencode");
+        await Assert.That(r.Vendors).Contains(HarnessId.OpenCode);
     }
 
     [Test]
@@ -76,7 +77,7 @@ public class VendorSelectionTests {
     public async Task parses_dsh_flag() {
         var r = VendorSelection.Parse(new[] { "import", "--dsh" });
         await Assert.That(r.HasError).IsFalse();
-        await Assert.That(r.Vendors).Contains("dsh");
+        await Assert.That(r.Vendors).Contains(HarnessId.Dsh);
     }
 
     [Test]

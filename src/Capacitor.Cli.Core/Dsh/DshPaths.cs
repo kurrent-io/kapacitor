@@ -16,7 +16,7 @@ public static class DshPaths {
         var dshHome = Environment.GetEnvironmentVariable("DSH_HOME");
         if (!string.IsNullOrEmpty(dshHome)) return dshHome;
 
-        home ??= PathHelpers.HomeDirectory;
+        home ??= UserHome.FromEnvironment().Path;
         return Path.Combine(home, ".dsh");
     }
 
@@ -24,7 +24,7 @@ public static class DshPaths {
     /// <c>~/.cache/kcap/dsh</c> (flat <c>{id}.jsonl</c>). Matches the plugin's path verbatim
     /// (<c>homedir()/.cache/kcap/dsh</c>, independent of <c>$DSH_HOME</c>).</summary>
     public static string SessionsDir(string? home = null) {
-        home ??= PathHelpers.HomeDirectory;
+        home ??= UserHome.FromEnvironment().Path;
         return Path.Combine(home, ".cache", "kcap", "dsh");
     }
 
@@ -60,7 +60,7 @@ public static class DshPaths {
     // of the real $DSH_HOME. Mirror the other vendors' *Pure helpers.
 
     public static string DshHomePure(string? home, string? dshHome) =>
-        !string.IsNullOrEmpty(dshHome) ? dshHome : Path.Combine(home ?? PathHelpers.HomeDirectory, ".dsh");
+        !string.IsNullOrEmpty(dshHome) ? dshHome : Path.Combine(home ?? UserHome.FromEnvironment().Path, ".dsh");
 
     public static string KcapPluginPure(string? home, string? dshHome) =>
         Path.Combine(DshHomePure(home, dshHome), "kcap-dsh.plugin.mjs");

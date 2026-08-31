@@ -7,7 +7,9 @@ using Avalonia.VisualTree;
 using Capacitor.App.Services;
 using Capacitor.App.ViewModels.Onboarding;
 using Capacitor.App.Views.Onboarding;
+using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Config;
+using Capacitor.Cli.Core.Setup;
 using TUnit.Assertions.Enums;
 
 namespace Capacitor.App.Tests.Unit;
@@ -17,6 +19,8 @@ namespace Capacitor.App.Tests.Unit;
 /// headless session like SignInStepViewModel; Defaults and Done own no commands and run directly,
 /// like ConnectStepViewModel.
 public class WizardSimpleStepsTests {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     // ── Shim: pure applicability decision ───────────────────────────────────
 
     [Test]
@@ -226,7 +230,7 @@ public class WizardSimpleStepsTests {
     public async Task The_window_selects_a_template_for_each_simple_step() {
         var result = await AvaloniaSession.DispatchAsync(async () => {
             using var h = new ShimHarness();
-            var defaults = new DefaultsStepViewModel();
+            var defaults = new DefaultsStepViewModel(Config.Root);
             var done = new DoneStepViewModel(() => [("Command-line tool", false, "kcap CLI not found")]);
             var vm = new OnboardingViewModel([h.Vm, defaults, done]);
             await vm.PendingEnterForTesting;
@@ -299,22 +303,15 @@ public class WizardSimpleStepsTests {
     }
 }
 
-/// spec §3 step 4 / decision 5. Real ConfigMutator against the assembly's shared config path
-/// (OnboardingGateGlobalSetup) — [NotInParallel(nameof(OnboardingGateTests))] serializes against
-/// every other test class touching that one real config.json.
-[NotInParallel(nameof(OnboardingGateTests))]
+/// Real ConfigMutator against the config path.
 public class DefaultsStepViewModelTests {
-    static string ConfigPath => AppConfig.GetConfigPath();
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
 
-    [Before(Test)]
-    public void Cleanup() {
-        if (File.Exists(ConfigPath)) File.Delete(ConfigPath);
-        AppConfig.ResetResolvedStateForTesting();
-    }
+    string ConfigPath => AppConfig.GetConfigPath(Config.Root);
 
     [Test]
     public async Task Defaults_are_org_public_and_the_lowercased_username() {
-        var vm = new DefaultsStepViewModel();
+        var vm = new DefaultsStepViewModel(Config.Root);
 
         await Assert.That(vm.Visibility).IsEqualTo("org_public");
         await Assert.That(vm.DaemonName).IsEqualTo(Environment.UserName.ToLowerInvariant());
@@ -353,7 +350,7 @@ public class DefaultsStepViewModelTests {
         };
         File.WriteAllText(ConfigPath, JsonSerializer.Serialize(existing, ProfileConfigJsonContext.Default.ProfileConfig));
 
-        var vm = new DefaultsStepViewModel { Visibility = "public", DaemonName = "acme-daemon" };
+        var vm = new DefaultsStepViewModel(Config.Root) { Visibility = "public", DaemonName = "acme-daemon" };
 
         var canLeave = await vm.CanLeaveAsync(WizardNavigation.Next, CancellationToken.None);
 
@@ -385,7 +382,7 @@ public class DefaultsStepViewModelTests {
         };
         File.WriteAllText(ConfigPath, JsonSerializer.Serialize(existing, ProfileConfigJsonContext.Default.ProfileConfig));
 
-        var vm = new DefaultsStepViewModel(resolveProfileName: () => "work")
+        var vm = new DefaultsStepViewModel(Config.Root, resolveProfileName: () => "work")
             { Visibility = "public", DaemonName = "work-daemon" };
 
         var canLeave = await vm.CanLeaveAsync(WizardNavigation.Next, CancellationToken.None);
@@ -410,7 +407,7 @@ public class DefaultsStepViewModelTests {
         };
         File.WriteAllText(ConfigPath, JsonSerializer.Serialize(existing, ProfileConfigJsonContext.Default.ProfileConfig));
 
-        var vm = new DefaultsStepViewModel(resolveProfileName: () => "ghost")
+        var vm = new DefaultsStepViewModel(Config.Root, resolveProfileName: () => "ghost")
             { Visibility = "public", DaemonName = "acme-daemon" };
 
         await vm.CanLeaveAsync(WizardNavigation.Next, CancellationToken.None);
@@ -429,7 +426,7 @@ public class DefaultsStepViewModelTests {
         };
         File.WriteAllText(ConfigPath, JsonSerializer.Serialize(existing, ProfileConfigJsonContext.Default.ProfileConfig));
 
-        var vm = new DefaultsStepViewModel(resolveProfileName: () => null)
+        var vm = new DefaultsStepViewModel(Config.Root, resolveProfileName: () => null)
             { Visibility = "public", DaemonName = "acme-daemon" };
 
         await vm.CanLeaveAsync(WizardNavigation.Next, CancellationToken.None);
@@ -441,7 +438,7 @@ public class DefaultsStepViewModelTests {
 
     [Test]
     public async Task Skip_and_back_do_not_persist_and_leave_the_step_unsatisfied() {
-        var vm = new DefaultsStepViewModel { Visibility = "public", DaemonName = "acme-daemon" };
+        var vm = new DefaultsStepViewModel(Config.Root) { Visibility = "public", DaemonName = "acme-daemon" };
 
         await Assert.That(await vm.CanLeaveAsync(WizardNavigation.Skip, CancellationToken.None)).IsTrue();
         await Assert.That(await vm.CanLeaveAsync(WizardNavigation.Back, CancellationToken.None)).IsTrue();
@@ -457,7 +454,7 @@ public class DefaultsStepViewModelTests {
         Skip.When(OperatingSystem.IsWindows(), "chmod-based read-only config dir is POSIX-only.");
 
         var dir = Path.GetDirectoryName(ConfigPath)!;
-        var vm  = new DefaultsStepViewModel { Visibility = "public", DaemonName = "acme-daemon" };
+        var vm  = new DefaultsStepViewModel(Config.Root) { Visibility = "public", DaemonName = "acme-daemon" };
 
         File.SetUnixFileMode(dir, UnixFileMode.UserRead | UnixFileMode.UserExecute);
         try {

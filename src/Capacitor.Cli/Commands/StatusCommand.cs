@@ -1,21 +1,15 @@
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.Config;
-using Capacitor.Cli.Core.Setup;
-using Capacitor.Cli.Core.Harness.Antigravity;
-using Capacitor.Cli.Core.Harness.Claude;
-using Capacitor.Cli.Core.Harness.Codex;
-using Capacitor.Cli.Core.Harness.Copilot;
-using Capacitor.Cli.Core.Harness.Cursor;
-using Capacitor.Cli.Core.Harness.Gemini;
-using Capacitor.Cli.Core.Harness.Kiro;
-using Capacitor.Cli.Core.Harness.OpenCode;
-using Capacitor.Cli.Core.Harness.Pi;
+using Capacitor.Cli.Core.Harness;
 
 namespace Capacitor.Cli.Commands;
 
-public static class StatusCommand {
-    public static async Task<int> HandleAsync(DaemonStore store, string? baseUrl, string[] args) {
+public sealed class StatusCommand(
+        DaemonStore store, ProfileContext profiles, ConfigRoot config, HarnessRegistry harnesses) {
+
+    public async Task<int> HandleAsync(string[] args) {
+        var baseUrl = profiles.Resolution.ServerUrl;
         // Version line reuses UpdateNotice's shared check and marks-reported so the exit footer
         // doesn't double-print; respects the same opt-outs.
         await WriteVersionLineAsync(args);
@@ -53,7 +47,7 @@ public static class StatusCommand {
             Console.WriteLine($"  Auth:    {machineLine}");
         } else {
             Console.Write("  Auth:    ");
-            var tokens = await TokenStore.GetValidTokensAsync();
+            var tokens = await new TokenStore(config).GetValidTokensForProfileAsync(profiles.Name);
 
             if (tokens is not null) {
                 var remaining = tokens.ExpiresAt - DateTimeOffset.UtcNow;
@@ -63,7 +57,7 @@ public static class StatusCommand {
                     : $"expires in {remaining.TotalMinutes:F0}m";
                 await Console.Out.WriteLineAsync($"{tokens.GitHubUsername} ({tokens.Provider}) ✓ token valid ({expiryText})");
             } else {
-                var rawTokens = await TokenStore.LoadAsync();
+                var rawTokens = await new TokenStore(config).LoadForProfileAsync(profiles.Name);
 
                 await Console.Out.WriteLineAsync(
                     rawTokens is not null
@@ -76,28 +70,18 @@ public static class StatusCommand {
         // Hooks
         await Console.Out.WriteAsync("  Hooks:   ");
 
-        var line = BuildHooksStatusLine(
-            claude:   IsClaudePluginInstalled(ClaudePaths.UserSettings),
-            codex:    IsCodexHooksInstalled(CodexPaths.UserHooksJson),
-            cursor:   CursorHooksInstaller.IsInstalled(CursorPaths.UserHooksJson()),
-            copilot:  CopilotHooksInstaller.IsInstalled(CopilotPaths.KcapHooksJson()),
-            gemini:   GeminiHooksInstaller.IsInstalled(GeminiPaths.SettingsJson()),
-            kiro:     KiroHooksInstaller.IsInstalled(KiroPaths.KcapAgentJson()),
-            pi:       PiExtensionInstaller.IsInstalled(PiPaths.KcapExtension()),
-            opencode: OpenCodeExtensionInstaller.IsInstalled(OpenCodePaths.KcapPlugin()),
-            antigravity: AntigravityHooksInstaller.IsInstalled(AntigravityPaths.GlobalHooksJson()));
+        var line = BuildHooksStatusLine(harnesses.Select(h => (h.Id, h.Signals.IsWired)));
 
         await Console.Out.WriteLineAsync(line);
 
         // Newly-installed-but-unconfigured harnesses. Ledger-independent (a dismissed vendor is
         // still surfaced here) — status always tells the truth, unlike the nudge which respects
         // dismissals. Shares the wired-check with the Hooks line above, so the two never disagree.
-        var detectionInputs = AgentDetection.FromEnvironment();
-        var detectedAgents  = AgentDetection.Detect(detectionInputs);
-        foreach (var h in HarnessCatalog.All) {
-            if (!h.Select(detectedAgents).Detected) continue;
-            if (HarnessIntegrationProbe.IsWired(h.VendorId, detectionInputs)) continue;
-            var install = h.InstallFlag is null ? "kcap plugin install" : $"kcap plugin install {h.InstallFlag}";
+        foreach (var h in harnesses) {
+            if (!harnesses.Detected(h.Id)) continue;
+            if (h.Signals.IsWired) continue;
+            var flag    = h.Id.PluginInstallFlag;
+            var install = flag is null ? "kcap plugin install" : $"kcap plugin install {flag}";
             await Console.Out.WriteLineAsync($"           {h.Label} installed but kcap not configured — run `{install}`");
         }
 
@@ -114,7 +98,7 @@ public static class StatusCommand {
         return 0;
     }
 
-    static async Task WriteVersionLineAsync(string[] args) {
+    async Task WriteVersionLineAsync(string[] args) {
         Console.Write("  Version: ");
 
         var current = CapacitorVersion.CurrentDisplay();
@@ -128,7 +112,7 @@ public static class StatusCommand {
             return;
         }
 
-        var profile = await AppConfig.GetActiveProfileAsync();
+        var profile = profiles.Effective;
 
         if (profile?.UpdateCheck == false) {
             await Console.Out.WriteLineAsync(FormatVersionLine(current, default));
@@ -137,10 +121,10 @@ public static class StatusCommand {
         }
 
         var channel  = UpdateCommand.ResolveChannel(args, profile?.UpdateChannel);
-        var result   = await UpdateNotice.GetSharedCheckAsync(channel);
+        var result   = await UpdateNotice.GetSharedCheckAsync(channel, config);
 
         // Cap the recommendation at the connected server's version (min(npm latest, server)).
-        var advisory = UpdateAdvisoryResolver.Resolve(result, channel);
+        var advisory = UpdateAdvisoryResolver.Resolve(result, channel, profiles.Resolution.ServerUrl, config);
 
         await Console.Out.WriteLineAsync(FormatVersionLine(current, advisory));
 
@@ -232,38 +216,16 @@ public static class StatusCommand {
     }
 
     /// <summary>
-    /// Renders the Hooks status line for every supported agent. Gemini merges its
-    /// hooks into the shared <c>~/.gemini/settings.json</c>, while Pi and OpenCode
-    /// track a live-ingest "extension"/plugin file rather than a hooks file (neither
-    /// has shell hooks), but all share the line for at-a-glance parity. Pure — the
-    /// I/O detection happens in the caller so this stays unit-testable.
+    /// Renders the Hooks status line: every harness, wired or not, in registry order. What "wired"
+    /// means is each vendor's own — Gemini merges its hooks into the shared
+    /// <c>~/.gemini/settings.json</c>, while Pi and OpenCode track a live-ingest extension file
+    /// rather than hooks — but all share the line for at-a-glance parity. Pure: the probing happens
+    /// in the caller.
     /// </summary>
-    internal static string BuildHooksStatusLine(bool claude, bool codex, bool cursor, bool copilot, bool gemini, bool kiro, bool pi, bool opencode, bool antigravity = false) =>
-        string.Join("  ", new[] {
-            claude   ? "Claude ✓"   : "Claude ✗",
-            codex    ? "Codex ✓"    : "Codex ✗",
-            cursor   ? "Cursor ✓"   : "Cursor ✗",
-            copilot  ? "Copilot ✓"  : "Copilot ✗",
-            gemini   ? "Gemini ✓"   : "Gemini ✗",
-            kiro     ? "Kiro ✓"     : "Kiro ✗",
-            pi       ? "Pi ✓"       : "Pi ✗",
-            opencode ? "OpenCode ✓" : "OpenCode ✗",
-            antigravity ? "Antigravity ✓" : "Antigravity ✗"
-        });
+    internal static string BuildHooksStatusLine(IEnumerable<(HarnessId Id, bool Wired)> wiring) =>
+        string.Join("  ", wiring.Select(w => $"{ShortLabel(w.Id)} {(w.Wired ? "✓" : "✗")}"));
 
-    /// <summary>
-    /// True iff <paramref name="settingsPath"/> exists and has
-    /// <c>enabledPlugins["kcap@kcap"] == true</c>. Delegates to the Core source of truth
-    /// (<see cref="HarnessIntegrationProbe"/>) so the status line and the new-harness nudge share
-    /// one wired-check definition.
-    /// </summary>
-    public static bool IsClaudePluginInstalled(string settingsPath) =>
-        ClaudePluginInstaller.IsPluginEnabled(settingsPath);
-
-    /// <summary>
-    /// True iff <paramref name="hooksPath"/> exists and any hook entry under any
-    /// event references the <c>kcap codex-hook</c> command. Delegates to the Core source of truth.
-    /// </summary>
-    public static bool IsCodexHooksInstalled(string hooksPath) =>
-        CodexHooksInstaller.ReferencesKcapHook(hooksPath);
+    /// <summary>Every vendor shares one line, so the one label carrying a product suffix is
+    /// shortened to fit beside the rest.</summary>
+    static string ShortLabel(HarnessId id) => id is HarnessId.Claude ? "Claude" : HarnessRegistry.LabelOf(id);
 }

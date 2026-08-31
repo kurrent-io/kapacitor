@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Core.Harness.Antigravity;
 
 namespace Capacitor.Cli.Harness.Antigravity;
@@ -42,21 +43,16 @@ internal sealed class AntigravityImportSource : IImportSource {
         "USER_INPUT", "PLANNER_RESPONSE", "RUN_COMMAND", "VIEW_FILE", "LIST_DIRECTORY", "CODE_ACTION"
     };
 
-    readonly string? _home;
-    readonly string? _geminiCliHome;
+    readonly AntigravityPaths _paths;
 
-    public AntigravityImportSource(string? home = null, string? geminiCliHome = null) {
-        _home          = home;
-        _geminiCliHome = geminiCliHome;
-    }
+    public AntigravityImportSource(AntigravityPaths paths) => _paths = paths;
 
     // Both product roots' brain dirs (GUI + agy CLI), in fixed order. Import enumerates every one
     // that exists — an agy-only machine has only the CLI root, and before this it was invisible.
     IReadOnlyList<string> BrainRoots =>
-        AntigravityPaths.BrainProductRoots(_home, _geminiCliHome)
-            .Select(r => Path.Combine(r, "brain")).ToList();
+        _paths.BrainProductRoots.Select(r => Path.Combine(r, "brain")).ToList();
 
-    public string Vendor => "antigravity";
+    public HarnessId Vendor => HarnessId.Antigravity;
     public bool   IsAvailable => BrainRoots.Any(Directory.Exists);
     public bool   SupportsTitleGeneration => false; // server computes a fallback title at session-end
     public bool   AttachesChildContentOnReplay => true;  // AlreadyLoaded repair branch imports children
@@ -116,7 +112,7 @@ internal sealed class AntigravityImportSource : IImportSource {
         var invokeEdges   = parentMap.Count;
         var danglingChild = parentMap.Keys.Count(c => !allConversationIds.Contains(c));
         var msgButNoInvoke = convIds.Count(id =>
-            Directory.Exists(AntigravityPaths.MessagesDirUnder(productRoot, id))
+            Directory.Exists(_paths.MessagesDirUnder(productRoot, id))
             && !parentMap.ContainsKey(id) && !linkedChildIds.Contains(id));
         Log($"Antigravity import ({Path.GetFileName(productRoot)}): {invokeEdges} invoke edge(s); {danglingChild} invoked child id(s) with no conversation dir; {msgButNoInvoke} conversation(s) with messages/ but no invoke edge");
 
@@ -129,7 +125,7 @@ internal sealed class AntigravityImportSource : IImportSource {
 
             if (sessionFilter is not null && !string.Equals(sessionId, sessionFilter, StringComparison.Ordinal)) continue;
 
-            var transcript = AntigravityPaths.TranscriptFullPathUnder(productRoot, convId);
+            var transcript = _paths.TranscriptFullPathUnder(productRoot, convId);
             if (!File.Exists(transcript)) continue;
 
             var firstTimestamp = ReadFirstTimestamp(transcript);
@@ -235,8 +231,14 @@ internal sealed class AntigravityImportSource : IImportSource {
         // succeeded). If either lifecycle POST fails, return Failed so a re-run retries the repair
         // instead of reporting a falsely-complete Skipped (mirrors Cursor).
         if (c.Status == ImportCommand.ClassificationStatus.AlreadyLoaded) {
+            var repairPayload = BuildSessionStartPayload(c.SessionId, c.Meta.Cwd, c.Meta.FirstTimestamp);
+
+            if (ctx.VisibilityStampFor(c.Status) is { } repairVisibility) {
+                repairPayload["default_visibility"] = repairVisibility;
+            }
+
             if (!await PostHookAsync(ctx.HttpClient, ctx.BaseUrl, "session-start/antigravity",
-                    BuildSessionStartPayload(c.SessionId, c.Meta.Cwd, c.Meta.FirstTimestamp, ctx.ForcePrivate), ct))
+                    repairPayload, ct))
                 return ImportOutcome.Failed;
 
             // Capture whether the repair actually attached new nested-child content — true
@@ -263,12 +265,9 @@ internal sealed class AntigravityImportSource : IImportSource {
         // Lifecycle-before-transcript (mirrors Gemini): a transcript that advances the
         // watermark past a failed lifecycle POST would leave the session lifecycle-less.
         // Re-runs are idempotent server-side (deterministic lifecycle ids).
-        var startPayload = BuildSessionStartPayload(c.SessionId, c.Meta.Cwd, c.Meta.FirstTimestamp, ctx.ForcePrivate);
-        // Step 3 visibility stamp — New-only (this branch handles New + Partial; AlreadyLoaded
-        // returned above), and never overrides the existing forcePrivate "private" stamp above
-        // (mutually exclusive: this only fires when !ctx.ForcePrivate).
-        if (!ctx.ForcePrivate && c.Status == ImportCommand.ClassificationStatus.New && ctx.DefaultVisibility is not null) {
-            startPayload["default_visibility"] = ctx.DefaultVisibility;
+        var startPayload = BuildSessionStartPayload(c.SessionId, c.Meta.Cwd, c.Meta.FirstTimestamp);
+        if (ctx.VisibilityStampFor(c.Status) is { } visibility) {
+            startPayload["default_visibility"] = visibility;
         }
 
         if (!await PostHookAsync(ctx.HttpClient, ctx.BaseUrl, "session-start/antigravity", startPayload, ct))
@@ -323,7 +322,7 @@ internal sealed class AntigravityImportSource : IImportSource {
         // but the fold stays truthful rather than silently mis-resolving a CLI child).
         var productRoot = sourceMeta.TryGetValue("ProductRoot", out var pr) && pr is string { Length: > 0 } p
             ? p
-            : AntigravityPaths.Root(_home, _geminiCliHome);
+            : _paths.Root;
 
         var anyChildContentSent = false;
 
@@ -335,7 +334,7 @@ internal sealed class AntigravityImportSource : IImportSource {
             // form: the server canonicalizes agent_id on both ingest and watermark read, so this
             // matches live routing/correlation and the dashless session ids used everywhere else
             // (mirrors GeminiImportSource).
-            var childTranscript = AntigravityPaths.TranscriptFullPathUnder(productRoot, childId);
+            var childTranscript = _paths.TranscriptFullPathUnder(productRoot, childId);
             if (!File.Exists(childTranscript)) continue;
 
             var childAgentId = ImportCommand.NormalizeGuid(childId);
@@ -424,14 +423,13 @@ internal sealed class AntigravityImportSource : IImportSource {
 
     // ── payload builders ────────────────────────────────────────────────────────
 
-    static JsonObject BuildSessionStartPayload(string sid, string? cwd, DateTimeOffset? startedAt, bool forcePrivate) {
+    static JsonObject BuildSessionStartPayload(string sid, string? cwd, DateTimeOffset? startedAt) {
         var p = new JsonObject { ["hook_event_name"] = "sessionStart", ["session_id"] = sid };
         if (cwd is not null) p["cwd"] = cwd;
         // fail-open git-root discovery, mirroring ImportChainsAsync
         // so routed imports carry the same workspace_root the file-based path does.
         if (cwd is not null && GitRepository.FindRoot(cwd) is { } workspaceRoot) p["workspace_root"] = workspaceRoot;
         if (startedAt is { } ts) p["started_at"] = ts.ToString("O");
-        if (forcePrivate) p["default_visibility"] = "private";
         p["origin"] = ImportOrigins.Historical;
         return p;
     }
@@ -633,7 +631,7 @@ internal sealed class AntigravityImportSource : IImportSource {
         EncodedCwd       = "",
         Meta             = meta,
         Status           = status,
-        Vendor           = "antigravity",
+        Vendor           = HarnessId.Antigravity,
         ProbeErrorReason = probeError,
         TotalLines       = totalLines,
         SourceMeta       = s.SourceMeta,

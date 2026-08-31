@@ -1,4 +1,6 @@
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Core.Harness.Codex;
 using Capacitor.Cli.Harness.Claude;
 
@@ -6,17 +8,17 @@ namespace Capacitor.Cli.Harness.Codex;
 
 /// <summary>
 /// Discover + classify Codex rollouts under <c>~/.codex/sessions/</c>. Discovery
-/// wraps <see cref="CodexPaths.Discover(string?, DateOnly?)"/> (honouring the
+/// wraps <see cref="CodexPaths.Discover(string, DateOnly?)"/> (honouring the
 /// <c>--since</c> filter at directory-prune time) and applies <c>--cwd</c> /
 /// <c>--session</c> via the same helpers as <see cref="ClaudeImportSource"/>.
 /// Classification delegates to <see cref="TranscriptFileClassification.ClassifyAsync"/>
-/// with <c>vendor = "codex"</c>. <see cref="ImportSessionAsync"/> is a stub —
-/// the orchestrator will wire chain workers in E2.
+/// with <c>vendor = "codex"</c>. Codex sessions are imported per chain, so
+/// <see cref="ImportSessionAsync"/> is never the entry point — <c>ImportChainsAsync</c> is.
 /// </summary>
-internal sealed class CodexImportSource(string? rootOverride = null) : IImportSource {
-    readonly string _sessionsDir = rootOverride ?? CodexPaths.Sessions;
+internal sealed class CodexImportSource(ConfigRoot config, string sessionsDir) : IImportSource {
+    readonly string _sessionsDir = sessionsDir;
 
-    public string Vendor => "codex";
+    public HarnessId Vendor => HarnessId.Codex;
 
     public bool IsAvailable => Directory.Exists(_sessionsDir);
 
@@ -34,7 +36,7 @@ internal sealed class CodexImportSource(string? rootOverride = null) : IImportSo
     public bool AttachesChildContentOnReplay => false; // chain-based: never routed
 
     public Task<IReadOnlyList<DiscoveredSession>> DiscoverAsync(DiscoveryFilters filters, CancellationToken ct) {
-        var transcripts = CodexPaths.Discover(sessionsDir: _sessionsDir, since: filters.Since);
+        var transcripts = CodexPaths.Discover(_sessionsDir, filters.Since);
 
         // Collab subagent rollouts (Codex 0.146+, session_meta thread_source == "subagent")
         // are NOT top-level sessions: they are imported nested under their parent by
@@ -100,13 +102,15 @@ internal sealed class CodexImportSource(string? rootOverride = null) : IImportSo
         }
 
         return await TranscriptFileClassification.ClassifyAsync(
+            config,
+            ctx.Home,
             ctx.HttpClient,
             ctx.BaseUrl,
             transcripts,
             ctx.MinLines,
             ctx.ExcludedRepos?.ToArray(),
             ct,
-            vendor: "codex",
+            vendor: Vendor,
             excludedPaths: ctx.ExcludedPaths?.ToArray()
         );
     }
@@ -116,5 +120,5 @@ internal sealed class CodexImportSource(string? rootOverride = null) : IImportSo
             ImportContext                       ctx,
             CancellationToken                   ct
         ) =>
-        throw new NotImplementedException("Wired up via ImportChainsAsync in E2.");
+        throw new NotImplementedException("Codex imports go through ImportChainsAsync.");
 }

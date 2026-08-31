@@ -1,3 +1,6 @@
+using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Harness;
+
 namespace Capacitor.Cli;
 
 /// <summary>
@@ -24,11 +27,11 @@ static class WorkItemsNudgeEmitter {
     /// Resolves the nudge fragment for a harness: <c>null</c> (emit nothing) when the user opted out
     /// (<c>disable_workitems_nudge</c>), when <c>kcap-workitems</c> is not materialized in that
     /// harness's config (fail-closed availability gate), or when there is no usable session id;
-    /// otherwise the built nudge. The optional <paramref name="home"/> / <paramref name="codexConfigPath"/>
-    /// are the availability gate's test seams and are null in production.
+    /// otherwise the built nudge. <paramref name="codexConfigPath"/> is the availability gate's test
+    /// seam and is null in production.
     /// </summary>
-    public static string? Resolve(SessionStartMemory.SessionStartHarness harness, string? sessionId, bool optedOut,
-                                  string? home = null, string? codexConfigPath = null) {
+    public static string? Resolve(HarnessId harness, string? sessionId, bool optedOut,
+                                  UserHome home, string? codexConfigPath = null) {
         if (optedOut) return null;
         if (!WorkItemsNudgeAvailability.IsRegisteredFor(harness, home, codexConfigPath)) return null;
         return Build(sessionId);

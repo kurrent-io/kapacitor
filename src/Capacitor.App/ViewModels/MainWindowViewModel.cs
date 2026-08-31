@@ -1,14 +1,16 @@
-using System.Collections.ObjectModel;
 using System.Reactive;
 using System.Reactive.Disposables.Fluent;
 using System.Reactive.Linq;
 using Avalonia.Media;
 using Capacitor.App.Services;
-using DynamicData;
-using DynamicData.Binding;
 using ReactiveUI;
 
 namespace Capacitor.App.ViewModels;
+
+/// Which surface owns the window: Home (status block + launcher + cards + Activity) or
+/// Sessions (rail | workspace). Orthogonal to CurrentWorkspace, which only means anything in
+/// Sessions view.
+public enum ShellView { Home, Sessions }
 
 /// Projects IDaemonClientService.Status/Snapshots into display text and drives Start/Retry.
 /// All display projections are activation-scoped (WhenActivated) — the service outlives this
@@ -90,29 +92,62 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     ObservableAsPropertyHelper<string?>? _reason;
     public string? Reason => _reason?.Value;
 
-    static readonly IComparer<AgentRowViewModel> RowComparer = Comparer<AgentRowViewModel>.Create((a, b) => {
-        var byCreated = a.CreatedAt.CompareTo(b.CreatedAt);
-        return byCreated != 0 ? byCreated : string.CompareOrdinal(a.Id, b.Id);
-    });
-
-    // ONE stable collection, created once here and never replaced: WhenActivated re-runs on
-    // every activation (hide-to-tray/reopen included), and Agents is a plain get-only property
-    // with no change notification — swapping the bound INSTANCE on each activation (the prior
-    // `SortAndBind(out _agents, ...)` shape) would leave the view's ItemsControl bound to a dead
-    // collection forever. SortAndBind's IList-targeting overload mutates THIS instance in place
-    // instead. Spec §8: rows persist across disconnects (the underlying SourceCache is retained
-    // by the service) — GridEnabled below is what disables actions and dims the XAML, never a
-    // local removal of rows.
-    readonly ObservableCollectionExtended<AgentRowViewModel> _agentsSource = new();
-    public ReadOnlyObservableCollection<AgentRowViewModel> Agents { get; }
-
-    /// The Activity tab (spec §7) — constructed once at the composition root, same instance the
+    /// The Activity feed (spec §7) — constructed once at the composition root, same instance the
     /// prompt window's onConcluded callback nudges, so this is a plain ctor-injected reference,
     /// not something built here.
     public ActivityViewModel Activity { get; }
 
-    ObservableAsPropertyHelper<bool>? _gridEnabled;
-    public bool GridEnabled => _gridEnabled?.Value ?? false;
+    /// The Home surface's launcher and cards — constructed at the composition root over the SAME
+    /// IDaemonClientService instance this window uses, never a second daemon connection. Null
+    /// only for a caller that doesn't supply one (most existing tests predate Home); HomeView
+    /// tolerates a null DataContext, same as any other unbound view.
+    public HomeViewModel? Home { get; }
+
+    readonly NavigationGate _navigation;
+    readonly Action<Func<Task>> _trackTeardown;
+    readonly Func<string, WorkspaceViewModel>? _workspaceFactory;
+
+    WorkspaceViewModel? _currentWorkspace;
+    /// null = the Sessions surface shows its placeholder pane; non-null = that session's workspace.
+    /// Exactly one workspace at a time, and this VM owns it: every swap starts the outgoing one's
+    /// tracked teardown (spec §3).
+    public WorkspaceViewModel? CurrentWorkspace {
+        get => _currentWorkspace;
+        private set => this.RaiseAndSetIfChanged(ref _currentWorkspace, value);
+    }
+
+    // Sessions is the app's home for now: the right pane's empty state IS the launcher, and the
+    // Home surface stays in the tree but hidden (nothing navigates to it) until it earns its keep.
+    ShellView _currentView = ShellView.Sessions;
+    public ShellView CurrentView {
+        get => _currentView;
+        private set {
+            this.RaiseAndSetIfChanged(ref _currentView, value);
+            this.RaisePropertyChanged(nameof(IsHomeView));
+            this.RaisePropertyChanged(nameof(IsSessionsView));
+        }
+    }
+    public bool IsHomeView => CurrentView == ShellView.Home;
+    public bool IsSessionsView => CurrentView == ShellView.Sessions;
+
+    public ReactiveCommand<Unit, Unit> ShowHomeCommand { get; }
+    public ReactiveCommand<Unit, Unit> ShowSessionsCommand { get; }
+
+    /// The Sessions rail (repo → worktree → session over daemon.Agents) — null for any caller
+    /// that predates it, same nullable-seam shape as Home/workspaceFactory above.
+    public SessionRailViewModel? Rail { get; }
+
+    /// The active profile's name — the tenant slug (profiles are named after it at sign-in).
+    /// "" for a caller without one (tests, pre-onboarding); the footer binding tolerates it.
+    public string TenantName { get; }
+
+    /// The launch auto-open's staleness token — see NavigationGate. Read from the SHARED gate, not
+    /// a per-window counter, so a window built after shutdown began sees the latch too.
+    public int NavigationGeneration => _navigation.Generation;
+
+    /// Clears the open workspace back to the Sessions surface's placeholder pane — the same command
+    /// the coordinator's close paths route through.
+    public ReactiveCommand<Unit, Unit> CloseWorkspaceCommand { get; }
 
     string? _startMessage;
     // Start-daemon failure text. Cleared on every new start attempt AND on any transition to
@@ -156,14 +191,45 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     /// cleared by the identical Connected-transition rule below. Null (most existing tests, and
     /// any caller without a live lifecycle controller) means this lane never receives anything.
     /// </param>
+    /// <param name="navigation">
+    /// The composition root's app-lifetime NavigationGate (spec §3). Null builds a private one, so
+    /// a caller with no navigation of its own (most existing tests) still gets a working VM — but
+    /// only a SHARED gate makes the shutdown latch reach a window built after shutdown began.
+    /// </param>
+    /// <param name="trackWorkspaceTeardown">
+    /// WorkspaceTeardownTracker.Track, as a delegate: this VM only ever registers a teardown, never
+    /// drains, and the delegate keeps the drain (a composition-root concern) off its surface. Null
+    /// falls back to running the teardown untracked — never to skipping it, or a swap would strand
+    /// a live attach.
+    /// </param>
+    /// <param name="workspaceFactory">
+    /// Builds the workspace for an agent id (the production one wires the daemon socket's attach
+    /// client and the xterm surface). Null means this window cannot navigate to a workspace at all
+    /// — every existing caller that predates workspaces stays on the Home surface.
+    /// </param>
+    /// <param name="rail">
+    /// The Sessions rail. Null means this window has no rail to keep in sync — every existing
+    /// caller that predates it keeps working the way it always has.
+    /// </param>
     public MainWindowViewModel(
-            IDaemonClientService service, AgentActionService actions, ITicker ticker,
+            IDaemonClientService service,
             CancellationToken shutdownToken, ActivityViewModel activity, Func<CancellationToken, Task>? startAction = null,
-            IObservable<string?>? lifecycleStatus = null, TimeProvider? time = null) {
+            IObservable<string?>? lifecycleStatus = null, TimeProvider? time = null, HomeViewModel? home = null,
+            NavigationGate? navigation = null, Action<Func<Task>>? trackWorkspaceTeardown = null,
+            Func<string, WorkspaceViewModel>? workspaceFactory = null, SessionRailViewModel? rail = null,
+            string? tenantName = null) {
         _service = service;
         _time = time ?? TimeProvider.System;
-        Agents = new ReadOnlyObservableCollection<AgentRowViewModel>(_agentsSource);
         Activity = activity;
+        Home = home;
+        _navigation = navigation ?? new NavigationGate();
+        _trackTeardown = trackWorkspaceTeardown ?? RunUntracked;
+        _workspaceFactory = workspaceFactory;
+        Rail = rail;
+        TenantName = tenantName ?? "";
+        CloseWorkspaceCommand = ReactiveCommand.Create(CloseWorkspace);
+        ShowHomeCommand = ReactiveCommand.Create(() => { CurrentView = ShellView.Home; });
+        ShowSessionsCommand = ReactiveCommand.Create(() => { CurrentView = ShellView.Sessions; });
 
         // ReactiveCommand's own CanExecute observable already ANDs the supplied canExecute with
         // "not currently executing" (confirmed against the installed ReactiveUI 23.2.28 API
@@ -199,12 +265,6 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
         this.WhenActivated(disposables => {
             var status    = service.Status.ObserveOn(RxSchedulers.MainThreadScheduler);
             var snapshots = service.Snapshots.ObserveOn(RxSchedulers.MainThreadScheduler);
-            var connected = status.Select(s => s.State == AttachState.Connected);
-            // Pre-scheduled here (not inside AgentRowViewModel) so every row's ActionsEnabled
-            // OAPH only ever observes on the UI thread — StopsInFlight is a plain BehaviorSubject
-            // that AgentActionService pushes to from a background Task.Run, same class of bug the
-            // canStart/canRetry comment above documents.
-            var stopsInFlight = actions.StopsInFlight.ObserveOn(RxSchedulers.MainThreadScheduler);
 
             _daemonName = snapshots.Select(s => s.Daemon.Name)
                 .ToProperty(this, x => x.DaemonName, "")
@@ -264,41 +324,67 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
                 .Where(msg => msg is not null)
                 .Subscribe(msg => StartMessage = msg)
                 .DisposeWith(disposables);
-
-            _gridEnabled = connected
-                .ToProperty(this, x => x.GridEnabled, initialValue: false)
-                .DisposeWith(disposables);
-
-            // _agentsSource is reused across activations (see its field comment) but SortAndBind
-            // below starts a brand-new pipeline — and DynamicData internal Cache<> — on every
-            // activation, so without this Clear a reactivation's initial replay would INSERT a
-            // second copy of every currently-cached row alongside whatever was left over (frozen,
-            // already-disposed) from the previous activation, since SortAndBind only clears its
-            // target on a reset, not on ordinary Add changes.
-            _agentsSource.Clear();
-
-            // Connect -> Transform to row VMs -> DisposeMany (disposes a row the instant Transform
-            // replaces or removes it — AgentRowViewModel's OAPHs otherwise stay subscribed to the
-            // shared ticker/stopsInFlight forever, since Transform recreates a row on every dto
-            // revision rather than updating one in place) -> ObserveOn BEFORE the operator that
-            // mutates the bound collection (SortAndBind counts as "Bind" here — DynamicData
-            // requires marshaling onto the UI thread before that mutation, not after) ->
-            // SortAndBind (spec §8: CreatedAt asc, Id ordinal tiebreak), targeting the stable
-            // _agentsSource in place rather than the out-param overload that would allocate a
-            // fresh collection every activation. EditDiff removals flow through as Remove changes,
-            // which is how a stopped agent's row disappears (spec §7 — no local removal on stop,
-            // only the next snapshot's absence) and DisposeMany's Remove path is what cleans up
-            // its subscriptions. Disposing this Subscribe() (window deactivation) also disposes
-            // whatever rows are still live at that point — DisposeMany disposes its full current
-            // set on teardown, not just on per-item Remove/Update.
-            service.Agents.Connect()
-                .Transform(dto => new AgentRowViewModel(dto, actions, ticker.Ticks, _time, connected, stopsInFlight))
-                .DisposeMany()
-                .ObserveOn(RxSchedulers.MainThreadScheduler)
-                .SortAndBind(_agentsSource, RowComparer)
-                .Subscribe()
-                .DisposeWith(disposables);
         });
+    }
+
+    /// Card and rail click: swaps the window to this session's workspace on the Sessions surface,
+    /// starting the tracked teardown of whatever it replaces. Refused once shutdown has latched — a
+    /// new workspace is a new attach, and quiesce/disposal is already running (spec §3).
+    public void OpenSession(string agentId) {
+        if (_navigation.ShutdownLatched || _workspaceFactory is null) return;
+        CurrentView = ShellView.Sessions;
+        // Re-clicking the open session must not tear down and rebuild a live attach.
+        if (CurrentWorkspace?.AgentId == agentId) return;
+
+        SwapTo(_workspaceFactory(agentId));
+        Rail?.NotifySessionOpened(agentId);
+    }
+
+    /// The launch auto-open. `generation` is what the launch captured BEFORE its call: a success
+    /// arriving after any navigation (closing the workspace, another session, close-to-hide, the
+    /// shutdown latch) opens nothing, rather than attaching an invisible terminal or replacing what
+    /// the user opened while the launch was in flight.
+    public void OpenSessionIfCurrent(string agentId, int generation) {
+        if (generation != _navigation.Generation) return;
+        OpenSession(agentId);
+    }
+
+    /// The coordinator's close paths. Bumps unconditionally — a close-to-hide with no workspace
+    /// open must still retire an in-flight launch's captured generation.
+    public void CloseWorkspace() => SwapTo(null);
+
+    /// The first shutdown pass, synchronously: unhook the live workspace and register its teardown
+    /// BEFORE the drain seals the tracker, then latch the gate so no later window can open another
+    /// one. A workspace that never went through a close or close-to-hide would otherwise register
+    /// its teardown after the drain, against already-disposed dependencies (spec §3).
+    public void LatchShutdown() {
+        var live = CurrentWorkspace;
+        CurrentWorkspace = null;
+        if (Rail is not null) Rail.SelectedAgentId = null;
+        _navigation.Latch();
+        if (live is not null) _trackTeardown(live.TeardownAsync);
+    }
+
+    void SwapTo(WorkspaceViewModel? next) {
+        var outgoing = CurrentWorkspace;
+        CurrentWorkspace = next;
+        if (Rail is not null) Rail.SelectedAgentId = next?.AgentId;
+        _navigation.Bump();
+        if (outgoing is not null) _trackTeardown(outgoing.TeardownAsync);
+    }
+
+    // A VM built without a tracker (a test, or any caller predating workspaces) must still not
+    // strand a live attach: run the teardown and observe its fault exactly like the tracker's own
+    // wrapper does. The teardown is bounded by TerminalTabViewModel's own budget, so this cannot
+    // run away.
+    static void RunUntracked(Func<Task> teardown) {
+        try {
+            _ = teardown().ContinueWith(
+                t => Console.Error.WriteLine($"kcap app: untracked workspace teardown failed: {t.Exception}"),
+                CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
+        } catch (Exception ex) {
+            Console.Error.WriteLine($"kcap app: untracked workspace teardown failed: {ex}");
+        }
     }
 
     static string? ReasonText(AttachStatus status) => status.State switch {

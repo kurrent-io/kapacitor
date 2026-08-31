@@ -69,7 +69,7 @@ internal sealed class DaemonStatusIpc(
             new DaemonInfoDto(
                 config.Name, DaemonRunner.ResolveDaemonVersion(), config.ServerUrl,
                 ConnectionText(connection.HubState), config.MaxConcurrentAgents, active,
-                Environment.ProcessId, config.InstanceId),
+                Environment.ProcessId, config.InstanceId, config.SupportedVendors),
             agents);
         return JsonSerializer.Serialize(dto, StatusIpcJsonContext.Default.DaemonStatusDto);
     }

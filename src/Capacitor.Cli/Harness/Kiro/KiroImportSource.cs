@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Core.Harness.Kiro;
 
 namespace Capacitor.Cli.Harness.Kiro;
@@ -23,11 +24,12 @@ internal sealed class KiroImportSource : IImportSource {
     readonly Func<string, Task<RepositoryPayload?>> _repoDetector;
 
     public KiroImportSource(
-        string?                                 sessionsDirOverride = null,
+        ConfigRoot                              config,
+        string                                  sessionsDir,
         Func<string, Task<RepositoryPayload?>>? repoDetector        = null
     ) {
-        _sessionsDir  = sessionsDirOverride ?? KiroPaths.SessionsDir();
-        _repoDetector = repoDetector ?? (cwd => RepositoryDetection.DetectRepositoryAsync(cwd, detectPullRequest: false));
+        _sessionsDir  = sessionsDir;
+        _repoDetector = repoDetector ?? (cwd => RepositoryDetection.DetectRepositoryAsync(config, cwd, detectPullRequest: false));
     }
 
     static StringComparison PathComparison =>
@@ -43,7 +45,7 @@ internal sealed class KiroImportSource : IImportSource {
         }
     }
 
-    public string Vendor => "kiro";
+    public HarnessId Vendor => HarnessId.Kiro;
 
     public bool IsAvailable => Directory.Exists(_sessionsDir);
 
@@ -241,10 +243,8 @@ internal sealed class KiroImportSource : IImportSource {
         var lifecycleId = dashed ?? classification.SessionId;
 
         var startPayload = BuildSessionStartPayload(lifecycleId, cwd, model, classification.Meta.FirstTimestamp);
-        // Step 3 visibility stamp — New-only, and never overrides an existing force-private
-        // choice (Kiro has none of its own today; this guard keeps it that way).
-        if (!ctx.ForcePrivate && classification.Status == ImportCommand.ClassificationStatus.New && ctx.DefaultVisibility is not null) {
-            startPayload["default_visibility"] = ctx.DefaultVisibility;
+        if (ctx.VisibilityStampFor(classification.Status) is { } visibility) {
+            startPayload["default_visibility"] = visibility;
         }
 
         var startOk = await PostSyntheticHookAsync(
@@ -388,7 +388,7 @@ internal sealed class KiroImportSource : IImportSource {
         EncodedCwd       = "",
         Meta             = meta,
         Status           = status,
-        Vendor           = "kiro",
+        Vendor           = HarnessId.Kiro,
         ProbeErrorReason = probeErrorReason,
         TotalLines       = totalLines,
         SourceMeta       = s.SourceMeta,
@@ -458,8 +458,8 @@ internal sealed class KiroImportSource : IImportSource {
         string? excludedPathKey = null;
         if (cwd is not null && ctx.ExcludedPaths is { Count: > 0 } paths) {
             foreach (var entry in paths) {
-                if (PathExclusion.IsExcluded(cwd, [entry])) {
-                    excludedPathKey = PathExclusion.Normalize(entry);
+                if (PathExclusion.IsExcluded(cwd, [entry], ctx.Home)) {
+                    excludedPathKey = PathExclusion.Normalize(entry, ctx.Home);
                     break;
                 }
             }

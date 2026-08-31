@@ -67,8 +67,8 @@ internal interface IHostedAgentRuntimeFactory {
     /// child the vendor spawns — under a <c>HOME</c> that is not the daemon user's.
     ///
     /// <para>That is a delivery fact, not a containment one. The <c>kcap-flow-result</c> channel
-    /// resolves its credential from <see cref="Core.PathHelpers"/>' config dir, which hangs off
-    /// <c>HOME</c>, so a redirected launch's channel reads an empty directory and cannot authenticate.
+    /// resolves its credential from the config dir, which hangs off <c>HOME</c>, so a redirected
+    /// launch's channel reads an empty directory and cannot authenticate.
     /// Such a launch must be given the daemon-brokered delivery capability instead of
     /// <c>KCAP_URL</c> — see <c>RuntimeStartContext.RequiresBrokeredResultDelivery</c>.</para>
     ///
@@ -231,5 +231,10 @@ internal sealed record RuntimeStartContext(
         // LaunchAgentCommand.AcpPermissionPreset. The ACP factory resolves it (for non-review-flow
         // launches only) into an AcpLaunchPermissionPreset and wires it onto the interaction bridge.
         // Null for every non-preset launch and constructions predating this field.
-        string?             AcpPermissionPreset = null
+        string?             AcpPermissionPreset = null,
+        // The hosted Codex thread to RESUME, carried verbatim from LaunchAgentCommand.ResumeSessionId.
+        // Non-null only for a parked reviewer relaunch: the Codex app-server runtime reopens this thread
+        // via thread/resume instead of thread/start, and suppresses the second SessionStarted. Null for
+        // a fresh launch, every non-Codex/non-app-server launch, and constructions predating this field.
+        string?             ResumeSessionId = null
     );

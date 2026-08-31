@@ -4,12 +4,11 @@ namespace Capacitor.Cli.Tests.Unit.Services;
 
 // Real-manager counterpart to ServiceVerifyStartGateProductionPathTests, covering the same
 // discriminated-read contract for InstallVerifiedAsync's marker recovery.
-[NotInParallel(["HomeEnvVarMutation"])]
 public class ServiceVerifyInstallProductionPathTests {
     const string Id = "prodpath-install";
 
     static ServiceSpec Spec(string daemonPath) =>
-        new(Id, daemonPath, Path.Combine(Path.GetTempPath(), "prodpath-install-daemon.log"),
+        new(Id, daemonPath, Path.ChangeExtension(daemonPath, ".log"),
             new Dictionary<string, string>(), []);
 
     // File.Exists reads a directory as absent, so recovery must classify via the discriminated
@@ -19,7 +18,7 @@ public class ServiceVerifyInstallProductionPathTests {
         Skip.When(OperatingSystem.IsWindows(), "launchd/HOME-based plist resolution is POSIX-only");
 
         using var fx = new ProdPathFixture(Id);
-        Directory.CreateDirectory(LaunchdUnit.AgentsDir());
+        Directory.CreateDirectory(LaunchdUnit.AgentsDir(fx.Home));
         Directory.CreateDirectory(fx.PlistPath); // a DIRECTORY sits at the plist path, not a file
 
         // The fingerprint value is irrelevant — recovery must never reach the fingerprint compare
@@ -29,7 +28,7 @@ public class ServiceVerifyInstallProductionPathTests {
         static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
             Task.FromResult(new HelloProbeResult(false, null, null, null));
 
-        var sut = new ServiceVerify(fx.Store, fx.Manager, _ => 4242, Hello, TimeProvider.System);
+        var sut = new ServiceVerify(fx.Store, fx.Config, fx.Manager, _ => 4242, Hello, TimeProvider.System);
 
         var exit = await sut.InstallVerifiedAsync(Spec(fx.DaemonPath), replace: false, expectedVersion: null);
 

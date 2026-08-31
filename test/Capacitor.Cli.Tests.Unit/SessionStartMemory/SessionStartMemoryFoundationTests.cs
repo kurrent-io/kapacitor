@@ -1,14 +1,15 @@
 using System.Net;
 using System.Text;
 using Capacitor.Cli.SessionStartMemory;
+using Capacitor.Cli.Core.Harness;
 
 namespace Capacitor.Cli.Tests.Unit.SessionStartMemory;
 
 public class SessionStartMemoryFoundationTests {
     [Test]
     public async Task Canonical_key_distinguishes_absent_token_from_literal_text() {
-        var absent = SessionStartMemoryIdentity.Create(SessionStartHarness.Claude, "session", null);
-        var literal = SessionStartMemoryIdentity.Create(SessionStartHarness.Claude, "session", "native-session");
+        var absent = SessionStartMemoryIdentity.Create(HarnessId.Claude, "session", null);
+        var literal = SessionStartMemoryIdentity.Create(HarnessId.Claude, "session", "native-session");
 
         await Assert.That(absent).IsNotEqualTo(literal);
         await Assert.That(absent).Matches("^[0-9a-f]{64}$");
@@ -16,9 +17,9 @@ public class SessionStartMemoryFoundationTests {
 
     [Test]
     public async Task Canonical_key_is_length_delimited_and_lifecycle_scoped() {
-        var left = SessionStartMemoryIdentity.Create(SessionStartHarness.Claude, "ab", "c");
-        var right = SessionStartMemoryIdentity.Create(SessionStartHarness.Claude, "a", "bc");
-        var resumed = SessionStartMemoryIdentity.Create(SessionStartHarness.Claude, "ab", "resume-2");
+        var left = SessionStartMemoryIdentity.Create(HarnessId.Claude, "ab", "c");
+        var right = SessionStartMemoryIdentity.Create(HarnessId.Claude, "a", "bc");
+        var resumed = SessionStartMemoryIdentity.Create(HarnessId.Claude, "ab", "resume-2");
 
         await Assert.That(left).IsNotEqualTo(right);
         await Assert.That(left).IsNotEqualTo(resumed);
@@ -27,7 +28,7 @@ public class SessionStartMemoryFoundationTests {
     [Test]
     public async Task Uuid_harnesses_use_lowercase_N_identity() {
         var id = SessionStartMemoryIdentity.NormalizeSessionId(
-            SessionStartHarness.Cursor, "A0D44A4A-5059-4D1F-9C93-2A1ADCE89C2E");
+            HarnessId.Cursor, "A0D44A4A-5059-4D1F-9C93-2A1ADCE89C2E");
 
         await Assert.That(id).IsEqualTo("a0d44a4a50594d1f9c932a1adce89c2e");
     }
@@ -37,24 +38,24 @@ public class SessionStartMemoryFoundationTests {
     // whatever Kiro sends), so Kiro shares Claude's permissive arm rather than the fail-closed one.
     [Test]
     public async Task Kiro_uuid_identity_is_canonical_across_spellings_but_still_accepts_non_uuids() {
-        var dashed    = SessionStartMemoryIdentity.Create(SessionStartHarness.Kiro, "A0D44A4A-5059-4D1F-9C93-2A1ADCE89C2E", null);
-        var compact   = SessionStartMemoryIdentity.Create(SessionStartHarness.Kiro, "a0d44a4a50594d1f9c932a1adce89c2e", null);
-        var uppercase = SessionStartMemoryIdentity.Create(SessionStartHarness.Kiro, "A0D44A4A50594D1F9C932A1ADCE89C2E", null);
+        var dashed    = SessionStartMemoryIdentity.Create(HarnessId.Kiro, "A0D44A4A-5059-4D1F-9C93-2A1ADCE89C2E", null);
+        var compact   = SessionStartMemoryIdentity.Create(HarnessId.Kiro, "a0d44a4a50594d1f9c932a1adce89c2e", null);
+        var uppercase = SessionStartMemoryIdentity.Create(HarnessId.Kiro, "A0D44A4A50594D1F9C932A1ADCE89C2E", null);
 
         await Assert.That(compact).IsEqualTo(dashed);
         await Assert.That(uppercase).IsEqualTo(dashed);
 
         // Not fail-closed: an id that is not a GUID still yields a usable identity.
-        await Assert.That(SessionStartMemoryIdentity.NormalizeSessionId(SessionStartHarness.Kiro, "kiro-session"))
+        await Assert.That(SessionStartMemoryIdentity.NormalizeSessionId(HarnessId.Kiro, "kiro-session"))
             .IsEqualTo("kiro-session");
     }
 
     [Test]
     public async Task Claude_uuid_identity_is_canonical_across_dashed_and_compact_forms() {
         var dashed = SessionStartMemoryIdentity.Create(
-            SessionStartHarness.Claude, "A0D44A4A-5059-4D1F-9C93-2A1ADCE89C2E", null);
+            HarnessId.Claude, "A0D44A4A-5059-4D1F-9C93-2A1ADCE89C2E", null);
         var compact = SessionStartMemoryIdentity.Create(
-            SessionStartHarness.Claude, "a0d44a4a50594d1f9c932a1adce89c2e", null);
+            HarnessId.Claude, "a0d44a4a50594d1f9c932a1adce89c2e", null);
 
         await Assert.That(dashed).IsEqualTo(compact);
     }
@@ -62,13 +63,13 @@ public class SessionStartMemoryFoundationTests {
     [Test]
     public async Task Lifecycle_policy_does_not_poison_unknown_or_subagent_callbacks() {
         var unknown = SessionStartMemoryLifecyclePolicy.Decide(new(
-            SessionStartHarness.Kiro, "s", null, true, false,
+            HarnessId.Kiro, "s", null, true, false,
             SessionLifecycleReason.Unknown, CallbackMayRepeat: true));
         var subagent = SessionStartMemoryLifecyclePolicy.Decide(new(
-            SessionStartHarness.Kiro, "s", null, false, true,
+            HarnessId.Kiro, "s", null, false, true,
             SessionLifecycleReason.New, CallbackMayRepeat: true));
         var top = SessionStartMemoryLifecyclePolicy.Decide(new(
-            SessionStartHarness.Kiro, "s", null, true, true,
+            HarnessId.Kiro, "s", null, true, true,
             SessionLifecycleReason.New, CallbackMayRepeat: true));
 
         await Assert.That(unknown).IsEqualTo(SessionMemoryLifecycleDecision.RetryLaterNoCommit);
@@ -79,7 +80,7 @@ public class SessionStartMemoryFoundationTests {
     [Test]
     public async Task Compact_is_ineligible_in_v1() {
         var decision = SessionStartMemoryLifecyclePolicy.Decide(new(
-            SessionStartHarness.Claude, "s", null, true, true,
+            HarnessId.Claude, "s", null, true, true,
             SessionLifecycleReason.Compact, CallbackMayRepeat: false));
 
         await Assert.That(decision).IsEqualTo(SessionMemoryLifecycleDecision.IneligibleNoCommit);
@@ -88,7 +89,7 @@ public class SessionStartMemoryFoundationTests {
     [Test]
     public async Task Authoritative_top_level_repeated_callback_uses_the_lease_store() {
         var decision = SessionStartMemoryLifecyclePolicy.Decide(new(
-            SessionStartHarness.Kiro, "session", null, true, true,
+            HarnessId.Kiro, "session", null, true, true,
             SessionLifecycleReason.RepeatedTurnCallback, CallbackMayRepeat: true));
 
         await Assert.That(decision).IsEqualTo(SessionMemoryLifecycleDecision.EligibleWithLease);
@@ -113,27 +114,27 @@ public class SessionStartMemoryFoundationTests {
     public async Task Output_adapters_match_exact_golden_bytes() {
         const string fragment = "F";
 
-        await Assert.That(SessionStartMemoryOutputAdapters.Render(SessionStartHarness.Claude, fragment))
+        await Assert.That(SessionStartMemoryOutputAdapters.Render(HarnessId.Claude, fragment))
             .IsEqualTo("{\"hookSpecificOutput\":{\"hookEventName\":\"SessionStart\",\"additionalContext\":\"F\"}}\n");
-        await Assert.That(SessionStartMemoryOutputAdapters.Render(SessionStartHarness.Claude, null)).IsEqualTo("");
-        await Assert.That(SessionStartMemoryOutputAdapters.Render(SessionStartHarness.Codex, fragment))
+        await Assert.That(SessionStartMemoryOutputAdapters.Render(HarnessId.Claude, null)).IsEqualTo("");
+        await Assert.That(SessionStartMemoryOutputAdapters.Render(HarnessId.Codex, fragment))
             .IsEqualTo("{\"continue\":true,\"hookSpecificOutput\":{\"hookEventName\":\"SessionStart\",\"additionalContext\":\"F\"}}\n");
-        await Assert.That(SessionStartMemoryOutputAdapters.Render(SessionStartHarness.Cursor, null)).IsEqualTo("{}\n");
-        await Assert.That(SessionStartMemoryOutputAdapters.Render(SessionStartHarness.Cursor, fragment))
+        await Assert.That(SessionStartMemoryOutputAdapters.Render(HarnessId.Cursor, null)).IsEqualTo("{}\n");
+        await Assert.That(SessionStartMemoryOutputAdapters.Render(HarnessId.Cursor, fragment))
             .IsEqualTo("{\"additional_context\":\"F\"}\n");
-        await Assert.That(SessionStartMemoryOutputAdapters.Render(SessionStartHarness.Copilot, fragment))
+        await Assert.That(SessionStartMemoryOutputAdapters.Render(HarnessId.Copilot, fragment))
             .IsEqualTo("{\"additionalContext\":\"F\"}\n");
-        await Assert.That(SessionStartMemoryOutputAdapters.Render(SessionStartHarness.Copilot, null)).IsEqualTo("{}\n");
-        await Assert.That(SessionStartMemoryOutputAdapters.Render(SessionStartHarness.Gemini, fragment))
+        await Assert.That(SessionStartMemoryOutputAdapters.Render(HarnessId.Copilot, null)).IsEqualTo("{}\n");
+        await Assert.That(SessionStartMemoryOutputAdapters.Render(HarnessId.Gemini, fragment))
             .IsEqualTo("{\"hookSpecificOutput\":{\"hookEventName\":\"SessionStart\",\"additionalContext\":\"F\"}}\n");
-        await Assert.That(SessionStartMemoryOutputAdapters.Render(SessionStartHarness.Gemini, null)).IsEqualTo("{}\n");
-        await Assert.That(SessionStartMemoryOutputAdapters.Render(SessionStartHarness.Kiro, fragment)).IsEqualTo("F\n");
-        await Assert.That(SessionStartMemoryOutputAdapters.Render(SessionStartHarness.Kiro, null)).IsEqualTo("");
-        await Assert.That(SessionStartMemoryOutputAdapters.Render(SessionStartHarness.Pi, fragment)).IsEqualTo("F\n");
-        await Assert.That(SessionStartMemoryOutputAdapters.Render(SessionStartHarness.OpenCode, null)).IsEqualTo("");
-        await Assert.That(SessionStartMemoryOutputAdapters.Render(SessionStartHarness.Antigravity, fragment))
+        await Assert.That(SessionStartMemoryOutputAdapters.Render(HarnessId.Gemini, null)).IsEqualTo("{}\n");
+        await Assert.That(SessionStartMemoryOutputAdapters.Render(HarnessId.Kiro, fragment)).IsEqualTo("F\n");
+        await Assert.That(SessionStartMemoryOutputAdapters.Render(HarnessId.Kiro, null)).IsEqualTo("");
+        await Assert.That(SessionStartMemoryOutputAdapters.Render(HarnessId.Pi, fragment)).IsEqualTo("F\n");
+        await Assert.That(SessionStartMemoryOutputAdapters.Render(HarnessId.OpenCode, null)).IsEqualTo("");
+        await Assert.That(SessionStartMemoryOutputAdapters.Render(HarnessId.Antigravity, fragment))
             .IsEqualTo("{\"injectSteps\":[{\"userMessage\":\"F\"}]}\n");
-        await Assert.That(SessionStartMemoryOutputAdapters.Render(SessionStartHarness.Antigravity, null)).IsEqualTo("{}\n");
+        await Assert.That(SessionStartMemoryOutputAdapters.Render(HarnessId.Antigravity, null)).IsEqualTo("{}\n");
     }
 
     [Test]
@@ -170,7 +171,7 @@ public class SessionStartMemoryFoundationTests {
         using var root = new TempDir();
         var key = new string('d', 64);
         var attempts = Enumerable.Range(0, 16)
-            .Select(_ => new SessionStartMemoryLeaseStore(root.Path).TryBeginAsync(key, TimeSpan.FromSeconds(2)));
+            .Select(_ => new SessionStartMemoryLeaseStore(root.Path, TimeProvider.System).TryBeginAsync(key, TimeSpan.FromSeconds(2)));
         var winners = (await Task.WhenAll(attempts)).Count(static lease => lease is not null);
 
         await Assert.That(winners).IsEqualTo(1);
@@ -294,8 +295,8 @@ public class SessionStartMemoryFoundationTests {
         var provider = new SessionStartMemoryContextProvider(new FixedScopeResolver(null, null),
             (_, _) => Task.FromResult(new HttpClient(new StaticHandler(HttpStatusCode.OK,
                 "[{\"memory_id\":\"1\",\"slug\":\"s\",\"audience\":\"org\",\"description\":\"d\",\"kind\":\"feedback\"}]"))));
-        var orchestrator = new SessionStartMemoryOrchestrator(new SessionStartMemoryLeaseStore(root.Path), provider);
-        var lifecycle = new SessionMemoryLifecycle(SessionStartHarness.Claude, "session", null,
+        var orchestrator = new SessionStartMemoryOrchestrator(new SessionStartMemoryLeaseStore(root.Path, TimeProvider.System), provider);
+        var lifecycle = new SessionMemoryLifecycle(HarnessId.Claude, "session", null,
             true, true, SessionLifecycleReason.New, true);
         var request = new SessionStartMemoryContextRequest(
             "https://example.test", null, false, TimeSpan.FromSeconds(1), CancellationToken.None);
@@ -324,7 +325,7 @@ public class SessionStartMemoryFoundationTests {
                 "[{\"memory_id\":\"1\",\"slug\":\"s\",\"audience\":\"org\",\"description\":\"d\",\"kind\":\"feedback\"}]"))));
         var orchestrator = new SessionStartMemoryOrchestrator(
             new SessionStartMemoryLeaseStore(root.Path, time), provider);
-        var lifecycle = new SessionMemoryLifecycle(SessionStartHarness.Copilot, "3f2504e0-4f89-41d3-9a0c-0305e82c3301", null,
+        var lifecycle = new SessionMemoryLifecycle(HarnessId.Copilot, "3f2504e0-4f89-41d3-9a0c-0305e82c3301", null,
             true, true, SessionLifecycleReason.New, true);
         var request = new SessionStartMemoryContextRequest(
             "https://example.test", null, false, TimeSpan.FromSeconds(1), CancellationToken.None);
@@ -347,8 +348,8 @@ public class SessionStartMemoryFoundationTests {
         var provider = new SessionStartMemoryContextProvider(new FixedScopeResolver(null, null),
             (_, _) => Task.FromResult(new HttpClient(new StaticHandler(HttpStatusCode.OK,
                 "[{\"memory_id\":\"1\",\"slug\":\"s\",\"audience\":\"org\",\"description\":\"d\",\"kind\":\"feedback\"}]"))));
-        var orchestrator = new SessionStartMemoryOrchestrator(new SessionStartMemoryLeaseStore(root.Path), provider);
-        var lifecycle = new SessionMemoryLifecycle(SessionStartHarness.Copilot, "3f2504e0-4f89-41d3-9a0c-0305e82c3301", null,
+        var orchestrator = new SessionStartMemoryOrchestrator(new SessionStartMemoryLeaseStore(root.Path, TimeProvider.System), provider);
+        var lifecycle = new SessionMemoryLifecycle(HarnessId.Copilot, "3f2504e0-4f89-41d3-9a0c-0305e82c3301", null,
             true, true, SessionLifecycleReason.New, true);
         var request = new SessionStartMemoryContextRequest(
             "https://example.test", null, false, TimeSpan.FromSeconds(1), CancellationToken.None);
@@ -366,7 +367,7 @@ public class SessionStartMemoryFoundationTests {
     // Exactly what KiroHookCommand builds: agentSpawn fires per PROMPT, so the callback repeats and
     // the lease is the only thing preventing re-injection.
     static SessionMemoryLifecycle KiroLifecycle(string sessionId) =>
-        new(SessionStartHarness.Kiro, sessionId, LifecycleInstanceId: null,
+        new(HarnessId.Kiro, sessionId, LifecycleInstanceId: null,
             IsTopLevel: true, ClassificationAuthoritative: true,
             SessionLifecycleReason.RepeatedTurnCallback, CallbackMayRepeat: true);
 
@@ -385,7 +386,7 @@ public class SessionStartMemoryFoundationTests {
                 Interlocked.Increment(ref calls);
                 return Task.FromResult(new HttpClient(new StaticHandler(HttpStatusCode.OK, OneMemoryJson)));
             });
-        var orchestrator = new SessionStartMemoryOrchestrator(new SessionStartMemoryLeaseStore(root.Path), provider);
+        var orchestrator = new SessionStartMemoryOrchestrator(new SessionStartMemoryLeaseStore(root.Path, TimeProvider.System), provider);
 
         var first  = await orchestrator.GetFragmentAsync(KiroLifecycle("kiro-session"), KiroRequest());
         var second = await orchestrator.GetFragmentAsync(KiroLifecycle("kiro-session"), KiroRequest());
@@ -406,7 +407,7 @@ public class SessionStartMemoryFoundationTests {
         using var root = new TempDir();
         var provider = new SessionStartMemoryContextProvider(new FixedScopeResolver(null, null),
             (_, _) => Task.FromResult(new HttpClient(new StaticHandler(HttpStatusCode.OK, OneMemoryJson))));
-        var orchestrator = new SessionStartMemoryOrchestrator(new SessionStartMemoryLeaseStore(root.Path), provider);
+        var orchestrator = new SessionStartMemoryOrchestrator(new SessionStartMemoryLeaseStore(root.Path, TimeProvider.System), provider);
 
         var a = await orchestrator.GetFragmentAsync(KiroLifecycle("session-a"), KiroRequest());
         var b = await orchestrator.GetFragmentAsync(KiroLifecycle("session-b"), KiroRequest());
@@ -451,7 +452,7 @@ public class SessionStartMemoryFoundationTests {
                 Interlocked.Increment(ref calls);
                 return Task.FromResult(new HttpClient(new StaticHandler(HttpStatusCode.NoContent, "")));
             });
-        var orchestrator = new SessionStartMemoryOrchestrator(new SessionStartMemoryLeaseStore(root.Path), provider);
+        var orchestrator = new SessionStartMemoryOrchestrator(new SessionStartMemoryLeaseStore(root.Path, TimeProvider.System), provider);
 
         await orchestrator.GetFragmentAsync(KiroLifecycle("kiro-session"), KiroRequest());
         var second = await orchestrator.GetFragmentAsync(KiroLifecycle("kiro-session"), KiroRequest());
@@ -487,7 +488,7 @@ public class SessionStartMemoryFoundationTests {
 
                 return new HttpClient(new StaticHandler(HttpStatusCode.OK, OneMemoryJson));
             });
-        var store = new SessionStartMemoryLeaseStore(root.Path);
+        var store = new SessionStartMemoryLeaseStore(root.Path, TimeProvider.System);
 
         var winner = Task.Run(() => new SessionStartMemoryOrchestrator(store, provider)
             .GetFragmentAsync(KiroLifecycle("kiro-session"), KiroRequest(20)));
@@ -517,7 +518,7 @@ public class SessionStartMemoryFoundationTests {
     // INVOCATION within a conversation, so the callback repeats like Kiro's agentSpawn and the
     // lease is the only thing preventing re-injection every turn.
     static SessionMemoryLifecycle AntigravityLifecycle(string sessionId) =>
-        new(SessionStartHarness.Antigravity, sessionId, LifecycleInstanceId: null,
+        new(HarnessId.Antigravity, sessionId, LifecycleInstanceId: null,
             IsTopLevel: true, ClassificationAuthoritative: true,
             SessionLifecycleReason.RepeatedTurnCallback, CallbackMayRepeat: true);
 
@@ -535,7 +536,7 @@ public class SessionStartMemoryFoundationTests {
                 Interlocked.Increment(ref fetches);
                 return Task.FromResult(new HttpClient(new StaticHandler(HttpStatusCode.OK, OneMemoryJson)));
             });
-        var orchestrator = new SessionStartMemoryOrchestrator(new SessionStartMemoryLeaseStore(root.Path), provider);
+        var orchestrator = new SessionStartMemoryOrchestrator(new SessionStartMemoryLeaseStore(root.Path, TimeProvider.System), provider);
 
         // A real GUID — Antigravity is on the fail-closed identity arm, which normalizes any
         // non-GUID id to null and would short-circuit before the lease is ever consulted,
@@ -556,7 +557,7 @@ public class SessionStartMemoryFoundationTests {
         using var root = new TempDir();
         var provider = new SessionStartMemoryContextProvider(new FixedScopeResolver(null, null),
             (_, _) => Task.FromResult(new HttpClient(new StaticHandler(HttpStatusCode.OK, OneMemoryJson))));
-        var orchestrator = new SessionStartMemoryOrchestrator(new SessionStartMemoryLeaseStore(root.Path), provider);
+        var orchestrator = new SessionStartMemoryOrchestrator(new SessionStartMemoryLeaseStore(root.Path, TimeProvider.System), provider);
 
         var a = await orchestrator.GetFragmentAsync(
             AntigravityLifecycle("e80c33bfc10f4d2fb626b0043f488fc0"), AntigravityRequest());
@@ -573,10 +574,10 @@ public class SessionStartMemoryFoundationTests {
         // such an id would pass without the code under test ever running.
         await Assert.That(
             SessionStartMemoryIdentity.NormalizeSessionId(
-                SessionStartHarness.Antigravity, "ag-test-sess-0001")).IsNull();
+                HarnessId.Antigravity, "ag-test-sess-0001")).IsNull();
         await Assert.That(
             SessionStartMemoryIdentity.NormalizeSessionId(
-                SessionStartHarness.Antigravity, "e80c33bfc10f4d2fb626b0043f488fc0")).IsNotNull();
+                HarnessId.Antigravity, "e80c33bfc10f4d2fb626b0043f488fc0")).IsNotNull();
     }
 
     [Test]
@@ -587,8 +588,8 @@ public class SessionStartMemoryFoundationTests {
             clientCalls++;
             return Task.FromResult(new HttpClient(new StaticHandler(HttpStatusCode.NoContent, "")));
         });
-        var orchestrator = new SessionStartMemoryOrchestrator(new SessionStartMemoryLeaseStore(root.Path), provider);
-        var lifecycle = new SessionMemoryLifecycle(SessionStartHarness.Claude, "session", null,
+        var orchestrator = new SessionStartMemoryOrchestrator(new SessionStartMemoryLeaseStore(root.Path, TimeProvider.System), provider);
+        var lifecycle = new SessionMemoryLifecycle(HarnessId.Claude, "session", null,
             true, true, SessionLifecycleReason.New, false);
 
         var fragment = await orchestrator.GetFragmentAsync(lifecycle,

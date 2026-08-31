@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Core.Harness.OpenCode;
 
 namespace Capacitor.Cli.Harness.OpenCode;
@@ -22,12 +23,12 @@ internal sealed class OpenCodeImportSource : IImportSource {
     readonly OpenCodeImportLedger _ledger;
     readonly object               _ledgerLock = new(); // routed imports may run concurrently
 
-    public OpenCodeImportSource(string? dbPathOverride = null, string? ledgerPathOverride = null) {
-        _dbPath = dbPathOverride ?? Path.Combine(OpenCodePaths.DataDir(), "opencode.db");
-        _ledger = OpenCodeImportLedger.Load(ledgerPathOverride ?? OpenCodeImportLedger.DefaultPath());
+    public OpenCodeImportSource(string dbPath, string ledgerPath) {
+        _dbPath = dbPath;
+        _ledger = OpenCodeImportLedger.Load(ledgerPath);
     }
 
-    public string Vendor => "opencode";
+    public HarnessId Vendor => HarnessId.OpenCode;
     public bool   IsAvailable => File.Exists(_dbPath);
     public bool   SupportsTitleGeneration => false; // routed; native title forwarded via /hooks/set-title
     public bool   AttachesChildContentOnReplay => false; // AlreadyLoaded early-returns before any POST
@@ -189,11 +190,9 @@ internal sealed class OpenCodeImportSource : IImportSource {
         var lineOffset = repair ? checked(c.ResumeFromLine + 1) : 0;
 
         // 1. session-start (lifecycle-before-transcript; idempotent server-side).
-        var startPayload = BuildSessionStartPayload(c.SessionId, c.Meta.Cwd, c.Meta.FirstTimestamp, ctx.ForcePrivate);
-        // Step 3 visibility stamp — New-only, and never overrides the existing forcePrivate
-        // "private" stamp above (mutually exclusive: this only fires when !ctx.ForcePrivate).
-        if (!ctx.ForcePrivate && c.Status == ImportCommand.ClassificationStatus.New && ctx.DefaultVisibility is not null) {
-            startPayload["default_visibility"] = ctx.DefaultVisibility;
+        var startPayload = BuildSessionStartPayload(c.SessionId, c.Meta.Cwd, c.Meta.FirstTimestamp);
+        if (ctx.VisibilityStampFor(c.Status) is { } visibility) {
+            startPayload["default_visibility"] = visibility;
         }
 
         if (!await PostHookAsync(ctx.HttpClient, ctx.BaseUrl, "session-start/opencode", startPayload, ct))
@@ -389,7 +388,7 @@ internal sealed class OpenCodeImportSource : IImportSource {
         EncodedCwd       = "",
         Meta             = meta,
         Status           = status,
-        Vendor           = "opencode",
+        Vendor           = HarnessId.OpenCode,
         ProbeErrorReason = probeError,
         TotalLines       = totalLines,
         SourceMeta       = s.SourceMeta,
@@ -459,7 +458,7 @@ internal sealed class OpenCodeImportSource : IImportSource {
             ? ln.GetInt32() : null;
     }
 
-    static JsonObject BuildSessionStartPayload(string sid, string? cwd, DateTimeOffset? startedAt, bool forcePrivate) {
+    static JsonObject BuildSessionStartPayload(string sid, string? cwd, DateTimeOffset? startedAt) {
         var p = new JsonObject {
             ["hook_event_name"] = "sessionStart",
             ["session_id"]      = sid,
@@ -470,7 +469,6 @@ internal sealed class OpenCodeImportSource : IImportSource {
         // so routed imports carry the same workspace_root the file-based path does.
         if (cwd is not null && GitRepository.FindRoot(cwd) is { } workspaceRoot) p["workspace_root"] = workspaceRoot;
         if (startedAt is { } ts) p["started_at"] = ts.ToString("O");
-        if (forcePrivate) p["default_visibility"] = "private";
         p["origin"] = ImportOrigins.Historical;
         return p;
     }

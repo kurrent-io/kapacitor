@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Capacitor.Cli.Core.LocalIpc;
 
 namespace Capacitor.Cli.Core.Tests.Unit.LocalIpc;
 
@@ -54,5 +55,30 @@ public class DaemonStatusDtoTests {
 
         await Assert.That(connect.Name).IsEqualTo("tony");
         await Assert.That(connect.LiveAgents).IsNull();
+    }
+
+    [Test]
+    public async Task Supported_vendors_round_trips() {
+        var dto = new DaemonStatusDto(
+            new DaemonInfoDto("kcap-dev", "1.2.3", "https://example.test", "connected", 4, 1,
+                Pid: 42, InstanceId: "abc", SupportedVendors: ["claude", "cursor"]),
+            []);
+
+        var json = JsonSerializer.Serialize(dto, StatusIpcJsonContext.Default.DaemonStatusDto);
+        var back = JsonSerializer.Deserialize(json, StatusIpcJsonContext.Default.DaemonStatusDto)!;
+
+        await Assert.That(back.Daemon.SupportedVendors).IsEquivalentTo(new[] { "claude", "cursor" });
+    }
+
+    [Test]
+    public async Task Snapshot_without_supported_vendors_deserializes_as_null() {
+        const string json = """
+            {"daemon":{"name":"kcap-dev","version":"1","server_url":"u","connection":"connected",
+            "max_agents":4,"active_agents":0,"pid":1,"instance_id":"i"},"agents":[]}
+            """;
+
+        var back = JsonSerializer.Deserialize(json, StatusIpcJsonContext.Default.DaemonStatusDto)!;
+
+        await Assert.That(back.Daemon.SupportedVendors).IsNull();
     }
 }

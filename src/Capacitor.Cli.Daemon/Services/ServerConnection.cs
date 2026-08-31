@@ -46,6 +46,16 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     static readonly TimeSpan PermissionRetryPollInterval = TimeSpan.FromMilliseconds(500);
     static readonly TimeSpan EndSessionRetryPollInterval  = TimeSpan.FromMilliseconds(500);
     static readonly TimeSpan AcpRetryPollInterval         = TimeSpan.FromMilliseconds(500);
+    static readonly TimeSpan ParkRetryPollInterval        = TimeSpan.FromMilliseconds(500);
+
+    /// <summary>§2.7 B6 arm-A: an upper bound on the WHOLE park report (readiness gate + retries).
+    /// <c>ParkReviewerAsync</c> holds the reap claim across this call, so — unlike the other
+    /// <see cref="ConnectionRetry"/> callers, whose waits are bounded only by daemon shutdown — an
+    /// unbounded wait for <see cref="IsReady"/> here would pin an idle reviewer (claimed, slot not freed)
+    /// for the entire outage. On elapse the attempt folds to <see cref="ParkAck.Ambiguous"/>, releasing
+    /// the claim so a later sweep retries the park (park is best-effort; never worth pinning for).
+    /// Settable only so a test need not spend the real 30s proving the bound; production never sets it.</summary>
+    internal TimeSpan ParkAckBudget { get; init; } = TimeSpan.FromSeconds(30);
 
     // Events for incoming commands from server
     public event Func<LaunchAgentCommand, Task>?    OnLaunchAgent;
@@ -190,7 +200,7 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
                 $"{config.ServerUrl.TrimEnd('/')}/hubs/sessions",
                 options => {
                     options.AccessTokenProvider = async () => {
-                        var resolution = await TokenStore.GetValidTokensForServerAsync(config.ServerUrl);
+                        var resolution = await new TokenStore(config.ConfigRoot).GetValidTokensForServerAsync(config.Profiles.Name, config.ServerUrl);
 
                         return resolution.Tokens?.AccessToken;
                     };
@@ -632,7 +642,7 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
                 "DaemonConnect",
                 new DaemonConnect(
                     _config.Name, platform, repoPaths, _config.MaxConcurrentAgents, liveIds,
-                    _config.InstanceId, _config.Version, _config.SupportedVendors, MachineId.Get(), liveAgents,
+                    _config.InstanceId, _config.Version, _config.SupportedVendors, new MachineId(_config.ConfigRoot).Get(), liveAgents,
                     _config.UnattendedVendors,
                     // Phase B2-b (sequenced-settlement design §4.2.3/§4.2.4): advertise the durable
                     // coverage boot-chain verdict plus the un-acked resolved-candidates ledger snapshot,
@@ -703,7 +713,7 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     internal Func<Task>? OnRegisteredHook { get; set; }
 
     async Task<string[]> MergeRepoPathsAsync() {
-        var persisted = await RepoPathStore.GetSortedPathsAsync();
+        var persisted = await new RepoPathStore(_config.ConfigRoot).GetSortedPathsAsync();
 
         if (_config.AllowedRepoPaths.Length == 0)
             return persisted;
@@ -929,34 +939,30 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     /// the positional-arity fragility that broke earlier hosted-permission changes.
     /// </summary>
     public virtual async Task<PermissionDecision> RequestPermissionAsync(
-            string            sessionId,
-            string?           toolName,
-            JsonElement?      toolInput,
-            JsonElement?      suggestions,
-            CancellationToken ct = default
-        ) {
-        // RequestPermission2 is a SHORT invocation: the server tracks the request, broadcasts the
-        // prompt to the UI, and returns a requestId right away — it does NOT stay pending for the
-        // whole elicitation wait. That keeps the connection's single parallel-invocation slot free
-        // so DaemonPing isn't starved (the reconnect-storm / spurious-deny bug). The user's
-        // decision arrives later via the "PermissionResolved" push, correlated by requestId.
-        //
-        // The invoke is still wrapped in ConnectionRetry: a SignalR blip while obtaining the
-        // requestId is transient (gated on IsReady so it can't fire against an unregistered
-        // connection). Once we have the requestId, the await survives reconnects on its own — the
-        // pending entry lives in-process, and the server re-resolves the daemon connection at push
-        // time, so a reconnect between request and decision is transparent.
-        //
-        // isRetriableServerError closes the residual ownership race: if IsReady is true but a
-        // specific agent's re-registration didn't restore server-side ownership, RequestPermission2
-        // throws "Caller is not the daemon owning session". Retry that a bounded number of times
-        // (giving re-registration a moment) rather than treating it as a final deny.
-        var requestId = await ConnectionRetry.InvokeWithConnectionRetryAsync(
-            () => _hub.InvokeAsync<string>(
-                "RequestPermission2",
-                new HostedPermissionRequest(sessionId, toolName, toolInput, suggestions),
-                ct
-            ),
+            string sessionId, string? toolName, JsonElement? toolInput, JsonElement? suggestions, CancellationToken ct = default) {
+        var requestId = await BeginPermissionRequestAsync(sessionId, toolName, toolInput, suggestions, ct, static () => false);
+        return await AwaitPermissionDecisionAsync(requestId, ct);
+    }
+
+    public enum RespondOutcomeKind { Applied, NotPending, Failed }
+    public readonly record struct RespondOutcome(RespondOutcomeKind Kind, string? Reason);
+
+    /// The RequestPermission2 invoke under ConnectionRetry. `abandoned` is evaluated synchronously
+    /// immediately before every hub invoke: a token cancelled from a task continuation is not
+    /// synchronous with the settlement that requested it, so the predicate is what keeps a settled
+    /// request's invoke off the wire when readiness returns.
+    public virtual Task<string> BeginPermissionRequestAsync(
+            string sessionId, string? toolName, JsonElement? toolInput, JsonElement? suggestions,
+            CancellationToken ct, Func<bool> abandoned) =>
+        ConnectionRetry.InvokeWithConnectionRetryAsync(
+            () => {
+                if (abandoned()) throw new PermissionRequestAbandonedException();
+                return _hub.InvokeAsync<string>(
+                    "RequestPermission2",
+                    new HostedPermissionRequest(sessionId, toolName, toolInput, suggestions),
+                    ct
+                );
+            },
             () => IsReady,
             PermissionRetryPollInterval,
             attempt => LogPermissionRetry(sessionId, attempt),
@@ -965,8 +971,25 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
             maxServerErrorRetries: OwnershipNotReadyMaxRetries
         );
 
-        return await _pendingPermissions.AwaitDecisionAsync(requestId, ct);
+    public virtual Task<PermissionDecision> AwaitPermissionDecisionAsync(string serverRequestId, CancellationToken ct) =>
+        _pendingPermissions.AwaitDecisionAsync(serverRequestId, ct);
+
+    /// The hub method the web UI answers through, invoked as the owner so the web card clears
+    /// after a local settlement. Never throws; runs on the daemon-lifetime token.
+    public virtual async Task<RespondOutcome> RespondToPermissionAsync(string sessionId, string serverRequestId, PermissionDecision decision) {
+        try {
+            await _hub.InvokeAsync("RespondToPermission", sessionId, serverRequestId, decision.Behavior,
+                decision.ApplyPermissions, decision.UpdatedInput, _ct);
+            return new RespondOutcome(RespondOutcomeKind.Applied, null);
+        } catch (Exception ex) {
+            return ClassifyRespondFailure(ex);
+        }
     }
+
+    internal static RespondOutcome ClassifyRespondFailure(Exception ex) =>
+        ex is Microsoft.AspNetCore.SignalR.HubException he && he.Message.Contains("no longer pending", StringComparison.Ordinal)
+            ? new RespondOutcome(RespondOutcomeKind.NotPending, he.Message)
+            : new RespondOutcome(RespondOutcomeKind.Failed, ex.Message);
 
     /// <summary>
     /// Forwards an ACP permission/elicitation interaction to the server's
@@ -1265,6 +1288,102 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
         ) => _hub.InvokeAsync<AcpLaunchConfirmOutcome>("ConfirmSessionLaunch", acpSessionId, ownershipToken, cancellationToken: ct);
 
     /// <summary>
+    /// §2.7 B6: reports a settled, resumable hosted reviewer that the daemon is about to
+    /// PARK (freeing its slot while keeping its app-server thread alive for a later resume) to the
+    /// server's <c>ReportParticipantParked</c> hub method, and folds the reply into a
+    /// <see cref="ParkAck"/>. Gated on <see cref="IsReady"/> and wrapped in <see cref="ConnectionRetry"/>
+    /// exactly like <see cref="AcpSessionSourceClaimAsync"/>/<see cref="ConfirmSessionLaunchAsync"/> —
+    /// a transient disconnect is retried transparently rather than surfacing.
+    ///
+    /// Unlike those two, this method NEVER throws. The arm-A park state machine
+    /// (<c>AgentOrchestrator.ParkReviewerAsync</c>) needs a definite three-way answer rather than a
+    /// two-way outcome-or-exception split, because an exception here must NOT be treated as a
+    /// rejection by default: <see cref="ParkAck.Ambiguous"/> — covering a transient
+    /// <c>HubException</c>, an <see cref="OperationCanceledException"/> (including daemon shutdown),
+    /// or any other unmapped exception — leaves the reviewer's local state untouched so the next reap
+    /// sweep retries the park, instead of falling back to a destructive end. Only the server's two
+    /// definite wire outcomes (<see cref="ParkParticipantOutcome.Parked"/>/
+    /// <see cref="ParkParticipantOutcome.Rejected"/>) map to their like-named <see cref="ParkAck"/>
+    /// members; any other/unmapped value degrades to <see cref="ParkAck.Ambiguous"/> rather than being
+    /// assumed successful.
+    ///
+    /// One exception IS treated as a definite outcome: <see cref="IsUnknownHubMethod"/> singles out
+    /// the <c>HubException</c> a pre-B1 server raises because it has no <c>ReportParticipantParked</c>
+    /// handler at all. That is a PERMANENT degrade, not a transient hiccup — folding it into Ambiguous
+    /// would have <c>ParkReviewerAsync</c> retry the park forever against a server that will never grow
+    /// the method. Mapping it to <see cref="ParkAck.Rejected"/> instead makes the caller fall back to
+    /// the normal reap, same as a definite server-side refusal.
+    /// </summary>
+    public virtual async Task<ParkAck> ReportParticipantParkedAsync(
+            string agentId, string canonicalSessionId, string reason, CancellationToken ct = default
+        ) {
+        // Bound the whole attempt (readiness gate + retries) with ParkAckBudget so a disconnected daemon
+        // can never pin the caller: ParkReviewerAsync holds the reap claim across this await, and the
+        // readiness loop is otherwise bounded only by the shutdown token. On elapse the linked token
+        // cancels, ConnectionRetry surfaces OperationCanceledException, and the generic catch below folds
+        // it to Ambiguous — "no definite reply" — releasing the claim for a later sweep to retry. If
+        // IsReady never came, no report was sent, so there is nothing to reconcile.
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(ParkAckBudget);
+        try {
+            var outcome = await ConnectionRetry.InvokeWithConnectionRetryAsync(
+                () => InvokeReportParticipantParkedRawAsync(agentId, canonicalSessionId, reason, timeoutCts.Token),
+                () => IsReady,
+                ParkRetryPollInterval,
+                attempt => LogReportParticipantParkedRetry(agentId, attempt),
+                timeoutCts.Token
+            );
+
+            return outcome switch {
+                ParkParticipantOutcome.Parked   => ParkAck.Parked,
+                ParkParticipantOutcome.Rejected => ParkAck.Rejected,
+                _                                => ParkAck.Ambiguous, // unmapped/future wire value — never assume success
+            };
+        } catch (Exception ex) when (IsUnknownHubMethod(ex)) {
+            // Pre-B1 server: ReportParticipantParked doesn't exist there and never will until the
+            // server is upgraded. Definite degrade, not "no reply" — fall back to the normal reap
+            // instead of retrying this park forever (see the doc comment above).
+            LogReportParticipantParkedUnknownMethod(agentId);
+
+            return ParkAck.Rejected;
+        } catch (Exception ex) {
+            LogReportParticipantParkedAmbiguous(ex, agentId);
+
+            return ParkAck.Ambiguous;
+        }
+    }
+
+    /// <summary>
+    /// True when <paramref name="ex"/> is the <see cref="Microsoft.AspNetCore.SignalR.HubException"/>
+    /// SignalR raises when the connected server has no handler at all for the invoked hub method
+    /// name — the case a pre-B1 server hits for <c>ReportParticipantParked</c>. When a client invokes
+    /// a target the server's <c>DefaultHubDispatcher</c> can't resolve, it completes the invocation
+    /// with the error <c>Unknown hub method '&lt;target&gt;'</c> (sent regardless of
+    /// <c>EnableDetailedErrors</c>), surfaced on the client as a <c>HubException</c> carrying that
+    /// message — verified against aspnetcore v10.0.11
+    /// (<c>src/SignalR/server/Core/src/Internal/DefaultHubDispatcher.cs</c>). Matched case-insensitively
+    /// on the stable <c>"Unknown hub method"</c> substring (robust to the interpolated target name), and
+    /// narrowly scoped to <see cref="Microsoft.AspNetCore.SignalR.HubException"/> only: that phrase is
+    /// SignalR-internal protocol text no hub handler emits deliberately, so a genuine transient
+    /// <c>HubException</c> (e.g. "Caller is not a registered daemon") never contains it and is never
+    /// misclassified as a permanent degrade.
+    /// </summary>
+    static bool IsUnknownHubMethod(Exception ex) =>
+        ex is Microsoft.AspNetCore.SignalR.HubException he
+        && he.Message.Contains("Unknown hub method", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// The actual <c>ReportParticipantParked</c> hub invocation, isolated into its own <c>virtual</c>
+    /// method so <see cref="ReportParticipantParkedAsync"/>'s gating/mapping can be tested without a
+    /// live hub. A pre-B1 server has no such method, so <c>InvokeAsync</c> throws (method-not-found),
+    /// which <see cref="ReportParticipantParkedAsync"/> singles out via <see cref="IsUnknownHubMethod"/>
+    /// and maps to <see cref="ParkAck.Rejected"/> rather than treating it like any other exception.
+    /// </summary>
+    internal virtual Task<ParkParticipantOutcome> InvokeReportParticipantParkedRawAsync(
+            string agentId, string canonicalSessionId, string reason, CancellationToken ct
+        ) => _hub.InvokeAsync<ParkParticipantOutcome>("ReportParticipantParked", agentId, canonicalSessionId, reason, cancellationToken: ct);
+
+    /// <summary>
     /// Queues a base64 PTY chunk for the hosted-agent terminal mirror:
     /// chunks are drained by <see cref="TerminalOutputSender"/>'s single ordered loop
     /// instead of being fired at <c>SendAsync</c> fire-and-forget, so they reach the
@@ -1359,7 +1478,7 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
                 while (!ct.IsCancellationRequested) {
                     try {
                         _httpClient ??= new();
-                        var resolution = await TokenStore.GetValidTokensForServerAsync(_config.ServerUrl, ct);
+                        var resolution = await new TokenStore(_config.ConfigRoot).GetValidTokensForServerAsync(_config.Profiles.Name, _config.ServerUrl, ct);
 
                         if (resolution.Tokens?.AccessToken is not null) {
                             _httpClient.DefaultRequestHeaders.Authorization = new("Bearer", resolution.Tokens.AccessToken);
@@ -1496,6 +1615,15 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     [LoggerMessage(Level = LogLevel.Information, Message = "ConfirmSessionLaunch for session {AcpSessionId} interrupted by a connection drop (retry {Attempt}); waiting for the daemon connection to recover before retrying")]
     partial void LogConfirmSessionLaunchRetry(string acpSessionId, int attempt);
 
+    [LoggerMessage(Level = LogLevel.Information, Message = "ReportParticipantParked for agent {AgentId} interrupted by a connection drop (retry {Attempt}); waiting for the daemon connection to recover before retrying")]
+    partial void LogReportParticipantParkedRetry(string agentId, int attempt);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "ReportParticipantParked for agent {AgentId} got no definite reply — treating as ambiguous so the next reap sweep retries the park")]
+    partial void LogReportParticipantParkedAmbiguous(Exception ex, string agentId);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "ReportParticipantParked for agent {AgentId} failed because the connected server has no such hub method (pre-B1) — treating as Rejected so the caller falls back to the normal reap instead of retrying forever")]
+    partial void LogReportParticipantParkedUnknownMethod(string agentId);
+
     [LoggerMessage(Level = LogLevel.Warning, Message = "Reconnect re-bind of ACP session {AcpSessionId} for agent {AgentId} failed (attempt {Attempt}/{MaxAttempts})")]
     partial void LogAcpRebindFailed(Exception ex, string agentId, string acpSessionId, int attempt, int maxAttempts);
 
@@ -1590,3 +1718,17 @@ internal sealed class AcpBindRejectedException(string agentId, string acpSession
     public string AgentId      { get; } = agentId;
     public string AcpSessionId { get; } = acpSessionId;
 }
+
+/// <summary>
+/// §2.7 B6: the daemon-local result of <see cref="ServerConnection.ReportParticipantParkedAsync"/> —
+/// purely in-memory, never (de)serialized. Widens the server's two-value wire outcome
+/// (<see cref="ParkParticipantOutcome"/>) with a third, daemon-only case the wire never encodes:
+/// <see cref="Ambiguous"/> covers any transport error, timeout, <c>HubException</c>, or otherwise
+/// unmapped result — i.e. no definite reply was received. <see cref="Parked"/> and
+/// <see cref="Rejected"/> mirror the like-named <see cref="ParkParticipantOutcome"/> members
+/// one-for-one. The arm-A park state machine (<c>AgentOrchestrator.ParkReviewerAsync</c>) branches
+/// on this: <c>Parked</c> completes the park teardown (session-end suppressed), <c>Rejected</c>
+/// falls back to the normal end path, and <c>Ambiguous</c> leaves everything intact for the next
+/// reap sweep to retry — never a destructive teardown on an uncertain reply.
+/// </summary>
+internal enum ParkAck { Parked, Rejected, Ambiguous }

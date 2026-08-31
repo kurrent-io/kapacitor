@@ -1,6 +1,7 @@
 using System.Text.RegularExpressions;
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Harness;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
 using WireMock.Server;
@@ -8,55 +9,50 @@ using WireMock.Server;
 namespace Capacitor.Cli.Tests.Integration;
 
 /// <summary>
-/// Pins the boundary between the Done-grid counting override and <c>--private</c> membership:
-/// <see cref="ImportCommand.ResolveRoutedOutcomeForCounting"/> may reclassify a <c>Skipped</c>
-/// replay that attached child content as <c>Loaded</c> FOR COUNTING, but that must never feed
-/// <c>importedSessionIds</c>, which keys off the call's RAW outcome.
+/// Pins that <c>--private</c> membership does not depend on what an import made of a session.
 ///
-/// <para>
-/// <see cref="AntigravitySkippedChildOverrideRoutedLoopTests"/> cannot pin this any more. The
-/// privatize set is <c>HashSet(importedSessionIds) ∪ privateScopeSessionIds</c>, and every REAL
-/// vendor that can report <c>SentChildContent: true</c> (Cursor, Antigravity, Gemini) is now in the
-/// outcome-independent private scope — so the union absorbs the difference and both the correct and
-/// the rewired behaviour emit exactly one PUT. For routed vendors the union is also
-/// <c>importedSessionIds</c>' only remaining consumer: <c>ComputePerSourceFinalCounts</c> takes the
-/// early <c>routedOutcomes</c> return and ignores its <c>imported</c> argument entirely.
+/// <para><b>Why it cannot depend on the outcome.</b> A <c>default_visibility</c> stamp decides a
+/// session's visibility at creation only — the read model's import-overlap branch omits that column
+/// from its update — so for a session this run merely revisits, the closing <c>visibility=none</c>
+/// pass is the only mechanism there is. Anything that lets an outcome decide whether that pass
+/// reaches a session leaves history org-visible for good.
+/// </para>
+///
+/// <para><b>The probe is the hardest case for that.</b> It is deliberately contradictory —
+/// <see cref="IImportSource.AttachesChildContentOnReplay"/> is <c>false</c> while the call reports
+/// <c>SentChildContent: true</c> — a combination no shipped source has. That keeps it out of
+/// <c>privateScopeSessionIds</c>, and its <c>Skipped</c> raw outcome keeps it out of
+/// <c>importedSessionIds</c>; only the in-scope capture reaches it. The Loaded-count assertion is
+/// kept alongside so the counting override is visibly firing, which is what stops the PUT assertion
+/// passing for some unrelated reason.
 /// </para>
 ///
 /// <para>
-/// Observing the rule therefore requires a source that attaches child content while sitting OUTSIDE
-/// the private scope — a combination no shipped source has, hence the probe below. It is
-/// deliberately contradictory (<see cref="IImportSource.AttachesChildContentOnReplay"/> is
-/// <c>false</c> while the call reports <c>SentChildContent: true</c>) precisely so the two
-/// mechanisms can be told apart: key membership off <c>resolved</c> and this test's zero-PUT
-/// assertion fails, while the Loaded-count assertion keeps passing.
-/// </para>
-///
-/// <para>
-/// This exercises the non-TTY renderer only, which is sound because there is exactly ONE membership
-/// site to break: <c>HandleImport</c>'s <c>RecordRoutedResultAsync</c> performs the privatize
-/// capture, the counting resolution and the membership decision for both renderers, which differ
-/// only in how they draw. If that bookkeeping is ever inlined back into the two
-/// <c>Parallel.ForEachAsync</c> bodies, this test stops covering the TTY branch and a TTY variant
-/// (or an injectable display mode) becomes necessary.
+/// This exercises the non-TTY renderer only, which is sound because the capture and the membership
+/// decision live in <c>HandleImport</c> for both renderers, which differ only in how they draw. If
+/// that bookkeeping is ever inlined back into the two <c>Parallel.ForEachAsync</c> bodies, this test
+/// stops covering the TTY branch and a TTY variant becomes necessary.
 /// </para>
 /// </summary>
 public class RoutedPrivatizeMembershipTests : IDisposable {
+    [TempHome] public required TempHome Home { get; init; }
+
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     readonly WireMockServer _server = WireMockServer.Start();
 
     public void Dispose() => _server.Stop();
 
-    const string ProbeVendor    = "membership-probe";
+    const HarnessId ProbeVendor = HarnessId.Kiro;
     const string ProbeSessionId = "9f9f0000000040008000000000000f0f";
 
     /// <summary>
-    /// Reports the exact shape the counting override targets — an <c>AlreadyLoaded</c> replay whose
-    /// own outcome is <c>Skipped</c> but which attached brand-new nested-child content — while
-    /// declaring it cannot attach child content on a replay, so the orchestrator's
-    /// outcome-independent privatize capture does NOT pick it up.
+    /// An <c>AlreadyLoaded</c> replay whose own outcome is <c>Skipped</c> but which attached
+    /// brand-new nested-child content, while declaring it cannot — so neither the raw-outcome set
+    /// nor the child-content scope holds it, and the in-scope capture is the only thing left.
     /// </summary>
     sealed class ChildContentOutsidePrivateScopeSource : IImportSource {
-        public string Vendor                      => ProbeVendor;
+        public HarnessId Vendor                   => ProbeVendor;
         public bool   IsAvailable                 => true;
         public bool   SupportsTitleGeneration     => false;
         public bool   AttachesChildContentOnReplay => false;
@@ -97,14 +93,36 @@ public class RoutedPrivatizeMembershipTests : IDisposable {
         Regex.IsMatch(text, $@"(?m)^\s*{Regex.Escape(label)}\s+{value}\s*$");
 
     [Test, NotInParallel]
-    public async Task counting_override_does_not_pull_a_skipped_replay_into_the_private_set() {
+    public async Task a_routed_replay_is_not_imported_when_it_could_not_be_made_private_first() {
+        // The routed half of the fail-closed preflight. The probe is an existing session, so it is
+        // narrowed before any content moves; when that write is lost it must be dropped from the run
+        // rather than replayed into while still carrying its old audience.
+        _server.Given(Request.Create().WithPath("/api/sessions/*/visibility").UsingPut())
+            .RespondWith(Response.Create().WithStatusCode(500));
+
+        var stdout = await CaptureStdoutAsync(async () => {
+            await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), Home).HandleImport(
+                filterCwd: null,
+                minLines: 0,
+                sources: [new ChildContentOutsidePrivateScopeSource()],
+                scope: new ImportScope.All(),
+                skipConfirmation: true,
+                forcePrivate: true
+            );
+        });
+
+        await Assert.That(stdout).DoesNotContain($"Loading {ProbeSessionId}")
+                    .Because("its import must not run at all once the floor could not be established");
+    }
+
+    [Test, NotInParallel]
+    public async Task a_skipped_replay_outside_the_child_content_scope_is_still_privatized() {
         _server.Given(Request.Create().WithPath("/api/sessions/*/visibility").UsingPut())
             .RespondWith(Response.Create().WithStatusCode(200));
 
         var exitCode = 0;
         var stdout = await CaptureStdoutAsync(async () => {
-            exitCode = await ImportCommand.HandleImport(
-                baseUrl: _server.Url!,
+            exitCode = await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), Home).HandleImport(
                 filterCwd: null,
                 minLines: 0,
                 sources: [new ChildContentOutsidePrivateScopeSource()],
@@ -119,17 +137,22 @@ public class RoutedPrivatizeMembershipTests : IDisposable {
         // The override DID fire: the raw outcome is Skipped, yet the run counts it as Loaded and
         // prints the "Loading" line. Without this the zero-PUT assertion below would pass
         // vacuously — a plain suppressed no-op replay also emits no PUT.
-        await Assert.That(stdout).Contains($"Loading {ProbeSessionId} ({ProbeVendor})");
+        await Assert.That(stdout).Contains($"Loading {ProbeSessionId} ({ProbeVendor.VendorId})");
         var doneIdx = stdout.IndexOf("== Done ==", StringComparison.Ordinal);
         await Assert.That(doneIdx).IsGreaterThanOrEqualTo(0);
         await Assert.That(LineMatches(stdout[doneIdx..], "Loaded", 1)).IsTrue();
 
-        // ...and membership did NOT follow it. This source is not in the private scope, so the
-        // union cannot mask the difference: keying membership off `resolved` instead of the raw
-        // outcome would add this id to importedSessionIds and produce one PUT here.
-        var visibilityPuts = _server.LogEntries.Count(e =>
-            e.RequestMessage.Method == "PUT"
-         && e.RequestMessage.Path.EndsWith("/visibility", StringComparison.Ordinal));
-        await Assert.That(visibilityPuts).IsEqualTo(0);
+        // ...and the session was privatized anyway, by the in-scope capture rather than by anything
+        // the import concluded. Nothing else could have: the raw outcome is Skipped and the source
+        // declares no child content on replay.
+        // Which sessions, not how many writes: an existing session is narrowed before the content and
+        // again by the closing pass, so the count is a property of that two-phase design.
+        var privatized = _server.LogEntries
+            .Where(e => e.RequestMessage.Method == "PUT")
+            .Select(e => e.RequestMessage.Path)
+            .Distinct()
+            .ToList();
+
+        await Assert.That(privatized).IsEquivalentTo([$"/api/sessions/{ProbeSessionId}/visibility"]);
     }
 }

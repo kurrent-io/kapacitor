@@ -58,6 +58,9 @@ namespace Capacitor.Cli.Tests.Integration;
 /// </para>
 /// </summary>
 public class AntigravitySkippedChildOverrideRoutedLoopTests : IDisposable {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+    [TempHome] public required TempHome Home { get; init; }
+
     readonly WireMockServer _server         = WireMockServer.Start();
     readonly TempDir        _tmp            = new();
     readonly string         _home;
@@ -157,13 +160,12 @@ public class AntigravitySkippedChildOverrideRoutedLoopTests : IDisposable {
         _server.Given(Request.Create().WithPath("/api/sessions/*/visibility").UsingPut())
             .RespondWith(Response.Create().WithStatusCode(200));
 
-        var antigravity = new AntigravityImportSource(home: _home, geminiCliHome: "");
-        var gemini      = new GeminiImportSource(tmpDirOverride: _geminiTmpDir);
+        var antigravity = new AntigravityImportSource(new(new(_home), ""));
+        var gemini      = new GeminiImportSource(_geminiTmpDir);
 
         var exitCode = 0;
         var stdout = await CaptureStdoutAsync(async () => {
-            exitCode = await ImportCommand.HandleImport(
-                baseUrl: _server.Url!,
+            exitCode = await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), Home).HandleImport(
                 filterCwd: null,
                 minLines: 0,
                 sources: [antigravity, gemini],
@@ -215,6 +217,8 @@ public class AntigravitySkippedChildOverrideRoutedLoopTests : IDisposable {
             .Where(e => e.RequestMessage.Method == "PUT")
             .Select(e => e.RequestMessage.Path)
             .ToArray();
-        await Assert.That(putPaths).IsEquivalentTo([$"/api/sessions/{Root}/visibility"]);
+        // Distinct: an existing session is narrowed before the replay and again by the closing pass, so
+        // which sessions were privatized is the claim here, not how many writes it took.
+        await Assert.That(putPaths.Distinct()).IsEquivalentTo([$"/api/sessions/{Root}/visibility"]);
     }
 }

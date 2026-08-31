@@ -878,7 +878,7 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
                   + "executable, so the sandbox cannot be drawn around it.");
 
             var profile = BorrowedReviewSandbox.BuildProfile(
-                snapshotRoot, stateRoot, BorrowedReviewRuntimeRoots.Resolve(vendorBinary));
+                snapshotRoot, stateRoot, BorrowedReviewRuntimeRoots.Resolve(vendorBinary, config.Home));
 
             argv       = [.. BorrowedReviewSandbox.WrapArgv(profile, vendorBinary, argv)];
             binaryPath = BorrowedReviewSandbox.SandboxExecPath;
@@ -929,8 +929,13 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
             // HOME and TMPDIR both move into the per-launch root, which is what keeps the reviewer
             // away from the user's vendor profile, command history and caches — and what removes the
             // previous profile's blanket /private/var/folders and /dev write grants.
-            psi.Environment["HOME"]    = BorrowedReviewSandbox.HomeDirectoryIn(stateRoot);
+            var sandboxHome = BorrowedReviewSandbox.HomeDirectoryIn(stateRoot);
+
+            psi.Environment["HOME"]    = sandboxHome;
             psi.Environment["TMPDIR"]  = BorrowedReviewSandbox.TempDirectoryIn(stateRoot);
+            // The home is only where a nested kcap would DERIVE its root, so an operator with
+            // KCAP_CONFIG_DIR exported had the reviewer reading the real profile by inheritance.
+            psi.Environment[ConfigRoot.ConfigDirEnvVar] = ConfigRoot.UnderHome(sandboxHome).Directory;
             psi.Environment[BorrowedReviewAuthBroker.TargetVariable] = brokeredToken;
         }
 

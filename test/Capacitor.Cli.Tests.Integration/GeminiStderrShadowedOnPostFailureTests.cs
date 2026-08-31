@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Capacitor.Cli.Commands;
 using Capacitor.Cli.Commands.Harness;
 using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core;
@@ -22,25 +23,13 @@ namespace Capacitor.Cli.Tests.Integration;
 /// same write also has to carry the memory envelope.</para>
 /// </summary>
 public class GeminiStderrShadowedOnPostFailureTests : IDisposable {
-    // Declaration order is load-bearing — see GeminiSessionStartHandshakeOnPostFailureTests.
-    readonly string  _configPath     = PathHelpers.ConfigPath("config.json");
-    readonly string? _previousConfig = File.Exists(PathHelpers.ConfigPath("config.json"))
-        ? File.ReadAllText(PathHelpers.ConfigPath("config.json"))
-        : null;
+    [TempHome] public required TempHome Home { get; init; }
+
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
 
     readonly WireMockServer _server = WireMockServer.Start();
 
-    public void Dispose() {
-        try {
-            if (_previousConfig is null) {
-                if (File.Exists(_configPath)) File.Delete(_configPath);
-            } else {
-                File.WriteAllText(_configPath, _previousConfig);
-            }
-        } finally {
-            try { _server.Stop(); } catch { /* best-effort */ }
-        }
-    }
+    public void Dispose() => _server.Stop();
 
     [Test, NotInParallel]
     public async Task A_rejected_session_end_post_shadows_its_own_stderr_diagnostic() {
@@ -93,7 +82,7 @@ public class GeminiStderrShadowedOnPostFailureTests : IDisposable {
     }
 
     async Task UseServerProfileAsync() =>
-        await ConfigMutator.MutateAsync(_ => new ProfileConfig {
+        await ConfigMutator.MutateAsync(Config.Root, _ => new ProfileConfig {
             ActiveProfile = "work",
             Profiles      = new() { ["work"] = new Profile { ServerUrl = _server.Url } }
         });
@@ -106,7 +95,7 @@ public class GeminiStderrShadowedOnPostFailureTests : IDisposable {
         using var capture = ConsoleOutput.StartFullCapture();
 
 
-        var exit = await GeminiHookCommand.Handle(_server.Url!, new StringReader(payload));
+        var exit = await new GeminiHookCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), new HookClock(TimeProvider.System), Home).Handle(new StringReader(payload));
 
         return (exit, capture.GetCapturedOutput(), capture.GetCapturedError());
     }

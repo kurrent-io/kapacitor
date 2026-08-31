@@ -1,15 +1,16 @@
 using System.Text;
 using System.Text.Json;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.Harness.Claude;
 using Capacitor.Cli.Core.Harness.Codex;
 
 namespace Capacitor.Cli.Commands;
 
-static class WhatsDoneCommand {
-    public static async Task<int> HandleGenerateWhatsDone(string baseUrl, string sessionId, string vendor = "claude") {
+sealed class WhatsDoneCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
+    public async Task<int> HandleGenerateWhatsDone(string baseUrl, string sessionId, string vendor = "claude") {
         // Redirect output to log file (same pattern as WatchCommand)
-        var logDir = PathHelpers.ConfigPath("logs");
+        var logDir = config.Path("logs");
         Directory.CreateDirectory(logDir);
         var logPath   = Path.Combine(logDir, $"{sessionId}-whatsdone.log");
         var logWriter = new StreamWriter(logPath, append: true) { AutoFlush = true };
@@ -28,10 +29,10 @@ static class WhatsDoneCommand {
     /// Uses the provided <paramref name="log"/> callback for diagnostics.
     /// </summary>
     /// <param name="vendor">"claude" (default) or "codex" — picks the headless CLI runner.</param>
-    public static async Task<int> GenerateForSessionAsync(string baseUrl, string sessionId, Action<string> log, string vendor = "claude") {
+    public async Task<int> GenerateForSessionAsync(string baseUrl, string sessionId, Action<string> log, string vendor = "claude") {
         log($"Generating what's-done summary for session {sessionId}");
 
-        using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync();
+        using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync(config, profiles, baseUrl);
 
         // 1. Fetch session recap
         string recapText;
@@ -76,8 +77,9 @@ static class WhatsDoneCommand {
         var prompt = EmbeddedResources.Load("prompt-whats-done.txt") + recapText;
 
         var result = vendor == "codex"
-            ? await CodexCliRunner.RunAsync(prompt, TimeSpan.FromSeconds(90), log)
-            : await ClaudeCliRunner.RunAsync(prompt, TimeSpan.FromSeconds(90), log, systemPrompt: TitleGenerator.HeadlessSummarizerSystemPrompt);
+            ? await CodexCliRunner.RunAsync(prompt, TimeSpan.FromSeconds(90), log, profiles.Resolution.Profile)
+            : await ClaudeCliRunner.RunAsync(prompt, TimeSpan.FromSeconds(90), log, profiles.Resolution.Profile, home,
+                systemPrompt: TitleGenerator.HeadlessSummarizerSystemPrompt);
 
         if (result is null) {
             log($"{vendor} returned empty or failed");

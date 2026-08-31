@@ -25,6 +25,9 @@ public enum FrameType : byte {
     ConsentResolve   = 12, // one-shot: resolve a pending request (Text = ConsentResolveDto JSON)
     ConsentRulesGet  = 13, // request the current ConsentPolicyDto
     ConsentRulesPut  = 14, // replace the policy (Text = ConsentPolicyDto JSON)
+    // Permission control frames — values append-only
+    PermissionSubscribe = 20, // long-lived: replay pending + push PermissionPending/PermissionResolved
+    PermissionResolve   = 21, // one-shot: settle a pending request (Text = PermissionResolveDto JSON)
     // daemon → client
     Attached  = 64,
     Stdout    = 65,
@@ -40,4 +43,7 @@ public enum FrameType : byte {
     ConsentPending = 72, // Text = ConsentPendingDto JSON, pushed on ConsentSubscribe
     ConsentRules   = 73, // Text = ConsentPolicyDto JSON, reply to ConsentRulesGet
     ConsentAck     = 74, // Text = ConsentAckDto JSON, reply to ConsentResolve/ConsentRulesPut
+    PermissionPending  = 77, // Text = PermissionPendingDto JSON, pushed on PermissionSubscribe
+    PermissionResolved = 78, // Text = PermissionResolvedDto JSON, pushed on every settlement
+    PermissionAck      = 79, // Text = PermissionAckDto JSON, reply to PermissionResolve
 }

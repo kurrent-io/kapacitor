@@ -22,6 +22,9 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 /// resolution behavior this test exists to pin.
 /// </summary>
 public class DaemonStatusWiringTests {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+    [TempHome] public required TempHome Home { get; init; }
+
     [Test]
     public async Task ServerConnection_resolved_via_DI_shares_the_one_registered_notifier() {
         var services = new ServiceCollection();
@@ -77,18 +80,21 @@ public class DaemonStatusWiringTests {
     /// </summary>
     [Test]
     public async Task AgentOrchestrator_resolved_via_DI_shares_the_one_registered_notifier() {
-        using var daemons = new TempDaemonStore();
+        using var daemons   = new TempDaemonStore();
+        using var worktrees = new TempDir();
 
         var services = new ServiceCollection();
         services.AddSingleton(new DaemonConfig {
             Name         = "wiring-orch-test",
             ServerUrl    = "http://127.0.0.1:1",
             Store        = daemons.Store,
-            WorktreeRoot = Path.Combine(Path.GetTempPath(), "kcap-wiring-orch-wt-" + Guid.NewGuid().ToString("N")[..8]),
+            WorktreeRoot = worktrees.PathTo("wt"),
         });
         services.AddSingleton<ILoggerFactory>(NullLoggerFactory.Instance);
         services.AddSingleton(typeof(ILogger<>), typeof(NullLogger<>));
+        services.AddSingleton(Config.Root);
         services.AddSingleton<DaemonStatusNotifier>();
+        services.AddSingleton(Home.Home);
         services.AddSingleton<ServerConnection>();
         services.AddSingleton<WorktreeManager>();
         services.AddSingleton<RepoMatcher>();

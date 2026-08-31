@@ -1,4 +1,5 @@
 using System.Net;
+using Capacitor.Cli.Commands;
 using Capacitor.Cli.Commands.Harness;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Harness.Cursor;
@@ -29,8 +30,14 @@ namespace Capacitor.Cli.Tests.Unit.Harness.Cursor;
 /// </summary>
 [NotInParallel]
 public class CursorSubagentStaleStateTests {
-    static string MarkerPath(string child) =>
-        Path.Combine(PathHelpers.ConfigPath("cursor-subagent-links"), child);
+    [TempHome] public required TempHome Home { get; init; }
+
+    CursorMarkers Markers => new(Config.Root);
+
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
+    string MarkerPath(string child) =>
+        Path.Combine(Config.Root.Path("cursor-subagent-links"), child);
 
     static string NewSessionId() => Guid.NewGuid().ToString("N");
 
@@ -42,9 +49,9 @@ public class CursorSubagentStaleStateTests {
     public async Task A_well_formed_marker_is_loaded_and_would_activate_the_divert() {
         var child = NewSessionId();
         try {
-            CursorLiveSubagentLinker.SaveLink(child, "parent-sid", "researcher");
+            CursorLiveSubagentLinker.SaveLink(Config.Root, child, "parent-sid", "researcher");
 
-            var marker = CursorLiveSubagentLinker.TryLoadLink(child);
+            var marker = CursorLiveSubagentLinker.TryLoadLink(Config.Root, child);
             await Assert.That(marker).IsNotNull();
             await Assert.That(marker!.Value.ParentSessionId).IsEqualTo("parent-sid");
             await Assert.That(marker.Value.SubagentType).IsEqualTo("researcher");
@@ -55,11 +62,11 @@ public class CursorSubagentStaleStateTests {
     public async Task A_truncated_marker_fails_open_to_top_level() {
         var child = NewSessionId();
         try {
-            Directory.CreateDirectory(PathHelpers.ConfigPath("cursor-subagent-links"));
+            Directory.CreateDirectory(Config.Root.Path("cursor-subagent-links"));
             // One line only: TryLoadLink requires >= 2 with a non-empty first.
             File.WriteAllText(MarkerPath(child), "only-one-line\n");
 
-            await Assert.That(CursorLiveSubagentLinker.TryLoadLink(child)).IsNull();
+            await Assert.That(CursorLiveSubagentLinker.TryLoadLink(Config.Root, child)).IsNull();
         } finally { TryDeleteMarker(child); }
     }
 
@@ -67,10 +74,10 @@ public class CursorSubagentStaleStateTests {
     public async Task A_marker_with_an_empty_parent_id_also_fails_open() {
         var child = NewSessionId();
         try {
-            Directory.CreateDirectory(PathHelpers.ConfigPath("cursor-subagent-links"));
+            Directory.CreateDirectory(Config.Root.Path("cursor-subagent-links"));
             File.WriteAllText(MarkerPath(child), "\ntask\n");
 
-            await Assert.That(CursorLiveSubagentLinker.TryLoadLink(child)).IsNull();
+            await Assert.That(CursorLiveSubagentLinker.TryLoadLink(Config.Root, child)).IsNull();
         } finally { TryDeleteMarker(child); }
     }
 
@@ -91,7 +98,7 @@ public class CursorSubagentStaleStateTests {
         var spawned = new List<string>();
         WatcherManager.SpawnOverrideForTesting = key => { spawned.Add(key); return Task.CompletedTask; };
         try {
-            CursorLiveSubagentLinker.SaveLink(child, parent, "task");
+            CursorLiveSubagentLinker.SaveLink(Config.Root, child, parent, "task");
             // Deliberately NO MarkSubagentStartAcked.
 
             var routes = new List<string>();
@@ -104,10 +111,10 @@ public class CursorSubagentStaleStateTests {
             using var client = new HttpClient(handler);
             var spool = new HookSpool(tmp.PathTo("spool"));
 
-            await CursorHookCommand.HandleCore(
-                client, "http://s",
+            await new CursorHookCommand(Config.Root, Resolutions.At("http://s", Config.Root), new HookClock(TimeProvider.System), Home).HandleCore(
+                client,
                 new StringReader($$"""{"hook_event_name":"afterAgentThought","session_id":"{{child}}","generation_id":"g","text":"t","transcript_path":"{{childFile.Replace(@"\", @"\\")}}"}"""),
-                spool, TimeSpan.FromSeconds(5));
+                spool);
 
             // Raw event suppressed...
             await Assert.That(routes).DoesNotContain("/hooks/agent-thought/cursor");
@@ -118,7 +125,7 @@ public class CursorSubagentStaleStateTests {
 
             // Fail-closed AND SILENT: nothing is logged, surfaced or marked at the moment of the
             // loss. Recovery is `kcap import --cursor` plus the adoption sweep.
-            await Assert.That(CursorMarkers.HasSubagentStartAck(child)).IsFalse();
+            await Assert.That(Markers.HasSubagentStartAck(child)).IsFalse();
         } finally {
             WatcherManager.SpawnOverrideForTesting = null;
             TryDeleteMarker(child);
@@ -166,18 +173,18 @@ public class CursorSubagentStaleStateTests {
             // posted), so a test that bypassed it by calling HandleSubagentChildEventAsync would
             // keep passing after the remedy landed — defeating the whole point of a
             // characterization test.
-            await CursorHookCommand.HandleCore(
-                client, "http://s",
+            await new CursorHookCommand(Config.Root, Resolutions.At("http://s", Config.Root), new HookClock(TimeProvider.System), Home).HandleCore(
+                client,
                 new StringReader($$"""{"hook_event_name":"sessionStart","session_id":"{{child}}","transcript_path":"{{childPath.Replace(@"\", @"\\")}}"}"""),
-                spool, TimeSpan.FromSeconds(5));
+                spool);
 
             // THE FINDING: the marker write failed, yet the start still went out, the ack was
             // persisted and the {parent}-{child} watcher spawned — with no marker tying them to
             // anything. Every later invocation misses TryLoadLink and routes this child
             // top-level while that watcher keeps feeding it under the parent.
-            await Assert.That(CursorLiveSubagentLinker.TryLoadLink(child)).IsNull();
+            await Assert.That(CursorLiveSubagentLinker.TryLoadLink(Config.Root, child)).IsNull();
             await Assert.That(routes).Contains("/hooks/subagent-start");
-            await Assert.That(CursorMarkers.HasSubagentStartAck(child)).IsTrue();
+            await Assert.That(Markers.HasSubagentStartAck(child)).IsTrue();
             await Assert.That(spawned).Contains($"{parent}-{child}");
         } finally {
             WatcherManager.SpawnOverrideForTesting = null;
@@ -215,29 +222,29 @@ public class CursorSubagentStaleStateTests {
             var spool = new HookSpool(tmp.PathTo("spool"));
 
             // Again through the REAL CALLER — see the note in the test above.
-            await CursorHookCommand.HandleCore(
-                client, "http://s",
+            await new CursorHookCommand(Config.Root, Resolutions.At("http://s", Config.Root), new HookClock(TimeProvider.System), Home).HandleCore(
+                client,
                 new StringReader($$"""{"hook_event_name":"sessionStart","session_id":"{{child}}","transcript_path":"{{childPath.Replace(@"\", @"\\")}}"}"""),
-                spool, TimeSpan.FromSeconds(5));
+                spool);
 
             await Assert.That(spool.HasBacklog(child)).IsTrue();
             await Assert.That(spawned).IsEmpty();
-            await Assert.That(CursorLiveSubagentLinker.TryLoadLink(child)).IsNull();
+            await Assert.That(CursorLiveSubagentLinker.TryLoadLink(Config.Root, child)).IsNull();
 
             // Next hook: the drain delivers the spooled start and spawns the agent-scoped
             // watcher, while this invocation — having missed TryLoadLink — also takes the
             // ordinary top-level route. THE FINDING: two watchers now tail the SAME transcript,
             // one under the parent and one as the child's own session.
             routes.Clear();
-            await CursorHookCommand.HandleCore(
-                client, "http://s",
+            await new CursorHookCommand(Config.Root, Resolutions.At("http://s", Config.Root), new HookClock(TimeProvider.System), Home).HandleCore(
+                client,
                 new StringReader($$"""{"hook_event_name":"afterAgentResponse","session_id":"{{child}}","transcript_path":"{{childPath.Replace(@"\", @"\\")}}"}"""),
-                spool, TimeSpan.FromSeconds(5));
+                spool);
 
             await Assert.That(spawned).Contains($"{parent}-{child}");   // under the parent
             await Assert.That(spawned).Contains(child);                 // ...and as its own session
             await Assert.That(routes).Contains("/hooks/agent-response/cursor");
-            await Assert.That(CursorLiveSubagentLinker.TryLoadLink(child)).IsNull();
+            await Assert.That(CursorLiveSubagentLinker.TryLoadLink(Config.Root, child)).IsNull();
         } finally {
             WatcherManager.SpawnOverrideForTesting = null;
             UnblockMarkerWrite(blocker);
@@ -280,8 +287,7 @@ public class CursorSubagentStaleStateTests {
 
     /// <summary>
     /// Makes the marker write fail by putting a DIRECTORY where the marker FILE must go, so
-    /// File.WriteAllLines throws and SaveLink swallows it. Chosen over redirecting
-    /// KCAP_CONFIG_DIR, which PathHelpers resolves into a process-wide static readonly field.
+    /// File.WriteAllLines throws and SaveLink swallows it — a failing write, not an absent root.
     /// </summary>
     static void BlockMarkerWrite(string markerPath) {
         Directory.CreateDirectory(Path.GetDirectoryName(markerPath)!);
@@ -292,9 +298,9 @@ public class CursorSubagentStaleStateTests {
         try { Directory.Delete(markerPath, true); } catch { /* best effort */ }
     }
 
-    static void TryDeleteMarker(string child) {
+    void TryDeleteMarker(string child) {
         try { File.Delete(MarkerPath(child)); } catch { /* best effort */ }
-        try { File.Delete(CursorMarkers.SubagentStartAckPath(child)); } catch { /* best effort */ }
+        try { File.Delete(Markers.SubagentStartAckPath(child)); } catch { /* best effort */ }
     }
 
     sealed class StubHandler(Func<HttpRequestMessage, string, HttpResponseMessage> impl) : HttpMessageHandler {

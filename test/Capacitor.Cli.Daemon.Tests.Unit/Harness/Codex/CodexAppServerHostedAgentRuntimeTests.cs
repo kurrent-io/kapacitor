@@ -26,9 +26,10 @@ public class CodexAppServerHostedAgentRuntimeTests {
     }
 
     static CodexAppServerLaunch Launch(string? model = null, string? prompt = null, string sandbox = "read-only",
-            string? effort = null, string approval = "never") =>
+            string? effort = null, string approval = "never", string? resumeSessionId = null) =>
         new(Cwd: "/tmp/wt", Model: model, Effort: effort, InitialPrompt: prompt, Sandbox: sandbox,
-            Approval: approval, WritableRoots: ["/tmp/wt"], ClientVersion: "0.146.0");
+            Approval: approval, WritableRoots: ["/tmp/wt"], ClientVersion: "0.146.0",
+            ResumeSessionId: resumeSessionId);
 
     /// <summary>Builds a spawn delegate that hands each spawn a fresh fake (indexed), recording the
     /// seed passed on each call so the restart path is assertable.</summary>
@@ -77,6 +78,42 @@ public class CodexAppServerHostedAgentRuntimeTests {
         await Assert.That(fake.ReceivedMethods).Contains("thread/start");
         await Assert.That(fake.InitializeOptOuts).Contains("item/agentMessage/delta");
         await Assert.That(fake.LastThreadStartSandbox).IsEqualTo("read-only");
+
+        await runtime.DisposeAsync();
+    }
+
+    /// <summary>The "default" no-override sentinel is omitted from both thread/start and turn/start,
+    /// so Codex resolves the model from ~/.codex/config.toml; sending <c>model:"default"</c> to a
+    /// ChatGPT-auth account is a 400.</summary>
+    [Test]
+    public async Task Default_model_sentinel_is_omitted_from_thread_start_and_turn_start() {
+        var fake = new FakeCodexAppServer { Model = "gpt-5.3-codex" };
+        var (runtime, _, _) = Build(_ => fake, Launch(model: "default"));
+
+        await runtime.StartAsync(CancellationToken.None).WaitAsync(HangGuard);
+        await runtime.SendUserInputAsync("go").WaitAsync(HangGuard);
+        await runtime.WaitForTurnIdleAsync(CancellationToken.None).WaitAsync(HangGuard);
+
+        await Assert.That(fake.LastThreadStartHadModel).IsFalse();
+        await Assert.That(fake.LastTurnStartHadModel).IsFalse();
+        await Assert.That(runtime.ResolvedModel).IsEqualTo("gpt-5.3-codex");
+
+        await runtime.DisposeAsync();
+    }
+
+    /// <summary>A concrete model is passed through verbatim on both thread/start and turn/start
+    /// (the sentinel handling strips only "default", never a real override).</summary>
+    [Test]
+    public async Task Concrete_model_is_passed_on_thread_start_and_turn_start() {
+        var fake = new FakeCodexAppServer { Model = "gpt-5.3-codex" };
+        var (runtime, _, _) = Build(_ => fake, Launch(model: "gpt-5.3-codex"));
+
+        await runtime.StartAsync(CancellationToken.None).WaitAsync(HangGuard);
+        await runtime.SendUserInputAsync("go").WaitAsync(HangGuard);
+        await runtime.WaitForTurnIdleAsync(CancellationToken.None).WaitAsync(HangGuard);
+
+        await Assert.That(fake.LastThreadStartModel).IsEqualTo("gpt-5.3-codex");
+        await Assert.That(fake.LastTurnStartModel).IsEqualTo("gpt-5.3-codex");
 
         await runtime.DisposeAsync();
     }
@@ -169,6 +206,89 @@ public class CodexAppServerHostedAgentRuntimeTests {
 
         await Assert.That(runtime.RequiresSourceClaimBeforeFirstTurn).IsFalse();
         await Assert.That(fake.ReceivedMethods).Contains("turn/start"); // no deferral ⇒ the prompt drives the first turn at start
+
+        await runtime.DisposeAsync();
+    }
+
+    // ── §2.7 B4: resume routing (thread/resume vs thread/start) ────────────────────────────────────
+
+    [Test]
+    public async Task Resume_launch_issues_thread_resume_carrying_the_thread_id() {
+        // A parked reviewer relaunch (ResumeSessionId set) must REOPEN the existing thread via
+        // thread/resume — carrying its threadId — never thread/start (which would fork the transcript).
+        var fake = new FakeCodexAppServer { Model = "gpt-5.3-codex" };
+        var (runtime, _, _) = Build(_ => fake, Launch(resumeSessionId: "thread-parked-1"));
+
+        await runtime.StartAsync(CancellationToken.None).WaitAsync(HangGuard);
+
+        await Assert.That(fake.ReceivedMethods).Contains("thread/resume");
+        await Assert.That(fake.ReceivedMethods).DoesNotContain("thread/start");
+        await Assert.That(fake.LastResumeThreadId).IsEqualTo("thread-parked-1");
+        // response.thread.id echoes the requested id, so the runtime keeps the resumed thread's canonical id.
+        await Assert.That(runtime.ThreadId).IsEqualTo("thread-parked-1");
+
+        await runtime.DisposeAsync();
+    }
+
+    [Test]
+    public async Task Fresh_launch_issues_thread_start_not_resume() {
+        // The discriminating companion: with no ResumeSessionId the runtime mints a fresh thread —
+        // thread/start, never thread/resume, and no threadId carried.
+        var fake = new FakeCodexAppServer();
+        var (runtime, _, _) = Build(_ => fake, Launch());
+
+        await runtime.StartAsync(CancellationToken.None).WaitAsync(HangGuard);
+
+        await Assert.That(fake.ReceivedMethods).Contains("thread/start");
+        await Assert.That(fake.ReceivedMethods).DoesNotContain("thread/resume");
+        await Assert.That(fake.LastResumeThreadId).IsNull();
+
+        await runtime.DisposeAsync();
+    }
+
+    [Test]
+    public async Task Resume_with_blank_id_fails_the_launch_and_never_forks() {
+        // §2.7 B4 safety: a present-but-BLANK ResumeSessionId is resume INTENT with an invalid id — it must
+        // fail the launch, NOT silently fall back to thread/start (which would fork the transcript). Guards
+        // a bad persisted/wire value against the no-silent-fork invariant.
+        var fake = new FakeCodexAppServer();
+        var (runtime, _, _) = Build(_ => fake, Launch(resumeSessionId: ""));
+
+        await Assert.That(async () => await runtime.StartAsync(CancellationToken.None).WaitAsync(HangGuard))
+            .Throws<InvalidOperationException>();
+
+        // Neither thread verb was issued — the launch failed before forking.
+        await Assert.That(fake.ReceivedMethods).DoesNotContain("thread/start");
+        await Assert.That(fake.ReceivedMethods).DoesNotContain("thread/resume");
+
+        await runtime.DisposeAsync();
+    }
+
+    [Test]
+    public async Task Resume_baselines_first_usage_then_emits_a_correct_incremental_delta() {
+        // On resume the runtime calls UsageBaselineOnNextNotification: the first post-resume usage snapshot
+        // (thread-CUMULATIVE, round 1 included) is consumed as the baseline and emits NO token_usage; the
+        // next snapshot yields the incremental delta. Pre-fix (no baseline on resume) the first snapshot
+        // would emit the whole cumulative total as a delta — a double-count of round 1.
+        var fake = new FakeCodexAppServer { Model = "gpt-5.3-codex", EmitUsageOnTurn = (input: 120, output: 40, total: 160) };
+        var (runtime, _, _) = Build(_ => fake, Launch(resumeSessionId: "thread-parked-1"), emitEnvelopes: true);
+
+        await runtime.StartAsync(CancellationToken.None).WaitAsync(HangGuard);
+        await Assert.That(fake.ReceivedMethods).Contains("thread/resume");
+
+        // Round-2 turn 1: the cumulative usage (120/40) is the baseline — NO token_usage envelope emitted.
+        await runtime.SendUserInputAsync("round 2 turn 1").WaitAsync(HangGuard);
+        await runtime.WaitForTurnIdleAsync(CancellationToken.None).WaitAsync(HangGuard);
+        await Assert.That(DrainAvailable(runtime).Any(e => e.Kind == AcpEventKind.TokenUsage)).IsFalse();
+
+        // Round-2 turn 2: a HIGHER cumulative (200/70) yields the incremental delta 80/30, NOT the raw 200/70.
+        fake.EmitUsageOnTurn = (input: 200, output: 70, total: 270);
+        await runtime.SendUserInputAsync("round 2 turn 2").WaitAsync(HangGuard);
+        await runtime.WaitForTurnIdleAsync(CancellationToken.None).WaitAsync(HangGuard);
+
+        var usage = DrainAvailable(runtime).Single(e => e.Kind == AcpEventKind.TokenUsage);
+        await Assert.That(usage.UsageInputTokens).IsEqualTo(80L);
+        await Assert.That(usage.UsageOutputTokens).IsEqualTo(30L);
 
         await runtime.DisposeAsync();
     }

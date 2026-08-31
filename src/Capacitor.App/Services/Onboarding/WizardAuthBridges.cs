@@ -32,10 +32,10 @@ public sealed class UiAuthProgress(Action<Action> post) : IAuthProgress {
 
 /// <summary>
 /// The tenant pick as a UI round trip: <see cref="PickAsync"/> publishes the tenants and parks on
-/// a completion source the view resolves. A null selection is the user backing out — Core renders
-/// that as "No tenant selected."
+/// a completion source the view resolves. A null selection is the user backing out, which this
+/// reports itself — per <see cref="ITenantPicker"/>, discovery adds no line of its own.
 /// </summary>
-public sealed class WizardTenantPicker : ITenantPicker {
+public sealed class WizardTenantPicker(IAuthProgress progress) : ITenantPicker {
     readonly Lock _gate = new();
 
     TaskCompletionSource<DiscoveredTenant?>? _pending;
@@ -46,7 +46,7 @@ public sealed class WizardTenantPicker : ITenantPicker {
     public DiscoveredTenant? Pick(DiscoveredTenant[] tenants) =>
         throw new NotSupportedException("The wizard picker is asynchronous — the façade consumes PickAsync.");
 
-    public async Task<DiscoveredTenant?> PickAsync(DiscoveredTenant[] tenants, CancellationToken ct) {
+    public async Task<DiscoveredTenant?> PickAsync(DiscoveredTenant[] tenants, TenantPickContext context, CancellationToken ct) {
         var pending = new TaskCompletionSource<DiscoveredTenant?>(TaskCreationOptions.RunContinuationsAsynchronously);
 
         TaskCompletionSource<DiscoveredTenant?>? displaced;
@@ -64,7 +64,11 @@ public sealed class WizardTenantPicker : ITenantPicker {
         SelectionRequested?.Invoke(tenants);
 
         try {
-            return await pending.Task.ConfigureAwait(false);
+            var picked = await pending.Task.ConfigureAwait(false);
+
+            if (picked is null) progress.Error("No tenant selected.");
+
+            return picked;
         } finally {
             lock (_gate) {
                 if (ReferenceEquals(_pending, pending)) _pending = null;
@@ -291,7 +295,7 @@ public sealed class WizardBridges {
     public WizardBridges(Action<Action> post, Func<IAuthProgress, WizardTenantProvisioner> provisioner) {
         Post        = post;
         Progress    = new UiAuthProgress(post);
-        Picker      = new WizardTenantPicker();
+        Picker      = new WizardTenantPicker(Progress);
         Provisioner = provisioner(Progress);
     }
 
@@ -307,10 +311,11 @@ public sealed class WizardBridges {
 /// carries <see cref="OnboardingGate"/> to Complete.
 /// </summary>
 public static class WizardSignInOperation {
-    public static Func<ConnectIntent, CancellationToken, Task<AuthResult>> For(OnboardingFacade facade) =>
+    public static Func<ConnectIntent, CancellationToken, Task<AuthResult>> For(
+            OnboardingFacade facade, string profile) =>
         async (intent, ct) => intent switch {
             ConnectIntent.Paste paste => await facade.LoginAsync(
-                ResolveServer(paste.ServerInput), forceDevice: false, profile: null, ct, adoptServer: true),
+                ResolveServer(paste.ServerInput), forceDevice: false, profile, ct, adoptServer: true),
             ConnectIntent.Discover discover => await facade.DiscoverAsync(discover.Provider, forceDevice: false, ct),
             // Creation runs inside WorkOS discovery, after the org-less sign-in finds no tenant.
             ConnectIntent.Create => await facade.DiscoverAsync(AuthProvider.WorkOS, forceDevice: false, ct),

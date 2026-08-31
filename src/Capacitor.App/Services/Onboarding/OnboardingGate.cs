@@ -1,5 +1,6 @@
 using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.Config;
+using Capacitor.Cli.Core;
 
 namespace Capacitor.App.Services.Onboarding;
 
@@ -8,7 +9,8 @@ public abstract record GateResult {
     public sealed record Incomplete(GateReason Reason) : GateResult;
 }
 
-// EvaluationFailed is never returned by EvaluateAsync itself — it's App.EvaluateGateSafelyAsync's fail-safe degrade for an unexpected exception.
+// EvaluationFailed is the degrade for an unexpected exception: from EvaluateAsync when the
+// evaluation throws (the resolution survives), from App.EvaluateGateSafelyAsync when the resolve does.
 public enum GateReason { NoProfile, InvalidServerUrl, NoToken, TokenUnusableBinding, TokenUnusableExpired, EvaluationFailed }
 
 /// <summary>
@@ -19,7 +21,7 @@ public enum GateReason { NoProfile, InvalidServerUrl, NoToken, TokenUnusableBind
 /// inverse of "does TokenStore already consider this profile authenticated" — so every branch
 /// here mirrors a specific TokenStore rule rather than inventing its own.
 /// </summary>
-public static class OnboardingGate {
+public sealed class OnboardingGate(ConfigRoot config) {
     /// <summary>
     /// The ONE shared validator for "is this usable as a server identity" — also used by
     /// <c>App.ValidProfileName</c> so the gate and the lifecycle-controller precondition can
@@ -30,19 +32,31 @@ public static class OnboardingGate {
     public static bool ValidServerUrl(string? url) => ServerIdentity.Canonicalize(url) is not null;
 
     /// The ONE resolve-then-evaluate composition (App.ResolveAndEvaluateGateAsync wraps this in its
-    /// never-brick degrade): the daemon graph is then built from the very AppConfig.ResolvedProfile
-    /// this call published, so the verdict and the graph identity can never name different profiles.
-    public static async Task<GateResult> EvaluateAsync(CancellationToken ct) {
+    /// never-brick degrade). It hands the resolution back with the verdict, and the daemon graph is
+    /// built from that very value — which is what stops the verdict and the graph identity naming
+    /// different profiles.
+    public async Task<(GateResult Result, ProfileContext Profiles)> EvaluateAsync(CancellationToken ct) {
         // Daemon-style resolution — no repo/git discovery, matching decision 1's "local" scope.
-        await AppConfig.ResolveActiveProfile([]);
-        var resolved = AppConfig.ResolvedProfile;
-        return await EvaluateResolvedAsync(resolved?.ProfileName, resolved?.Profile, ct);
+        var profiles = await AppConfig.ResolveActiveProfile([], config);
+        GateResult result;
+        try {
+            result = await EvaluateResolvedAsync(profiles.Resolution.ProfileName, profiles.Resolution.Profile, ct);
+        } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
+            throw;
+        } catch (Exception ex) {
+            // The resolution outlives a failed evaluation. It names the daemon to attach to and the
+            // profile a sign-in writes to; discarding it falls back to the OS username and
+            // "default", so a token file that cannot be read would silently move both.
+            await Console.Error.WriteLineAsync($"kcap: onboarding gate evaluation failed — degrading to Incomplete: {ex.Message}");
+            result = new GateResult.Incomplete(GateReason.EvaluationFailed);
+        }
+        return (result, profiles);
     }
 
     /// Evaluates a resolution the caller already holds instead of resolving a second time — two
     /// independent resolves racing a concurrent active-profile change could otherwise evaluate the
     /// gate against a different profile than the one the daemon graph builds for.
-    public static async Task<GateResult> EvaluateResolvedAsync(string? profileName, Profile? profile, CancellationToken ct) {
+    public async Task<GateResult> EvaluateResolvedAsync(string? profileName, Profile? profile, CancellationToken ct) {
         if (profile is null || string.IsNullOrEmpty(profileName)) {
             return new GateResult.Incomplete(GateReason.NoProfile);
         }
@@ -64,7 +78,7 @@ public static class OnboardingGate {
 
         // Raw, refresh-free read — a stale/expiring token must not be rotated just to answer
         // "is the wizard needed", which would spend a rotating WorkOS refresh token for nothing.
-        var tokens = await TokenStore.LoadForProfileAsync(profileName, ct);
+        var tokens = await new TokenStore(config).LoadForProfileAsync(profileName, ct);
 
         if (tokens is null) {
             return new GateResult.Incomplete(GateReason.NoToken);

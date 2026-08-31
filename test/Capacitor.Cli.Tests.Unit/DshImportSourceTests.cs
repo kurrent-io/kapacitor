@@ -1,4 +1,5 @@
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.Core.Harness;
 
 namespace Capacitor.Cli.Tests.Unit;
 
@@ -9,6 +10,8 @@ namespace Capacitor.Cli.Tests.Unit;
 /// keeps the watermark in sync with the server's DeepSeekHarnessTranscriptNormalizer.
 /// </summary>
 public class DshImportSourceTests {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     // The plugin's real header line: {$kcap:"header", ...session.header}. The PoC omits
     // type:"session"; a real dsh session includes it. Either must be recognized.
     const string Header   = """{"$kcap":"header","version":0,"id":"sess-abc","createdAt":1785730000000,"cwd":"/work"}""";
@@ -19,7 +22,7 @@ public class DshImportSourceTests {
         using var tmp = new TempDir();
         await File.WriteAllTextAsync(Path.Combine(tmp.Path, "sess-abc.jsonl"), Header + "\n" + UserLine + "\n");
 
-        var src = new DshImportSource(sessionsDirOverride: tmp.Path);
+        var src = new DshImportSource(Config.Root, sessionsDirOverride: tmp.Path);
         await Assert.That(src.IsAvailable).IsTrue();
 
         var found = await src.DiscoverAsync(new DiscoveryFilters(null, null, null, 1), CancellationToken.None);
@@ -29,7 +32,7 @@ public class DshImportSourceTests {
         // RAW id (dashes kept): dsh ids are non-GUID, so the server leaves them dashed; the
         // CLI must send the SAME raw id for transcript + lifecycle or they split into two streams.
         await Assert.That(s.SessionId).IsEqualTo("sess-abc");
-        await Assert.That(s.Vendor).IsEqualTo("dsh");
+        await Assert.That(s.Vendor).IsEqualTo(HarnessId.Dsh);
         await Assert.That(s.Cwd).IsEqualTo("/work");               // read from the $kcap header
         await Assert.That(s.SourceMeta!["DashedSessionId"]).IsEqualTo("sess-abc");
     }
@@ -42,7 +45,7 @@ public class DshImportSourceTests {
         const string rawId = "session-e1d79e8a-9b62-4b23-b576-7e7493c09dba";
         await File.WriteAllTextAsync(Path.Combine(tmp.Path, rawId + ".jsonl"), Header + "\n" + UserLine + "\n");
 
-        var found = await new DshImportSource(sessionsDirOverride: tmp.Path)
+        var found = await new DshImportSource(Config.Root, sessionsDirOverride: tmp.Path)
             .DiscoverAsync(new DiscoveryFilters(null, null, null, 1), CancellationToken.None);
 
         await Assert.That(found.Count).IsEqualTo(1);
@@ -56,7 +59,7 @@ public class DshImportSourceTests {
         const string childHeader = """{"$kcap":"header","version":0,"id":"session-child","cwd":"/work","parentSession":"session-parent-abc","origin":"subagent"}""";
         await File.WriteAllTextAsync(Path.Combine(tmp.Path, "session-child.jsonl"), childHeader + "\n" + UserLine + "\n");
 
-        var found = await new DshImportSource(sessionsDirOverride: tmp.Path)
+        var found = await new DshImportSource(Config.Root, sessionsDirOverride: tmp.Path)
             .DiscoverAsync(new DiscoveryFilters(null, null, null, 1), CancellationToken.None);
 
         await Assert.That(found.Count).IsEqualTo(1);
@@ -68,7 +71,7 @@ public class DshImportSourceTests {
         using var tmp = new TempDir();
         await File.WriteAllTextAsync(Path.Combine(tmp.Path, "sess-abc.jsonl"), Header + "\n" + UserLine + "\n");
 
-        var src = new DshImportSource(sessionsDirOverride: tmp.Path);
+        var src = new DshImportSource(Config.Root, sessionsDirOverride: tmp.Path);
 
         var match = await src.DiscoverAsync(new DiscoveryFilters(null, "sess-abc", null, 1), CancellationToken.None);
         await Assert.That(match.Count).IsEqualTo(1);
@@ -87,16 +90,5 @@ public class DshImportSourceTests {
     [Arguments("""not json""", false)]
     public async Task is_import_relevant_line(string line, bool expected) {
         await Assert.That(DshImportSource.IsImportRelevantLine(line)).IsEqualTo(expected);
-    }
-
-    sealed class TempDir : IDisposable {
-        public string Path { get; } = System.IO.Path.Combine(
-            System.IO.Path.GetTempPath(),
-            $"kcap-dsh-import-test-{Guid.NewGuid().ToString("N")[..8]}"
-        );
-        public TempDir() => Directory.CreateDirectory(Path);
-        public void Dispose() {
-            try { Directory.Delete(Path, true); } catch { /* best effort */ }
-        }
     }
 }

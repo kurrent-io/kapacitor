@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.Text;
 using Capacitor.Cli.Core.Harness.Claude;
+using Capacitor.Cli.Core.Config;
+using Capacitor.Cli.Core.Setup;
 
 namespace Capacitor.Cli.Core.Harness.Codex;
 
@@ -21,6 +23,7 @@ static class CodexCliRunner {
             string            prompt,
             TimeSpan          timeout,
             Action<string>    log,
+            Profile?          profile,
             string?           model         = null,
             string            reasoning     = "low",
             CancellationToken ct            = default
@@ -43,7 +46,7 @@ static class CodexCliRunner {
         }
 
         try {
-            return await RunCoreAsync(prompt, timeout, log, workingDir, lastMessageFile, model, reasoning, ct);
+            return await RunCoreAsync(prompt, timeout, log, profile, workingDir, lastMessageFile, model, reasoning, ct);
         } finally {
             if (createdWorkingDir) {
                 try { Directory.Delete(workingDir, recursive: true); } catch {
@@ -61,6 +64,7 @@ static class CodexCliRunner {
             string            prompt,
             TimeSpan          timeout,
             Action<string>    log,
+            Profile?          profile,
             string            workingDir,
             string            lastMessageFile,
             string?           model,
@@ -69,7 +73,7 @@ static class CodexCliRunner {
         ) {
         // Resolve rather than pass "codex" verbatim: CreateProcess appends only .exe, so the
         // npm-installed codex.cmd shim on Windows would never be found.
-        var exePath = CliExecutable.Resolve("codex");
+        var exePath = BinaryProbe.FromEnvironment().Resolve("codex");
 
         if (exePath is null) {
             log("codex not found on PATH");
@@ -94,7 +98,7 @@ static class CodexCliRunner {
         // A globally-set OPENAI_API_KEY overrides ChatGPT subscription auth in `codex exec`.
         // Users on PAYG/API-key auth opt back in via profile flag or
         // KCAP_USE_PROVIDER_API_KEY=1.
-        if (!ProviderApiKeyPolicy.ShouldKeepProviderKey()) {
+        if (!ProviderApiKeyPolicy.ShouldKeepProviderKey(profile)) {
             psi.Environment.Remove("OPENAI_API_KEY");
         }
 

@@ -26,10 +26,8 @@ namespace Capacitor.Cli.Core;
 /// </summary>
 public static class DaemonNameResolver {
     /// <summary>
-    /// Parse the daemon name from <paramref name="args"/>. Pass the
-    /// profile-supplied default (typically
-    /// <c>AppConfig.ResolvedProfile?.Profile?.Daemon?.Name</c>) so callers
-    /// don't need to thread AppConfig into Capacitor.Core. Returns the
+    /// Parse the daemon name from <paramref name="args"/>. Pass the profile-supplied default —
+    /// <c>ProfileContext.DaemonName</c>, which states which profile that reads. Returns the
     /// resolved name; never null or empty.
     /// </summary>
     public static string Resolve(string[] args, string? profileName = null) {

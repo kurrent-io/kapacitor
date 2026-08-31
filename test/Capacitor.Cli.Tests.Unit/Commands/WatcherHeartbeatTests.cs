@@ -54,7 +54,8 @@ public class WatcherHeartbeatTests {
 
     [Test]
     public async Task read_missing_file_returns_null() {
-        var p = WatcherHeartbeat.HeartbeatPath(Path.GetTempPath(), $"missing-{Guid.NewGuid():N}");
+        using var tmp = new TempDir();
+        var p = WatcherHeartbeat.HeartbeatPath(tmp.Path, "missing");
         await Assert.That(WatcherHeartbeat.Read(p)).IsNull();
     }
 

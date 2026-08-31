@@ -2,6 +2,7 @@ using System.Net.Sockets;
 using System.Text.Json;
 using Capacitor.Cli.Core.LocalIpc;
 using TUnit.Assertions.Enums;
+using TUnit.Core.Enums;
 
 namespace Capacitor.Cli.Core.Tests.Unit.LocalIpc;
 
@@ -12,7 +13,14 @@ namespace Capacitor.Cli.Core.Tests.Unit.LocalIpc;
 /// by generous polling deadlines rather than tight tolerances — see
 /// <see cref="Backoff_delay_advances_across_failures_and_resets_after_connected"/> for why a
 /// real clock was chosen there over a <c>FakeTimeProvider</c>).
+///
+/// <para>Runs exclusively (<see cref="NotInParallelAttribute"/>): every test drives a REAL Unix
+/// socket and a loopback-style handshake bounded by small real timeouts. Those bounds assume prompt
+/// connect and event-stream propagation, which the rest of the assembly's socket and thread-pool load
+/// can deny — so this class needs the host to itself.</para>
 /// </summary>
+[NotInParallel]
+[ExcludeOn(OS.Windows)] // Unix-domain socket path
 public class LocalControlClientTests {
     /// One scripted connection behavior; the server runs them in accept order and repeats
     /// the last script for further connections.
@@ -178,11 +186,12 @@ public class LocalControlClientTests {
     static bool HasConnectedLocked(object gate, List<LocalControlEvent> events) {
         lock (gate) return events.OfType<LocalControlEvent.Connected>().Any();
     }
+    static int ConnectedCountLocked(object gate, List<LocalControlEvent> events) {
+        lock (gate) return events.OfType<LocalControlEvent.Connected>().Count();
+    }
 
     [Test]
     public async Task Gate_pass_yields_connecting_then_connected_with_first_snapshot_then_status() {
-        if (OperatingSystem.IsWindows()) return;
-
         var events = await RunClientAsync(
             [HelloThen(GoodHello("consent/1", "status/1")), SubscribePush(ValidStatusJson("m", "a1"), ValidStatusJson("m", "a1", "a2"))],
             evs => evs.OfType<LocalControlEvent.Status>().Any());
@@ -197,8 +206,6 @@ public class LocalControlClientTests {
 
     [Test]
     public async Task Capability_missing_and_hello_eof_classify_as_incompatible() {
-        if (OperatingSystem.IsWindows()) return;
-
         var noCap = await RunClientAsync(
             [HelloThen(GoodHello("consent/1"))],
             evs => evs.OfType<LocalControlEvent.Unreachable>().Any());
@@ -212,8 +219,6 @@ public class LocalControlClientTests {
 
     [Test]
     public async Task Missing_socket_classifies_as_unreachable() {
-        if (OperatingSystem.IsWindows()) return;
-
         using var daemons = new TempDaemonStore();
         var client = new LocalControlClient(daemons.Store, "none") { RetryDelays = [TimeSpan.FromMilliseconds(1)] };
         var events = new List<LocalControlEvent>();
@@ -234,8 +239,6 @@ public class LocalControlClientTests {
 
     [Test] // "Error frame or any unexpected frame type answering Hello" (§4.2), both flavors
     public async Task Unexpected_and_undecodable_hello_replies_classify_as_incompatible() {
-        if (OperatingSystem.IsWindows()) return;
-
         var wrongType = await RunClientAsync(
             [HelloWrongFrameType()],
             evs => evs.OfType<LocalControlEvent.Unreachable>().Any());
@@ -249,8 +252,6 @@ public class LocalControlClientTests {
 
     [Test] // same §4.2 branch, but "arriving on the subscribe connection" instead of answering Hello
     public async Task Unexpected_frame_type_on_subscribe_connection_classifies_as_incompatible() {
-        if (OperatingSystem.IsWindows()) return;
-
         var events = await RunClientAsync(
             [HelloThen(GoodHello("status/1")), SubscribeWrongFrameType()],
             evs => evs.OfType<LocalControlEvent.Unreachable>().Any());
@@ -260,8 +261,6 @@ public class LocalControlClientTests {
 
     [Test] // silent peers classify via deadlines instead of hanging (spec §4.1)
     public async Task Silent_peers_classify_as_unreachable_via_phase_deadlines() {
-        if (OperatingSystem.IsWindows()) return;
-
         var helloStall = await RunClientAsync([HelloStall()],
             evs => evs.OfType<LocalControlEvent.Unreachable>().Any());
         await Assert.That(((LocalControlEvent.Unreachable)helloStall[^1]).Reason).IsEqualTo("daemon_unreachable");
@@ -273,8 +272,6 @@ public class LocalControlClientTests {
 
     [Test] // malformed/invalid status is protocol evidence, first frame AND mid-stream, for both shapes
     public async Task Malformed_and_invalid_status_classify_as_incompatible() {
-        if (OperatingSystem.IsWindows()) return;
-
         string[] badShapes = ["{not json", """{"daemon":null,"agents":null}"""];
 
         foreach (var bad in badShapes) {
@@ -296,8 +293,6 @@ public class LocalControlClientTests {
 
     [Test] // subscribe-EOF before first frame: failed cycle, no Connected, no backoff reset
     public async Task Subscribe_eof_before_first_frame_is_a_failed_cycle() {
-        if (OperatingSystem.IsWindows()) return;
-
         var events = await RunClientAsync(
             [HelloThen(GoodHello("status/1")), SubscribeEof(), HelloThen(GoodHello("status/1")), SubscribeEof()],
             evs => evs.OfType<LocalControlEvent.Unreachable>().Any());
@@ -306,8 +301,6 @@ public class LocalControlClientTests {
 
     [Test] // transition-only: a persistent outage yields ONE Unreachable however many cycles run
     public async Task Persistent_outage_yields_one_unreachable_event() {
-        if (OperatingSystem.IsWindows()) return;
-
         var events = await RunClientAsync(
             [HelloEof(), HelloEof(), HelloEof(), HelloThen(GoodHello("status/1")), SubscribePush(ValidStatusJson("m", "a1"))],
             evs => evs.OfType<LocalControlEvent.Connected>().Any());
@@ -318,8 +311,6 @@ public class LocalControlClientTests {
 
     [Test] // a reason CHANGE yields a second event
     public async Task Reason_change_yields_a_new_unreachable_event() {
-        if (OperatingSystem.IsWindows()) return;
-
         var events = await RunClientAsync(
             [HelloEof(), HelloStall()],                    // incompatible, then unresponsive
             evs => evs.OfType<LocalControlEvent.Unreachable>().Count() >= 2);
@@ -329,8 +320,6 @@ public class LocalControlClientTests {
 
     [Test] // spec decision 6: the hello reply's DaemonVersion propagates into the incompatible Unreachable
     public async Task Hello_reply_missing_status_cap_carries_daemon_version_into_incompatible() {
-        if (OperatingSystem.IsWindows()) return;
-
         var events = await RunClientAsync(
             [HelloThen(GoodHello("consent/1"))],              // DaemonVersion "1.0", no status/1
             evs => evs.OfType<LocalControlEvent.Unreachable>().Any());
@@ -343,8 +332,6 @@ public class LocalControlClientTests {
     [Test] // dedupe key is the (reason, version) PAIR: a version change re-emits even though the
            // reason stays "daemon_incompatible" across every cycle
     public async Task Daemon_version_change_while_incompatible_reemits_unreachable() {
-        if (OperatingSystem.IsWindows()) return;
-
         var events = await RunClientAsync(
             [HelloEof(),                                        // no dto ⇒ version null
              HelloThen(HelloWithVersion("1.0", "consent/1")),    // incompatible, version "1.0"
@@ -354,14 +341,12 @@ public class LocalControlClientTests {
         var seen = events.OfType<LocalControlEvent.Unreachable>()
             .Select(u => (u.Reason, u.DaemonVersion)).ToArray();
         await Assert.That(seen).IsEquivalentTo(
-            new[] { ("daemon_incompatible", (string?)null), ("daemon_incompatible", "1.0"), ("daemon_incompatible", "2.0") },
+            new[] { ("daemon_incompatible", null), ("daemon_incompatible", "1.0"), ("daemon_incompatible", "2.0") },
             CollectionOrdering.Matching);
     }
 
     [Test] // a transport failure never read a hello reply, so no version is ever known
     public async Task Transport_failure_has_null_daemon_version() {
-        if (OperatingSystem.IsWindows()) return;
-
         using var daemons = new TempDaemonStore();
         var client = new LocalControlClient(daemons.Store, "none-v") { RetryDelays = [TimeSpan.FromMilliseconds(1)] };
         var events = new List<LocalControlEvent>();
@@ -377,8 +362,6 @@ public class LocalControlClientTests {
 
     [Test] // daemon dies mid-stream → Unreachable; restart → Connected with fresh snapshot
     public async Task Mid_stream_death_then_restart_reconnects() {
-        if (OperatingSystem.IsWindows()) return;
-
         var events = await RunClientAsync(
             [HelloThen(GoodHello("status/1")), SubscribePushThenClose(ValidStatusJson("m", "a1")), // then conn closes
              HelloThen(GoodHello("status/1")), SubscribePush(ValidStatusJson("m", "a1", "a2"))],
@@ -391,8 +374,6 @@ public class LocalControlClientTests {
     [Test] // pins the disposal-leak fix: breaking out of the enumeration (no cancel) must still
            // close the live subscribe socket, not merely stop reading from it
     public async Task Breaking_out_of_the_enumeration_after_connected_disposes_the_subscribe_socket() {
-        if (OperatingSystem.IsWindows()) return;
-
         using var daemons = new TempDaemonStore();
         const string name = "client";
         var closed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -419,8 +400,6 @@ public class LocalControlClientTests {
            // RunCycleAsync succeeding and Connected being yielded must end the enumeration with
            // NO Connected ever surfacing, and must still close the stream it was handed
     public async Task Cancellation_landing_exactly_at_cycle_success_never_yields_connected() {
-        if (OperatingSystem.IsWindows()) return;
-
         using var daemons = new TempDaemonStore();
         const string name = "client";
         var closed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -447,8 +426,6 @@ public class LocalControlClientTests {
 
     [Test] // clean cancellation mid-backoff-wait, no fabricated events
     public async Task Cancellation_ends_the_enumeration_cleanly() {
-        if (OperatingSystem.IsWindows()) return;
-
         using var daemons = new TempDaemonStore();
         var client = new LocalControlClient(daemons.Store, "cxl") { RetryDelays = [TimeSpan.FromSeconds(30)] };
         using var cts = new CancellationTokenSource();
@@ -471,8 +448,6 @@ public class LocalControlClientTests {
 
     [Test] // clean cancellation mid-stream (established connection, blocked on the next read)
     public async Task Cancellation_mid_stream_ends_the_enumeration_cleanly() {
-        if (OperatingSystem.IsWindows()) return;
-
         using var daemons = new TempDaemonStore();
         const string name = "client";
         await using var server = new ScriptedServer(daemons.Store.SocketPath(name),
@@ -500,8 +475,6 @@ public class LocalControlClientTests {
 
     [Test] // backoff advances across consecutive failures and resets to the start after a proven Connected
     public async Task Backoff_delay_advances_across_failures_and_resets_after_connected() {
-        if (OperatingSystem.IsWindows()) return;
-
         // Real TimeProvider.System (not FakeTimeProvider — see the class doc). Every assertion
         // below is deliberately ONE-SIDED:
         //  - "advanced" is a LOWER bound (deltaLong > 1s) — proves cycle1's wait was genuinely
@@ -533,9 +506,10 @@ public class LocalControlClientTests {
             FirstSnapshotTimeout = TimeSpan.FromSeconds(10),
         };
         var events = new List<LocalControlEvent>();
+        var gate = new object();
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         var run = Task.Run(async () => {
-            await foreach (var e in client.RunAsync(cts.Token)) events.Add(e);
+            await foreach (var e in client.RunAsync(cts.Token)) { lock (gate) events.Add(e); }
         });
 
         var sw = System.Diagnostics.Stopwatch.StartNew();
@@ -552,6 +526,13 @@ public class LocalControlClientTests {
         await WaitForServedAsync(6);                      // cycle3's hello+subscribe — only reachable within the
                                                             // poll deadline if the schedule actually reset
 
+        // Served counts ACCEPTS, which run ahead of the client: the sixth accept lands before cycle3's
+        // hello/subscribe has been read and its Connected emitted. Wait for the client to surface both
+        // Connected events before cancelling, or the count assertion below races the very handshake it
+        // is meant to observe.
+        var connDeadline = DateTime.UtcNow.AddSeconds(10);
+        while (ConnectedCountLocked(gate, events) < 2 && DateTime.UtcNow < connDeadline) await Task.Delay(5);
+
         cts.Cancel();
         try { await run; } catch (OperationCanceledException) { }
 
@@ -567,7 +548,6 @@ public class LocalControlClientTests {
 
     [Test]
     public async Task Mismatched_hello_and_snapshot_identity_never_emits_Connected() {
-        if (OperatingSystem.IsWindows()) return;
         // Use the suite's scripted-socket helper: hello reply from process A, snapshot from process B.
         // (Concretely: serve HelloReply {pid:111,instance_id:"A"} then DaemonStatus whose DaemonInfoDto
         // has {pid:222,instance_id:"B"}; iterate client.RunAsync and collect events until Unreachable.)
@@ -581,8 +561,6 @@ public class LocalControlClientTests {
 
     [Test]
     public async Task Matching_hello_and_snapshot_identity_yields_connected_with_identity() {
-        if (OperatingSystem.IsWindows()) return;
-
         var events = await RunScriptedCycleAsync(
             helloJson:  """{"protocol_version":1,"daemon_version":"1.0.0","daemon_name":"x","capabilities":["consent/1","status/1"],"pid":111,"instance_id":"A"}""",
             statusJson: """{"daemon":{"name":"x","version":"1.0.0","server_url":"http://s","connection":"connected","max_agents":5,"active_agents":0,"pid":111,"instance_id":"A"},"agents":[]}""");
@@ -597,8 +575,6 @@ public class LocalControlClientTests {
 
     [Test]
     public async Task Hello_without_identity_fields_yields_connected_with_null_identity_pid() {
-        if (OperatingSystem.IsWindows()) return;
-
         // Pre-slice daemon: hello reply carries no pid/instance_id at all, even though the
         // snapshot (a current daemon's status payload) does — no mismatch may be inferred from
         // that asymmetry, so Connected must still fire, with Identity built from hello alone.

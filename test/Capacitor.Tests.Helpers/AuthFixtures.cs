@@ -1,3 +1,4 @@
+using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Auth;
 using Duende.IdentityModel.OidcClient.Browser;
 using NSubstitute;
@@ -8,6 +9,7 @@ namespace Capacitor.Tests.Helpers;
 // assemblies and so cannot reach a fixture declared in either one.
 public static class AuthFixtures {
     public static OnboardingFacade NewFacade(
+            ConfigRoot                                                  root,
             IAuthProgress                                               progress,
             HttpMessageHandler                                          handler,
             ITenantPicker?                                              picker        = null,
@@ -15,10 +17,13 @@ public static class AuthFixtures {
             Func<IReadOnlyList<AuthIdentity>, CancellationToken, Task>? beforeCommit  = null,
             Func<CancellationToken, Task<WorkOSAuthResponse?>>?         workosLogin   = null,
             IBrowser?                                                   workosBrowser = null,
-            string?                                                     workosApiBase = null) {
+            string?                                                     workosApiBase = null,
+            IBrowserLauncher?                                           browser       = null) {
         var http = new HttpClient(handler, disposeHandler: false);
 
-        return new OnboardingFacade(progress, picker ?? Substitute.For<ITenantPicker>(), provisioner, beforeCommit, () => http) {
+        return new OnboardingFacade(
+                root, progress, browser ?? new RecordingBrowser(),
+                picker ?? Substitute.For<ITenantPicker>(), provisioner, beforeCommit, () => http) {
             WorkOSOrglessLogin    = workosLogin,
             WorkOSBrowser         = workosBrowser,
             WorkOSApiBaseOverride = workosApiBase
@@ -27,7 +32,7 @@ public static class AuthFixtures {
 
     public static ITenantPicker PickerReturningFirst() {
         var picker = Substitute.For<ITenantPicker>();
-        picker.PickAsync(Arg.Any<DiscoveredTenant[]>(), Arg.Any<CancellationToken>())
+        picker.PickAsync(Arg.Any<DiscoveredTenant[]>(), Arg.Any<TenantPickContext>(), Arg.Any<CancellationToken>())
               .Returns(ci => Task.FromResult<DiscoveredTenant?>(ci.Arg<DiscoveredTenant[]>()[0]));
 
         return picker;

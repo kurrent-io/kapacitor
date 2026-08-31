@@ -5,6 +5,7 @@ using Capacitor.Cli.Daemon.Pty;
 using Capacitor.Cli.Daemon.Services;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
+using TUnit.Core.Enums;
 
 namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 
@@ -16,7 +17,12 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 /// since none of these tests exercise Spawn/Attach/List/Stop — the orchestrator only needs to
 /// exist to satisfy LocalControlServer's constructor.
 /// </summary>
+[ExcludeOn(OS.Windows)] // Unix-domain socket path
 public class ConsentRulesPutV2Tests {
+    [TempHome] public required TempHome Home { get; init; }
+
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     sealed class NoopHostLifetime : IHostApplicationLifetime {
         public CancellationToken ApplicationStarted  => CancellationToken.None;
         public CancellationToken ApplicationStopping => CancellationToken.None;
@@ -41,7 +47,7 @@ public class ConsentRulesPutV2Tests {
 
     sealed record Harness(TempDaemonStore Daemons, LocalControlServer Server, AgentOrchestrator Orchestrator, ServerConnection Connection, DaemonConfig Config, string SockPath);
 
-    static async Task<Harness> StartAsync(string daemonName, CancellationToken ct, string serverUrl = "http://127.0.0.1:1") {
+    async Task<Harness> StartAsync(string daemonName, CancellationToken ct, string serverUrl = "http://127.0.0.1:1") {
         var daemons     = new TempDaemonStore();
         var stateRoot   = daemons.Store.StateDirectory(daemonName);
         var store       = new LaunchConsentStore(stateRoot, NullLogger.Instance);
@@ -63,14 +69,16 @@ public class ConsentRulesPutV2Tests {
         var permissionBridge = new LocalPermissionBridge(connection, NullLogger<LocalPermissionBridge>.Instance);
 
         var orchestrator = new AgentOrchestrator(
-            config, connection, worktreeManager, repoMatcher, new NoopPtyProcessFactory(), new NoopHttpClientFactory(),
+            config, Config.Root, Home, connection, worktreeManager, repoMatcher,
+            new NoopPtyProcessFactory(), new NoopHttpClientFactory(),
             permissionBridge, new Dictionary<string, IHostedAgentLauncher>(),
             new Dictionary<string, IHostedAgentRuntimeFactory>(), new NoopHostLifetime(),
             NullLogger<AgentOrchestrator>.Instance, gate);
 
+        var permissionIpc = new PermissionIpc(new PermissionPromptBroker(), NullLogger<PermissionIpc>.Instance);
         var statusIpc = new DaemonStatusIpc(config, orchestrator, connection, new DaemonStatusNotifier());
         var restart = RestartCoordinator.ForTest(daemons.Store, daemonName, daemonName, new NoopRestartStrategy());
-        var server = new LocalControlServer(config, orchestrator, restart, consentIpc, statusIpc, NullLogger<LocalControlServer>.Instance);
+        var server = new LocalControlServer(config, orchestrator, restart, consentIpc, permissionIpc, statusIpc, NullLogger<LocalControlServer>.Instance);
         await server.StartAsync(ct);
 
         var sockPath = daemons.Store.SocketPath(daemonName);
@@ -91,7 +99,7 @@ public class ConsentRulesPutV2Tests {
     /// Wraps a test body with the harness lifecycle, mirroring LocalControlHelloTests's RunAsync. The harness owns
     /// its own daemons directory, so nothing here is shared between tests; each [Test] still
     /// carries its own Windows guard, which must be visible on the test method itself.
-    static async Task RunAsync(string daemonName, Func<Harness, CancellationToken, Task> body, string serverUrl = "http://127.0.0.1:1") {
+    async Task RunAsync(string daemonName, Func<Harness, CancellationToken, Task> body, string serverUrl = "http://127.0.0.1:1") {
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
 
         Harness? h = null;
@@ -127,8 +135,6 @@ public class ConsentRulesPutV2Tests {
 
     [Test]
     public async Task V2_put_with_matching_identity_mutates_and_acks_ok() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         await RunAsync("putv2-a", async (h, ct) => {
             var dto = new ConsentPolicyPutV2Dto("putv2-a", h.Config.ServerUrl,
                 new ConsentPolicyDto("prompt", 45, []));
@@ -144,8 +150,6 @@ public class ConsentRulesPutV2Tests {
 
     [Test]
     public async Task V2_put_with_wrong_server_acks_identity_mismatch_and_mutates_nothing() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         await RunAsync("putv2-b", async (h, ct) => {
             var before = ReadConsentFile(h);
             var dto = new ConsentPolicyPutV2Dto("putv2-b", "https://other-server.example",
@@ -166,8 +170,6 @@ public class ConsentRulesPutV2Tests {
 
     [Test]
     public async Task V2_put_with_trailing_slash_and_host_case_difference_still_matches() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         await RunAsync("putv2-caseslash", async (h, ct) => {
             var dto = new ConsentPolicyPutV2Dto("putv2-caseslash", "HTTP://127.0.0.1:1/",
                 new ConsentPolicyDto("prompt", 45, []));
@@ -182,8 +184,6 @@ public class ConsentRulesPutV2Tests {
 
     [Test]
     public async Task V2_put_with_default_port_equivalence_matches() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         await RunAsync("putv2-defaultport", async (h, ct) => {
             var dto = new ConsentPolicyPutV2Dto("putv2-defaultport", "https://x.example:443",
                 new ConsentPolicyDto("prompt", 45, []));
@@ -198,8 +198,6 @@ public class ConsentRulesPutV2Tests {
 
     [Test]
     public async Task V2_put_with_path_case_difference_is_identity_mismatch() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         await RunAsync("putv2-pathcase", async (h, ct) => {
             var before = ReadConsentFile(h);
             var dto = new ConsentPolicyPutV2Dto("putv2-pathcase", "https://x.example/tenant",
@@ -217,8 +215,6 @@ public class ConsentRulesPutV2Tests {
 
     [Test]
     public async Task V2_put_with_wrong_name_acks_identity_mismatch_and_mutates_nothing() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         await RunAsync("putv2-name", async (h, ct) => {
             var before = ReadConsentFile(h);
             var dto = new ConsentPolicyPutV2Dto("some-other-daemon", h.Config.ServerUrl,
@@ -236,8 +232,6 @@ public class ConsentRulesPutV2Tests {
 
     [Test]
     public async Task V2_put_with_missing_expected_fields_acks_malformed() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         await RunAsync("putv2-malformed", async (h, ct) => {
             var before = ReadConsentFile(h);
             // Expected_name/expected_server_url omitted entirely — a syntactically valid JSON
@@ -256,8 +250,6 @@ public class ConsentRulesPutV2Tests {
 
     [Test]
     public async Task Capabilities_advertise_consent3() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         await RunAsync("putv2-c", async (h, ct) => {
             await using var s = await ConnectAsync(h.SockPath, ct);
             await FrameCodec.WriteAsync(s, new LocalFrame(FrameType.Hello), ct);

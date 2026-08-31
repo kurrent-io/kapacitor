@@ -40,6 +40,11 @@ Deliberate choices a change can silently undo — each looks like a bug until yo
   failing closed, so an update cannot brick a pre-existing daemon. Decisions append to an
   owner-only log; no gate path blocks a launch on a terminal prompt, and cancellation aborts the
   launch rather than fabricating a decision.
+- **The daemons directory is a fixed location and ignores `KCAP_CONFIG_DIR`.** It shares the
+  `~/.config/kcap` prefix with the config directory by coincidence, not derivation: when it was
+  derived, two daemons under different config dirs took different `flock`s, never saw each other,
+  both authenticated as the same GitHub ID and oscillated the server's registry slot. Same literal,
+  different anchor — `DaemonStoreTests` guards it.
 - **Local control IPC is append-only and capability-gated.** `FrameType` values are never reused or
   renumbered, and `LocalControlCapabilities.Current` is assembled beside the routing switch so
   nothing can be advertised without a live handler.
@@ -53,6 +58,10 @@ Deliberate choices a change can silently undo — each looks like a bug until yo
 - **Auth commits in one ordered boundary** — claims, then config and provider stamp, then tokens —
   behind a totalized result. `kcap login` never repoints `server_url`; `kcap setup` and the wizard
   adopt it.
+- **Secret redaction rewrites decoded JSON string values, never the serialized line.** A pattern run
+  over the whole line matches past the value it found into the surrounding structure, and the server
+  drops an unparseable line silently. A line the writer refuses is replaced by a placeholder —
+  never by the raw line, which would re-expose what the redactor just matched.
 
 ## Tech stack
 
@@ -117,18 +126,60 @@ Always verify no IL3050/IL2026 AOT warnings after changes:
 dotnet publish src/Capacitor.Cli/Capacitor.Cli.csproj -c Release 2>&1 | grep -E 'IL[23][01][0-9]{2}'
 ```
 
+## Comments
+
+**Scarce by default — never modelled on the ones already in the tree.** Existing comments are long and heavily historical, so they are the one thing here you *MUST NOT* imitate: do not pattern-match on them, and do not match their density. Follow these rules whatever the neighboring code looks like.
+
+**The test, before writing any comment:** would it still be true and useful to a reader who has only the current source — no ticket, no diff, no review thread, no calendar? And does it name something that breaks or gets undone if unknown (a trap, a non-obvious constraint, a deliberate decision)? Both yes, or write nothing. Restating the code fails the second question; narrating how the code got here fails the first. One or two lines is the norm; a longer block needs something the reader can get nowhere else.
+
+**Never write** — and the ban is on the content, not these exact words; paraphrases count:
+
+- **design/spec/plan coordinates** — "§4", "decision 3", "Task 12", "Phase 2", "scenario (a)". State the constraint itself.
+- **ticket ids as narration** — "ABC-123 adds…", "pre-ABC-456 semantics", "the ABC-789 invariant".
+- **review artifacts** — reviewer or bot names, "round 2's fix", "PR #1289 finding 3", severity labels ("P1", "Medium 2"). If the text only parses once the reader reconstructs earlier versions, rewrite it to describe what is there now.
+- **facts true only at the time of writing** — "as of this writing", "measured today", dates, run ids, site counts, open-PR numbers.
+- **change narration** — "used to", "previously", "no longer", "originally", "this replaces", "moved from", "do not re-add", or any other account of how the code evolved. The diff, the commit message and the issue own that.
+
+**Exactly three exceptions**, each with its condition:
+
+- A ticket id pointing at *still-open* work the reader must act on (TODO-style). Closed tickets never qualify, and the id is the GitHub issue number — see Dos and donts.
+- A measurement justifying a value that would otherwise look arbitrary (a timeout, a retry gap) — keep the number, drop the date and the run it came from.
+- An old shape — a renamed field, a dropped enum value, an older event version — that persisted data, stored config or an older client **can still present**. That is a live compatibility constraint, not history: name the old form and what must keep accepting it, not the story of the change.
+
+**A test's doc comment says what the test pins.** A precondition that keeps the test honest ("the stale spec genuinely cannot — otherwise this test proves nothing") belongs; its review history or its place in a CI budget does not.
+
+**Rewrite as you go.** When you touch code, shorten and de-historicise the comments on and around it: delete anything the Never list bans, keep only what still passes the test. Expected work, not scope creep.
+
+Applies to every file type: source, tests, config and build files, YAML, shell scripts.
+
+## Commit messages
+
+Subject: `one clause (#123)`, imperative, **at most 80 characters including the trailing reference**. No second clause, and no parenthetical other than that reference.
+
+The reference is the GitHub issue number — Linear ids stay out of commit messages, as they do out of comments. It goes in only when context already gives it. **Never invent one, and never settle a near-match on your own judgement** — offer the candidates and let the user pick, or ask whether one should be created. Leave the reference off until then.
+
+Body: a line or two naming the constraint that forced this shape, or a consequence easy to miss — something neither the diff nor the issue shows. Nothing to name means no body. **Five lines max.** Comments bans apply, and no inventory of the diff (file lists, per-site counts), however labelled.
+
+Squash-merge concatenates the branch's messages verbatim, and the merge is usually not yours, so write them to survive that untouched: every subject standing on its own, context stated once instead of repeated in each message, and no cross-references between commits ("as above", "fixes the previous commit"). If you do perform the merge, discard the concatenated default and write the squash body fresh, under these same rules.
+
 ## Issues and pull requests
 
 This is a public repository — we develop in the open.
 
 - **Open issues in GitHub Issues**, not Linear. Linear auto-imports GitHub issues, so there is no need to create the issue in Linear by hand.
-- **PRs must reference both the Linear issue and the GitHub issue.** Put these references in the PR *description*, not the title (the title stays clean and human-readable). Reference the GitHub issue with a closing keyword (e.g. `Closes #123`) and include the Linear issue (e.g. `AI-774`) so Linear links the PR back to the imported issue.
+- **PRs must reference both the Linear issue and the GitHub issue.** Both go on the reference line in the PR *description*: the GitHub issue with a closing keyword (e.g. `Closes #123`) and the Linear issue (e.g. `AI-774`), so Linear links the PR back to the imported issue. The title carries no reference of its own: squash-merge appends the PR number to it, so an issue reference there lands beside that one and reads as a second PR.
+
+Title: commit-subject rules minus the reference — `Show "Copied" tooltip on clipboard copy`.
+
+Description: **before writing it, open [.github/PULL_REQUEST_TEMPLATE.md](.github/PULL_REQUEST_TEMPLATE.md) and follow its comment block** — it owns length, headings and the Never list. `gh pr create --body` not rendering the template is not an exemption from it.
 
 ## Dos and donts
 
 - DO use `JsonElementExtensions` instead of checking JSON value kind.
+- DO take a `UserHome` rather than resolving a home yourself: `Environment.GetFolderPath` is banned
+  (`RS0030`, `BannedSymbols.txt`), so a new call is a build error. An exemption is a per-site
+  `#pragma warning disable RS0030` naming why that site cannot take one.
 - DO NOT use Linear issue numbers in comments. If you absolutely need an issue number, use the GitHub issue number.
-- **Comments:** only where they add value, and short. Explain why — the trap, the non-obvious constraint, the decision someone would otherwise undo. Never restate what the code already says, never narrate a change ("moved from X", "hoisted from all 25 projects") — that is what the commit message and the issue are for. One or two lines is the norm; a longer block needs a reason a reader could not get anywhere else. This applies to `.editorconfig`, `.props` and YAML as much as to C#.
 
 ## Common mistakes to avoid
 

@@ -16,16 +16,19 @@ sealed class ScriptedLocalControlOps : ILocalControlOps {
     readonly Queue<TaskCompletionSource<ConsentAckDto>> _putV2s = new();
     readonly Queue<TaskCompletionSource<StopAgentResult>> _stops = new();
     readonly Queue<TaskCompletionSource<ConsentAckDto>> _resolves = new();
+    readonly Queue<TaskCompletionSource<PermissionAckDto>> _permissionResolves = new();
 
     public int GetCalls;
     public int PutCalls;
     public int PutV2Calls;
     public int StopCalls;
     public int ResolveCalls;
+    public int PermissionResolveCalls;
     public readonly List<ConsentPolicyDto> PutPayloads = [];
     public readonly List<ConsentPolicyPutV2Dto> PutV2Payloads = [];
     public readonly List<(string AgentId, bool Force)> StopPayloads = [];
     public readonly List<ConsentResolveDto> ResolvePayloads = [];
+    public readonly List<PermissionResolveDto> PermissionResolvePayloads = [];
 
     public TaskCompletionSource<ConsentPolicyDto> ArmGet() {
         var tcs = new TaskCompletionSource<ConsentPolicyDto>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -75,6 +78,15 @@ sealed class ScriptedLocalControlOps : ILocalControlOps {
     public void QueueResolveFailure(string reason) => ArmResolve().SetException(new LocalControlOpsException(reason, reason));
     public void QueueResolveUnmappedFailure(Exception ex) => ArmResolve().SetException(ex);
 
+    public TaskCompletionSource<PermissionAckDto> ArmPermissionResolve() {
+        var tcs = new TaskCompletionSource<PermissionAckDto>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _permissionResolves.Enqueue(tcs);
+        return tcs;
+    }
+
+    public void QueuePermissionResolve(bool ok, string? error = null) => ArmPermissionResolve().SetResult(new PermissionAckDto(ok, error));
+    public void QueuePermissionResolveFailure(string reason) => ArmPermissionResolve().SetException(new LocalControlOpsException(reason, reason));
+
     public Task<ConsentPolicyDto> GetConsentPolicyAsync(CancellationToken ct) {
         Interlocked.Increment(ref GetCalls);
         if (ct.IsCancellationRequested) return Task.FromCanceled<ConsentPolicyDto>(ct);
@@ -120,6 +132,16 @@ sealed class ScriptedLocalControlOps : ILocalControlOps {
         if (ct.IsCancellationRequested) return Task.FromCanceled<ConsentAckDto>(ct);
         if (_resolves.Count == 0) throw new InvalidOperationException("ScriptedLocalControlOps: unscripted Resolve call");
         var tcs = _resolves.Dequeue();
+        ct.Register(() => tcs.TrySetCanceled(ct));
+        return tcs.Task;
+    }
+
+    public Task<PermissionAckDto> ResolvePermissionAsync(PermissionResolveDto resolve, CancellationToken ct) {
+        Interlocked.Increment(ref PermissionResolveCalls);
+        PermissionResolvePayloads.Add(resolve);
+        if (ct.IsCancellationRequested) return Task.FromCanceled<PermissionAckDto>(ct);
+        if (_permissionResolves.Count == 0) throw new InvalidOperationException("ScriptedLocalControlOps: unscripted permission resolve call");
+        var tcs = _permissionResolves.Dequeue();
         ct.Register(() => tcs.TrySetCanceled(ct));
         return tcs.Task;
     }

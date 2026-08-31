@@ -14,18 +14,14 @@ namespace Capacitor.Cli.Tests.Integration;
 /// </summary>
 public class McpReviewServerTests : IDisposable {
     [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
+    [TempConfigRoot]  public required TempConfigRoot  Config  { get; init; }
+    [GitRepo]         public required GitRepo         Repo    { get; init; }
 
     readonly WireMockServer _server           = WireMockServer.Start();
-    readonly TempDir        _tmp              = new();
-    readonly string         _cfgDir;
-    readonly string         _cwdDir;
     readonly List<Process>  _spawnedProcesses = [];
 
-    public McpReviewServerTests() {
-        _cfgDir = _tmp.CreateDir("cfg");
-        _cwdDir = _tmp.CreateDir("cwd");
-        InitGitRepo(_cwdDir);
-    }
+    [Before(Test)]
+    public void InitWorkspaceRepo() => Repo.AddRemote("https://github.com/test-owner/test-repo.git");
 
     public void Dispose() {
         foreach (var p in _spawnedProcesses) {
@@ -38,23 +34,8 @@ public class McpReviewServerTests : IDisposable {
         }
 
         _server.Stop();
-        _tmp.Dispose();
     }
 
-    static void InitGitRepo(string dir) {
-        RunGit(dir, "init");
-        RunGit(dir, "remote add origin https://github.com/test-owner/test-repo.git");
-    }
-
-    static void RunGit(string cwd, string args) {
-        using var p = Process.Start(new ProcessStartInfo("git", args) {
-            WorkingDirectory       = cwd,
-            RedirectStandardOutput = true,
-            RedirectStandardError  = true,
-            UseShellExecute        = false
-        })!;
-        p.WaitForExit(5000);
-    }
 
     /// <summary>
     /// Spawns <c>kcap mcp review</c> (argless / auto PR-detection) against WireMock.
@@ -65,10 +46,9 @@ public class McpReviewServerTests : IDisposable {
         _server.Given(Request.Create().WithPath("/auth/config").UsingGet())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody($$"""{"provider":"{{provider}}"}"""));
 
-        var psi = KcapProcess.StartInfo(Daemons.Store, "mcp", "review");
-        psi.WorkingDirectory = _cwdDir;
+        var psi = KcapProcess.StartInfo(Daemons.Store, Config.Root, "mcp", "review");
+        psi.WorkingDirectory = Repo.Path;
         psi.Environment["KCAP_URL"] = urlOverride ?? _server.Url!;
-        psi.Environment["KCAP_CONFIG_DIR"] = _cfgDir;
 
         var process = Process.Start(psi) ?? throw new InvalidOperationException("Failed to start kcap process");
         _spawnedProcesses.Add(process);

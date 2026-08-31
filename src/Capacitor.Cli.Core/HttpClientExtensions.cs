@@ -40,12 +40,16 @@ public static class HttpClientExtensions {
     /// and returns the reason. Does NOT write to stderr — the caller chooses how, and whether, to
     /// surface it. Hook callers should prefer this over <see cref="CreateAuthenticatedClientAsync"/>
     /// so they can stay quiet on high-frequency events and exit cleanly instead of erroring per-turn.
+    /// <paramref name="autoRetryUnauthorized"/> installs the 401-refresh-retry handler on the same
+    /// terms <see cref="CreateAuthenticatedClientAsync"/> does — a caller that runs the leg long
+    /// enough for a token to expire mid-flight wants it; a hook that POSTs once does not.
     /// </summary>
     public static async Task<(HttpClient Client, AuthStatus Status)> CreateClientWithAuthStatusAsync(
-        string? baseUrl = null, CancellationToken ct = default, bool allowAutoRedirect = true,
-        string? rejectedAccessToken = null) {
-        var (client, status, _, _) = await CreateClientCoreAsync(baseUrl, ct, allowAutoRedirect,
-            rejectedAccessToken, autoRetryUnauthorized: false);
+        ConfigRoot config, ProfileContext profiles, string baseUrl, CancellationToken ct = default,
+        bool allowAutoRedirect = true, string? rejectedAccessToken = null,
+        bool autoRetryUnauthorized = false) {
+        var (client, status, _, _) = await CreateClientCoreAsync(config, profiles, baseUrl, ct, allowAutoRedirect,
+            rejectedAccessToken, autoRetryUnauthorized);
 
         return (client, status);
     }
@@ -56,25 +60,24 @@ public static class HttpClientExtensions {
     ///
     /// <para>Every client this produces — regardless of which branch below built it — leaves here
     /// carrying the observation headers the server's update-notification pipeline reads (see
-    /// <see cref="AttachObservationHeadersAsync"/>): this is the ONE choke point every authenticated
+    /// <see cref="AttachObservationHeaders"/>): this is the ONE choke point every authenticated
     /// CLI request flows through, so it is the one place that can promise every request the server
     /// sees is tagged. <c>WhoamiCommand.ProbeAsync</c> deliberately bypasses this method (it
     /// must not mutate auth state) and attaches the same headers explicitly.</para>
     /// </summary>
     static async Task<(HttpClient Client, AuthStatus Status, TokenResolution? Resolution, string? MachineProblem)> CreateClientCoreAsync(
-        string? baseUrl, CancellationToken ct, bool allowAutoRedirect,
+        ConfigRoot config, ProfileContext profiles, string baseUrl, CancellationToken ct, bool allowAutoRedirect,
         string? rejectedAccessToken, bool autoRetryUnauthorized) {
-        var result = await CreateClientCoreImplAsync(baseUrl, ct, allowAutoRedirect, rejectedAccessToken, autoRetryUnauthorized);
-        await AttachObservationHeadersAsync(result.Client, ct);
+        var result = await CreateClientCoreImplAsync(
+            config, profiles, baseUrl, ct, allowAutoRedirect, rejectedAccessToken, autoRetryUnauthorized);
+        AttachObservationHeaders(profiles, result.Client);
 
         return result;
     }
 
     static async Task<(HttpClient Client, AuthStatus Status, TokenResolution? Resolution, string? MachineProblem)> CreateClientCoreImplAsync(
-        string? baseUrl, CancellationToken ct, bool allowAutoRedirect,
+        ConfigRoot config, ProfileContext profiles, string baseUrl, CancellationToken ct, bool allowAutoRedirect,
         string? rejectedAccessToken, bool autoRetryUnauthorized) {
-        baseUrl ??= AppConfig.ResolvedServerUrl ?? Environment.GetEnvironmentVariable("KCAP_URL") ?? "http://localhost:5108";
-
         HttpClient NewClient(DelegatingHandler? retry = null) {
             var primary = new HttpClientHandler { AllowAutoRedirect = allowAutoRedirect };
 
@@ -87,12 +90,12 @@ public static class HttpClientExtensions {
 
             // Capture the server's own version (X-Kcap-Server-Version) from every response — outermost,
             // so it observes the FINAL response after any 401-retry. No extra requests; best-effort.
-            var capture = new ServerVersionCaptureHandler(baseUrl) { InnerHandler = inner };
+            var capture = new ServerVersionCaptureHandler(baseUrl, config) { InnerHandler = inner };
 
             return new(capture);
         }
 
-        var provider = await DiscoverProviderAsync(baseUrl, ct);
+        var provider = await DiscoverProviderAsync(baseUrl, config, profiles, ct);
 
         if (provider == "None") {
             return (NewClient(), AuthStatus.NoAuthRequired, null, null); // No auth needed
@@ -137,20 +140,20 @@ public static class HttpClientExtensions {
         // an expired token be refreshed a SECOND time — re-spending a single-use WorkOS refresh
         // token — so this path returns directly.
         if (rejectedAccessToken is not null) {
-            var recovered = await TokenStore.RecoverForServerAsync(baseUrl, rejectedAccessToken, ct);
+            var recovered = await new TokenStore(config).RecoverForServerAsync(profiles.Name, baseUrl, rejectedAccessToken, ct);
 
             if (recovered is null) return (NewClient(), AuthStatus.Expired, null, null);
 
-            var recoveredClient = NewClient(autoRetryUnauthorized ? new UnauthorizedRetryHandler(recovered, baseUrl) : null);
+            var recoveredClient = NewClient(autoRetryUnauthorized ? new UnauthorizedRetryHandler(config, profiles.Name, recovered, baseUrl) : null);
             recoveredClient.DefaultRequestHeaders.Authorization = new("Bearer", recovered.AccessToken);
 
             return (recoveredClient, AuthStatus.Ok, null, null);
         }
 
-        var resolution = await TokenStore.GetValidTokensForServerAsync(baseUrl, ct);
+        var resolution = await new TokenStore(config).GetValidTokensForServerAsync(profiles.Name, baseUrl, ct);
 
         if (resolution is { Status: AuthStatus.Ok, Tokens: not null }) {
-            var client = NewClient(autoRetryUnauthorized ? new UnauthorizedRetryHandler(resolution.Tokens, baseUrl) : null);
+            var client = NewClient(autoRetryUnauthorized ? new UnauthorizedRetryHandler(config, profiles.Name, resolution.Tokens, baseUrl) : null);
             client.DefaultRequestHeaders.Authorization = new("Bearer", resolution.Tokens.AccessToken);
 
             return (client, AuthStatus.Ok, resolution, null);
@@ -183,20 +186,18 @@ public static class HttpClientExtensions {
     /// <see cref="CapacitorVersion.CurrentDisplay"/> can't resolve a real version, in which case
     /// sending "unknown" would be worse than omitting it. Attaches <see cref="UpdateCheckHeader"/>
     /// only when the active profile has explicitly opted out, per the absence-means-on contract
-    /// above. Reads the profile via <see cref="AppConfig.GetActiveProfileAsync"/> — the same
-    /// accessor <c>UpdateNotice</c> uses — which is a cache hit (no disk I/O) whenever the process
-    /// already resolved a profile, so this stays cheap on the per-request hot path.
+    /// above. Reads the profile via <see cref="ProfileContext.Effective"/> — the same accessor
+    /// <c>UpdateNotice</c> uses — off the resolution the caller already holds, so the per-request
+    /// hot path touches no disk at all.
     /// </summary>
-    internal static async Task AttachObservationHeadersAsync(HttpClient client, CancellationToken ct = default) {
+    internal static void AttachObservationHeaders(ProfileContext profiles, HttpClient client) {
         var version = CapacitorVersion.CurrentDisplay();
 
         if (!string.IsNullOrWhiteSpace(version) && !version.Equals("unknown", StringComparison.OrdinalIgnoreCase)) {
             client.DefaultRequestHeaders.Add(CliVersionHeader, version);
         }
 
-        var profile = await AppConfig.GetActiveProfileAsync(ct);
-
-        if (profile?.UpdateCheck == false) {
+        if (profiles.Effective?.UpdateCheck == false) {
             client.DefaultRequestHeaders.Add(UpdateCheckHeader, UpdateCheckOffValue);
         }
     }
@@ -212,9 +213,11 @@ public static class HttpClientExtensions {
     /// a refresh. Pass <c>false</c> from callers that run their own 401-retry loop over the returned
     /// client — the MCP servers do — so a single rejection isn't retried (and refreshed) twice.
     /// </param>
-    public static async Task<HttpClient> CreateAuthenticatedClientAsync(string? baseUrl = null, CancellationToken ct = default,
-            bool autoRetryUnauthorized = true) {
-        var (client, status, resolution, machineProblem) = await CreateClientCoreAsync(baseUrl, ct, allowAutoRedirect: true,
+    public static async Task<HttpClient> CreateAuthenticatedClientAsync(
+            ConfigRoot config, ProfileContext profiles, string baseUrl,
+            CancellationToken ct = default, bool autoRetryUnauthorized = true) {
+        var (client, status, resolution, machineProblem) = await CreateClientCoreAsync(
+            config, profiles, baseUrl, ct, allowAutoRedirect: true,
             rejectedAccessToken: null, autoRetryUnauthorized);
 
         switch (status) {
@@ -231,7 +234,7 @@ public static class HttpClientExtensions {
 
                 break;
             case AuthStatus.WrongServer:
-                var target = baseUrl ?? AppConfig.ResolvedServerUrl ?? "the configured server";
+                var target = baseUrl;
                 await Console.Error.WriteLineAsync(
                     $"Stored token was issued by {resolution?.IssuedServerUrl} but this command targets {target}. " +
                     $"Run 'kcap login' (or switch profiles with 'kcap use') to authenticate against {target}.");
@@ -254,7 +257,8 @@ public static class HttpClientExtensions {
     /// </summary>
     internal static void ResetProviderCacheForTesting() => cachedProvider = null;
 
-    public static async Task<string> DiscoverProviderAsync(string baseUrl, CancellationToken ct = default) {
+    public static async Task<string> DiscoverProviderAsync(
+            string baseUrl, ConfigRoot config, ProfileContext profiles, CancellationToken ct = default) {
         if (cachedProvider is not null) {
             return cachedProvider;
         }
@@ -266,7 +270,7 @@ public static class HttpClientExtensions {
 
         // Cross-process cache: each hook invocation is a fresh process, so the in-process static
         // above never helps a hook. Skip the /auth/config round-trip when a recent result is on disk.
-        var cached = AuthProviderCache.TryGet(baseUrl);
+        var cached = AuthProviderCache.TryGet(baseUrl, config);
 
         if (cached is not null) {
             cachedProvider = cached;
@@ -280,10 +284,10 @@ public static class HttpClientExtensions {
             var response = await http.GetAsync($"{baseUrl}/auth/config", ct);
 
             if (response.IsSuccessStatusCode) {
-                var config   = await response.Content.ReadFromJsonAsync(CapacitorJsonContext.Default.AuthDiscoveryResponse, ct);
-                var provider = config?.Provider ?? "None";
+                var discovered = await response.Content.ReadFromJsonAsync(CapacitorJsonContext.Default.AuthDiscoveryResponse, ct);
+                var provider   = discovered?.Provider ?? "None";
                 cachedProvider = provider;          // in-process
-                AuthProviderCache.Set(baseUrl, provider); // cross-process; only cache successful discovery
+                AuthProviderCache.Set(baseUrl, provider, config); // cross-process; only cache successful discovery
 
                 return provider;
             }
@@ -295,14 +299,14 @@ public static class HttpClientExtensions {
         }
 
         // Fallback: try existing tokens (don't cache — allow re-discovery next time)
-        return (await TokenStore.LoadAsync())?.Provider ?? "None";
+        return (await new TokenStore(config).LoadForProfileAsync(profiles.Name, ct))?.Provider ?? "None";
     }
 
     static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(30);
     static readonly TimeSpan MaxDelay       = TimeSpan.FromSeconds(4);
 
     /// <summary>
-    /// Per-attempt cap on a single HTTP call inside <see cref="SendWithRetryAsync(Func{CancellationToken, Task{HttpResponseMessage}}, TimeSpan, CancellationToken)"/>.
+    /// Per-attempt cap on a single HTTP call inside <see cref="SendWithRetryAsync(Func{CancellationToken, Task{HttpResponseMessage}}, TimeSpan, CancellationToken, bool)"/>.
     /// Enforced via a linked <see cref="CancellationTokenSource"/> so the wall-clock cap
     /// is observable on the token we pass to <see cref="HttpClient"/> — not on the
     /// client's own <see cref="HttpClient.Timeout"/> (default 100s), which would
@@ -348,14 +352,18 @@ public static class HttpClientExtensions {
     }
 
     extension(HttpClient client) {
+        /// <param name="retryStatuses">Retry a retryable status as a transport fault is retried — see
+        /// <see cref="IsRetryableStatus"/>. Off by default, and set only where a lost call is counted and
+        /// shown to someone.</param>
         public Task<HttpResponseMessage> PostWithRetryAsync(
                 string            url,
                 HttpContent       content,
-                TimeSpan?         timeout = null,
-                CancellationToken ct      = default
+                TimeSpan?         timeout       = null,
+                CancellationToken ct            = default,
+                bool              retryStatuses = false
             ) {
             EnsureAbsolute(url);
-            return SendWithRetryAsync(token => client.PostAsync(url, content, token), timeout ?? DefaultTimeout, ct);
+            return SendWithRetryAsync(token => client.PostAsync(url, content, token), timeout ?? DefaultTimeout, ct, retryStatuses);
         }
 
         public Task<HttpResponseMessage> GetWithRetryAsync(string url, TimeSpan? timeout = null, CancellationToken ct = default) {
@@ -363,14 +371,18 @@ public static class HttpClientExtensions {
             return SendWithRetryAsync(token => client.GetAsync(url, token), timeout ?? DefaultTimeout, ct);
         }
 
+        /// <param name="retryStatuses">Retry a retryable status as a transport fault is retried — see
+        /// <see cref="IsRetryableStatus"/>. Off by default, and set only where a lost call is counted and
+        /// shown to someone.</param>
         public Task<HttpResponseMessage> PutWithRetryAsync(
                 string            url,
                 HttpContent       content,
-                TimeSpan?         timeout = null,
-                CancellationToken ct      = default
+                TimeSpan?         timeout       = null,
+                CancellationToken ct            = default,
+                bool              retryStatuses = false
             ) {
             EnsureAbsolute(url);
-            return SendWithRetryAsync(token => client.PutAsync(url, content, token), timeout ?? DefaultTimeout, ct);
+            return SendWithRetryAsync(token => client.PutAsync(url, content, token), timeout ?? DefaultTimeout, ct, retryStatuses);
         }
 
         public Task<HttpResponseMessage> DeleteWithRetryAsync(string url, TimeSpan? timeout = null, CancellationToken ct = default) {
@@ -465,72 +477,140 @@ public static class HttpClientExtensions {
         return true;
     }
 
+    /// <summary>
+    /// Statuses worth a second attempt: a request timeout, a rate limit, and anything the server calls
+    /// its own fault.
+    ///
+    /// <para><b>Opt-in per call site, never the default.</b> Every hook, watch, daemon and MCP path
+    /// shares this helper, and retrying a 5xx for all of them at once would change the timing of paths
+    /// whose budgets are shaped around a single attempt.</para>
+    /// </summary>
+    internal static bool IsRetryableStatus(HttpStatusCode status) =>
+        status is HttpStatusCode.RequestTimeout or HttpStatusCode.TooManyRequests || (int)status >= 500;
+
+    /// <summary>How long the server asked us to wait, in either header form — a proxy may rewrite
+    /// delta-seconds as an HTTP date, and reading only the delta would treat that as no header at all. A
+    /// date is measured against the response's own Date header so clock skew cannot invert the wait.</summary>
+    static TimeSpan? RetryAfterOf(HttpResponseMessage resp) => resp.Headers.RetryAfter switch {
+        { Delta: { } delta } => delta,
+        { Date:  { } date  } => date - (resp.Headers.Date ?? DateTimeOffset.UtcNow) is { Ticks: > 0 } wait
+                                    ? wait
+                                    : TimeSpan.Zero,
+        _                    => null
+    };
+
     internal static Task<HttpResponseMessage> SendWithRetryAsync(
             Func<CancellationToken, Task<HttpResponseMessage>> send,
             TimeSpan                                           totalTimeout,
-            CancellationToken                                  ct
-        ) => SendWithRetryAsync(send, totalTimeout, PerAttemptTimeout, ct);
+            CancellationToken                                  ct,
+            bool                                               retryStatuses = false
+        ) => SendWithRetryAsync(send, totalTimeout, PerAttemptTimeout, ct, retryStatuses);
 
     internal static async Task<HttpResponseMessage> SendWithRetryAsync(
             Func<CancellationToken, Task<HttpResponseMessage>> send,
             TimeSpan                                           totalTimeout,
             TimeSpan                                           perAttemptTimeout,
-            CancellationToken                                  ct
+            CancellationToken                                  ct,
+            bool                                               retryStatuses = false
         ) {
         var        sw        = Stopwatch.StartNew();
         var        delayMs   = 250;
         Exception? lastError = null;
 
-        while (true) {
-            // Hard wall-clock guard: never start a new attempt (or sleep) past totalTimeout,
-            // even when perAttemptTimeout would otherwise allow it. Without this, a default
-            // call (total=30s, per-attempt=60s) against a hung server still blocks for ~60s.
-            var remaining = totalTimeout - sw.Elapsed;
+        // The last retryable response, held so that running out of budget returns the status the server
+        // actually sent. Throwing instead would report a transport failure about a server that answered
+        // every time, and the call sites catch only HttpRequestException.
+        //
+        // Nulled when handed to the caller, so the finally disposes only what nobody received.
+        HttpResponseMessage? refused   = null;
+        TimeSpan?            honourFor = null;
 
-            if (remaining <= TimeSpan.Zero)
-                throw BudgetExhausted(totalTimeout, perAttemptTimeout, lastError);
+        try {
+            while (true) {
+                // Hard wall-clock guard: never start a new attempt (or sleep) past totalTimeout,
+                // even when perAttemptTimeout would otherwise allow it. Without this, a default
+                // call (total=30s, per-attempt=60s) against a hung server still blocks for ~60s.
+                var remaining = totalTimeout - sw.Elapsed;
 
-            var attemptCap = remaining < perAttemptTimeout ? remaining : perAttemptTimeout;
+                if (remaining <= TimeSpan.Zero)
+                    return Answered() ?? throw BudgetExhausted(totalTimeout, perAttemptTimeout, lastError);
 
-            using var attemptCts = new CancellationTokenSource(attemptCap);
-            using var linkedCts  = CancellationTokenSource.CreateLinkedTokenSource(ct, attemptCts.Token);
+                var attemptCap = remaining < perAttemptTimeout ? remaining : perAttemptTimeout;
 
-            try {
-                return await send(linkedCts.Token);
-            } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
-                // Caller cancelled — surface as cancellation, never retry.
-                throw;
-            } catch (HttpRequestException ex) when (sw.Elapsed < totalTimeout) {
-                // Transient transport error within retry budget — back off and try again.
-                lastError = ex;
-            } catch (OperationCanceledException ex) when (sw.Elapsed < totalTimeout) {
-                // Per-attempt timeout fired (linked CTS, not caller's ct) and retry budget
-                // remains — back off and try again. Without this branch the same condition
-                // would surface as an unhandled TaskCanceledException at every call site
-                // that only catches HttpRequestException (import probes, transcript POSTs,
-                // session-start hooks, ...).
-                lastError = ex;
-            } catch (HttpRequestException ex) {
-                // Budget exhausted on transport error — surface as HttpRequestException so
-                // existing `catch (HttpRequestException)` handlers degrade gracefully.
-                throw new HttpRequestException(
-                    $"Request failed after exhausting the {totalTimeout.TotalSeconds:F0}s retry budget.",
-                    ex
-                );
-            } catch (OperationCanceledException ex) {
-                throw BudgetExhausted(totalTimeout, perAttemptTimeout, ex);
+                using var attemptCts = new CancellationTokenSource(attemptCap);
+                using var linkedCts  = CancellationTokenSource.CreateLinkedTokenSource(ct, attemptCts.Token);
+
+                try {
+                    var resp = await send(linkedCts.Token);
+
+                    if (!retryStatuses || !IsRetryableStatus(resp.StatusCode)) return resp;
+
+                    // Replaces rather than accumulates: only the newest refusal is worth returning, and
+                    // the one it replaces holds a connection until it is dropped.
+                    refused?.Dispose();
+                    refused   = resp;
+                    honourFor = RetryAfterOf(resp);
+                    lastError = null;
+                } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
+                    // Caller cancelled — surface as cancellation, never retry.
+                    throw;
+                } catch (HttpRequestException ex) when (sw.Elapsed < totalTimeout) {
+                    // Transient transport error within retry budget — back off and try again.
+                    lastError = ex;
+                } catch (OperationCanceledException ex) when (sw.Elapsed < totalTimeout) {
+                    // Per-attempt timeout fired (linked CTS, not caller's ct) and retry budget
+                    // remains — back off and try again. Without this branch the same condition
+                    // would surface as an unhandled TaskCanceledException at every call site
+                    // that only catches HttpRequestException (import probes, transcript POSTs,
+                    // session-start hooks, ...).
+                    lastError = ex;
+                } catch (HttpRequestException ex) {
+                    // A refusal already in hand outranks a late transport fault: the server did answer,
+                    // and that answer is what the caller counts on.
+                    if (Answered() is { } answer) return answer;
+
+                    // Budget exhausted on transport error — surface as HttpRequestException so
+                    // existing `catch (HttpRequestException)` handlers degrade gracefully.
+                    throw new HttpRequestException(
+                        $"Request failed after exhausting the {totalTimeout.TotalSeconds:F0}s retry budget.",
+                        ex
+                    );
+                } catch (OperationCanceledException ex) {
+                    if (Answered() is { } answer) return answer;
+
+                    throw BudgetExhausted(totalTimeout, perAttemptTimeout, ex);
+                }
+
+                // Cap the backoff sleep to the remaining budget so a retry delay can never push
+                // us past totalTimeout. If nothing's left, jump back to the loop top so the
+                // hard-guard above throws with lastError preserved as the inner exception.
+                var remainingAfter = totalTimeout - sw.Elapsed;
+
+                if (remainingAfter <= TimeSpan.Zero) continue;
+
+                // The server's own figure wins when it is longer: it is the one party that knows when it
+                // will be ready, and backing off less than it asked is what earns the next refusal.
+                var wantMs = honourFor is { } asked
+                    ? Math.Max(delayMs, asked.TotalMilliseconds)
+                    : delayMs;
+
+                honourFor = null;
+
+                var actualDelayMs = (int)Math.Min(wantMs, remainingAfter.TotalMilliseconds);
+                await Task.Delay(actualDelayMs, ct);
+                delayMs = Math.Min(delayMs * 2, (int)MaxDelay.TotalMilliseconds);
             }
+        } finally {
+            refused?.Dispose();
+        }
 
-            // Cap the backoff sleep to the remaining budget so a retry delay can never push
-            // us past totalTimeout. If nothing's left, jump back to the loop top so the
-            // hard-guard above throws with lastError preserved as the inner exception.
-            var remainingAfter = totalTimeout - sw.Elapsed;
+        // Hands the held refusal over, so the finally above stops owning it.
+        HttpResponseMessage? Answered() {
+            var answer = refused;
 
-            if (remainingAfter <= TimeSpan.Zero) continue;
+            refused = null;
 
-            var actualDelayMs = (int)Math.Min(delayMs, remainingAfter.TotalMilliseconds);
-            await Task.Delay(actualDelayMs, ct);
-            delayMs = Math.Min(delayMs * 2, (int)MaxDelay.TotalMilliseconds);
+            return answer;
         }
 
         static HttpRequestException BudgetExhausted(TimeSpan totalTimeout, TimeSpan perAttemptTimeout, Exception? inner) =>
@@ -550,13 +630,13 @@ public static class HttpClientExtensions {
 /// <c>NewClient</c>), so it observes the final response after any retry. Best-effort: it never alters
 /// the request/response and never lets a capture failure surface.
 /// </summary>
-internal sealed class ServerVersionCaptureHandler(string serverUrl) : DelegatingHandler {
+internal sealed class ServerVersionCaptureHandler(string serverUrl, ConfigRoot config) : DelegatingHandler {
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) {
         var response = await base.SendAsync(request, ct);
 
         try {
             if (response.Headers.TryGetValues(HttpClientExtensions.ServerVersionHeader, out var values))
-                ServerVersionStore.Set(serverUrl, values.FirstOrDefault());
+                ServerVersionStore.Set(serverUrl, values.FirstOrDefault(), config);
         } catch {
             // Header capture must never affect the response the caller gets back.
         }

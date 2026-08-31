@@ -18,6 +18,8 @@ namespace Capacitor.Cli.Tests.Integration;
 /// <c>AgentSubsession-*</c>.
 /// </summary>
 public class GeminiSubagentImportTests : IDisposable {
+    [TempHome] public required TempHome Home { get; init; }
+
     readonly WireMockServer _server = WireMockServer.Start();
     readonly TempDir        _tmp    = new();
     readonly string         _tempDir;
@@ -69,7 +71,7 @@ public class GeminiSubagentImportTests : IDisposable {
         }
 
         using var client = new HttpClient();
-        var source = new GeminiImportSource(tmpDirOverride: _tempDir);
+        var source = new GeminiImportSource(_tempDir);
 
         var discovered = await source.DiscoverAsync(new DiscoveryFilters(null, null, null, 0), CancellationToken.None);
         // The nested subagent file must NOT be discovered as its own session.
@@ -78,7 +80,7 @@ public class GeminiSubagentImportTests : IDisposable {
 
         var classified = await source.ClassifyAsync(
             discovered,
-            new ClassifyContext(client, _server.Url!, MinLines: 0, ExcludedRepos: null, ExcludedPaths: null),
+            new ClassifyContext(client, _server.Url!, MinLines: 0, ExcludedRepos: null, ExcludedPaths: null, Home: Home),
             CancellationToken.None);
 
         var result = await source.ImportSessionAsync(
@@ -144,12 +146,12 @@ public class GeminiSubagentImportTests : IDisposable {
         }
 
         using var client = new HttpClient();
-        var source = new GeminiImportSource(tmpDirOverride: _tempDir);
+        var source = new GeminiImportSource(_tempDir);
 
         var discovered = await source.DiscoverAsync(new DiscoveryFilters(null, null, null, 0), CancellationToken.None);
         var classified = await source.ClassifyAsync(
             discovered,
-            new ClassifyContext(client, _server.Url!, MinLines: 0, ExcludedRepos: null, ExcludedPaths: null),
+            new ClassifyContext(client, _server.Url!, MinLines: 0, ExcludedRepos: null, ExcludedPaths: null, Home: Home),
             CancellationToken.None);
         await Assert.That(classified[0].Status).IsEqualTo(ImportCommand.ClassificationStatus.AlreadyLoaded);
 
@@ -189,12 +191,12 @@ public class GeminiSubagentImportTests : IDisposable {
         }
 
         using var client = new HttpClient();
-        var source = new GeminiImportSource(tmpDirOverride: _tempDir);
+        var source = new GeminiImportSource(_tempDir);
 
         var discovered = await source.DiscoverAsync(new DiscoveryFilters(null, null, null, 0), CancellationToken.None);
         var classified = await source.ClassifyAsync(
             discovered,
-            new ClassifyContext(client, _server.Url!, MinLines: 0, ExcludedRepos: null, ExcludedPaths: null),
+            new ClassifyContext(client, _server.Url!, MinLines: 0, ExcludedRepos: null, ExcludedPaths: null, Home: Home),
             CancellationToken.None);
         await Assert.That(classified[0].Status).IsEqualTo(ImportCommand.ClassificationStatus.AlreadyLoaded);
 
@@ -234,12 +236,12 @@ public class GeminiSubagentImportTests : IDisposable {
             .RespondWith(Response.Create().WithStatusCode(500));
 
         using var client = new HttpClient();
-        var source = new GeminiImportSource(tmpDirOverride: _tempDir);
+        var source = new GeminiImportSource(_tempDir);
 
         var discovered = await source.DiscoverAsync(new DiscoveryFilters(null, null, null, 0), CancellationToken.None);
         var classified = await source.ClassifyAsync(
             discovered,
-            new ClassifyContext(client, _server.Url!, MinLines: 0, ExcludedRepos: null, ExcludedPaths: null),
+            new ClassifyContext(client, _server.Url!, MinLines: 0, ExcludedRepos: null, ExcludedPaths: null, Home: Home),
             CancellationToken.None);
         await Assert.That(classified[0].Status).IsEqualTo(ImportCommand.ClassificationStatus.AlreadyLoaded);
 
@@ -329,14 +331,14 @@ public class GeminiSubagentImportTests : IDisposable {
         }
 
         using var client = new HttpClient();
-        var source = new GeminiImportSource(tmpDirOverride: _tempDir);
+        var source = new GeminiImportSource(_tempDir);
 
         var discovered = await source.DiscoverAsync(new DiscoveryFilters(null, null, null, 0), CancellationToken.None);
         await Assert.That(discovered.Count).IsEqualTo(1); // neither nested file is its own top-level session
 
         var classified = await source.ClassifyAsync(
             discovered,
-            new ClassifyContext(client, _server.Url!, MinLines: 0, ExcludedRepos: null, ExcludedPaths: null),
+            new ClassifyContext(client, _server.Url!, MinLines: 0, ExcludedRepos: null, ExcludedPaths: null, Home: Home),
             CancellationToken.None);
 
         var result = await source.ImportSessionAsync(

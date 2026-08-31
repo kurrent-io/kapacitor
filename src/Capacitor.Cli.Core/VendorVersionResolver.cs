@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Capacitor.Cli.Core.Setup;
 
 namespace Capacitor.Cli.Core;
 
@@ -15,7 +16,7 @@ namespace Capacitor.Cli.Core;
 public static class VendorVersionResolver {
     public static string? Resolve(string binaryPath) {
         try {
-            var resolved = CliExecutable.Resolve(binaryPath);
+            var resolved = BinaryProbe.FromEnvironment().Resolve(binaryPath);
             if (resolved is null) return null;
 
             using var proc = Process.Start(new ProcessStartInfo(resolved, ["--version"]) {

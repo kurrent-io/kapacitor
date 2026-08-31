@@ -11,6 +11,8 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Harness.Claude;
 /// <summary>Gated certification against the real Claude CLI. It spends one Claude turn and is
 /// intentionally excluded from ordinary local/CI runs.</summary>
 public class ClaudeBorrowedReviewLiveTests {
+    [TempHome] public required TempHome Home { get; init; }
+
     [Test]
     [UnsupportedOSPlatform("windows")]
     public async Task BorrowedReview_DeniesMutation_AndCallsResultMcp() {
@@ -34,6 +36,7 @@ public class ClaudeBorrowedReviewLiveTests {
                 ServerUrl = "http://kcap.test",
                 CapacitorPath = mcpPath
             },
+            Home,
             NullLogger<ClaudeLauncher>.Instance);
         var ctx = new LauncherContext(
             AgentId: markerPath,

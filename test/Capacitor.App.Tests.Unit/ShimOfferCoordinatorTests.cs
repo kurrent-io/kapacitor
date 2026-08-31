@@ -1,4 +1,6 @@
 using Capacitor.App.Services;
+using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Setup;
 using TUnit.Assertions.Enums;
 
 namespace Capacitor.App.Tests.Unit;

@@ -5,6 +5,7 @@ using System.Text.Json.Nodes;
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Commands.Harness;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Core.Harness.Pi;
 
 namespace Capacitor.Cli.Harness.Pi;
@@ -29,11 +30,12 @@ internal sealed class PiImportSource : IImportSource {
     readonly Func<string, Task<RepositoryPayload?>> _repoDetector;
 
     public PiImportSource(
-        string?                                 sessionsDirOverride = null,
-        Func<string, Task<RepositoryPayload?>>? repoDetector        = null
+        ConfigRoot                              config,
+        string                                  sessionsDir,
+        Func<string, Task<RepositoryPayload?>>? repoDetector = null
     ) {
-        _sessionsDir  = sessionsDirOverride ?? PiPaths.SessionsDir();
-        _repoDetector = repoDetector ?? (cwd => RepositoryDetection.DetectRepositoryAsync(cwd, detectPullRequest: false));
+        _sessionsDir  = sessionsDir;
+        _repoDetector = repoDetector ?? (cwd => RepositoryDetection.DetectRepositoryAsync(config, cwd, detectPullRequest: false));
     }
 
     static StringComparison PathComparison =>
@@ -49,7 +51,7 @@ internal sealed class PiImportSource : IImportSource {
         }
     }
 
-    public string Vendor => "pi";
+    public HarnessId Vendor => HarnessId.Pi;
 
     public bool IsAvailable => Directory.Exists(_sessionsDir);
 
@@ -240,11 +242,9 @@ internal sealed class PiImportSource : IImportSource {
         // Lifecycle-before-transcript ordering: a transcript that advanced the
         // watermark past a failed lifecycle POST would leave the session
         // permanently lifecycle-less. Idempotent server-side (deterministic ids).
-        var startPayload = BuildSessionStartPayload(classification.SessionId, cwd, classification.Meta.FirstTimestamp, ctx.ForcePrivate);
-        // Step 3 visibility stamp — New-only, and never overrides the existing forcePrivate
-        // "private" stamp above (mutually exclusive: this only fires when !ctx.ForcePrivate).
-        if (!ctx.ForcePrivate && classification.Status == ImportCommand.ClassificationStatus.New && ctx.DefaultVisibility is not null) {
-            startPayload["default_visibility"] = ctx.DefaultVisibility;
+        var startPayload = BuildSessionStartPayload(classification.SessionId, cwd, classification.Meta.FirstTimestamp);
+        if (ctx.VisibilityStampFor(classification.Status) is { } visibility) {
+            startPayload["default_visibility"] = visibility;
         }
 
         var startOk = await PostSyntheticHookAsync(
@@ -285,7 +285,7 @@ internal sealed class PiImportSource : IImportSource {
 
     // ── payloads ──────────────────────────────────────────────────────────
 
-    static JsonObject BuildSessionStartPayload(string sessionId, string? cwd, DateTimeOffset? startedAt, bool forcePrivate) {
+    static JsonObject BuildSessionStartPayload(string sessionId, string? cwd, DateTimeOffset? startedAt) {
         var payload = new JsonObject {
             ["hook_event_name"] = "sessionStart",
             ["session_id"]      = sessionId,
@@ -296,7 +296,6 @@ internal sealed class PiImportSource : IImportSource {
         // so routed imports carry the same workspace_root the file-based path does.
         if (cwd is not null && GitRepository.FindRoot(cwd) is { } workspaceRoot) payload["workspace_root"] = workspaceRoot;
         if (startedAt is { } ts) payload["started_at"] = ts.ToString("O");
-        if (forcePrivate) payload["default_visibility"] = "private";
         payload["origin"] = ImportOrigins.Historical;
         return payload;
     }
@@ -448,7 +447,7 @@ internal sealed class PiImportSource : IImportSource {
         EncodedCwd       = "",
         Meta             = meta,
         Status           = status,
-        Vendor           = "pi",
+        Vendor           = HarnessId.Pi,
         ProbeErrorReason = probeErrorReason,
         TotalLines       = totalLines,
         SourceMeta       = s.SourceMeta,
@@ -466,8 +465,8 @@ internal sealed class PiImportSource : IImportSource {
         string? excludedPathKey = null;
         if (cwd is not null && ctx.ExcludedPaths is { Count: > 0 } paths) {
             foreach (var entry in paths) {
-                if (PathExclusion.IsExcluded(cwd, [entry])) {
-                    excludedPathKey = PathExclusion.Normalize(entry);
+                if (PathExclusion.IsExcluded(cwd, [entry], ctx.Home)) {
+                    excludedPathKey = PathExclusion.Normalize(entry, ctx.Home);
                     break;
                 }
             }

@@ -10,12 +10,12 @@ static class LaunchdUnit {
 
     public static string Label(string id) => LabelPrefix + id;
 
-    /// <summary>~/Library/LaunchAgents directory for the current user.</summary>
-    public static string AgentsDir() =>
-        Path.Combine(PathHelpers.HomeDirectory, "Library", "LaunchAgents");
+    /// <summary>The Library/LaunchAgents directory under the given home.</summary>
+    public static string AgentsDir(UserHome home) =>
+        Path.Combine(home.Path, "Library", "LaunchAgents");
 
-    public static string PlistPath(string id) =>
-        Path.Combine(AgentsDir(), Label(id) + ".plist");
+    public static string PlistPath(UserHome home, string id) =>
+        Path.Combine(AgentsDir(home), Label(id) + ".plist");
 
     /// <summary>Separate stdout/stderr capture file (keeps the rolling --log-file uncluttered).</summary>
     static string OutLogPath(ServiceSpec spec) =>

@@ -1,3 +1,5 @@
+using Capacitor.Cli.Core.Harness;
+
 namespace Capacitor.Cli.Commands;
 
 /// <summary>
@@ -8,7 +10,7 @@ namespace Capacitor.Cli.Commands;
 /// flow through dispatch unchanged.
 /// </summary>
 public static class VendorSelection {
-    public sealed record Result(IReadOnlySet<string> Vendors, string? Error) {
+    public sealed record Result(IReadOnlySet<HarnessId> Vendors, string? Error) {
         public bool HasError => Error is not null;
     }
 
@@ -18,20 +20,20 @@ public static class VendorSelection {
     internal static readonly string[] KnownVendorFlags = ["--claude", "--codex", "--cursor", "--copilot", "--gemini", "--kiro", "--pi", "--opencode", "--antigravity", "--dsh"];
 
     public static Result Parse(string[] args) {
-        var vendors = new HashSet<string>(StringComparer.Ordinal);
+        var vendors = new HashSet<HarnessId>();
 
         foreach (var a in args) {
             switch (a) {
-                case "--claude":  vendors.Add("claude");  break;
-                case "--codex":   vendors.Add("codex");   break;
-                case "--cursor":  vendors.Add("cursor");  break;
-                case "--copilot": vendors.Add("copilot"); break;
-                case "--gemini":  vendors.Add("gemini");  break;
-                case "--kiro":    vendors.Add("kiro");    break;
-                case "--pi":      vendors.Add("pi");      break;
-                case "--opencode": vendors.Add("opencode"); break;
-                case "--antigravity": vendors.Add("antigravity"); break;
-                case "--dsh":     vendors.Add("dsh");     break;
+                case "--claude":  vendors.Add(HarnessId.Claude);  break;
+                case "--codex":   vendors.Add(HarnessId.Codex);   break;
+                case "--cursor":  vendors.Add(HarnessId.Cursor);  break;
+                case "--copilot": vendors.Add(HarnessId.Copilot); break;
+                case "--gemini":  vendors.Add(HarnessId.Gemini);  break;
+                case "--kiro":    vendors.Add(HarnessId.Kiro);    break;
+                case "--pi":      vendors.Add(HarnessId.Pi);      break;
+                case "--opencode": vendors.Add(HarnessId.OpenCode); break;
+                case "--antigravity": vendors.Add(HarnessId.Antigravity); break;
+                case "--dsh":     vendors.Add(HarnessId.Dsh);     break;
             }
         }
 

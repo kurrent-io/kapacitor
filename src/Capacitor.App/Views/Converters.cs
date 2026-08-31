@@ -1,40 +1,17 @@
 using System.Globalization;
+using Avalonia.Controls;
 using Avalonia.Data.Converters;
 using Avalonia.Media;
 
 namespace Capacitor.App.Views;
 
-/// Dims the Agents grid when GridEnabled is false (spec §8) — a single-purpose converter, not a
-/// general bool-to-double one; deliberately not bidirectional (opacity never writes back).
-public sealed class GridEnabledOpacityConverter : IValueConverter {
-    public static readonly GridEnabledOpacityConverter Instance = new();
+/// The rail's repo headers render as small caps (design canvas); Avalonia has no text-transform,
+/// so the casing happens here rather than in the VM, keeping Label reusable as-is in tooltips.
+public sealed class UppercaseConverter : IValueConverter {
+    public static readonly UppercaseConverter Instance = new();
 
-    public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture) =>
-        value is true ? 1.0 : 0.5;
-
-    public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) =>
-        throw new NotSupportedException();
-}
-
-/// Empty state (spec §8): "No agents running" shows only while the grid is enabled (Connected)
-/// AND the bound collection is empty — a retained-but-stale cache while disconnected must not
-/// show this text, since the daemon's own status area already explains that state.
-public sealed class EmptyStateVisibleConverter : IMultiValueConverter {
-    public static readonly EmptyStateVisibleConverter Instance = new();
-
-    public object? Convert(IList<object?> values, Type targetType, object? parameter, CultureInfo culture) =>
-        values is [true, int count] && count == 0;
-}
-
-/// Grid header row: hidden when the Agents collection is empty (a naked column-header row above
-/// "No agents running" reads as noise), visible as soon as at least one row exists — independent
-/// of GridEnabled, since rows (and therefore their header) persist across disconnects (spec §8).
-/// Single-purpose converter, not a general count-to-bool one — mirrors GridEnabledOpacityConverter.
-public sealed class HeaderRowVisibleConverter : IValueConverter {
-    public static readonly HeaderRowVisibleConverter Instance = new();
-
-    public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture) =>
-        value is int count && count > 0;
+    public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture) =>
+        value is string s ? s.ToUpperInvariant() : value;
 
     public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) =>
         throw new NotSupportedException();
@@ -49,6 +26,42 @@ public sealed class OutcomeBrushConverter : IValueConverter {
 
     public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture) =>
         new SolidColorBrush(Color.Parse(value is true ? "#2E7D32" : "#D32F2F"));
+
+    public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) =>
+        throw new NotSupportedException();
+}
+
+/// Opacity for the off-tab terminal: it must stay measured (so the PTY gets the real pane size),
+/// so it is faded rather than collapsed.
+public sealed class BoolToOpacityConverter : IValueConverter {
+    public static readonly BoolToOpacityConverter Instance = new();
+
+    public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture) =>
+        value is true ? 1.0 : 0.0;
+
+    public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) =>
+        throw new NotSupportedException();
+}
+
+/// A visible-but-faded control is still announced as onscreen by default; the inactive terminal
+/// must be reported offscreen instead.
+public sealed class OffscreenWhenInactiveConverter : IValueConverter {
+    public static readonly OffscreenWhenInactiveConverter Instance = new();
+
+    public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture) =>
+        value is true ? Avalonia.Automation.IsOffscreenBehavior.Default : Avalonia.Automation.IsOffscreenBehavior.Offscreen;
+
+    public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) =>
+        throw new NotSupportedException();
+}
+
+/// The tool-call outcome glyph's colour, resolved off the app palette at bind time for the same
+/// UI-thread-affinity reason OutcomeBrushConverter documents.
+public sealed class ToolOutcomeBrushConverter : IValueConverter {
+    public static readonly ToolOutcomeBrushConverter Instance = new();
+
+    public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture) =>
+        Avalonia.Application.Current?.FindResource(value is true ? "KcapDangerBrush" : "KcapAccentBrush");
 
     public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) =>
         throw new NotSupportedException();

@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Harness;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
 using WireMock.Server;
@@ -9,6 +10,13 @@ using WireMock.Server;
 namespace Capacitor.Cli.Tests.Unit.Commands;
 
 public class ImportChainsTests : IDisposable {
+    [TempHome] public required TempHome Home { get; init; }
+
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
+    // These tests exercise chaining and repo resolution, not profile selection.
+    ImportCommand Import() =>
+        new(Config.Root, Resolutions.None(Config.Root), Home);
     readonly WireMockServer _server  = WireMockServer.Start();
     // TUnit creates a new class instance per test, so _tempDir is always unique.
     readonly TempDir _tmp     = new();
@@ -93,7 +101,7 @@ public class ImportChainsTests : IDisposable {
         };
 
         using var client = new HttpClient();
-        var result = await ImportCommand.ImportChainsAsync(client, _server.Url!, chains, events, CancellationToken.None);
+        var result = await Import().ImportChainsAsync(client, _server.Url!, chains, events, CancellationToken.None);
 
         await Assert.That(result.Loaded).IsEqualTo(3);
         await Assert.That(result.Errored).IsEqualTo(0);
@@ -130,7 +138,7 @@ public class ImportChainsTests : IDisposable {
         };
 
         using var client = new HttpClient();
-        await ImportCommand.ImportChainsAsync(client, _server.Url!, chains, events, CancellationToken.None);
+        await Import().ImportChainsAsync(client, _server.Url!, chains, events, CancellationToken.None);
 
         // Three batches were flushed and the line counts sum to the whole transcript.
         await Assert.That(progressLines.Count).IsEqualTo(3);
@@ -166,7 +174,7 @@ public class ImportChainsTests : IDisposable {
         };
 
         using var client = new HttpClient();
-        await ImportCommand.ImportChainsAsync(client, _server.Url!, chains, events, CancellationToken.None);
+        await Import().ImportChainsAsync(client, _server.Url!, chains, events, CancellationToken.None);
 
         // Batches still flowed, but the denominator was never computed.
         await Assert.That(progressTotals.Count).IsEqualTo(3);
@@ -196,7 +204,7 @@ public class ImportChainsTests : IDisposable {
         };
 
         using var client = new HttpClient();
-        await ImportCommand.ImportChainsAsync(client, _server.Url!, chains, events, CancellationToken.None);
+        await Import().ImportChainsAsync(client, _server.Url!, chains, events, CancellationToken.None);
 
         var lines = order.ToArray();
         await Assert.That(lines[0]).Contains("ord-s1");
@@ -212,7 +220,7 @@ public class ImportChainsTests : IDisposable {
         // Asserting on the URL path here keeps that bug from re-appearing.
         StubAllHookEndpoints();
 
-        var session = MakeNew("codex-routing", 10) with { Vendor = "codex" };
+        var session = MakeNew("codex-routing", 10) with { Vendor = HarnessId.Codex };
         var chains  = new List<List<ImportCommand.SessionClassification>> { new() { session } };
 
         var events = new ImportCommand.ChainWorkerEvents {
@@ -227,7 +235,7 @@ public class ImportChainsTests : IDisposable {
         };
 
         using var client = new HttpClient();
-        await ImportCommand.ImportChainsAsync(client, _server.Url!, chains, events, CancellationToken.None);
+        await Import().ImportChainsAsync(client, _server.Url!, chains, events, CancellationToken.None);
 
         var startHits = _server.LogEntries
             .Count(e => e.RequestMessage.Path == "/hooks/session-start/codex");
@@ -278,7 +286,7 @@ public class ImportChainsTests : IDisposable {
         };
 
         using var client = new HttpClient();
-        await ImportCommand.ImportChainsAsync(client, _server.Url!, chains, events, CancellationToken.None);
+        await Import().ImportChainsAsync(client, _server.Url!, chains, events, CancellationToken.None);
 
         // Verify all 4 transcript POSTs arrived at the server.
         var transcriptEntries = _server.LogEntries
@@ -348,7 +356,7 @@ public class ImportChainsTests : IDisposable {
         };
 
         using var client = new HttpClient();
-        var result = await ImportCommand.ImportChainsAsync(client, _server.Url!, chains, events, CancellationToken.None, sessionCwds);
+        var result = await Import().ImportChainsAsync(client, _server.Url!, chains, events, CancellationToken.None, sessionCwds);
 
         await Assert.That(result.Loaded).IsEqualTo(1);
 

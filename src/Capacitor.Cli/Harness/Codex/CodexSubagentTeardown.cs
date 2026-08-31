@@ -1,6 +1,7 @@
 using System.Text;
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.Harness.Codex;
 using Capacitor.Cli.Harness.Gemini;
 
@@ -26,7 +27,9 @@ namespace Capacitor.Cli.Harness.Codex;
 /// subagent — or one step — never skips the rest; re-import recovers). Mirrors
 /// <see cref="GeminiSubagentTeardown"/>.
 /// </summary>
-static class CodexSubagentTeardown {
+sealed class CodexSubagentTeardown(ConfigRoot config, ProfileContext profiles) {
+    readonly WatcherManager _watchers = new(config, profiles);
+
     /// <summary>
     /// Time budget for the teardown on a shutdown path (the parent-exit watchdog), so a slow
     /// or retrying drain can't block process termination. Mirrors
@@ -34,7 +37,7 @@ static class CodexSubagentTeardown {
     /// </summary>
     internal static readonly TimeSpan DrainCap = TimeSpan.FromSeconds(8);
 
-    internal static async Task DrainAsync(string baseUrl, string sessionId, string transcriptPath) {
+    internal async Task DrainAsync(string sessionId, string transcriptPath) {
         var subs = CodexSubagentDiscovery.EnumerateSubagentRollouts(transcriptPath, sessionId);
         if (subs.Count == 0) return;
 
@@ -44,17 +47,18 @@ static class CodexSubagentTeardown {
 
             // Each step best-effort + independent so subagent-stop (→ SubagentCompleted) is
             // always attempted even if the kill or drain hiccups; re-import recovers the rest.
-            await SafeAsync(() => WatcherManager.KillWatcher($"{sessionId}-{agentId}"));
-            await SafeAsync(() => WatcherManager.InlineDrainAsync(baseUrl, sessionId, sub.FilePath, agentId, vendor: "codex"));
-            await SafeAsync(() => PostStopAsync(baseUrl, sessionId, agentId, agentType, sub.FilePath));
+            await SafeAsync(() => _watchers.KillWatcher($"{sessionId}-{agentId}"));
+            await SafeAsync(() => _watchers.InlineDrainAsync(sessionId, sub.FilePath, agentId, vendor: "codex"));
+            await SafeAsync(() => PostStopAsync(sessionId, agentId, agentType, sub.FilePath));
         }
     }
 
-    static async Task PostStopAsync(string baseUrl, string sessionId, string agentId, string agentType, string subFile) {
+    async Task PostStopAsync(string sessionId, string agentId, string agentType, string subFile) {
         // baseUrl is threaded into auth resolution so token/server selection matches the URL
         // actually posted to (a process configured for a different default server must not
         // resolve the wrong credential).
-        using var client  = await HttpClientExtensions.CreateAuthenticatedClientAsync(baseUrl);
+        var       baseUrl = profiles.Resolution.ServerUrl!;
+        using var client  = await HttpClientExtensions.CreateAuthenticatedClientAsync(config, profiles, baseUrl);
         var       payload = CodexSubagentDiscovery.BuildStopPayload(sessionId, agentId, agentType, subFile);
         using var content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json");
         await client.PostWithRetryAsync($"{baseUrl}/hooks/subagent-stop", content);

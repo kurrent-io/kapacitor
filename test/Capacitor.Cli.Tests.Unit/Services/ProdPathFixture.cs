@@ -3,29 +3,29 @@ using Capacitor.Cli.Services;
 
 namespace Capacitor.Cli.Tests.Unit.Services;
 
-/// <summary>Shared HOME/lock-dir isolation for the production-path suites.</summary>
+/// <summary>Shared home/lock-dir isolation for the production-path suites.</summary>
 sealed class ProdPathFixture : IDisposable {
     readonly TempDir _tmp = new();
     readonly TempDaemonStore _daemons = new("prod");
+    readonly TempConfigRoot _config = new("prod");
     readonly string _id;
-    readonly string? _originalHome;
-    readonly string _home;
 
     public DaemonStore Store => _daemons.Store;
-    public string PlistPath => LaunchdUnit.PlistPath(_id);
+    public ConfigRoot Config => _config.Root;
+    public UserHome Home { get; }
+    public string PlistPath => LaunchdUnit.PlistPath(Home, _id);
     public string DaemonPath { get; }
 
     public LaunchdServiceManager Manager { get; }
 
     public ProdPathFixture(string id) {
-        _id = id;
-        _originalHome = Environment.GetEnvironmentVariable("HOME");
-        _home = _tmp.CreateDir("home");
-        Environment.SetEnvironmentVariable("HOME", _home);
+        _id  = id;
+        Home = new UserHome(_tmp.CreateDir("home"));
 
         DaemonPath = _daemons.CreateFile("kcap-daemon");
 
         Manager = new(
+            Home,
             runProcess: (_, args) => PrintNotFound(args),
             runBounded: (_, args, _) => {
                 var (code, stdout, stderr) = PrintNotFound(args);
@@ -39,7 +39,7 @@ sealed class ProdPathFixture : IDisposable {
             : (0, "", "");
 
     public void Dispose() {
-        Environment.SetEnvironmentVariable("HOME", _originalHome);
+        _config.Dispose();
         _daemons.Dispose();
         _tmp.Dispose();
     }

@@ -1,5 +1,6 @@
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Harness;
 
 namespace Capacitor.Cli.Tests.Unit.Commands;
 
@@ -13,7 +14,7 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 public class ImportDoneBreakdownTests {
     static ImportCommand.SessionClassification Cls(
             string                              sessionId,
-            string                              vendor,
+            HarnessId                           vendor,
             ImportCommand.ClassificationStatus  status
         ) =>
         new() {
@@ -33,9 +34,9 @@ public class ImportDoneBreakdownTests {
         //   Loaded=1, Skipped=1, Failed=1
         // (Skipped = "already current" — must NOT be counted as Errored.)
         var classifications = new[] {
-            Cls("c1", "cursor", ImportCommand.ClassificationStatus.New),
-            Cls("c2", "cursor", ImportCommand.ClassificationStatus.New),
-            Cls("c3", "cursor", ImportCommand.ClassificationStatus.New),
+            Cls("c1", HarnessId.Cursor, ImportCommand.ClassificationStatus.New),
+            Cls("c2", HarnessId.Cursor, ImportCommand.ClassificationStatus.New),
+            Cls("c3", HarnessId.Cursor, ImportCommand.ClassificationStatus.New),
         };
 
         var counts = ImportCommand.ComputePerSourceFinalCounts(
@@ -52,9 +53,9 @@ public class ImportDoneBreakdownTests {
     public async Task routed_vendor_includes_classify_time_excluded_plus_routed_skipped() {
         // 2 classify-time Excluded + 1 routed Skipped → total Excluded == 3.
         var classifications = new[] {
-            Cls("c1", "cursor", ImportCommand.ClassificationStatus.New),
-            Cls("c2", "cursor", ImportCommand.ClassificationStatus.Excluded),
-            Cls("c3", "cursor", ImportCommand.ClassificationStatus.Excluded),
+            Cls("c1", HarnessId.Cursor, ImportCommand.ClassificationStatus.New),
+            Cls("c2", HarnessId.Cursor, ImportCommand.ClassificationStatus.Excluded),
+            Cls("c3", HarnessId.Cursor, ImportCommand.ClassificationStatus.Excluded),
         };
 
         var counts = ImportCommand.ComputePerSourceFinalCounts(
@@ -71,7 +72,7 @@ public class ImportDoneBreakdownTests {
         // 5 sessions, all of which the server marked as "already current".
         // Pre-fix bug: sub-grid would show Errored=5. Post-fix: Errored=0.
         var classifications = Enumerable.Range(0, 5)
-            .Select(i => Cls($"c{i}", "cursor", ImportCommand.ClassificationStatus.New))
+            .Select(i => Cls($"c{i}", HarnessId.Cursor, ImportCommand.ClassificationStatus.New))
             .ToArray();
 
         var counts = ImportCommand.ComputePerSourceFinalCounts(
@@ -91,10 +92,10 @@ public class ImportDoneBreakdownTests {
         // No routed outcomes available — falls back to the chain approximation:
         // Loaded = imported; Errored = (New+Partial) - imported.
         var classifications = new[] {
-            Cls("s1", "claude", ImportCommand.ClassificationStatus.New),
-            Cls("s2", "claude", ImportCommand.ClassificationStatus.New),
-            Cls("s3", "claude", ImportCommand.ClassificationStatus.Partial),
-            Cls("s4", "claude", ImportCommand.ClassificationStatus.AlreadyLoaded),
+            Cls("s1", HarnessId.Claude, ImportCommand.ClassificationStatus.New),
+            Cls("s2", HarnessId.Claude, ImportCommand.ClassificationStatus.New),
+            Cls("s3", HarnessId.Claude, ImportCommand.ClassificationStatus.Partial),
+            Cls("s4", HarnessId.Claude, ImportCommand.ClassificationStatus.AlreadyLoaded),
         };
 
         var counts = ImportCommand.ComputePerSourceFinalCounts(
@@ -112,8 +113,8 @@ public class ImportDoneBreakdownTests {
     [Test]
     public async Task chain_vendor_with_all_imported_has_zero_errored() {
         var classifications = new[] {
-            Cls("s1", "claude", ImportCommand.ClassificationStatus.New),
-            Cls("s2", "claude", ImportCommand.ClassificationStatus.New),
+            Cls("s1", HarnessId.Claude, ImportCommand.ClassificationStatus.New),
+            Cls("s2", HarnessId.Claude, ImportCommand.ClassificationStatus.New),
         };
 
         var counts = ImportCommand.ComputePerSourceFinalCounts(
@@ -136,15 +137,15 @@ public class ImportDoneBreakdownTests {
         // Expected aggregate Errored  = 1 (Claude) + 1 (Cursor Failed)  = 2.
 
         var claude = new[] {
-            Cls("k1", "claude", ImportCommand.ClassificationStatus.New),
-            Cls("k2", "claude", ImportCommand.ClassificationStatus.New),
-            Cls("k3", "claude", ImportCommand.ClassificationStatus.New),
+            Cls("k1", HarnessId.Claude, ImportCommand.ClassificationStatus.New),
+            Cls("k2", HarnessId.Claude, ImportCommand.ClassificationStatus.New),
+            Cls("k3", HarnessId.Claude, ImportCommand.ClassificationStatus.New),
         };
         var cursor = new[] {
-            Cls("c1", "cursor", ImportCommand.ClassificationStatus.New),
-            Cls("c2", "cursor", ImportCommand.ClassificationStatus.New),
-            Cls("c3", "cursor", ImportCommand.ClassificationStatus.New),
-            Cls("c4", "cursor", ImportCommand.ClassificationStatus.New),
+            Cls("c1", HarnessId.Cursor, ImportCommand.ClassificationStatus.New),
+            Cls("c2", HarnessId.Cursor, ImportCommand.ClassificationStatus.New),
+            Cls("c3", HarnessId.Cursor, ImportCommand.ClassificationStatus.New),
+            Cls("c4", HarnessId.Cursor, ImportCommand.ClassificationStatus.New),
         };
 
         var claudeRow = ImportCommand.ComputePerSourceFinalCounts(claude, imported: 2, routedOutcomes: null);

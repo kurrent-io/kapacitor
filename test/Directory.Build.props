@@ -7,6 +7,11 @@
              ships to nobody, so a fresh advisory is a bump to schedule, not a build to stop. -->
         <WarningsNotAsErrors>$(WarningsNotAsErrors);NU1903;NU1904</WarningsNotAsErrors>
     </PropertyGroup>
+    <!-- Banned only under test/: production code writes real temp files at runtime, but a test that
+         reaches for the shared temp root leaks between runs and can see another test's files. -->
+    <ItemGroup>
+        <AdditionalFiles Include="$(MSBuildThisFileDirectory)BannedSymbols.txt" Visible="false" />
+    </ItemGroup>
     <!-- One source, compiled into each test assembly rather than referenced from Helpers:
          TUnit finds hooks only in assemblies it has loaded.  -->
     <ItemGroup Condition="'$(MSBuildProjectName)' != 'Capacitor.Tests.Helpers'

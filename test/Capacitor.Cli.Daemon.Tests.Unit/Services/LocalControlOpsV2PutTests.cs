@@ -3,6 +3,7 @@ using Capacitor.Cli.Daemon.Pty;
 using Capacitor.Cli.Daemon.Services;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
+using TUnit.Core.Enums;
 
 namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 
@@ -16,7 +17,11 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 /// through <see cref="LocalControlOps"/>, the Core client under test, instead of hand-rolled
 /// frames.
 /// </summary>
+[ExcludeOn(OS.Windows)] // Unix-domain socket path
 public class LocalControlOpsV2PutTests {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+    [TempHome] public required TempHome Home { get; init; }
+
     sealed class NoopHostLifetime : IHostApplicationLifetime {
         public CancellationToken ApplicationStarted  => CancellationToken.None;
         public CancellationToken ApplicationStopping => CancellationToken.None;
@@ -41,7 +46,7 @@ public class LocalControlOpsV2PutTests {
 
     sealed record Harness(TempDaemonStore Daemons, LocalControlServer Server, AgentOrchestrator Orchestrator, ServerConnection Connection, DaemonConfig Config, string SockPath);
 
-    static async Task<Harness> StartAsync(string daemonName, CancellationToken ct, string serverUrl = "http://127.0.0.1:1") {
+    async Task<Harness> StartAsync(string daemonName, CancellationToken ct, string serverUrl = "http://127.0.0.1:1") {
         var daemons     = new TempDaemonStore();
         var stateRoot   = daemons.Store.StateDirectory(daemonName);
         var store       = new LaunchConsentStore(stateRoot, NullLogger.Instance);
@@ -63,14 +68,16 @@ public class LocalControlOpsV2PutTests {
         var permissionBridge = new LocalPermissionBridge(connection, NullLogger<LocalPermissionBridge>.Instance);
 
         var orchestrator = new AgentOrchestrator(
-            config, connection, worktreeManager, repoMatcher, new NoopPtyProcessFactory(), new NoopHttpClientFactory(),
+            config, Config.Root, Home, connection, worktreeManager, repoMatcher,
+            new NoopPtyProcessFactory(), new NoopHttpClientFactory(),
             permissionBridge, new Dictionary<string, IHostedAgentLauncher>(),
             new Dictionary<string, IHostedAgentRuntimeFactory>(), new NoopHostLifetime(),
             NullLogger<AgentOrchestrator>.Instance, gate);
 
+        var permissionIpc = new PermissionIpc(new PermissionPromptBroker(), NullLogger<PermissionIpc>.Instance);
         var statusIpc = new DaemonStatusIpc(config, orchestrator, connection, new DaemonStatusNotifier());
         var restart = RestartCoordinator.ForTest(daemons.Store, daemonName, daemonName, new NoopRestartStrategy());
-        var server = new LocalControlServer(config, orchestrator, restart, consentIpc, statusIpc, NullLogger<LocalControlServer>.Instance);
+        var server = new LocalControlServer(config, orchestrator, restart, consentIpc, permissionIpc, statusIpc, NullLogger<LocalControlServer>.Instance);
         await server.StartAsync(ct);
 
         var sockPath = daemons.Store.SocketPath(daemonName);
@@ -91,7 +98,7 @@ public class LocalControlOpsV2PutTests {
     /// Wraps a test body with the harness lifecycle, mirroring
     /// ConsentRulesPutV2Tests.RunAsync, and hands the body a LocalControlOps pointed at the same
     /// daemon name so it can drive Put/Get through the real client under test.
-    static async Task RunAsync(string daemonName, Func<Harness, LocalControlOps, CancellationToken, Task> body, string serverUrl = "http://127.0.0.1:1") {
+    async Task RunAsync(string daemonName, Func<Harness, LocalControlOps, CancellationToken, Task> body, string serverUrl = "http://127.0.0.1:1") {
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
 
         Harness? h = null;
@@ -100,7 +107,7 @@ public class LocalControlOpsV2PutTests {
             await Assert.That(File.Exists(h.SockPath)).IsTrue();
             var ops = new LocalControlOps(h.Daemons.Store, daemonName) {
                 ConnectTimeout = TimeSpan.FromSeconds(2),
-                ConsentReplyTimeout = TimeSpan.FromSeconds(5),
+                ReplyTimeout = TimeSpan.FromSeconds(5),
             };
             await body(h, ops, cts.Token);
         } finally {
@@ -110,8 +117,6 @@ public class LocalControlOpsV2PutTests {
 
     [Test]
     public async Task Identity_match_applies_and_follow_up_get_sees_it() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         await RunAsync("lcov2put-a", async (h, ops, ct) => {
             var put = new ConsentPolicyPutV2Dto("lcov2put-a", h.Config.ServerUrl,
                 new ConsentPolicyDto("prompt", 45, []));
@@ -128,8 +133,6 @@ public class LocalControlOpsV2PutTests {
 
     [Test]
     public async Task Name_mismatch_acks_identity_mismatch_and_leaves_policy_unchanged() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         await RunAsync("lcov2put-b", async (h, ops, ct) => {
             var before = await ops.GetConsentPolicyAsync(ct);
 
@@ -148,8 +151,6 @@ public class LocalControlOpsV2PutTests {
 
     [Test]
     public async Task Server_mismatch_acks_identity_mismatch_and_leaves_policy_unchanged() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         await RunAsync("lcov2put-c", async (h, ops, ct) => {
             var before = await ops.GetConsentPolicyAsync(ct);
 

@@ -13,17 +13,11 @@ namespace Capacitor.Cli.Tests.Integration;
 /// </summary>
 public class McpAnalyticsServerTests : IDisposable {
     [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
+    [TempConfigRoot]  public required TempConfigRoot  Config  { get; init; }
+    [TempDir]         public required TempDir         Tmp     { get; init; }
 
     readonly WireMockServer _server           = WireMockServer.Start();
-    readonly TempDir        _tmp              = new();
-    readonly string         _cfgDir;
-    readonly string         _cwdDir;
     readonly List<Process>  _spawnedProcesses = [];
-
-    public McpAnalyticsServerTests() {
-        _cfgDir = _tmp.CreateDir("cfg");
-        _cwdDir = _tmp.CreateDir("cwd");
-    }
 
     public void Dispose() {
         foreach (var p in _spawnedProcesses) {
@@ -36,17 +30,15 @@ public class McpAnalyticsServerTests : IDisposable {
         }
 
         _server.Stop();
-        _tmp.Dispose();
     }
 
     Process SpawnMcpServer(string provider = "None") {
         _server.Given(Request.Create().WithPath("/auth/config").UsingGet())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody($$"""{"provider":"{{provider}}"}"""));
 
-        var psi = KcapProcess.StartInfo(Daemons.Store, "mcp", "analytics");
-        psi.WorkingDirectory = _cwdDir;
+        var psi = KcapProcess.StartInfo(Daemons.Store, Config.Root, "mcp", "analytics");
+        psi.WorkingDirectory = Tmp.Path;
         psi.Environment["KCAP_URL"] = _server.Url!;
-        psi.Environment["KCAP_CONFIG_DIR"] = _cfgDir;
 
         var process = Process.Start(psi) ?? throw new InvalidOperationException("Failed to start kcap process");
         _spawnedProcesses.Add(process);

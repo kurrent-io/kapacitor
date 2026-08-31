@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Core.Harness.Cursor;
 
 namespace Capacitor.Cli.Harness.Cursor;
@@ -45,14 +46,19 @@ internal sealed class CursorImportSource : IImportSource {
     // throws InvalidOperationException on the second attach — BuildRepositoryNode must be
     // called fresh per session from the cached payload.
     readonly Dictionary<string, RepositoryPayload?> _repoCache = new(StringComparer.Ordinal);
+    readonly ConfigRoot                             _config;
+    readonly CursorMarkers                          _markers;
 
     public CursorImportSource(
-        string?                                  projectsDirOverride         = null,
-        string?                                  workspaceStorageDirOverride = null,
+        ConfigRoot                               config,
+        string                                   projectsDir,
+        string                                   workspaceStorageDir,
         Func<string, Task<RepositoryPayload?>>?  repoDetector                = null
     ) {
-        _projectsDir         = projectsDirOverride         ?? CursorPaths.ProjectsDir();
-        _workspaceStorageDir = workspaceStorageDirOverride ?? CursorPaths.Resolve().WorkspaceStorageDir;
+        _config              = config;
+        _markers             = new CursorMarkers(config);
+        _projectsDir         = projectsDir;
+        _workspaceStorageDir = workspaceStorageDir;
         _sanitizedToFolder   = new Lazy<IReadOnlyDictionary<string, string?>>(BuildSanitizedToFolderMap);
         // historical import must never attach a live PR to an old session —
         // stamping today's open PR onto a transcript from weeks ago is an anachronism, and it's
@@ -62,7 +68,7 @@ internal sealed class CursorImportSource : IImportSource {
         // grouping under their repo — they just never carry pr_number/pr_title/pr_url/pr_head_ref.
         // The LIVE Cursor hook path (CursorHookCommand → EnrichWithRepositoryInfoFromCwd) is a
         // separate call site untouched by this default and keeps live PR detection.
-        _repoDetector        = repoDetector ?? (cwd => RepositoryDetection.DetectRepositoryAsync(cwd, detectPullRequest: false));
+        _repoDetector        = repoDetector ?? (cwd => RepositoryDetection.DetectRepositoryAsync(config, cwd, detectPullRequest: false));
     }
 
     /// <summary>
@@ -88,7 +94,7 @@ internal sealed class CursorImportSource : IImportSource {
         return p.Length == 0 ? "/" : p;
     }
 
-    public string Vendor => "cursor";
+    public HarnessId Vendor => HarnessId.Cursor;
 
     public bool IsAvailable => Directory.Exists(_projectsDir);
 
@@ -321,9 +327,9 @@ internal sealed class CursorImportSource : IImportSource {
             // doc for round-2 review fix #7's fallback when `--session <child>` (or an
             // inaccessible/omitted parent transcript) filters the parent out of `subagentLinks`
             // entirely.
-            var quarantineIdentity = ResolveQuarantineIdentity(s.SessionId, subagentLinks);
+            var quarantineIdentity = ResolveQuarantineIdentity(_config, s.SessionId, subagentLinks);
 
-            if (CursorMarkers.IsQuarantined(quarantineIdentity)) {
+            if (_markers.IsQuarantined(quarantineIdentity)) {
                 results.Add(MakeClassification(s, meta, ImportCommand.ClassificationStatus.ProbeError, totalLines: 0,
                                                probeErrorReason: "cursor session quarantined (transcript rewrite detected) — not imported"));
                 continue;
@@ -455,7 +461,7 @@ internal sealed class CursorImportSource : IImportSource {
             ? qi
             : classification.SessionId;
 
-        if (CursorMarkers.IsQuarantined(quarantineIdentity)) {
+        if (_markers.IsQuarantined(quarantineIdentity)) {
             return ImportOutcome.Skipped;
         }
 
@@ -498,12 +504,9 @@ internal sealed class CursorImportSource : IImportSource {
         // Errored and the user re-runs, which is idempotent on the server
         // (canonical event ids are deterministic).
         var startPayload = BuildSessionStartPayload(classification.SessionId, workspaceFolder, transcriptPath, createdUtc, repositoryNode);
-        // Step 3 visibility stamp — New-only, and never overrides existing force-private
-        // handling (Cursor privatizes post-hoc via privateScopeSessionIds, not inline here;
-        // this guard still keeps the two mechanisms from conflicting). New for Cursor: the
-        // live hook has no default_visibility injection today, so this is import-only.
-        if (!ctx.ForcePrivate && classification.Status == ImportCommand.ClassificationStatus.New && ctx.DefaultVisibility is not null) {
-            startPayload["default_visibility"] = ctx.DefaultVisibility;
+        // The only Cursor path that stamps one: its live hook sets no default_visibility at all.
+        if (ctx.VisibilityStampFor(classification.Status) is { } visibility) {
+            startPayload["default_visibility"] = visibility;
         }
 
         var startOk = await PostSyntheticHookAsync(
@@ -530,7 +533,7 @@ internal sealed class CursorImportSource : IImportSource {
         // hang open "active" forever, but send NO transcript content (skip the children too — the
         // same corrupted-source concern applies to them) and surface Failed so a re-run is
         // attempted, which will hit the pre-flight check above and cleanly Skip from then on.
-        if (CursorMarkers.IsQuarantined(quarantineIdentity)) {
+        if (_markers.IsQuarantined(quarantineIdentity)) {
             var abortDurationMs = createdUtc is { } ac && modifiedUtc is { } am && am >= ac
                 ? (long?)(am - ac).TotalMilliseconds
                 : null;
@@ -574,7 +577,7 @@ internal sealed class CursorImportSource : IImportSource {
                 agentId:       null,
                 startLine:     startLine,
                 vendor:        Vendor,
-                abortDelivery: () => CursorMarkers.IsQuarantined(quarantineIdentity));
+                abortDelivery: () => _markers.IsQuarantined(quarantineIdentity));
         } catch (SessionImporter.TranscriptDeliveryAbortedException) {
             // Quarantine tripped mid-delivery — no children/remaining batches (we return before
             // reaching them).
@@ -717,12 +720,13 @@ internal sealed class CursorImportSource : IImportSource {
     /// this batch either — an inherent limitation the marker fallback can't close).
     /// </summary>
     internal static string ResolveQuarantineIdentity(
+        ConfigRoot                                                 config,
         string                                                     sessionId,
         IReadOnlyDictionary<string, CursorSubagentCorrelator.SubagentLink> subagentLinks
     ) {
         if (subagentLinks.TryGetValue(sessionId, out var ownLink)) return ownLink.ParentSessionId;
 
-        return CursorLiveSubagentLinker.TryLoadLink(sessionId) is { } marker
+        return CursorLiveSubagentLinker.TryLoadLink(config, sessionId) is { } marker
             ? marker.ParentSessionId
             : sessionId;
     }
@@ -779,7 +783,7 @@ internal sealed class CursorImportSource : IImportSource {
         // post, since nothing here re-checked the marker before that first POST. Throwing the same
         // typed exception the transcript-delivery abort below throws lets the caller's loop (in
         // ImportSessionAsync) route this through the identical best-effort close-and-fail contract.
-        if (CursorMarkers.IsQuarantined(quarantineIdentity)) {
+        if (_markers.IsQuarantined(quarantineIdentity)) {
             throw new SessionImporter.TranscriptDeliveryAbortedException();
         }
 
@@ -850,7 +854,7 @@ internal sealed class CursorImportSource : IImportSource {
                 startLine:     startLine,
                 vendor:        Vendor,
                 failOnError:   true,
-                abortDelivery: () => CursorMarkers.IsQuarantined(quarantineIdentity));
+                abortDelivery: () => _markers.IsQuarantined(quarantineIdentity));
         } catch (SessionImporter.TranscriptDeliveryAbortedException) {
             // a quarantine trip during THIS child's own
             // transcript delivery must propagate to the caller's close-and-fail path, not collapse
@@ -971,7 +975,7 @@ internal sealed class CursorImportSource : IImportSource {
         EncodedCwd       = "",
         Meta             = meta,
         Status           = status,
-        Vendor           = "cursor",
+        Vendor           = HarnessId.Cursor,
         ProbeErrorReason = probeErrorReason,
         TotalLines       = totalLines,
         SourceMeta       = s.SourceMeta,
@@ -1073,8 +1077,8 @@ internal sealed class CursorImportSource : IImportSource {
         string? excludedPathKey = null;
         if (cwd is not null && ctx.ExcludedPaths is { Count: > 0 } paths) {
             foreach (var entry in paths) {
-                if (PathExclusion.IsExcluded(cwd, [entry])) {
-                    excludedPathKey = PathExclusion.Normalize(entry);
+                if (PathExclusion.IsExcluded(cwd, [entry], ctx.Home)) {
+                    excludedPathKey = PathExclusion.Normalize(entry, ctx.Home);
                     break;
                 }
             }

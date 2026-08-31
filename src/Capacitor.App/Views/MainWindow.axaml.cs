@@ -1,6 +1,6 @@
+using System.Reactive.Disposables.Fluent;
 using System.Reactive.Linq;
 using Avalonia;
-using Avalonia.Controls;
 using Avalonia.Controls.Notifications;
 using Capacitor.App.Services;
 using Capacitor.App.ViewModels;
@@ -23,9 +23,9 @@ public partial class MainWindow : ReactiveWindow<MainWindowViewModel> {
     IDisposable? _notifierSubscription;
     IAppNotifier? _notifier;
 
-    // Defaults to false — the Agents TabItem is selected first (MainWindow.axaml), so Activity
-    // starts unselected regardless of the window's own visibility.
-    bool _activityTabSelected;
+    // Defaults to false — the Activity flyout starts closed (MainWindow.axaml), so Activity is off
+    // regardless of the window's own visibility.
+    bool _activityOpen;
 
     /// Assigned by App.BuildAndShowMainWindow (spec §11) — the SAME IAppNotifier instance
     /// AgentActionService pushes into, so the toast overlay and stderr mirroring are always in
@@ -58,6 +58,25 @@ public partial class MainWindow : ReactiveWindow<MainWindowViewModel> {
         Loaded += (_, _) => _notifications ??= new WindowNotificationManager(this) {
             Position = NotificationPosition.TopRight,
         };
+
+        // The Activity feed rides a flyout off its chip: open/closed IS the section's
+        // expanded/collapsed state for the polling gate below.
+        if (ActivityButton.Flyout is { } activityFlyout) {
+            activityFlyout.Opened += (_, _) => { _activityOpen = true; UpdateActivityVisibility(); };
+            activityFlyout.Closed += (_, _) => { _activityOpen = false; UpdateActivityVisibility(); };
+        }
+
+        this.WhenActivated(disposables => {
+            ViewModel?.WhenAnyValue(x => x.IsSessionsView, x => x.CurrentWorkspace)
+                .Subscribe(state => {
+                    // A popup can't meaningfully survive the pane swapping under it — opening a
+                    // workspace (or leaving the Sessions surface) closes the feed; its Closed
+                    // handler then turns the gate off.
+                    if (!state.Item1 || state.Item2 is not null) ActivityButton.Flyout?.Hide();
+                    UpdateActivityVisibility();
+                })
+                .DisposeWith(disposables);
+        });
     }
 
     // A toast fired before Loaded, or while the window is hidden (Hide() suspends rendering
@@ -67,13 +86,9 @@ public partial class MainWindow : ReactiveWindow<MainWindowViewModel> {
     void ShowToast(string message) =>
         _notifications?.Show(new Notification("Kurrent Capacitor", message, NotificationType.Warning, TimeSpan.FromSeconds(4)));
 
-    // Wired from MainWindow.axaml's TabControl (spec §7): the Activity tab's refresh cadence
-    // needs to know it is ACTUALLY on screen, which is the AND of tab selection and the window's
-    // own visibility below — a background window with Activity selected must not poll.
-    void OnTabSelectionChanged(object? sender, SelectionChangedEventArgs e) {
-        _activityTabSelected = e.AddedItems.Count > 0 && ReferenceEquals(e.AddedItems[0], ActivityTabItem);
-        UpdateActivityVisibility();
-    }
+    // The launcher header strip and the bottom-most drag strip — see WindowChrome.
+    void OnChromePointerPressed(object? sender, Avalonia.Input.PointerPressedEventArgs e) =>
+        WindowChrome.BeginDrag(this, e);
 
     // IsVisible is decompile-verified to be exactly what Show()/Hide() toggle (see
     // App.ShowConfirmForceStopDialogAsync's owner check) — hide-to-tray never fires Closed/Opened
@@ -88,7 +103,11 @@ public partial class MainWindow : ReactiveWindow<MainWindowViewModel> {
         if (change.Property == IsVisibleProperty || change.Property == DataContextProperty) UpdateActivityVisibility();
     }
 
+    // Activity polls only when it is ACTUALLY on screen: window visible AND the launcher pane
+    // showing (Sessions surface, no workspace open) AND the flyout open — the same contract the
+    // Activity tab's selection used to carry.
     void UpdateActivityVisibility() {
-        if (DataContext is MainWindowViewModel vm) vm.Activity.OnTabVisibleChanged(_activityTabSelected && IsVisible);
+        if (DataContext is MainWindowViewModel vm)
+            vm.Activity.OnTabVisibleChanged(_activityOpen && IsVisible && vm.IsSessionsView && vm.CurrentWorkspace is null);
     }
 }

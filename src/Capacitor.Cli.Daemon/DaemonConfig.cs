@@ -1,4 +1,5 @@
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Daemon.Harness.Claude;
 
 namespace Capacitor.Cli.Daemon;
@@ -31,6 +32,11 @@ public class DaemonConfig {
     public TimeSpan ReviewerMaxLifetime { get; set; } = TimeSpan.FromHours(6);
     public TimeSpan ReviewerIdleTimeout { get; set; } = TimeSpan.FromHours(2);
 
+    /// <summary>§2.7 B6 arm-A: how long a RESUMABLE hosted reviewer (app-server Codex) may sit idle
+    /// between rounds before the daemon PARKS it (freeing the slot, keeping the thread for resume) —
+    /// distinct from and shorter than <see cref="ReviewerIdleTimeout"/> (arm-B, the 2h hard reap).</summary>
+    public TimeSpan ReviewerResumableIdleTimeout { get; set; } = TimeSpan.FromMinutes(10);
+
     /// <summary>
     /// The daemon-local ceiling on a held ACP turn with a frozen activity seq: once <c>TurnInFlight</c>
     /// has stayed true with no further <c>Advance()</c> for longer than this, the reviewer is reaped as
@@ -49,6 +55,21 @@ public class DaemonConfig {
     /// <summary>Where this daemon's files live.</summary>
     public DaemonStore Store {
         get => field ?? throw new InvalidOperationException($"DaemonConfig.Store was never set; pass a {nameof(DaemonStore)} in from the entry point.");
+        set;
+    }
+
+    /// <summary>Where this daemon's kcap configuration lives — a different anchor from
+    /// <see cref="Store"/>, which ignores <c>KCAP_CONFIG_DIR</c> by design.</summary>
+    public ConfigRoot ConfigRoot {
+        get => field ?? throw new InvalidOperationException($"DaemonConfig.ConfigRoot was never set; pass a {nameof(Core.ConfigRoot)} in from the entry point.");
+        set;
+    }
+
+    /// <summary>The profile this daemon resolved at boot. A separate process from the CLI, so it
+    /// resolves its own; nothing re-resolves later, which is what keeps its token reads and its
+    /// daemon identity naming one profile for the daemon's whole life.</summary>
+    public ProfileContext Profiles {
+        get => field ?? throw new InvalidOperationException($"DaemonConfig.Profiles was never set; pass a {nameof(ProfileContext)} in from the entry point.");
         set;
     }
 
@@ -121,11 +142,14 @@ public class DaemonConfig {
     /// </summary>
     public string[]? AcpPresetVendors { get; set; }
 
-    public string WorktreeRoot { get; set; } = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-        ".capacitor",
-        "worktrees"
-    );
+    /// <summary>The home directory this daemon resolved at boot. Every home-derived daemon path
+    /// reads it, so a descendant can't be handed a different one than the entry point chose.</summary>
+    public UserHome Home {
+        get => field ?? throw new InvalidOperationException($"DaemonConfig.Home was never set; pass a {nameof(UserHome)} in from the entry point.");
+        set;
+    }
+
+    public string WorktreeRoot { get; set; } = "";
 
     public string ClaudePath { get; set; } = "claude";
     public string CodexPath  { get; set; } = "codex";

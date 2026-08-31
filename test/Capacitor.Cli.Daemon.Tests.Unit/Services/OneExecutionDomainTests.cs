@@ -216,31 +216,28 @@ public class OneExecutionDomainTests {
     // Exactly one terminal answer per accepted item — outcome (a) success.
     [Test]
     public async Task Settlement_success_is_accepted_before_terminal_with_exactly_one_ack() {
-        var (repoPath, cleanup) = GitRepoHarness.CreateGitRepo();
+        using var repoPath = GitRepo.CreateWithCommit();
 
-        try {
-            var             server     = new SeqCaptureServerConnection();
-            var             ptyFactory = new SpyPtyProcessFactory();
-            var             claudeSpy  = new SpyHostedAgentLauncher("claude", cliPath: "spy-claude");
-            var             launchers  = new Dictionary<string, IHostedAgentLauncher> { ["claude"] = claudeSpy };
-            await using var orch       = AgentOrchestratorHarness.BuildOrchestrator(server, ptyFactory, launchers, allowedRepoPath: repoPath);
-            var             epoch      = orch.DaemonEpochForTest;
+        var             server     = new SeqCaptureServerConnection();
+        var             ptyFactory = new SpyPtyProcessFactory();
+        var             claudeSpy  = new SpyHostedAgentLauncher("claude", cliPath: "spy-claude");
+        var             launchers  = new Dictionary<string, IHostedAgentLauncher> { ["claude"] = claudeSpy };
+        await using var orch       = AgentOrchestratorHarness.BuildOrchestrator(server, ptyFactory, launchers, allowedRepoPath: repoPath);
+        var             epoch      = orch.DaemonEpochForTest;
 
-            await orch.SubmitLaunchAgentForTest(new LaunchAgentCommand(
-                AgentId: "succ", Prompt: "hi", Model: "opus", Effort: null,
-                RepoPath: repoPath, Tools: null, AttachmentIds: null, Vendor: "claude",
-                Epoch: epoch, Seq: 1, CommandId: "cmd-1"));
+        await orch.SubmitLaunchAgentForTest(new LaunchAgentCommand(
+            AgentId: "succ", Prompt: "hi", Model: "opus", Effort: null,
+            RepoPath: repoPath, Tools: null, AttachmentIds: null, Vendor: "claude",
+            Epoch: epoch, Seq: 1, CommandId: "cmd-1"));
 
-            await WaitHarness.SpinUntilAsync(() => server.Acks.Count > 0, WaitHarness.Bounded);
+        await WaitHarness.SpinUntilAsync(() => server.Acks.Count > 0, WaitHarness.Bounded);
 
-            await Assert.That(server.Rejects).IsEmpty();
-            await Assert.That(server.Acks).Count().IsEqualTo(1); // exactly one terminal answer
-            await Assert.That(server.Acks[0].State).IsEqualTo(CommandAckState.Processed);
-            await Assert.That(server.Acks[0].OutcomeKind).IsEqualTo(CommandOutcomeKind.LaunchExecuted);
-            await Assert.That(server.Acks[0].Seq).IsEqualTo(1L);
-        } finally {
-            cleanup();
-        }
+        await Assert.That(server.Rejects).IsEmpty();
+        await Assert.That(server.Acks).Count().IsEqualTo(1); // exactly one terminal answer
+        await Assert.That(server.Acks[0].State).IsEqualTo(CommandAckState.Processed);
+        await Assert.That(server.Acks[0].OutcomeKind).IsEqualTo(CommandOutcomeKind.LaunchExecuted);
+        await Assert.That(server.Acks[0].Seq).IsEqualTo(1L);
+
     }
 
     // Outcome (b) consent denial.
@@ -389,31 +386,28 @@ public class OneExecutionDomainTests {
     // population; nothing about §3.3 may change it.
     [Test]
     public async Task With_no_processor_an_unsequenced_launch_executes_inline_before_the_handler_returns() {
-        var (repoPath, cleanup) = GitRepoHarness.CreateGitRepo();
+        using var repoPath = GitRepo.CreateWithCommit();
 
-        try {
-            var server     = new SeqCaptureServerConnection();
-            var ptyFactory = new SpyPtyProcessFactory();
-            var claudeSpy  = new SpyHostedAgentLauncher("claude", cliPath: "spy-claude");
-            var launchers  = new Dictionary<string, IHostedAgentLauncher> { ["claude"] = claudeSpy };
-            await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, ptyFactory, launchers, allowedRepoPath: repoPath,
-                deferProcessorPublication: true);
-            await Assert.That(orch.ProcessorForTest).IsNull();
+        var server     = new SeqCaptureServerConnection();
+        var ptyFactory = new SpyPtyProcessFactory();
+        var claudeSpy  = new SpyHostedAgentLauncher("claude", cliPath: "spy-claude");
+        var launchers  = new Dictionary<string, IHostedAgentLauncher> { ["claude"] = claudeSpy };
+        await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, ptyFactory, launchers, allowedRepoPath: repoPath,
+            deferProcessorPublication: true);
+        await Assert.That(orch.ProcessorForTest).IsNull();
 
-            // SubmitLaunchAgentForTest deliberately does NOT wait for the lane, so anything observable here
-            // was decided on this call's own stack.
-            await orch.SubmitLaunchAgentForTest(UnsequencedLaunch("legacy-inline", repoPath: repoPath));
+        // SubmitLaunchAgentForTest deliberately does NOT wait for the lane, so anything observable here
+        // was decided on this call's own stack.
+        await orch.SubmitLaunchAgentForTest(UnsequencedLaunch("legacy-inline", repoPath: repoPath));
 
-            // Deliberately NOT asserting on GetAgentForTest/LaunchFaileds: the stub PTY's ReadOutputAsync
-            // yields no bytes, so the background read-loop's own (pre-existing) startup-failure heuristic
-            // races to mark the launch failed. SpawnCalls/PrepareCalls/BuildArgsCalls are all decided
-            // synchronously inside the inline-awaited core, before that task is even scheduled.
-            await Assert.That(ptyFactory.SpawnCalls).IsEqualTo(1);
-            await Assert.That(claudeSpy.PrepareCalls).IsEqualTo(1);
-            await Assert.That(claudeSpy.BuildArgsCalls).IsEqualTo(1);
-        } finally {
-            cleanup();
-        }
+        // Deliberately NOT asserting on GetAgentForTest/LaunchFaileds: the stub PTY's ReadOutputAsync
+        // yields no bytes, so the background read-loop's own (pre-existing) startup-failure heuristic
+        // races to mark the launch failed. SpawnCalls/PrepareCalls/BuildArgsCalls are all decided
+        // synchronously inside the inline-awaited core, before that task is even scheduled.
+        await Assert.That(ptyFactory.SpawnCalls).IsEqualTo(1);
+        await Assert.That(claudeSpy.PrepareCalls).IsEqualTo(1);
+        await Assert.That(claudeSpy.BuildArgsCalls).IsEqualTo(1);
+
     }
 
     // ══ Transition barrier ═════════════════════════════════════════════════════════════════════════

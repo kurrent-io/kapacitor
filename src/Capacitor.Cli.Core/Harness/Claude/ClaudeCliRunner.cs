@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json;
+using Capacitor.Cli.Core.Config;
+using Capacitor.Cli.Core.Setup;
 
 namespace Capacitor.Cli.Core.Harness.Claude;
 
@@ -109,6 +111,8 @@ static class ClaudeCliRunner {
             string            prompt,
             TimeSpan          timeout,
             Action<string>    log,
+            Profile?          profile,
+            UserHome          home,
             string            model          = "haiku",
             int               maxTurns       = 1,
             bool              promptViaStdin = false,
@@ -156,7 +160,7 @@ static class ClaudeCliRunner {
         }
 
         try {
-            return await RunCoreAsync(prompt, timeout, log, workingDir, model, maxTurns, promptViaStdin, jsonSchema, mcpConfigJson, allowedTools, maxBudgetUsd, systemPrompt, ct);
+            return await RunCoreAsync(prompt, timeout, log, profile, home, workingDir, model, maxTurns, promptViaStdin, jsonSchema, mcpConfigJson, allowedTools, maxBudgetUsd, systemPrompt, ct);
         } finally {
             if (createdWorkingDir) {
                 try {
@@ -173,6 +177,8 @@ static class ClaudeCliRunner {
             string            prompt,
             TimeSpan          timeout,
             Action<string>    log,
+            Profile?          profile,
+            UserHome          home,
             string            workingDir,
             string            model,
             int               maxTurns,
@@ -186,7 +192,7 @@ static class ClaudeCliRunner {
         ) {
         // Resolve rather than pass "claude" verbatim: CreateProcess appends only .exe, so the
         // npm-installed claude.cmd shim on Windows would never be found.
-        var exePath = CliExecutable.Resolve("claude");
+        var exePath = BinaryProbe.FromEnvironment().Resolve("claude");
 
         if (exePath is null) {
             log("claude not found on PATH");
@@ -213,7 +219,7 @@ static class ClaudeCliRunner {
         // which surfaced as (API error text leaking into session titles).
         // Users on PAYG/API-key auth opt back in via profile flag or
         // KCAP_USE_PROVIDER_API_KEY=1.
-        if (!ProviderApiKeyPolicy.ShouldKeepProviderKey()) {
+        if (!ProviderApiKeyPolicy.ShouldKeepProviderKey(profile)) {
             psi.Environment.Remove("ANTHROPIC_API_KEY");
         }
 
@@ -304,7 +310,7 @@ static class ClaudeCliRunner {
             // the "result" only to fail downstream parsing with misleading
             // noise. DEV-1476 saw this produce unrelated PR-status text.
             if (string.IsNullOrEmpty(jsonSchema)) {
-                var fallback = TryReadTranscriptFallback(stdout, log);
+                var fallback = TryReadTranscriptFallback(stdout, log, home);
 
                 if (fallback is not null) {
                     log("Recovered result from session transcript (fallback)");
@@ -529,7 +535,7 @@ static class ClaudeCliRunner {
     /// guard exists to close.
     /// </para>
     /// </summary>
-    internal static ClaudeCliResult? TryReadTranscriptFallback(string stdout, Action<string> log) {
+    internal static ClaudeCliResult? TryReadTranscriptFallback(string stdout, Action<string> log, UserHome home) {
         try {
             using var doc  = JsonDocument.Parse(stdout);
             var       root = doc.RootElement;
@@ -546,7 +552,7 @@ static class ClaudeCliRunner {
                 return null;
             }
 
-            var transcriptPath = FindTranscriptFile(sessionId);
+            var transcriptPath = FindTranscriptFile(sessionId, home);
 
             if (transcriptPath is null) {
                 log($"Transcript fallback: could not find {sessionId}.jsonl");
@@ -573,8 +579,8 @@ static class ClaudeCliRunner {
     /// <summary>
     /// Searches <c>~/.claude/projects/</c> for a transcript file matching the session ID.
     /// </summary>
-    static string? FindTranscriptFile(string sessionId) {
-        var projectsDir = ClaudePaths.Projects;
+    static string? FindTranscriptFile(string sessionId, UserHome home) {
+        var projectsDir = ClaudeHarness.FromEnvironment(home).Paths.Projects;
 
         if (!Directory.Exists(projectsDir)) {
             return null;

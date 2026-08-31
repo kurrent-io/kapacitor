@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.Harness.Claude;
 using Capacitor.Cli.Core.Harness.Codex;
 
@@ -78,6 +79,8 @@ static partial class TitleGenerator {
             string         userText,
             string?        assistantText,
             Action<string> log,
+            Profile?       profile,
+            UserHome       home,
             string         vendor = "claude"
         ) {
         var prompt = BuildPrompt(userText, assistantText);
@@ -88,8 +91,8 @@ static partial class TitleGenerator {
         // last-message gives us a single text response with no token usage,
         // mirroring ClaudeCliResult's shape with zeros for the metric fields.
         var result = vendor == "codex"
-            ? await CodexCliRunner.RunAsync(prompt, TimeSpan.FromSeconds(30), log)
-            : await ClaudeCliRunner.RunAsync(prompt, TimeSpan.FromSeconds(15), log, systemPrompt: HeadlessSummarizerSystemPrompt);
+            ? await CodexCliRunner.RunAsync(prompt, TimeSpan.FromSeconds(30), log, profile)
+            : await ClaudeCliRunner.RunAsync(prompt, TimeSpan.FromSeconds(15), log, profile, home, systemPrompt: HeadlessSummarizerSystemPrompt);
 
         if (result is null) {
             return null;

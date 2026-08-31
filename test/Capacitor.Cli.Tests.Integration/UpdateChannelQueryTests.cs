@@ -10,11 +10,10 @@ namespace Capacitor.Cli.Tests.Integration;
 /// queries the right npm dist-tag. Points <see cref="UpdateCommand.RegistryBaseUrl"/>
 /// at a WireMock-stubbed registry instead of the real <c>registry.npmjs.org</c>,
 /// mirroring the harness in <see cref="Config.ServerUrlProbeIntegrationTests"/>.
-/// The config dir (and therefore the per-channel update-check cache) is isolated
-/// by <see cref="IntegrationGlobalSetup"/>, which pins <c>KCAP_CONFIG_DIR</c>
-/// before any test runs.
 /// </summary>
 public class UpdateChannelQueryTests : IDisposable {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     readonly WireMockServer _server         = WireMockServer.Start();
     readonly string         _originalBaseUrl = UpdateCommand.RegistryBaseUrl;
 
@@ -37,7 +36,7 @@ public class UpdateChannelQueryTests : IDisposable {
     // tests in this class so they don't race each other's WireMock server.
     [Test, NotInParallel("UpdateCommand_RegistryBaseUrl")]
     public async Task Beta_channel_reports_beta_dist_tag_version() {
-        var result = await UpdateCommand.CheckForUpdateAsync(forceCheck: true, "beta");
+        var result = await UpdateCommand.CheckForUpdateAsync(forceCheck: true, "beta", Config.Root);
 
         await Assert.That(result.Latest).IsEqualTo("0.9.0-beta.1");
 
@@ -47,7 +46,7 @@ public class UpdateChannelQueryTests : IDisposable {
 
     [Test, NotInParallel("UpdateCommand_RegistryBaseUrl")]
     public async Task Latest_channel_reports_latest_dist_tag_version() {
-        var result = await UpdateCommand.CheckForUpdateAsync(forceCheck: true, "latest");
+        var result = await UpdateCommand.CheckForUpdateAsync(forceCheck: true, "latest", Config.Root);
 
         await Assert.That(result.Latest).IsEqualTo("0.8.0");
 
@@ -69,11 +68,11 @@ public class UpdateChannelQueryTests : IDisposable {
             .RespondWith(Response.Create().WithStatusCode(200).WithBody("""{"version":"0.12.0"}""")
                 .WithDelay(TimeSpan.FromMilliseconds(400)));
 
-        var first = await UpdateCommand.CheckForUpdateAsync(forceCheck: false, channel);
+        var first = await UpdateCommand.CheckForUpdateAsync(forceCheck: false, channel, Config.Root);
         await Assert.That(first.Latest).IsEqualTo("0.12.0");
         await Assert.That(first.FromCache).IsFalse();
 
-        var second = await UpdateCommand.CheckForUpdateAsync(forceCheck: false, channel);
+        var second = await UpdateCommand.CheckForUpdateAsync(forceCheck: false, channel, Config.Root);
         await Assert.That(second.Latest).IsEqualTo("0.12.0");
         await Assert.That(second.FromCache).IsTrue();
 
@@ -108,7 +107,7 @@ public class UpdateChannelQueryTests : IDisposable {
 
         using var passiveBound = new CancellationTokenSource(TimeSpan.FromMilliseconds(200));
         var firstSw = System.Diagnostics.Stopwatch.StartNew();
-        var first = await UpdateCommand.CheckForUpdateAsync(forceCheck: false, channel, passiveBound.Token);
+        var first = await UpdateCommand.CheckForUpdateAsync(forceCheck: false, channel, Config.Root, passiveBound.Token);
         firstSw.Stop();
         await Assert.That(first.Latest).IsNull();
         await Assert.That(first.FromCache).IsTrue();
@@ -118,7 +117,7 @@ public class UpdateChannelQueryTests : IDisposable {
         await Assert.That(firstSw.Elapsed).IsLessThan(TimeSpan.FromSeconds(1));
 
         var secondSw = System.Diagnostics.Stopwatch.StartNew();
-        var second = await UpdateCommand.CheckForUpdateAsync(forceCheck: false, channel);
+        var second = await UpdateCommand.CheckForUpdateAsync(forceCheck: false, channel, Config.Root);
         secondSw.Stop();
         await Assert.That(second.Latest).IsNull();
         await Assert.That(second.FromCache).IsTrue();
@@ -140,7 +139,7 @@ public class UpdateChannelQueryTests : IDisposable {
         _server.Given(Request.Create().WithPath($"/@kurrent/kcap/{channel}").UsingGet())
             .RespondWith(Response.Create().WithStatusCode(503));
 
-        var first = await UpdateCommand.CheckForUpdateAsync(forceCheck: false, channel);
+        var first = await UpdateCommand.CheckForUpdateAsync(forceCheck: false, channel, Config.Root);
         await Assert.That(first.Latest).IsNull();
 
         // The endpoint "recovers" — but the backoff record, not the endpoint,
@@ -150,7 +149,7 @@ public class UpdateChannelQueryTests : IDisposable {
         _server.Given(Request.Create().WithPath($"/@kurrent/kcap/{channel}").UsingGet())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody("""{"version":"0.14.0"}"""));
 
-        var second = await UpdateCommand.CheckForUpdateAsync(forceCheck: false, channel);
+        var second = await UpdateCommand.CheckForUpdateAsync(forceCheck: false, channel, Config.Root);
         await Assert.That(second.Latest).IsNull();
         await Assert.That(second.FromCache).IsTrue();
 
@@ -169,7 +168,7 @@ public class UpdateChannelQueryTests : IDisposable {
         _server.Given(Request.Create().WithPath($"/@kurrent/kcap/{channel}").UsingGet())
             .RespondWith(Response.Create().WithStatusCode(503));
 
-        var first = await UpdateCommand.CheckForUpdateAsync(forceCheck: false, channel);
+        var first = await UpdateCommand.CheckForUpdateAsync(forceCheck: false, channel, Config.Root);
         await Assert.That(first.Latest).IsNull();
 
         _server.ResetMappings();
@@ -177,7 +176,7 @@ public class UpdateChannelQueryTests : IDisposable {
         _server.Given(Request.Create().WithPath($"/@kurrent/kcap/{channel}").UsingGet())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody("""{"version":"0.15.0"}"""));
 
-        var forced = await UpdateCommand.CheckForUpdateAsync(forceCheck: true, channel);
+        var forced = await UpdateCommand.CheckForUpdateAsync(forceCheck: true, channel, Config.Root);
         await Assert.That(forced.Latest).IsEqualTo("0.15.0");
         await Assert.That(forced.FromCache).IsFalse();
 

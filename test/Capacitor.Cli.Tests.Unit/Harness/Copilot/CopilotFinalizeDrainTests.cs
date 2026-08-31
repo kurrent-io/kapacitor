@@ -48,7 +48,7 @@ public class CopilotFinalizeDrainLastLineTests {
 
     [Test]
     public async Task False_ForMissingFile() {
-        var path = Path.Combine(Path.GetTempPath(), $"kcap_missing_{Guid.NewGuid():N}.jsonl");
+        using var pathDir = TempDir.WithPathTo("kcap_missing.jsonl", out var path);
 
         await Assert.That(CopilotFinalizeDrainCommand.LastLineIsShutdown(path)).IsFalse();
     }
@@ -70,6 +70,8 @@ public class CopilotFinalizeDrainLastLineTests {
 /// so requests flow without a token.
 /// </summary>
 public class CopilotFinalizeDrainRunTests : IDisposable {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     readonly WireMockServer _server = WireMockServer.Start();
 
     public void Dispose() {
@@ -134,8 +136,8 @@ public class CopilotFinalizeDrainRunTests : IDisposable {
 
         var path = NewTranscript(tmp, AssistantLine + "\n" + ShutdownLine + "\n");
 
-        await CopilotFinalizeDrainCommand.RunAsync(
-            _server.Url!, sessionId, path,
+        await new CopilotFinalizeDrainCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root)).RunAsync(
+            sessionId, path,
             pollBudget: TimeSpan.FromSeconds(5),
             pollInterval: TimeSpan.FromMilliseconds(100)
         );
@@ -154,8 +156,8 @@ public class CopilotFinalizeDrainRunTests : IDisposable {
 
         var path = NewTranscript(tmp, AssistantLine + "\n");
 
-        var runTask = CopilotFinalizeDrainCommand.RunAsync(
-            _server.Url!, sessionId, path,
+        var runTask = new CopilotFinalizeDrainCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root)).RunAsync(
+            sessionId, path,
             pollBudget: TimeSpan.FromSeconds(5),
             pollInterval: TimeSpan.FromMilliseconds(100)
         );
@@ -180,8 +182,8 @@ public class CopilotFinalizeDrainRunTests : IDisposable {
 
         var path = NewTranscript(tmp, AssistantLine + "\n");
 
-        await CopilotFinalizeDrainCommand.RunAsync(
-            _server.Url!, sessionId, path,
+        await new CopilotFinalizeDrainCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root)).RunAsync(
+            sessionId, path,
             pollBudget: TimeSpan.FromMilliseconds(700),
             pollInterval: TimeSpan.FromMilliseconds(200)
         );

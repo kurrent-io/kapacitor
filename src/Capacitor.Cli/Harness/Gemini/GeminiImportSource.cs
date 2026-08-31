@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Core.Harness.Gemini;
 
 namespace Capacitor.Cli.Harness.Gemini;
@@ -26,16 +27,14 @@ namespace Capacitor.Cli.Harness.Gemini;
 internal sealed class GeminiImportSource : IImportSource {
     readonly string _tmpDir;
 
-    public GeminiImportSource(string? tmpDirOverride = null) {
-        _tmpDir = tmpDirOverride ?? GeminiPaths.TmpDir();
-    }
+    public GeminiImportSource(string tmpDir) => _tmpDir = tmpDir;
 
     static StringComparison PathComparison =>
         OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
             ? StringComparison.OrdinalIgnoreCase
             : StringComparison.Ordinal;
 
-    public string Vendor => "gemini";
+    public HarnessId Vendor => HarnessId.Gemini;
 
     public bool IsAvailable => Directory.Exists(_tmpDir);
 
@@ -211,10 +210,8 @@ internal sealed class GeminiImportSource : IImportSource {
         // would leave the session permanently lifecycle-less. Re-runs are
         // idempotent server-side (deterministic lifecycle event ids).
         var startPayload = BuildSessionStartPayload(classification.SessionId, classification.Meta.FirstTimestamp);
-        // Step 3 visibility stamp — New-only, and never overrides an existing force-private
-        // choice (Gemini has none of its own today; this guard keeps it that way).
-        if (!ctx.ForcePrivate && classification.Status == ImportCommand.ClassificationStatus.New && ctx.DefaultVisibility is not null) {
-            startPayload["default_visibility"] = ctx.DefaultVisibility;
+        if (ctx.VisibilityStampFor(classification.Status) is { } visibility) {
+            startPayload["default_visibility"] = visibility;
         }
 
         var startOk = await PostSyntheticHookAsync(
@@ -407,7 +404,7 @@ internal sealed class GeminiImportSource : IImportSource {
         EncodedCwd       = "",
         Meta             = meta,
         Status           = status,
-        Vendor           = "gemini",
+        Vendor           = HarnessId.Gemini,
         ProbeErrorReason = probeErrorReason,
         TotalLines       = totalLines,
         SourceMeta       = s.SourceMeta,

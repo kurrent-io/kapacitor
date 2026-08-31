@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Core.Config;
+using Capacitor.Cli.Core;
 
 namespace Capacitor.Cli.Tests.Unit.SessionStartMemory;
 
@@ -82,7 +83,7 @@ internal static partial class MemoryIndexLiveCertHarness {
     /// this before building an authenticated client.**
     ///
     /// <para>A cert runs inside the TEST assembly, not the `kcap` binary, so nothing has done what
-    /// <c>Program.cs</c> does on startup: without it <c>AppConfig.ResolvedProfile</c> is null,
+    /// <c>Program.cs</c> does on startup: without it nothing has resolved a profile,
     /// credential resolution cannot find the profile's token, the request goes out unauthenticated,
     /// and the server answers <c>401</c> — even though `kcap whoami` succeeds in a shell a second
     /// earlier. That failure mode is indistinguishable from "you are not logged in", so it is worth
@@ -93,22 +94,24 @@ internal static partial class MemoryIndexLiveCertHarness {
     /// server the harness's own hook will talk to.</para>
     /// </summary>
     public static async Task<string> InitializeAndResolveServerUrlAsync() {
-        var resolved = await AppConfig.ResolveServerUrl([]);
+        // The operator's REAL root, named rather than resolved: this assembly pins KCAP_CONFIG_DIR at
+        // a throwaway directory, and a cert that resolved that would read an empty config — the same
+        // 401-in-a-different-costume the child processes below strip the variable to avoid.
+        var profiles = await AppConfig.ResolveForRepo([], ConfigRoot.UnderHome(UserHome.FromEnvironment().Path));
 
-        return resolved ?? RequiredServerUrl();
+        return profiles.Resolution.ServerUrl ?? RequiredServerUrl();
     }
 
     /// <summary>
     /// Drives one <c>kcap mcp memory</c> tool call as a SUBPROCESS and returns its raw stdout.
     ///
-    /// <para><b>Why a subprocess and not an in-process HttpClient.</b> This assembly redirects
-    /// <c>KCAP_CONFIG_DIR</c> to a throwaway directory for its whole lifetime
-    /// (<c>RepoPathStoreGlobalSetup</c>'s <c>[ModuleInitializer]</c>), so in-process credential
-    /// resolution reads an EMPTY config: every authenticated call 401s with "Not authenticated" even
-    /// though `kcap whoami` succeeds in a shell a second earlier. A real `kcap` child reads the real
-    /// config, so routing the memory lifecycle through the CLI is the only way a cert in this assembly
-    /// can authenticate at all. It is also closer to what we are certifying — the same binary the
-    /// harness hook invokes.</para>
+    /// <para><b>Why a subprocess and not an in-process HttpClient.</b> This assembly pins
+    /// <c>KCAP_CONFIG_DIR</c> at a directory that cannot exist (<c>ConfigDirGlobalSetup</c>), so an
+    /// inherited credential resolution finds nothing: every authenticated call 401s with "Not
+    /// authenticated" even though `kcap whoami` succeeds in a shell a second earlier. A real `kcap`
+    /// child with the variable stripped reads the real config, so routing the memory lifecycle
+    /// through the CLI is the only way a cert in this assembly can authenticate at all. It is also
+    /// closer to what we are certifying — the same binary the harness hook invokes.</para>
     ///
     /// <para>Speaks just enough MCP: initialize, initialized, then one <c>tools/call</c>, all written
     /// up front. The server processes them in order and exits on stdin EOF, which is exactly the
@@ -148,11 +151,10 @@ internal static partial class MemoryIndexLiveCertHarness {
         psi.ArgumentList.Add("mcp");
         psi.ArgumentList.Add("memory");
 
-        // The child MUST NOT inherit this assembly's redirected KCAP_CONFIG_DIR (RepoPathStoreGlobalSetup's
-        // [ModuleInitializer]), or `kcap` reads the same empty throwaway config the in-process path did
-        // and answers "Not logged in" — the 401 in a different costume. Removing it lets the child
-        // resolve the real config, which is the whole point of going out-of-process.
-        psi.Environment.Remove("KCAP_CONFIG_DIR");
+        // The child MUST NOT inherit this assembly's pinned KCAP_CONFIG_DIR (ConfigDirGlobalSetup),
+        // which names a directory that cannot be created. Removing it lets the child resolve the real
+        // config, which is the whole point of going out-of-process.
+        psi.Environment.Remove(ConfigRoot.ConfigDirEnvVar);
 
         using var process = Process.Start(psi)
             ?? throw new InvalidOperationException("Failed to start `kcap mcp memory`.");
@@ -648,7 +650,7 @@ internal static partial class MemoryIndexLiveCertHarness {
 
         // Same reason as CallMemoryToolAsync: a `kcap config` child — and every harness CLI, which
         // invokes `kcap hook` itself — must see the REAL config, not this assembly's throwaway one.
-        psi.Environment.Remove("KCAP_CONFIG_DIR");
+        psi.Environment.Remove(ConfigRoot.ConfigDirEnvVar);
 
         // AFTER the scrub, so an explicit override is never silently dropped by it.
         if (environment is not null)

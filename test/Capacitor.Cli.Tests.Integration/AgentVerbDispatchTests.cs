@@ -14,6 +14,7 @@ namespace Capacitor.Cli.Tests.Integration;
 /// </summary>
 public class AgentVerbDispatchTests {
     [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
+    [TempConfigRoot]  public required TempConfigRoot  Config  { get; init; }
 
     /// Emitted by AgentCommand and nothing else: the Unix subcommand paths all prefix their
     /// usage/errors with `kcap agent`, and Windows refuses the group with the same prefix.
@@ -115,12 +116,11 @@ public class AgentVerbDispatchTests {
     async Task<(string Stdout, string Stderr, int ExitCode)> RunCli(
             string argLine, bool clearServerUrl = false) {
 
-        var psi = KcapProcess.StartInfo(Daemons.Store);
+        var psi = KcapProcess.StartInfo(Daemons.Store, Config.Root);
         // A string, not ArgumentList: quote-aware parsing, so an argument may contain a space.
         psi.Arguments = $"{argLine} --no-update-check";
-
-        // Isolate from the developer's own profile so these assertions don't depend on whether
-        // this machine happens to have a server configured.
+        // Clearing KCAP_URL alone would not isolate this: the CLI also reads a persisted profile,
+        // and the empty per-test root is what leaves KCAP_URL as the only server signal.
         psi.Environment["KCAP_URL"] = clearServerUrl ? "" : "http://127.0.0.1:1";
 
         using var process = Process.Start(psi)

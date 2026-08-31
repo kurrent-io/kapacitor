@@ -1,4 +1,6 @@
+using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Auth;
+using Capacitor.Cli.Core.Config;
 
 namespace Capacitor.Cli.Commands;
 
@@ -8,12 +10,14 @@ namespace Capacitor.Cli.Commands;
 /// message is already rendered through the facade's <see cref="IAuthProgress"/> sink; this layer
 /// only maps the result to an exit code and, on the discover path, appends today's final line.
 /// </summary>
-public static class LoginCommand {
-    public static Task<int> HandleAsync(string[] args, string? baseUrl) =>
-        HandleAsync(args, baseUrl, NewFacade(), ConsoleAuthProgress.Instance);
+public sealed class LoginCommand(ConfigRoot config, ProfileContext profiles, IBrowserLauncher browser) {
+    public Task<int> HandleAsync(string[] args, string? baseUrl) =>
+        HandleAsync(args, baseUrl, profiles.Name, NewFacade(), ConsoleAuthProgress.Instance);
 
+    /// <summary>The dispatch with its facade handed in — independent of the root, which only the
+    /// entry point above needs to build one.</summary>
     internal static async Task<int> HandleAsync(
-            string[] args, string? baseUrl, OnboardingFacade facade, IAuthProgress progress) {
+            string[] args, string? baseUrl, string profile, OnboardingFacade facade, IAuthProgress progress) {
         // Also when there is no keyboard: a redirected stdin cannot press the escape-hatch key, so a
         // loopback wait there can only end in the listener timeout. Not a headless guess - an
         // interactive SSH session has a keyboard and keeps the browser.
@@ -27,7 +31,7 @@ public static class LoginCommand {
 
         // `kcap login` never adopts a foreign profile onto the server it just signed into — see
         // OnboardingFacade.LoginAsync's adoptServer doc.
-        var result = await facade.LoginAsync(baseUrl!, forceDevice, profile: null, CancellationToken.None, adoptServer: false);
+        var result = await facade.LoginAsync(baseUrl!, forceDevice, profile, CancellationToken.None, adoptServer: false);
 
         return result is AuthResult.Committed ? 0 : 1;
     }
@@ -69,8 +73,11 @@ public static class LoginCommand {
     /// sign-in rather than failing before it — without this they would hold a live credential and be
     /// told to ask an admin.
     /// </summary>
-    internal static OnboardingFacade NewFacade() =>
-        new(ConsoleAuthProgress.Instance, new SpectreTenantPicker(),
+    OnboardingFacade NewFacade() =>
+        new(config, ConsoleAuthProgress.Instance, browser,
+            // The same composite `kcap setup` uses: one operation must not behave differently
+            // for being reached by a different command.
+            new BrowserTenantPicker(browser, new SpectreTenantPicker(), ConsoleAuthProgress.Instance),
             new SpectreTenantProvisioner(new TenantProvisioningClient(new HttpClient()), ProvisioningEndpoint.Url),
             beforeCommit: null) {
             KeyWatcher = ConsoleKeyWatcher.Instance

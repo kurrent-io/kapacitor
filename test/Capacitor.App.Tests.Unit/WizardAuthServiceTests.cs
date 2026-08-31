@@ -4,6 +4,7 @@ using Capacitor.App.Services.Onboarding;
 using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.Config;
 using AppUnderTest = Capacitor.App.App;
+using Capacitor.Cli.Core;
 
 namespace Capacitor.App.Tests.Unit;
 
@@ -20,14 +21,12 @@ public class WizardAuthServiceTests {
     static AuthResult.Committed Committed(params AuthIdentity[] identities) =>
         new("acme", Acme.CanonicalServer, AuthProvider.None, "someone", identities);
 
-    static (ConsentFlipClaims Claims, string ClaimsPath) TempClaims(TempDir tmp) {
-        var claimsPath = tmp.PathTo("consent-flip-claims.json");
-        return (new ConsentFlipClaims(claimsPath, tmp.PathTo("config.json")), claimsPath);
-    }
+    static (ConsentFlipClaims Claims, string ClaimsPath) TempClaims(TempConfigRoot config) =>
+        (new ConsentFlipClaims(config.Root), config.PathTo("consent-flip-claims.json"));
 
     static (ConsentFlipClaims Claims, string Dir) ReadOnlyClaims(TempDir tmp) {
         var dir = tmp.CreateDir("wizardauth-ro");
-        return (new ConsentFlipClaims(tmp.PathTo("wizardauth-ro", "consent-flip-claims.json"), tmp.PathTo("wizardauth-ro", "config.json")), dir);
+        return (new ConsentFlipClaims(new ConfigRoot(dir)), dir);
     }
 
     [UnsupportedOSPlatform("windows")]
@@ -57,8 +56,8 @@ public class WizardAuthServiceTests {
 
     [Test]
     public async Task No_attempt_has_run_yet_so_current_is_null_and_the_service_is_quiesced() {
-        using var tmp = new TempDir();
-        var (claims, _) = TempClaims(tmp);
+        using var config = new TempConfigRoot();
+        var (claims, _) = TempClaims(config);
         var service = new WizardAuthService((_, _) => Task.FromResult<AuthResult>(Committed(Acme)));
 
         await Assert.That(service.Current).IsNull();
@@ -67,8 +66,8 @@ public class WizardAuthServiceTests {
 
     [Test]
     public async Task Begin_runs_the_operation_with_the_intent_and_publishes_it_as_current() {
-        using var tmp = new TempDir();
-        var (claims, _) = TempClaims(tmp);
+        using var config = new TempConfigRoot();
+        var (claims, _) = TempClaims(config);
         ConnectIntent? seen = null;
         var service = new WizardAuthService((intent, _) => {
             seen = intent;
@@ -85,8 +84,8 @@ public class WizardAuthServiceTests {
 
     [Test]
     public async Task Begin_while_an_attempt_is_live_throws() {
-        using var tmp = new TempDir();
-        var (claims, _) = TempClaims(tmp);
+        using var config = new TempConfigRoot();
+        var (claims, _) = TempClaims(config);
         var gate = new TaskCompletionSource<AuthResult>();
         var service = new WizardAuthService((_, _) => gate.Task);
 
@@ -100,8 +99,8 @@ public class WizardAuthServiceTests {
 
     [Test]
     public async Task Begin_is_admitted_again_once_the_previous_result_completed() {
-        using var tmp = new TempDir();
-        var (claims, _) = TempClaims(tmp);
+        using var config = new TempConfigRoot();
+        var (claims, _) = TempClaims(config);
         var gate = new TaskCompletionSource<AuthResult>();
         var starts = 0;
         var service = new WizardAuthService((_, _) => {
@@ -124,8 +123,8 @@ public class WizardAuthServiceTests {
 
     [Test]
     public async Task The_hook_arms_one_claim_per_identity() {
-        using var tmp = new TempDir();
-        var (claims, _) = TempClaims(tmp);
+        using var config = new TempConfigRoot();
+        var (claims, _) = TempClaims(config);
 
         await WizardAuthService.ArmingHook(claims)([Acme, Work], CancellationToken.None);
 
@@ -137,8 +136,8 @@ public class WizardAuthServiceTests {
 
     [Test]
     public async Task The_arming_hook_binds_to_the_claims_store_it_was_built_over() {
-        using var tmp = new TempDir();
-        var (claims, _) = TempClaims(tmp);
+        using var config = new TempConfigRoot();
+        var (claims, _) = TempClaims(config);
 
         await WizardAuthService.ArmingHook(claims)([Acme], CancellationToken.None);
 
@@ -150,8 +149,8 @@ public class WizardAuthServiceTests {
     // the façade's boundary would read as a user cancel.
     [Test]
     public async Task The_hook_arms_even_under_an_already_cancelled_token() {
-        using var tmp = new TempDir();
-        var (claims, _) = TempClaims(tmp);
+        using var config = new TempConfigRoot();
+        var (claims, _) = TempClaims(config);
         using var cts = new CancellationTokenSource();
         await cts.CancelAsync();
 
@@ -207,10 +206,10 @@ public class WizardAuthServiceTests {
     // store — a wizard sign-in is never rejected because a previous claims file was unreadable.
     [Test]
     public async Task Arming_into_a_corrupt_store_lands_in_the_fresh_store_and_quarantines_the_old_one() {
-        using var tmp = new TempDir();
-        var (_, claimsPath) = TempClaims(tmp);
+        using var config = new TempConfigRoot();
+        var (_, claimsPath) = TempClaims(config);
         File.WriteAllText(claimsPath, "{not json");
-        var claims  = new ConsentFlipClaims(claimsPath, tmp.PathTo("config.json"));
+        var claims  = new ConsentFlipClaims(config.Root);
         var service = new WizardAuthService(
             (_, ct) => ScriptedCommitAsync(WizardAuthService.ArmingHook(claims), [Acme], () => { }, ct));
 
@@ -225,8 +224,8 @@ public class WizardAuthServiceTests {
 
     [Test]
     public async Task Cancel_before_the_boundary_yields_cancelled_and_quiesces() {
-        using var tmp = new TempDir();
-        var (claims, _) = TempClaims(tmp);
+        using var config = new TempConfigRoot();
+        var (claims, _) = TempClaims(config);
         var started = new TaskCompletionSource();
         var service = new WizardAuthService(async (_, ct) => {
             started.SetResult();
@@ -246,8 +245,8 @@ public class WizardAuthServiceTests {
     // Committed; the service just delivers that answer to the close path.
     [Test]
     public async Task Cancel_after_the_boundary_still_yields_committed() {
-        using var tmp = new TempDir();
-        var (claims, _) = TempClaims(tmp);
+        using var config = new TempConfigRoot();
+        var (claims, _) = TempClaims(config);
         var started      = new TaskCompletionSource();
         var cancelSeen   = new TaskCompletionSource();
         var service = new WizardAuthService(async (_, ct) => {
@@ -266,8 +265,8 @@ public class WizardAuthServiceTests {
 
     [Test]
     public async Task QuiescedAsync_waits_for_a_live_attempt_to_settle() {
-        using var tmp = new TempDir();
-        var (claims, _) = TempClaims(tmp);
+        using var config = new TempConfigRoot();
+        var (claims, _) = TempClaims(config);
         var gate = new TaskCompletionSource<AuthResult>();
         var service = new WizardAuthService((_, _) => gate.Task);
 
@@ -284,8 +283,8 @@ public class WizardAuthServiceTests {
     // rather than as a faulted task nobody is positioned to catch.
     [Test]
     public async Task An_operation_that_throws_is_reported_as_failed() {
-        using var tmp = new TempDir();
-        var (claims, _) = TempClaims(tmp);
+        using var config = new TempConfigRoot();
+        var (claims, _) = TempClaims(config);
         var service = new WizardAuthService((_, _) => throw new InvalidOperationException("boom"));
 
         var result = await service.Begin(new ConnectIntent.Create()).Result.WaitAsync(TimeSpan.FromSeconds(5));
@@ -296,8 +295,8 @@ public class WizardAuthServiceTests {
 
     [Test]
     public async Task Cancelling_a_settled_attempt_is_a_no_op() {
-        using var tmp = new TempDir();
-        var (claims, _) = TempClaims(tmp);
+        using var config = new TempConfigRoot();
+        var (claims, _) = TempClaims(config);
         var service = new WizardAuthService((_, _) => Task.FromResult<AuthResult>(Committed(Acme)));
 
         var attempt = service.Begin(new ConnectIntent.Create());
@@ -312,39 +311,27 @@ public class WizardAuthServiceTests {
 /// <c>App.ResolveConsentFlipIdentity</c> runs INSIDE <see cref="ConsentFlipClaims.TryConsume"/>'s
 /// two-lock section, so an unreadable config must fail closed to an identity that matches nothing
 /// rather than resolve to plausible defaults or let an exception escape the locks.
-///
-/// [NotInParallel]: writes the one real config.json under the assembly-wide KCAP_CONFIG_DIR (see
-/// <c>OnboardingGateGlobalSetup</c>) — same shared resource as AppStartupCarveOutTests.
 /// </summary>
-[NotInParallel(nameof(OnboardingGateTests))]
 public class ConsentFlipIdentityFailClosedTests {
-    static string ConfigPath => AppConfig.GetConfigPath();
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
 
-    [Before(Test)]
-    public void Cleanup() {
-        if (File.Exists(ConfigPath)) File.Delete(ConfigPath);
-        AppConfig.ResetResolvedStateForTesting();
-    }
-
-    [After(Test)]
-    public void RemoveCorruptConfig() => Cleanup();
+    string ConfigPath => AppConfig.GetConfigPath(Config.Root);
 
     [Test]
     public async Task Unreadable_config_resolves_an_identity_that_matches_nothing() {
         File.WriteAllText(ConfigPath, "{not json");
 
-        await Assert.That(AppUnderTest.ResolveConsentFlipIdentity()).IsEqualTo(("", "", ""));
+        await Assert.That(AppUnderTest.ResolveConsentFlipIdentity(Config.Root)).IsEqualTo(("", "", ""));
     }
 
     [Test]
     public async Task Unreadable_config_retains_the_claim_instead_of_throwing_inside_TryConsume() {
         File.WriteAllText(ConfigPath, "{not json");
-        using var tmp = new TempDir();
-        var claims = new ConsentFlipClaims(tmp.PathTo("consent-flip-claims.json"), ConfigPath);
+        var claims = new ConsentFlipClaims(Config.Root);
         var claim  = new ConsentFlipClaim("acme", "https://acme.example:443");
         claims.Arm(claim);
 
-        var consumed = claims.TryConsume(claim, AppUnderTest.ResolveConsentFlipIdentity, "acme-daemon");
+        var consumed = claims.TryConsume(claim, () => AppUnderTest.ResolveConsentFlipIdentity(Config.Root), "acme-daemon");
 
         await Assert.That(consumed).IsFalse();
         await Assert.That(claims.Pending()).IsEquivalentTo([claim]);
@@ -358,12 +345,11 @@ public class ConsentFlipIdentityFailClosedTests {
         File.WriteAllText(ConfigPath, JsonSerializer.Serialize(
             new ProfileConfig { ActiveProfile = "acme", Profiles = new() { ["acme"] = profile } },
             ProfileConfigJsonContext.Default.ProfileConfig));
-        using var tmp = new TempDir();
-        var claims = new ConsentFlipClaims(tmp.PathTo("consent-flip-claims.json"), ConfigPath);
+        var claims = new ConsentFlipClaims(Config.Root);
         var claim  = new ConsentFlipClaim("acme", ServerIdentity.Canonicalize("https://acme.example")!);
         claims.Arm(claim);
 
-        var consumed = claims.TryConsume(claim, AppUnderTest.ResolveConsentFlipIdentity, "acme-daemon");
+        var consumed = claims.TryConsume(claim, () => AppUnderTest.ResolveConsentFlipIdentity(Config.Root), "acme-daemon");
 
         await Assert.That(consumed).IsTrue();
         await Assert.That(claims.Pending()).IsEmpty();

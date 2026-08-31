@@ -1,4 +1,6 @@
+using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Config;
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Core.Setup;
 
 namespace Capacitor.Cli;
@@ -24,14 +26,14 @@ internal static class HarnessSetupNotice {
             or "update" or "uninstall" or "harness" or "status");
     }
 
-    public static async Task FlushAsync(string command) {
+    public static async Task FlushAsync(string command, ConfigRoot config, ProfileContext profiles, UserHome home) {
         try {
             if (!ShouldNotify(command)) return;
             if (Console.IsErrorRedirected) return; // scripts/pipelines never see it
 
-            var profile = await AppConfig.GetActiveProfileAsync();
+            var profile = profiles.Effective;
             var notice = HarnessNudgeEmitter.ResolveNotice(
-                AgentDetection.FromEnvironment(), HarnessOfferStore.Default(),
+                HarnessRegistry.FromEnvironment(home), new HarnessOfferStore(config),
                 profile?.DisableHarnessNudge is true, DateTimeOffset.UtcNow);
             if (notice is null) return;
 

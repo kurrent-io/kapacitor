@@ -1,19 +1,23 @@
+using Capacitor.Cli.Core;
+
 namespace Capacitor.Cli.Tests.Unit;
 
 public class PathExclusionTests {
+    [TempHome] public required TempHome Home { get; init; }
+
     [Test]
     public async Task IsExcluded_returns_false_when_excludedPaths_is_null() {
-        await Assert.That(PathExclusion.IsExcluded("/some/path", null)).IsFalse();
+        await Assert.That(PathExclusion.IsExcluded("/some/path", null, Home)).IsFalse();
     }
 
     [Test]
     public async Task IsExcluded_returns_false_when_excludedPaths_is_empty() {
-        await Assert.That(PathExclusion.IsExcluded("/some/path", [])).IsFalse();
+        await Assert.That(PathExclusion.IsExcluded("/some/path", [], Home)).IsFalse();
     }
 
     [Test]
     public async Task IsExcluded_returns_false_when_cwd_is_null() {
-        await Assert.That(PathExclusion.IsExcluded(null, ["/some/path"])).IsFalse();
+        await Assert.That(PathExclusion.IsExcluded(null, ["/some/path"], Home)).IsFalse();
     }
 
     [Test]
@@ -21,7 +25,7 @@ public class PathExclusionTests {
         using var tmp  = new TempDir();
         var       path = tmp.Path;
 
-        await Assert.That(PathExclusion.IsExcluded(path, [path])).IsTrue();
+        await Assert.That(PathExclusion.IsExcluded(path, [path], Home)).IsTrue();
     }
 
     [Test]
@@ -29,19 +33,19 @@ public class PathExclusionTests {
         using var tmp = new TempDir();
         var       sub = tmp.CreateDir("sub", "deeper");
 
-        await Assert.That(PathExclusion.IsExcluded(sub, [tmp.Path])).IsTrue();
+        await Assert.That(PathExclusion.IsExcluded(sub, [tmp.Path], Home)).IsTrue();
     }
 
     [Test]
     public async Task IsExcluded_does_not_match_sibling_with_shared_prefix() {
-        // /tmp/foo vs /tmp/foobar — must NOT match
+        // foo vs foobar share a prefix but foobar is not a descendant — must NOT match.
         using var tmp    = new TempDir();
         var       foo    = tmp.PathTo("foo");
         var       foobar = tmp.PathTo("foobar");
         Directory.CreateDirectory(foo);
         Directory.CreateDirectory(foobar);
 
-        await Assert.That(PathExclusion.IsExcluded(foobar, [foo])).IsFalse();
+        await Assert.That(PathExclusion.IsExcluded(foobar, [foo], Home)).IsFalse();
     }
 
     [Test]
@@ -49,7 +53,7 @@ public class PathExclusionTests {
         using var tmp = new TempDir();
         var       sub = tmp.CreateDir("child");
 
-        await Assert.That(PathExclusion.IsExcluded(sub, [tmp.Path + Path.DirectorySeparatorChar])).IsTrue();
+        await Assert.That(PathExclusion.IsExcluded(sub, [tmp.Path + Path.DirectorySeparatorChar], Home)).IsTrue();
     }
 
     [Test]
@@ -60,7 +64,7 @@ public class PathExclusionTests {
         using var tmp = new TempDir();
         var       sub = tmp.CreateDir("..scratch");
 
-        await Assert.That(PathExclusion.IsExcluded(sub, [tmp.Path])).IsTrue();
+        await Assert.That(PathExclusion.IsExcluded(sub, [tmp.Path], Home)).IsTrue();
     }
 
     [Test]
@@ -68,7 +72,7 @@ public class PathExclusionTests {
         using var tmp = new TempDir();
         var       sub = tmp.CreateDir("..data", "session");
 
-        await Assert.That(PathExclusion.IsExcluded(sub, [tmp.Path])).IsTrue();
+        await Assert.That(PathExclusion.IsExcluded(sub, [tmp.Path], Home)).IsTrue();
     }
 
     [Test]
@@ -76,7 +80,7 @@ public class PathExclusionTests {
         using var tmp = new TempDir();
         var       sub = tmp.CreateDir("child");
 
-        await Assert.That(PathExclusion.IsExcluded(sub, ["/nonexistent/path", tmp.Path])).IsTrue();
+        await Assert.That(PathExclusion.IsExcluded(sub, ["/nonexistent/path", tmp.Path], Home)).IsTrue();
     }
 
     [Test]
@@ -86,14 +90,13 @@ public class PathExclusionTests {
         using var real = new TempDir();
         using var link = TempSymlink.To(real.Path);
 
-        // cwd uses the real path; entry uses the symlinked path.
-        await Assert.That(PathExclusion.IsExcluded(real.Path, [link.Path])).IsTrue();
+        await Assert.That(PathExclusion.IsExcluded(real.Path, [link.Path], Home)).IsTrue();
     }
 
     [Test]
     public async Task IsExcluded_resolves_parent_symlinks() {
-        // /link -> /real, cwd is /link/sub. Ignoring /real (or /link) must match
-        // /link/sub. Today this fails because only the leaf is resolved.
+        // link -> real, cwd is link/sub: ignoring real (or link) must match link/sub too,
+        // which requires resolving symlinks in parent components, not just the leaf.
         using var real = new TempDir();
         using var link = TempSymlink.To(real.Path);
 
@@ -102,8 +105,8 @@ public class PathExclusionTests {
         // The cwd reported by an agent that descended through the symlink path.
         var subUnderLink = Path.Combine(link.Path, "sub");
 
-        await Assert.That(PathExclusion.IsExcluded(subUnderLink, [real.Path])).IsTrue();
-        await Assert.That(PathExclusion.IsExcluded(subUnderLink, [link.Path])).IsTrue();
+        await Assert.That(PathExclusion.IsExcluded(subUnderLink, [real.Path], Home)).IsTrue();
+        await Assert.That(PathExclusion.IsExcluded(subUnderLink, [link.Path], Home)).IsTrue();
     }
 
     [Test]
@@ -112,57 +115,59 @@ public class PathExclusionTests {
         using var real = new TempDir();
         using var link = TempSymlink.To(real.Path);
 
-        await Assert.That(PathExclusion.IsExcluded(link.Path, [real.Path])).IsTrue();
+        await Assert.That(PathExclusion.IsExcluded(link.Path, [real.Path], Home)).IsTrue();
     }
 
     [Test]
     public async Task IsExcluded_ignores_null_entries() {
         using var tmp = new TempDir();
 
-        await Assert.That(PathExclusion.IsExcluded(tmp.Path, [null!])).IsFalse();
+        await Assert.That(PathExclusion.IsExcluded(tmp.Path, [null!], Home)).IsFalse();
     }
 
     [Test]
     public async Task IsExcluded_ignores_empty_entries() {
         using var tmp = new TempDir();
 
-        await Assert.That(PathExclusion.IsExcluded(tmp.Path, [""])).IsFalse();
+        await Assert.That(PathExclusion.IsExcluded(tmp.Path, [""], Home)).IsFalse();
     }
 
     [Test]
     public async Task IsExcluded_ignores_whitespace_entries() {
         using var tmp = new TempDir();
 
-        await Assert.That(PathExclusion.IsExcluded(tmp.Path, ["   "])).IsFalse();
+        await Assert.That(PathExclusion.IsExcluded(tmp.Path, ["   "], Home)).IsFalse();
     }
 
     [Test]
     public async Task IsExcluded_skips_bad_entries_but_still_matches_good_ones() {
         using var tmp = new TempDir();
 
-        await Assert.That(PathExclusion.IsExcluded(tmp.Path, [null!, "", tmp.Path])).IsTrue();
+        await Assert.That(PathExclusion.IsExcluded(tmp.Path, [null!, "", tmp.Path], Home)).IsTrue();
     }
+
+    // A home that needs no expanding, since Normalize runs GetFullPath over it: a Unix-shaped
+    // literal picks up the current drive on Windows. Non-existent, so no symlink resolution either.
+    static UserHome FakeHome => new(Path.GetFullPath("/fake/home"));
 
     [Test]
     public async Task Normalize_expands_tilde() {
-        var home  = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        var normd = PathExclusion.Normalize("~");
+        var home = FakeHome;
 
-        await Assert.That(normd).IsEqualTo(home.TrimEnd(Path.DirectorySeparatorChar));
+        await Assert.That(PathExclusion.Normalize("~", home)).IsEqualTo(home.Path);
     }
 
     [Test]
     public async Task Normalize_expands_tilde_subpath() {
-        var home     = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        var expected = Path.Combine(home, "stuff");
-        var normd    = PathExclusion.Normalize("~/stuff");
+        var home = FakeHome;
 
-        await Assert.That(normd).IsEqualTo(expected);
+        await Assert.That(PathExclusion.Normalize("~/stuff", home))
+                    .IsEqualTo(Path.Combine(home.Path, "stuff"));
     }
 
     [Test]
     public async Task Normalize_makes_relative_path_absolute() {
-        var normd = PathExclusion.Normalize(".");
+        var normd = PathExclusion.Normalize(".", Home);
 
         await Assert.That(Path.IsPathRooted(normd)).IsTrue();
     }
@@ -172,26 +177,33 @@ public class PathExclusionTests {
         using var tmp       = new TempDir();
         var       withSlash = tmp.Path + Path.DirectorySeparatorChar;
 
-        await Assert.That(PathExclusion.Normalize(withSlash))
+        await Assert.That(PathExclusion.Normalize(withSlash, Home))
             .DoesNotEndWith(Path.DirectorySeparatorChar.ToString());
     }
 }
 
 sealed class TempSymlink : IDisposable {
+    readonly TempDir _parent;
+
     public string Path { get; }
 
-    TempSymlink(string path) => Path = path;
-
-    public static TempSymlink To(string target) {
-        var p = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "kap-pathex-link-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateSymbolicLink(p, target);
-
-        return new(p);
+    TempSymlink(TempDir parent, string path) {
+        _parent = parent;
+        Path    = path;
     }
 
+    public static TempSymlink To(string target) {
+        var parent = new TempDir("pathexlink");
+        var link   = parent.PathTo("link");
+
+        Directory.CreateSymbolicLink(link, target);
+
+        return new(parent, link);
+    }
+
+    // The link first: deleting the directory tree would follow it into the target otherwise.
     public void Dispose() {
-        try { Directory.Delete(Path); } catch {
-            /* best effort */
-        }
+        try { Directory.Delete(Path); } catch { /* best effort */ }
+        _parent.Dispose();
     }
 }

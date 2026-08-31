@@ -5,6 +5,7 @@ using Capacitor.Cli.Daemon.Pty;
 using Capacitor.Cli.Daemon.Services;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
+using TUnit.Core.Enums;
 
 namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 
@@ -17,7 +18,11 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 /// AgentOrchestrator, since none of these tests exercise Spawn/Attach/List/Stop — the
 /// orchestrator only needs to exist to satisfy LocalControlServer's constructor.
 /// </summary>
+[ExcludeOn(OS.Windows)] // Unix-domain socket path
 public class LaunchConsentIpcTests {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+    [TempHome] public required TempHome Home { get; init; }
+
     sealed class NoopHostLifetime : IHostApplicationLifetime {
         public CancellationToken ApplicationStarted  => CancellationToken.None;
         public CancellationToken ApplicationStopping => CancellationToken.None;
@@ -44,7 +49,7 @@ public class LaunchConsentIpcTests {
         TempDaemonStore Daemons, LocalControlServer Server, AgentOrchestrator Orchestrator, ServerConnection Connection,
         LaunchConsentStore Store, LaunchConsentBroker Broker, LaunchConsentGate Gate, string SockPath);
 
-    static async Task<Harness> StartAsync(
+    async Task<Harness> StartAsync(
             string daemonName, LaunchConsentDefault def, int promptTimeoutSeconds, CancellationToken ct
         ) {
         var daemons = new TempDaemonStore();
@@ -69,14 +74,16 @@ public class LaunchConsentIpcTests {
         var permissionBridge = new LocalPermissionBridge(connection, NullLogger<LocalPermissionBridge>.Instance);
 
         var orchestrator = new AgentOrchestrator(
-            config, connection, worktreeManager, repoMatcher, new NoopPtyProcessFactory(), new NoopHttpClientFactory(),
+            config, Config.Root, Home, connection, worktreeManager, repoMatcher,
+            new NoopPtyProcessFactory(), new NoopHttpClientFactory(),
             permissionBridge, new Dictionary<string, IHostedAgentLauncher>(),
             new Dictionary<string, IHostedAgentRuntimeFactory>(), new NoopHostLifetime(),
             NullLogger<AgentOrchestrator>.Instance, gate);
 
+        var permissionIpc = new PermissionIpc(new PermissionPromptBroker(), NullLogger<PermissionIpc>.Instance);
         var statusIpc = new DaemonStatusIpc(config, orchestrator, connection, new DaemonStatusNotifier());
         var restart = RestartCoordinator.ForTest(daemons.Store, daemonName, daemonName, new NoopRestartStrategy());
-        var server = new LocalControlServer(config, orchestrator, restart, consentIpc, statusIpc, NullLogger<LocalControlServer>.Instance);
+        var server = new LocalControlServer(config, orchestrator, restart, consentIpc, permissionIpc, statusIpc, NullLogger<LocalControlServer>.Instance);
         await server.StartAsync(ct);
 
         var sockPath = daemons.Store.SocketPath(daemonName);
@@ -98,7 +105,7 @@ public class LaunchConsentIpcTests {
     /// AgentOrchestratorLocalAttachTests's real-socket tests. The harness owns its own daemons
     /// directory, so no test here shares state with another; each [Test] still carries its own
     /// Windows guard, which must be visible on the test method itself.
-    static async Task RunAsync(
+    async Task RunAsync(
             string daemonName, LaunchConsentDefault def, int promptTimeoutSeconds,
             Func<Harness, CancellationToken, Task> body
         ) {
@@ -162,8 +169,6 @@ public class LaunchConsentIpcTests {
 
     [Test]
     public async Task RulesGet_returns_current_policy_and_RulesPut_replaces_it() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         await RunAsync("test-consent-rules", LaunchConsentDefault.Allow, 45, async (h, ct) => {
             // Act 1: RulesGet reports the current (default, empty) policy.
             await using (var s1 = await ConnectAsync(h.SockPath, ct)) {
@@ -201,8 +206,6 @@ public class LaunchConsentIpcTests {
 
     [Test]
     public async Task Subscribe_receives_pending_and_Resolve_unblocks_the_gate() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         await RunAsync("test-consent-subscribe", LaunchConsentDefault.Prompt, 30, async (h, ct) => {
             await using var subscriber = await ConnectAsync(h.SockPath, ct);
             // Subscribe FIRST and wait for it to actually land server-side before starting the
@@ -241,8 +244,6 @@ public class LaunchConsentIpcTests {
 
     [Test]
     public async Task Resolve_with_save_rule_appends_to_policy() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         await RunAsync("test-consent-saverule", LaunchConsentDefault.Prompt, 30, async (h, ct) => {
             await using var subscriber = await ConnectAsync(h.SockPath, ct);
             await FrameCodec.WriteAsync(subscriber, new LocalFrame(FrameType.ConsentSubscribe), ct);
@@ -274,8 +275,6 @@ public class LaunchConsentIpcTests {
 
     [Test]
     public async Task Resolve_unknown_request_acks_false() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         await RunAsync("test-consent-unknown", LaunchConsentDefault.Allow, 45, async (h, ct) => {
             await using var s = await ConnectAsync(h.SockPath, ct);
             await FrameCodec.WriteAsync(s, LocalFrame.ConsentJson(FrameType.ConsentResolve,
@@ -298,8 +297,6 @@ public class LaunchConsentIpcTests {
 
     [Test]
     public async Task RulesPut_missing_rules_field_acks_false_without_dropping_the_connection() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         await RunAsync("put-norules", LaunchConsentDefault.Allow, 45, async (h, ct) => {
             await using var s = await ConnectAsync(h.SockPath, ct);
             // No "rules" key at all.
@@ -316,8 +313,6 @@ public class LaunchConsentIpcTests {
 
     [Test]
     public async Task RulesPut_null_rules_element_acks_false_without_dropping_the_connection() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         // "rules":[null] is valid JSON — STJ source-gen deserializes it into a List<ConsentRuleDto>
         // containing a null element despite the non-nullable C# declaration. Any(r => r.Action is
         // null) would throw an uncaught NullReferenceException on that element (only JsonException
@@ -338,8 +333,6 @@ public class LaunchConsentIpcTests {
 
     [Test]
     public async Task Resolve_missing_request_id_acks_false_without_dropping_the_connection() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         await RunAsync("resolve-noid", LaunchConsentDefault.Allow, 45, async (h, ct) => {
             await using var s = await ConnectAsync(h.SockPath, ct);
             // No "request_id" key at all.
@@ -359,8 +352,6 @@ public class LaunchConsentIpcTests {
 
     [Test]
     public async Task Resolve_with_an_invalid_save_rule_still_resolves_but_reports_the_save_error() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         await RunAsync("saverule-bad", LaunchConsentDefault.Prompt, 30, async (h, ct) => {
             await using var subscriber = await ConnectAsync(h.SockPath, ct);
             await FrameCodec.WriteAsync(subscriber, new LocalFrame(FrameType.ConsentSubscribe), ct);
@@ -400,8 +391,6 @@ public class LaunchConsentIpcTests {
 
     [Test]
     public async Task V2_resolve_without_prompt_id_acks_invalid_payload() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         await RunAsync("v2-resolve-noecho", LaunchConsentDefault.Allow, 45, async (h, ct) => {
             // A v2 resolve missing prompt_id entirely never reaches the broker.
             await using (var s1 = await ConnectAsync(h.SockPath, ct)) {
@@ -422,8 +411,6 @@ public class LaunchConsentIpcTests {
 
     [Test]
     public async Task Rule_saved_is_populated_on_both_ok_branches() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         await RunAsync("v2-rule-saved", LaunchConsentDefault.Prompt, 30, async (h, ct) => {
             await using var subscriber = await ConnectAsync(h.SockPath, ct);
             await FrameCodec.WriteAsync(subscriber, new LocalFrame(FrameType.ConsentSubscribeV2), ct);
@@ -473,8 +460,6 @@ public class LaunchConsentIpcTests {
 
     [Test]
     public async Task V2_resolve_with_mismatching_echo_acks_no_pending_and_leaves_the_request_live() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         await RunAsync("v2-resolve-mismatch", LaunchConsentDefault.Prompt, 30, async (h, ct) => {
             await using var subscriber = await ConnectAsync(h.SockPath, ct);
             await FrameCodec.WriteAsync(subscriber, new LocalFrame(FrameType.ConsentSubscribeV2), ct);
@@ -497,8 +482,6 @@ public class LaunchConsentIpcTests {
 
     [Test]
     public async Task Subscribe_pushes_prompt_id_and_requester_display_on_pending_frames() {
-        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
-
         await RunAsync("v2-subscribe-stamped", LaunchConsentDefault.Prompt, 30, async (h, ct) => {
             await using var subscriber = await ConnectAsync(h.SockPath, ct);
             await FrameCodec.WriteAsync(subscriber, new LocalFrame(FrameType.ConsentSubscribeV2), ct);

@@ -49,10 +49,9 @@ public class ServiceVerifyProcessTests {
         using var tmp = new TempDir();
         var (home, daemons, config) = NewIsolatedEnv(tmp);
 
-        var psi = KcapProcess.StartInfo(new DaemonStore(daemons), "daemon", "service", "start", "--name", "ptest", "--verify");
+        var psi = KcapProcess.StartInfo(new DaemonStore(daemons), new ConfigRoot(config), "daemon", "service", "start", "--name", "ptest", "--verify");
         psi.WorkingDirectory = home;
         psi.Environment["HOME"] = home;
-        psi.Environment["KCAP_CONFIG_DIR"] = config;
 
         using var process = Process.Start(psi) ?? throw new InvalidOperationException("Failed to start kcap");
 
@@ -110,7 +109,7 @@ public class ServiceVerifyProcessTests {
             Environment = {
                 ["HOME"]             = home,
                 [DaemonStore.DaemonsDirEnvVar] = daemons,
-                ["KCAP_CONFIG_DIR"]  = config,
+                [ConfigRoot.ConfigDirEnvVar]  = config,
             }
         };
 
