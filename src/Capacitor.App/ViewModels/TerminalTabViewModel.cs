@@ -33,9 +33,9 @@ namespace Capacitor.App.ViewModels;
 ///   real clients.
 ///   A call that loses the try-enter is a clean no-op, not a queued retry.
 /// * Send gate (_openingToken): who may accept composer text. BeginAttempt and Invalidate are its
-///   only advances, and the gate is DERIVED from ownership (_gateOpenToken == _openingToken), so
-///   an advance closes it with nothing to remember and no window in which a passed token check
-///   still opens one. A publish that is not an attempt's own Connecting/Attached invalidates -- a
+///   only advances, and both the gate and the in-flight flag are DERIVED from ownership
+///   (_gateOpenToken / _sendInFlightToken == _openingToken), so an advance settles them with
+///   nothing to remember and no window in which a passed token check still sets one. A publish that is not an attempt's own Connecting/Attached invalidates -- a
 ///   terminal outcome only while its OWN attempt still holds the token, since a reattach takes
 ///   its token before it disposes the client whose outcome it is retiring. State has one
 ///   assignment site, Publish, which applies both rules.
@@ -97,19 +97,14 @@ public sealed class TerminalTabViewModel : ReactiveObject {
     // BeginAttempt opens nothing, and no invalidation path has to remember to close it. Starts at
     // a value no token takes, since Interlocked.Increment hands out 1 upwards.
     int _gateOpenToken = -1;
-    bool _sendInFlight;
+    // Whose send is in flight, on the same derived footing as _gateOpenToken: a check-then-set
+    // flag could be set by an acceptance that raced a claim and then never cleared, since a
+    // delivery only clears a flag it still owns -- wedging the composer for the tab's whole life.
+    int _sendInFlightToken = -1;
     Task? _delivery;
 
     /// Bound; true from a send's acceptance until its delivery ends.
-    public bool SendInFlight {
-        get => Volatile.Read(ref _sendInFlight);
-        private set {
-            if (Volatile.Read(ref _sendInFlight) == value) return;
-            Volatile.Write(ref _sendInFlight, value);
-            this.RaisePropertyChanged();
-            RaiseSendProjections();
-        }
-    }
+    public bool SendInFlight => Volatile.Read(ref _sendInFlightToken) == Volatile.Read(ref _openingToken);
 
     /// The gate itself: the attempt that opened it still owns the token.
     bool GateOpen => Volatile.Read(ref _gateOpenToken) == Volatile.Read(ref _openingToken);
@@ -139,6 +134,7 @@ public sealed class TerminalTabViewModel : ReactiveObject {
     internal Task? PendingDeliveryForTesting => _delivery;
 
     void RaiseSendProjections() {
+        this.RaisePropertyChanged(nameof(SendInFlight));
         this.RaisePropertyChanged(nameof(CanAcceptText));
         this.RaisePropertyChanged(nameof(SendAvailability));
     }
@@ -146,7 +142,6 @@ public sealed class TerminalTabViewModel : ReactiveObject {
     /// Closes the gate and hands the caller a fresh token, which that attempt carries for its
     /// whole life.
     int BeginAttempt() {
-        SendInFlight = false;
         var token = Interlocked.Increment(ref _openingToken);
         RaiseSendProjections();
         return token;
@@ -155,7 +150,6 @@ public sealed class TerminalTabViewModel : ReactiveObject {
     /// Advances ownership past every attempt alive: an already-closed gate still allocates, since
     /// a callback queued mid-Connecting must lose its right to open.
     void Invalidate() {
-        SendInFlight = false;
         Interlocked.Increment(ref _openingToken);
         RaiseSendProjections();
     }
@@ -166,7 +160,6 @@ public sealed class TerminalTabViewModel : ReactiveObject {
     /// them would be advanced past by the increment that follows: the replacement attempt
     /// retired by the very outcome this guard exists to keep out of its way.
     void InvalidateOwner(int ownerToken) {
-        SendInFlight = false;
         Interlocked.CompareExchange(ref _openingToken, ownerToken + 1, ownerToken);
         RaiseSendProjections();
     }
@@ -208,7 +201,8 @@ public sealed class TerminalTabViewModel : ReactiveObject {
         var token = Volatile.Read(ref _openingToken);
         if (!CanAcceptText || _client is not { } client) return false;
         if (Volatile.Read(ref _openingToken) != token) return false;
-        SendInFlight = true;
+        Volatile.Write(ref _sendInFlightToken, token);
+        RaiseSendProjections();
         _delivery = DeliverAsync(client, token, TerminalInputEncoder.Paste(text));
         return true;
     }
@@ -230,7 +224,8 @@ public sealed class TerminalTabViewModel : ReactiveObject {
                 await Dispatcher.UIThread.InvokeAsync(() => {
                     if (Volatile.Read(ref _resolveState) == ResolveDisposed) return;
                     if (Volatile.Read(ref _openingToken) != token) return;
-                    SendInFlight = false;
+                    Interlocked.CompareExchange(ref _sendInFlightToken, -1, token);
+                    RaiseSendProjections();
                 });
             }
         }
