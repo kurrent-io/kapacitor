@@ -11,11 +11,10 @@ public class FirstRunMachineReportTests {
             HarnessRegistry?    harnesses = null,
             HarnessOfferLedger? ledger    = null,
             bool?               shell     = null,
-            string?             platform  = null,
-            bool?               daemon    = null) =>
+            string?             platform  = null) =>
         FirstRunMachineReport.Evaluate(
             "nostromo", "machine-1", harnesses ?? TestHarnesses.All(),
-            ledger ?? new HarnessOfferLedger(), shell, platform, daemon);
+            ledger ?? new HarnessOfferLedger(), shell, platform);
 
     // Key absence is the only way this shape says "we did not look", so every harness this build
     // knows has to appear — an omitted one reads as unknown and vanishes from BOTH the found list and
@@ -103,17 +102,6 @@ public class FirstRunMachineReportTests {
 
     // Every one of the three is a value the browser maps; null is what an unrecognised host reports,
     // and it draws no fix affordance rather than guessing at one.
-    // Null is not false. False means the ensure ladder has a verb it could run here, so the screen may
-    // offer one; null covers an ambiguous machine and one whose answer could only be no, and an older
-    // CLI answers nothing at all.
-    [Test]
-    [Arguments(null)]
-    [Arguments(true)]
-    [Arguments(false)]
-    public async Task Passes_the_daemon_service_answer_through_unchanged(bool? daemon) {
-        await Assert.That(Evaluate(daemon: daemon).DaemonServiceEnabled).IsEqualTo(daemon);
-    }
-
     [Test]
     public async Task Names_this_host_as_one_of_the_platforms_the_browser_maps() {
         var current = FirstRunPlatforms.Current();

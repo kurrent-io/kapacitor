@@ -63,64 +63,11 @@ sealed class DaemonServiceCommands(
         return result;
     }
 
-    /// <summary>
-    /// Whether the service is enabled, as the flow reports it once on the create: <c>true</c> reachable,
-    /// <c>false</c> not and <c>ensure</c> has a verb for it, <c>null</c> nothing claimable.
-    ///
-    /// <para><b>Never throws.</b> It resolves a service manager and runs a manager query — a subprocess —
-    /// and the caller's own catch drops the machine's whole harness report, so a failure here has to cost
-    /// one field rather than all of them.</para>
-    /// </summary>
-    internal static async Task<bool?> FlowServiceEnabledAsync(
-            ConfigRoot root, ProfileContext profiles, UserHome home) {
-        try {
-            return await ForFlow(root, profiles, home).ServiceEnabledAsync();
-        } catch (Exception) {
-            return null;
-        }
-    }
-
     /// <summary>The flow's own resolution of the manager and the service id, matching
     /// <see cref="DispatchAsync"/>'s with no command-line arguments to draw a daemon name from.</summary>
     static DaemonServiceCommands ForFlow(ConfigRoot root, ProfileContext profiles, UserHome home) =>
         new(DaemonStore.FromEnvironment(), root, profiles, ServiceManagerFactory.ForCurrentOs(root, home),
             DaemonStore.Sanitize(DaemonNameResolver.Resolve([], profiles.DaemonName)), home);
-
-    /// <summary>
-    /// The fact behind the flow's offer, from the same evidence <see cref="Ensure"/> classifies.
-    ///
-    /// <para><b>Offerable, not merely absent.</b> The classifier is half of the ladder's refusal surface:
-    /// the rest is decided in the arms, so a fact taken from the classifier alone draws a button on a
-    /// machine whose only possible answer is no.</para>
-    /// </summary>
-    async Task<bool?> ServiceEnabledAsync() {
-        var profileName = profiles.Resolution.ProfileName;
-        var query       = manager.Query(id);
-
-        var decision = EnsureClassifier.Classify(
-            query.Probe, query.State, query.UnitPresent,
-            DaemonPidProbe.ValidatedPid(store, id),
-            ServiceTxnMarker.Exists(store, id), ServiceTxnLock.IsHeld(store, id),
-            query.JobPid, manager is LaunchdServiceManager);
-
-        if (decision.Action is EnsureAction.AlreadyEnabled) return true;
-        if (decision.Action is not (EnsureAction.Install or EnsureAction.Start)) return null;
-
-        if (LaunchdProfileRefusal(manager is LaunchdServiceManager, profileName, decision.Action)) return null;
-
-        // The same resolution the arms run, not a second reading of it: off launchd the profile name can
-        // be null, where this falls through to a URL the environment may supply — and a fact that missed
-        // that arm would withhold an offer the action would have taken.
-        if (await ResolveServerUrlAsync(profileName) is null) return null;
-
-        // An install bakes the daemon's path, and launchd's start gate compares that path against the
-        // unit's — so a missing daemon binary refuses on both. A plain start elsewhere restarts a unit
-        // that already names one, and demanding it there would withhold an offer that would have worked.
-        if ((decision.Action is EnsureAction.Install || manager is LaunchdServiceManager)
-            && UnitIdentity.ResolveDaemonBinary() is null) return null;
-
-        return false;
-    }
 
     /// <summary>
     /// The <c>ExtraArgs</c> baked into a service unit, from the raw <c>--max-agents</c> flag value.

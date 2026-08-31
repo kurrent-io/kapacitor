@@ -33,12 +33,14 @@ launchd, exit 1 is lock contention *or* a manager error, and only one of those r
 verified transaction, so off it nothing proves the daemon came up and answered. Two success tokens keep
 "reachable now" a claim the ladder is willing to make.
 
-**The reported fact is offerability, not state.** `daemon_service_enabled` is false only where `ensure`
-has a verb it could actually run: the classifier is half of the refusal surface, and the arms add three
-more after it, so a launchd machine with no resolvable profile classifies as an install and can then only
-refuse. Null covers both an ambiguous machine and one whose answer could only be no. Its derivation
-swallows everything, because it resolves a service manager and runs a manager query — a subprocess — and
-the caller's own catch drops the machine's entire harness report rather than one field.
+**Nothing is reported about the service, and that is not a simplification.** The offer was going to be
+conditioned on whether the daemon already ran as a service, reported on the flow create. But the create
+runs before login selects a tenant, and the service *id* comes from the daemon name that setup does not
+collect until after the browser leg — so the fact would have been a claim about a service whose identity
+is chosen later. There is no point in the flow at which it can be made honest. The offer is therefore
+unconditional and the ladder decides at action time, where the profile is known: someone who already has
+it gets `already_enabled`, which reads honestly, and someone running `setup` has very likely not set it
+up.
 
 **The wait spinner comes down for this capability and not for the shim.** The shim prompts through
 osascript and writes nothing; the verify transaction writes its coded lines, and two live renderables

@@ -67,16 +67,6 @@ public sealed record CreateFirstRunFlowRequest {
     /// alike, and only one of them is a claim.</para>
     /// </summary>
     [JsonPropertyName("platform")] public string? Platform { get; init; }
-
-    /// <summary>
-    /// Whether the agent daemon is installed as a service and running, or null when nothing claimable
-    /// was read.
-    ///
-    /// <para><b>False is an offer, not just a state.</b> It means the ensure ladder has a verb it could
-    /// actually run here — so null covers both an ambiguous machine and one whose ladder could only
-    /// refuse, since a button whose single possible answer is no is not an offer.</para>
-    /// </summary>
-    [JsonPropertyName("daemon_service_enabled")] public bool? DaemonServiceEnabled { get; init; }
 }
 
 /// <summary>One thing the browser is asking this machine to do, as the poll carries it.</summary>

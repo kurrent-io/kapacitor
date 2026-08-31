@@ -91,8 +91,7 @@ public sealed class FirstRunFlowClient(HttpClient http) : IFirstRunFlowChannel {
                 Harnesses          = new Dictionary<string, FirstRunHarnessReport>(report.Harnesses, StringComparer.Ordinal),
                 Declined           = [.. report.Declined],
                 LoginShellFindsCli = report.LoginShellFindsCli,
-                Platform           = report.Platform,
-                DaemonServiceEnabled = report.DaemonServiceEnabled
+                Platform           = report.Platform
             },
             CapacitorJsonContext.Default.CreateFirstRunFlowRequest);
 

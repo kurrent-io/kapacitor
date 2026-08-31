@@ -891,7 +891,13 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
         // carries what this run actually chose.
         if (browserAnswers.FlowId is { } browserFlowId) {
             try {
-                using var deferred = new HttpClient();
+                // Through the same authenticated choke point the leg uses. Every flow route is
+                // authenticated, and a raw client polls into a 401 whose empty body is indistinguishable
+                // from "nothing was asked" — so an unauthenticated one here enables nothing, silently.
+                var (deferredHttp, _) = await HttpClientExtensions.CreateClientWithAuthStatusAsync(
+                    config, saved, serverUrl, autoRetryUnauthorized: true);
+
+                using var deferred = deferredHttp;
 
                 await SetupDaemonService.RunAsync(
                     new FirstRunFlowClient(deferred), serverUrl, browserFlowId, config, saved, home);
@@ -1457,8 +1463,7 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
 
                 var report = FirstRunMachineReport.EvaluateCurrent(
                     config, HarnessRegistry.FromEnvironment(home),
-                    Environment.MachineName, await LoginShellFindsCliAsync(),
-                    await DaemonServiceCommands.FlowServiceEnabledAsync(config, profiles, home));
+                    Environment.MachineName, await LoginShellFindsCliAsync());
 
                 importing = new SetupImportLane(config, profiles, home, _paths);
 

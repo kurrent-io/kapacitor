@@ -21,18 +21,13 @@ namespace Capacitor.Cli.Core.FirstRun;
 /// probed. <b>Null is not false</b> — see the wire model.</param>
 /// <param name="Platform">This machine's platform, or null when it is none the flow names. What decides
 /// whether the screen can offer to fix a broken PATH at all — see <see cref="FirstRunPlatforms"/>.</param>
-/// <param name="DaemonServiceEnabled">Whether the agent daemon is installed as a service and running, or
-/// null when nothing claimable was read. <b>False means more than "not running"</b>: it means the ensure
-/// ladder has a verb it could actually run, so the screen can offer one. Null covers both an ambiguous
-/// machine and one whose ladder could only refuse — see the wire model.</param>
 public sealed record FirstRunMachineReport(
         string?                                            Machine,
         string?                                            MachineId,
         IReadOnlyDictionary<string, FirstRunHarnessReport> Harnesses,
         IReadOnlyList<string>                              Declined,
         bool?                                              LoginShellFindsCli,
-        string?                                            Platform = null,
-        bool?                                              DaemonServiceEnabled = null) {
+        string?                                            Platform = null) {
     /// <summary>Vendors this machine reported a signal for. The set the Agents screen could offer,
     /// and so the only set a decision can be read as REFUSING: a vendor with history on disk but
     /// nothing installed now was never offered, and its absence from an answer is not a refusal.</summary>
@@ -47,8 +42,7 @@ public sealed record FirstRunMachineReport(
             HarnessRegistry    harnesses,
             HarnessOfferLedger ledger,
             bool?              loginShellFindsCli,
-            string?            platform = null,
-            bool?              daemonServiceEnabled = null) {
+            string?            platform = null) {
         var harnessReports = new Dictionary<string, FirstRunHarnessReport>(StringComparer.Ordinal);
         var declined       = new List<string>();
 
@@ -71,8 +65,7 @@ public sealed record FirstRunMachineReport(
             harnessReports,
             declined,
             loginShellFindsCli,
-            platform,
-            daemonServiceEnabled);
+            platform);
     }
 
     /// <summary>
@@ -89,8 +82,7 @@ public sealed record FirstRunMachineReport(
     /// a result.</para>
     /// </summary>
     public static FirstRunMachineReport EvaluateCurrent(
-            ConfigRoot config, HarnessRegistry harnesses, string? machine, bool? loginShellFindsCli,
-            bool? daemonServiceEnabled = null) {
+            ConfigRoot config, HarnessRegistry harnesses, string? machine, bool? loginShellFindsCli) {
         try {
             return Evaluate(
                 machine,
@@ -100,8 +92,7 @@ public sealed record FirstRunMachineReport(
                 harnesses,
                 new HarnessOfferStore(config).Load(),
                 loginShellFindsCli,
-                FirstRunPlatforms.Current(),
-                daemonServiceEnabled);
+                FirstRunPlatforms.Current());
         } catch (Exception) {
             // No platform either, though reading it cannot fail: the server drops a block with no
             // harnesses, no declines and no probe answer, and a lone platform must not be what keeps it.
