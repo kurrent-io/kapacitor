@@ -100,6 +100,22 @@ public class ClaudeElicitationTests {
     }
 
     [Test]
+    public async Task Question_text_cap_is_measured_on_the_raw_untrimmed_string() {
+        // Cap-length content plus one leading space: trimmed length is under the cap, but the raw
+        // (protocol) length is one over — must still fail.
+        var padded = " " + new string('q', ClaudeElicitation.MaxQuestionTextChars);
+        var overCap = $$"""{"questions":[{"question":"{{padded}}"}]}""";
+        await Assert.That(ClaudeElicitation.TryParse(overCap)).IsNull();
+
+        // Exactly the cap INCLUDING padding passes.
+        var atCap = " " + new string('q', ClaudeElicitation.MaxQuestionTextChars - 1);
+        var underCap = $$"""{"questions":[{"question":"{{atCap}}"}]}""";
+        var parsed = ClaudeElicitation.TryParse(underCap);
+        await Assert.That(parsed).IsNotNull();
+        await Assert.That(parsed!.Questions[0].Question).IsEqualTo(atCap);
+    }
+
+    [Test]
     public async Task Retained_questions_element_outlives_the_parse() {
         var parsed = ClaudeElicitation.TryParse(OneQuestion());
         GC.Collect();
@@ -144,6 +160,18 @@ public class ClaudeElicitationTests {
             new ElicitationAnswer("Café — décider?", ["Oui"], null),
         ]);
         await Assert.That(composed.Prop("questions")!.Value.GetRawText()).IsEqualTo(q.QuestionsJson.GetRawText());
+    }
+
+    [Test]
+    public async Task Padded_question_and_label_text_round_trips_untrimmed() {
+        var q = Parsed("""{"questions":[{"question":"  Pick one  ","options":[{"label":" A "},{"label":"B"}]}]}""");
+        await Assert.That(q.Questions[0].Question).IsEqualTo("  Pick one  ");
+        await Assert.That(q.Questions[0].Options[0].Label).IsEqualTo(" A ");
+
+        var composed = ClaudeElicitation.ComposeAnswers(q, [new ElicitationAnswer("  Pick one  ", [" A "], null)]);
+        var answers = composed.Prop("answers")!.Value;
+        await Assert.That(answers.Prop("  Pick one  ")).IsNotNull();
+        await Assert.That(answers.Str("  Pick one  ")).IsEqualTo(" A ");
     }
 
     [Test]

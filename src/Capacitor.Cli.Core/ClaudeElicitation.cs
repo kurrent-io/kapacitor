@@ -68,11 +68,13 @@ public static class ClaudeElicitation {
         }
     }
 
-    // Protocol field: must be a non-blank string within the cap; anything else is null → fatal.
+    // Protocol field: the ORIGINAL string is the protocol value — ComposeAnswers keys the answers
+    // map by it and replays QuestionsJson verbatim, so a trimmed copy would no longer match the
+    // replayed array. Trimming is used only to test blankness; the cap applies to the raw length.
     static string? ProtocolString(JsonElement obj, string name, int maxChars) {
         if (obj.Prop(name) is null) return null;
-        var s = obj.Str(name)?.Trim();
-        return s is { Length: > 0 } && s.Length <= maxChars ? s : null;
+        var s = obj.Str(name);
+        return s is not null && s.Length <= maxChars && s.AsSpan().Trim().Length > 0 ? s : null;
     }
 
     // Display field: a non-blank string is used; wrong type or whitespace reads as absent.
