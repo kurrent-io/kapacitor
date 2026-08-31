@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Dsh;
 using Capacitor.Cli.Core.Harness.Antigravity;
 using Capacitor.Cli.Core.Harness.Claude;
 using Capacitor.Cli.Core.Harness.Codex;
@@ -45,10 +46,10 @@ public sealed class PluginCommand(PluginEnvironment env) {
         };
     }
 
-    static readonly string[] ExclusiveTargetFlags = ["--codex", "--cursor", "--copilot", "--gemini", "--kiro", "--pi", "--opencode", "--antigravity", "--skills"];
+    static readonly string[] ExclusiveTargetFlags = ["--codex", "--cursor", "--copilot", "--gemini", "--kiro", "--pi", "--opencode", "--antigravity", "--dsh", "--skills"];
 
     const string MutuallyExclusiveMsg =
-        "--cursor, --codex, --copilot, --gemini, --kiro, --pi, --opencode, --antigravity, and --skills are mutually exclusive.";
+        "--cursor, --codex, --copilot, --gemini, --kiro, --pi, --opencode, --antigravity, --dsh, and --skills are mutually exclusive.";
 
     static bool HasConflictingTargets(string[] args) =>
         ExclusiveTargetFlags.Count(args.Contains) > 1;
@@ -69,6 +70,7 @@ public sealed class PluginCommand(PluginEnvironment env) {
         if (args.Contains("--pi")) return await InstallPi(args);
         if (args.Contains("--opencode")) return await InstallOpenCode(args);
         if (args.Contains("--antigravity")) return await InstallAntigravity(args);
+        if (args.Contains("--dsh")) return await InstallDsh(args);
 
         return await InstallClaude(args);
     }
@@ -89,8 +91,62 @@ public sealed class PluginCommand(PluginEnvironment env) {
         if (args.Contains("--pi")) return await RemovePi(args);
         if (args.Contains("--opencode")) return await RemoveOpenCode(args);
         if (args.Contains("--antigravity")) return await RemoveAntigravity(args);
+        if (args.Contains("--dsh")) return await RemoveDsh(args);
 
         return await RemoveClaude(args);
+    }
+
+    // ── DeepSeek Harness (dsh) ────────────────────────────────────────────────
+    // dsh has no shell hooks; live capture is the shipped Cordis observer plugin. Install writes
+    // the plugin to $DSH_HOME/kcap-dsh.plugin.mjs and registers it in each profile's live-watched
+    // cordis.patch.yml (an idempotent managed block). MCP stays documented (docs/DSH_NORMALIZER.md).
+    async Task<int> InstallDsh(string[] args) {
+        _ = args;
+        var pluginPath = DshPaths.KcapPlugin();
+        if (!DshExtensionInstaller.Install(pluginPath)) {
+            await env.Stderr.WriteLineAsync($"Failed to write the dsh plugin at {pluginPath}.");
+            return 1;
+        }
+        await env.Stdout.WriteLineAsync($"dsh plugin installed: {pluginPath}");
+
+        var profilesDir = DshPaths.ProfilesDir();
+        var profiles = Directory.Exists(profilesDir)
+            ? Directory.EnumerateDirectories(profilesDir).Where(d => File.Exists(Path.Combine(d, "package.json"))).ToList()
+            : [];
+
+        var registered = 0;
+        foreach (var dir in profiles) {
+            if (DshExtensionInstaller.RegisterInCordisPatch(DshPaths.CordisPatch(dir), pluginPath)) {
+                registered++;
+                await env.Stdout.WriteLineAsync($"  registered in profile '{Path.GetFileName(dir)}'");
+            }
+        }
+
+        if (registered > 0) {
+            await env.Stdout.WriteLineAsync("Live capture starts on the next dsh session (cordis.patch.yml is live-watched).");
+        } else {
+            await env.Stdout.WriteLineAsync($"No dsh profiles found under {profilesDir}. Add this to your active profile's cordis.patch.yml:");
+            await env.Stdout.WriteLineAsync();
+            await env.Stdout.WriteLineAsync(DshExtensionInstaller.BuildCordisBlock(pluginPath));
+        }
+        return 0;
+    }
+
+    async Task<int> RemoveDsh(string[] args) {
+        _ = args;
+        var pluginPath = DshPaths.KcapPlugin();
+        var existed = DshExtensionInstaller.Remove(pluginPath);
+
+        var profilesDir = DshPaths.ProfilesDir();
+        if (Directory.Exists(profilesDir)) {
+            foreach (var dir in Directory.EnumerateDirectories(profilesDir)) {
+                var patch = DshPaths.CordisPatch(dir);
+                if (DshExtensionInstaller.IsRegisteredInCordisPatch(patch))
+                    DshExtensionInstaller.UnregisterFromCordisPatch(patch);
+            }
+        }
+        await env.Stdout.WriteLineAsync(existed ? $"dsh plugin removed: {pluginPath}" : "dsh plugin was not installed.");
+        return 0;
     }
 
     async Task<int> InstallClaude(string[] args) {

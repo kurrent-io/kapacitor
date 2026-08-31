@@ -16,4 +16,5 @@ public enum HarnessId {
     Pi,
     OpenCode,
     Antigravity,
+    Dsh,
 }

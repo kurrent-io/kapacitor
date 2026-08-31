@@ -38,7 +38,7 @@ public class DaemonStatusReportTests {
 
         var report = capture.StatusReports[^1];
         await Assert.That(report.HarnessInventory).IsNotNull();
-        await Assert.That(report.HarnessInventory!.Vendors.Count).IsEqualTo(9);
+        await Assert.That(report.HarnessInventory!.Vendors.Count).IsEqualTo(10);
         await Assert.That(string.IsNullOrEmpty(report.HarnessInventory!.MachineId)).IsFalse();
     }
 }

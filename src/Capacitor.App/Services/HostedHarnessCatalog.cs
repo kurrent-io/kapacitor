@@ -28,6 +28,9 @@ public static class HostedHarnessCatalog {
         { "opencode",    "acp" },
         { "antigravity", "rpc" },
         { "pi",          "rpc" },
+        // dsh is ingestion-only (never daemon-hosted, so never advertised/available in the picker);
+        // the neutral "rpc" family satisfies the completeness guard like antigravity/pi.
+        { "dsh",         "rpc" },
     };
 
     /// The vendors with an EXPLICIT family above — what the guard test reads, since Build's
@@ -105,6 +108,7 @@ public static class HostedHarnessCatalog {
         ["opencode"]    = ("Oc", "#F1F3F7"),
         ["antigravity"] = ("An", "#F4B860"),
         ["pi"]          = ("π", "#A994FF"),
+        ["dsh"]         = ("Ds", "#F1F3F7"),
     };
 
     /// Glyph + tint for a vendor token; an unmapped token gets its first letter in neutral grey

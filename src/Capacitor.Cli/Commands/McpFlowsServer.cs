@@ -82,7 +82,7 @@ class McpFlowsServer(ConfigRoot config, ProfileContext profiles) {
                 return await HandleToolCallAsync(
                     callId, callRequest, client, baseUrl, cwd, repoRoot, repoInfo,
                     requestingSessionId: requester.SessionId, driverVendor: driverVendor,
-                    reviewerVendorPreference: () => LoadReviewerVendorPreferenceAsync());
+                    reviewerVendorPreference: LoadReviewerVendorPreferenceAsync);
             } catch (Exception ex) {
                 // Unexpected: log the detail to stderr (not to the client, which could leak local
                 // paths from IO errors) and return a generic tool error, keeping the loop alive.

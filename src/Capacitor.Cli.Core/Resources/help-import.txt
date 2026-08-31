@@ -13,7 +13,8 @@ ship a per-session .jsonl transcript (OpenCode is a SQLite db):
   Pi       — ~/.pi/agent/sessions/.../<timestamp>_<sid>.jsonl (badlogic/pi-mono)
   OpenCode — ~/.local/share/opencode/opencode.db (SQLite; sessions + parts tables)
   Antigravity — ~/.gemini/antigravity/brain/<id>/.system_generated/logs/transcript_full.jsonl
-kcap walks all nine the same way.
+  dsh      — ~/.cache/kcap/dsh/<id>.jsonl (written by the kcap Cordis plugin)
+kcap walks all ten the same way.
 
 Usage: kcap import [vendor-filters] [scope] [options]
 
@@ -31,6 +32,7 @@ Vendor filters (additive — pass one or more to restrict the run):
   --pi                    Import Pi (badlogic/pi-mono) session transcripts
   --opencode              Import SST OpenCode sessions (~/.local/share/opencode/opencode.db)
   --antigravity           Import Google Antigravity conversations (~/.gemini/antigravity/brain)
+  --dsh                   Import DeepSeek Harness sessions (~/.cache/kcap/dsh)
 
 Scope (one of, required for non-interactive use):
   --all                   Import every discovered session

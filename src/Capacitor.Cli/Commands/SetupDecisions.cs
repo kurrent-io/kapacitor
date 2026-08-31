@@ -76,6 +76,13 @@ internal static class SetupDecisions {
             SkipOpenCode    = Skip(HarnessId.OpenCode, options.SkipOpenCode),
             SkipAntigravity = Skip(HarnessId.Antigravity, options.SkipAntigravity),
 
+            // dsh (ingested, plugin-only; installed via `kcap plugin install --dsh`) has no separate
+            // tools/instructions axis, so it needs only the capture arm — same as the browser fold's
+            // treatment of any plugin-only harness. Without this the registry↔setup parity guard
+            // (HarnessRegistryConformanceTests) fails: dsh would round-trip through the screen and
+            // report chosen while the fold silently left it skipped.
+            SkipDsh         = Skip(HarnessId.Dsh, options.SkipDsh),
+
             // The hooks flag counts against TOOLS as well. `--skip-<vendor>-hooks` is a whole-vendor
             // opt-out, and the browser's separate tools axis must not re-enable the half of it the
             // caller never mentioned: a script that excluded a vendor gets no writes for it.

@@ -1257,7 +1257,10 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
             new OpenCodeImportSource(
                     Path.Combine(paths.OpenCode.DataDir, "opencode.db"),
                     paths.OpenCode.ImportLedgerJson),
-            new AntigravityImportSource(paths.Antigravity)
+            new AntigravityImportSource(paths.Antigravity),
+            // dsh keeps its per-session transcript cache at ~/.cache/kcap/dsh (independent of
+            // DSH_HOME), so its source resolves that itself rather than taking a HarnessPaths leaf.
+            new DshImportSource(config)
         ];
 
         if (vendors is null) return all;

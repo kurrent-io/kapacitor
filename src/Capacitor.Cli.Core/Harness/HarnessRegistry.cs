@@ -4,6 +4,7 @@ using Capacitor.Cli.Core.Harness.Claude;
 using Capacitor.Cli.Core.Harness.Codex;
 using Capacitor.Cli.Core.Harness.Copilot;
 using Capacitor.Cli.Core.Harness.Cursor;
+using Capacitor.Cli.Core.Harness.Dsh;
 using Capacitor.Cli.Core.Harness.Gemini;
 using Capacitor.Cli.Core.Harness.Kiro;
 using Capacitor.Cli.Core.Harness.OpenCode;
@@ -48,6 +49,7 @@ public sealed class HarnessRegistry : IReadOnlyList<IHarness> {
         IdentityOf<PiHarness>(),
         IdentityOf<OpenCodeHarness>(),
         IdentityOf<AntigravityHarness>(),
+        IdentityOf<DshHarness>(),
     ];
 
     static HarnessIdentity IdentityOf<TSelf>() where TSelf : IHarness<TSelf> => new(TSelf.Id, TSelf.Label);
@@ -67,6 +69,7 @@ public sealed class HarnessRegistry : IReadOnlyList<IHarness> {
             PiHarness.FromEnvironment(home),
             OpenCodeHarness.FromEnvironment(home),
             AntigravityHarness.Over(gemini),
+            DshHarness.FromEnvironment(home),
         ], BinaryProbe.FromEnvironment());
     }
 

@@ -52,6 +52,14 @@ Options:
               kcap acts on the first PreInvocation of a conversation (spawns a
               watcher tailing its transcript_full.jsonl, vendor=antigravity) and
               synthesizes session-end on idle. Other events are no-ops.
+  --dsh       Dispatch a DeepSeek Harness lifecycle event. dsh has no shell
+              hooks; the shipped Cordis plugin invokes this with arguments
+              (session-start AND session-end — dsh writes its own session.jsonl):
+                kcap hook --dsh --event session-start \
+                  --session <id> --file <session.jsonl> [--cwd <cwd>]
+                kcap hook --dsh --event session-end --session <id> --file <path>
+              The watcher tails the file directly (vendor=dsh); session-end
+              kill+drains it then POSTs the terminal.
 
 Exit codes:
   0   Normal exit (including budget expiry, malformed payload, and

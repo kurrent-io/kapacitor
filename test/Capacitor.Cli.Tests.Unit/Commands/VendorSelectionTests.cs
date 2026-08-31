@@ -74,6 +74,19 @@ public class VendorSelectionTests {
     }
 
     [Test]
+    public async Task parses_dsh_flag() {
+        var r = VendorSelection.Parse(new[] { "import", "--dsh" });
+        await Assert.That(r.HasError).IsFalse();
+        await Assert.That(r.Vendors).Contains(HarnessId.Dsh);
+    }
+
+    [Test]
+    public async Task rejects_dsh_prefixed_unknown_flag() {
+        var r = VendorSelection.Parse(new[] { "import", "--dsh-foo" });
+        await Assert.That(r.HasError).IsTrue();
+    }
+
+    [Test]
     public async Task unknown_pi_prefix_flag_is_rejected() {
         // --pi is a known vendor flag, but --pi-<x> typos / future options must be
         // rejected as unknown source options, not silently ignored.

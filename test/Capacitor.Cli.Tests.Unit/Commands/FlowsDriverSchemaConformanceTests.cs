@@ -614,6 +614,7 @@ public class FlowsDriverSchemaConformanceTests {
         var covered = Arms.Select(a => a.Flag)
             .Append("--claude")   // bundled kcap/.mcp.json, covered by the static-config test
             .Append("--pi")       // no MCP config at all, covered by the bridge test
+            .Append("--dsh")      // ingest-only Cordis plugin; no kcap MCP config, so no driver schema
             .ToHashSet(StringComparer.Ordinal);
 
         foreach (var flag in VendorSelection.KnownVendorFlags)

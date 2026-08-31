@@ -272,7 +272,7 @@ internal sealed class AgentHookPoster(ConfigRoot config, ProfileContext profiles
                 // parent-exit path) must still trigger the what's-done generator, mirroring
                 // ClaudeHookCommand.ClaudePoster's own session-end replay side effect.
                 await LifecycleSpoolDrain.RunAsync(new CursorMarkers(config), client, Url!, lifecycle, transcript, sessionId, budget, cts.Token,
-                    onWhatsDoneRequested: (sid, vendor) => _watchers.SpawnWhatsDoneGenerator(sid, vendor));
+                    onWhatsDoneRequested: _watchers.SpawnWhatsDoneGenerator);
             }
         } catch {
             // Best-effort — a drain hiccup must never disrupt the vendor's own hook.

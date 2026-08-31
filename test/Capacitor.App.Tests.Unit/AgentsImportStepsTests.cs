@@ -642,10 +642,10 @@ public class AgentsImportTemplateTests {
         });
 
         await Assert.That(result.installButton).IsNotNull();
-        await Assert.That(result.AgentRows).IsEqualTo(9);
+        await Assert.That(result.AgentRows).IsEqualTo(10);
         await Assert.That(result.runButton).IsNotNull();
         await Assert.That(result.everythingChoice).IsNotNull();
         await Assert.That(result.everythingChoice!.IsChecked).IsTrue();
-        await Assert.That(result.ImportRows).IsEqualTo(9);
+        await Assert.That(result.ImportRows).IsEqualTo(10);
     }
 }
