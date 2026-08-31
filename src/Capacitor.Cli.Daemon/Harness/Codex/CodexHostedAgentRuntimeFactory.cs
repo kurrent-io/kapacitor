@@ -55,6 +55,7 @@ internal sealed class CodexHostedAgentRuntimeFactory : IHostedAgentRuntimeFactor
     public string Vendor => "codex";
 
     // Capability advertisement is transport-independent — delegate every member to the PTY factory.
+    public string           CliPath                                    => _pty.CliPath;
     public bool             IsAvailable()                              => _pty.IsAvailable();
     public bool             SupportsUnattended                          => _pty.SupportsUnattended;
     public UnattendedSupport DescribeUnattendedSupport()               => _pty.DescribeUnattendedSupport();

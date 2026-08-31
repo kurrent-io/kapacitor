@@ -452,6 +452,7 @@ public class AcpLaunchStageOrchestratorTests {
     /// was ever wired, and only the Running-flip's own Clear bumped the seq" — verified by mutation
     /// below. Object-identity plus a same-instance read-back closes that gap.</summary>
     sealed class StageStampingAcpRuntimeFactory(string vendor = "cursor") : IHostedAgentRuntimeFactory {
+    public string CliPath => "unused-by-this-double";
         public string Vendor             { get; } = vendor;
         public bool   SupportsUnattended => false;
 

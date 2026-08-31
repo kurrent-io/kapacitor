@@ -23,6 +23,7 @@ public class DaemonRunnerCursorAvailabilityTests {
             bool supportsBorrowedReviewFlow = false,
             IReviewerModelResolver? reviewerModelResolver = null,
             string? borrowedReviewContainment = null) : IHostedAgentRuntimeFactory {
+        public string CliPath => "unused-by-this-double";
         public string Vendor             { get; } = vendor;
         public bool   SupportsUnattended { get; } = supportsUnattended;
         public bool   SupportsBorrowedReviewFlow { get; } = supportsBorrowedReviewFlow;
@@ -137,6 +138,7 @@ public class DaemonRunnerCursorAvailabilityTests {
     /// answering it spawns the vendor binary for the gated reviewers.</summary>
     sealed class WithholdingRuntimeFactory(string vendor, string? withheldReason, bool isAvailable = true)
             : IHostedAgentRuntimeFactory {
+        public string CliPath => "unused-by-this-double";
         public int Describes { get; private set; }
 
         public string Vendor             { get; } = vendor;

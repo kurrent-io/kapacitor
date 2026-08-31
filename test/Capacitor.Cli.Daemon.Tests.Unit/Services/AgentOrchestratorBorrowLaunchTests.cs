@@ -816,6 +816,7 @@ public class AgentOrchestratorBorrowLaunchTests {
     /// (non-<see cref="CodexHooksNotInstalledException"/>) failure, driving the launch into the
     /// main failed-launch cleanup path AFTER the worktree is assigned.</summary>
     sealed class ThrowingHostedAgentRuntimeFactory(string vendor, string message) : IHostedAgentRuntimeFactory {
+    public string CliPath => "unused-by-this-double";
         public string  Vendor            { get; }              = vendor;
         public bool    SupportsUnattended                       => true;
         public string? LastWorktreePath  { get; private set; }

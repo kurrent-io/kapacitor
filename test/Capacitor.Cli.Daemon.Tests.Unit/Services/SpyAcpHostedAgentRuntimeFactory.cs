@@ -9,6 +9,7 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 /// wiring, where the runtime IS its own transcript source.
 /// </summary>
 internal sealed class SpyAcpHostedAgentRuntimeFactory(string vendor = "cursor") : IHostedAgentRuntimeFactory {
+    public string CliPath => "unused-by-this-double";
     public string Vendor             { get; } = vendor;
     public bool   SupportsUnattended => false;
 

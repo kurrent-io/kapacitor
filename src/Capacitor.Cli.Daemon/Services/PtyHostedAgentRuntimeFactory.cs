@@ -35,6 +35,8 @@ internal sealed partial class PtyHostedAgentRuntimeFactory(
     /// launcher (Claude, Codex) owns its accepted aliases/ids and canonical/equivalence behavior.</summary>
     public IReviewerModelResolver? ReviewerModelResolver => launcher.ReviewerModelResolver;
 
+    public string CliPath => launcher.CliPath;
+
     public bool IsAvailable() => launcher.IsAvailable();
 
     /// <remarks>

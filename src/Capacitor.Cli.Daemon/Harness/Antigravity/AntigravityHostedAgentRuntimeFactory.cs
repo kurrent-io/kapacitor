@@ -114,6 +114,8 @@ internal sealed partial class AntigravityHostedAgentRuntimeFactory(
     /// capture side already knows <c>antigravity</c>. <c>agy</c> is only ever a binary name.</summary>
     public string Vendor => "antigravity";
 
+    public string CliPath => config.AntigravityPath;
+
     public bool IsAvailable() => _binaryExists(config.AntigravityPath);
 
     public bool SupportsUnattended => DescribeUnattendedSupport().Supported;

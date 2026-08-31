@@ -64,6 +64,8 @@ internal sealed partial class PiRpcHostedAgentRuntimeFactory(
 
     public string Vendor => "pi";
 
+    public string CliPath => config.PiPath;
+
     public bool IsAvailable() => _binaryExists(config.PiPath);
 
     /// <summary>PR-1 only — the reviewer lane is not implemented yet. Pi never claimed unattended

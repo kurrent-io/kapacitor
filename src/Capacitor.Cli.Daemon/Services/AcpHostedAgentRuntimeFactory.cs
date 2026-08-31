@@ -115,7 +115,9 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
     /// implementation, or a test double, is equally valid and would defeat one.</summary>
     public bool SupportsModelSelection => descriptor.ModelSelector.CanSelectModel;
 
-    public bool IsAvailable() => CliResolver.Exists(descriptor.ResolveBinaryPath(config));
+    public string CliPath => descriptor.ResolveBinaryPath(config);
+
+    public bool IsAvailable() => CliResolver.Exists(CliPath);
 
     public async Task<HostedRuntimeStart> StartAsync(RuntimeStartContext ctx, CancellationToken ct) {
         LogLaunching(ctx.AgentId, Vendor, ctx.Worktree.Path);

@@ -19,6 +19,7 @@ public class CodexHostedAgentRuntimeFactoryTests {
 
     // ── Test doubles ─────────────────────────────────────────────────────────────────────────
     sealed class RecordingPtyFactory : IHostedAgentRuntimeFactory {
+    public string CliPath => "unused-by-this-double";
         public int StartCalls;
         public string Vendor => "codex";
         public bool IsAvailable() => true;

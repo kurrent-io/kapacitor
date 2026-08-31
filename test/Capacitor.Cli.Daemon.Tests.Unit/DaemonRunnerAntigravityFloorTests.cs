@@ -18,7 +18,8 @@ public class DaemonRunnerAntigravityFloorTests {
 
     [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
 
-    sealed class FakeFactory(string vendor, bool advertised) : IHostedAgentRuntimeFactory {
+    sealed class FakeFactory(string vendor, bool advertised, string cliPath = "") : IHostedAgentRuntimeFactory {
+        public string CliPath            { get; } = cliPath;
         public string Vendor             { get; } = vendor;
         public bool   SupportsUnattended { get; } = advertised;
 
@@ -290,16 +291,34 @@ public class DaemonRunnerAntigravityFloorTests {
 
         using var stubDir = StubAgy("1.1.10", out var stub);
 
-        var config = Config();
-        config.AntigravityPath = stub;
-
         var capabilities = DaemonRunner.ComputeUnattendedVendorCapabilities(
-            [new FakeFactory("antigravity", advertised: true)], config, advertised: ["antigravity"]);
+            [new FakeFactory("antigravity", advertised: true, cliPath: stub)], Config(),
+            advertised: ["antigravity"]);
 
         var antigravity = capabilities.Single();
 
         await Assert.That(antigravity.CliVersion).IsEqualTo("1.1.10");
         await Assert.That(antigravity.LauncherPolicyVersion)
             .IsEqualTo(DaemonRunner.AntigravityLauncherPolicyVersion);
+    }
+
+    /// <summary>The version comes from the factory that would launch the binary, so a vendor the
+    /// policy-version switch has no arm for still advertises the build it would run. The stub is a
+    /// real executable because that is the only thing separating a derived path from a fixed one —
+    /// the policy version is identical either way.</summary>
+    [Test]
+    [UnsupportedOSPlatform("windows")]
+    public async Task AVendorThePolicySwitchDoesNotNameStillAdvertisesItsProbedVersion() {
+        Skip.Unless(!OperatingSystem.IsWindows(), "The stub binary below is a POSIX shell script.");
+
+        using var stubDir = StubAgy("0.56.0", out var stub);
+
+        var capabilities = DaemonRunner.ComputeUnattendedVendorCapabilities(
+            [new FakeFactory("gemini", advertised: true, cliPath: stub)], Config(), advertised: ["gemini"]);
+
+        var gemini = capabilities.Single();
+
+        await Assert.That(gemini.CliVersion).IsEqualTo("0.56.0");
+        await Assert.That(gemini.LauncherPolicyVersion).IsEqualTo("gemini-unattended-v1");
     }
 }

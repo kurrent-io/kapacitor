@@ -166,6 +166,7 @@ public class AntigravityReviewerReapingTests {
     /// exactly as a real first turn would. Mirrors the real factory's one load-bearing ordering: the
     /// conversation id is resolved before control returns.</summary>
     sealed class AntigravityRuntimeSpyFactory : IHostedAgentRuntimeFactory {
+    public string CliPath => "unused-by-this-double";
         public string Vendor             => "antigravity";
         public bool   SupportsUnattended => true;
 

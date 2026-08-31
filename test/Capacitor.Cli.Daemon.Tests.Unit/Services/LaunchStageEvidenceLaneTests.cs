@@ -36,6 +36,7 @@ public class LaunchStageEvidenceLaneTests {
     /// failed-handshake cleanup path.</summary>
     sealed class FourStageAcpRuntimeFactory(
             CaptureServerConnection server, bool throwAfterFirstStage = false) : IHostedAgentRuntimeFactory {
+        public string CliPath => "unused-by-this-double";
         public static readonly string[] Stages = ["spawned", "initialized", "session_created", "model_set"];
 
         public string Vendor             => "cursor";

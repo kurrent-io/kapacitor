@@ -9,6 +9,7 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 /// <see cref="IHostedAgentRuntimeFactory"/> by vendor.
 /// </summary>
 sealed class SpyHostedAgentRuntimeFactory(string vendor) : IHostedAgentRuntimeFactory {
+    public string CliPath => "unused-by-this-double";
     public string Vendor                                    { get; } = vendor;
     public bool   SupportsUnattended                        { get; init; }
     public bool   SupportsBorrowedReviewFlow                { get; init; }
