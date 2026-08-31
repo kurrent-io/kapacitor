@@ -355,6 +355,17 @@ public class ServiceEnvironmentTests {
 
     /// <summary>An exported value is the operator's word, whatever it says — derivation only fills
     /// silence, it never argues.</summary>
+    /// <summary>An empty export is the operator declining ADC auth, not an absent key — derivation
+    /// must not hand them the 1 they declined.</summary>
+    [Test]
+    public async Task Build_keeps_an_exported_empty_adc_auth_over_the_derived_flag() {
+        var env = ServiceEnvironment.Build(null,
+            new Dictionary<string, string> { ["AGY_ADC_AUTH"] = "" },
+            Config.Root, adcCredentialsPath: "/derived/adc.json");
+
+        await Assert.That(env["AGY_ADC_AUTH"]).IsEqualTo("");
+    }
+
     [Test]
     public async Task Build_does_not_flip_an_exported_adc_auth_value() {
         var src = new Dictionary<string, string> { ["AGY_ADC_AUTH"] = "0" };
@@ -405,7 +416,10 @@ public class ServiceEnvironmentTests {
     }
 
     /// <summary>Windows carries no GOOGLE_APPLICATION_CREDENTIALS at all (unit files there have no
-    /// owner-only guarantee), so the trio can never complete and derivation stays off wholesale.</summary>
+    /// owner-only guarantee), so the trio can never complete and derivation stays off wholesale.
+    /// <see cref="ServiceEnvironment.Capture"/> also skips looking either source up on Windows —
+    /// reading a credential location and discarding it is still the probe the boundary forbids, and
+    /// only that caller can prove it, since Build is handed the values already read.</summary>
     [Test]
     public async Task Windows_build_derives_nothing() {
         var env = ServiceEnvironment.Build(null, new Dictionary<string, string>(), Config.Root,
@@ -414,6 +428,19 @@ public class ServiceEnvironmentTests {
         await Assert.That(env.ContainsKey("GOOGLE_APPLICATION_CREDENTIALS")).IsFalse();
         await Assert.That(env.ContainsKey("AGY_ADC_AUTH")).IsFalse();
         await Assert.That(env.ContainsKey("GOOGLE_CLOUD_PROJECT")).IsFalse();
+    }
+
+    /// <summary>A hand-edited config carries comments and quotes, and two keys in one section is a
+    /// file gcloud's own reader refuses — a guessed winner would be baked into a unit and only surface
+    /// later as an auth failure.</summary>
+    [Test]
+    public async Task GcloudConfig_strips_comments_and_quotes_and_refuses_a_duplicate_key() {
+        await Assert.That(GcloudConfig.ParseProject("[core]\nproject = my-proj # the one we use\n"))
+            .IsEqualTo("my-proj");
+        await Assert.That(GcloudConfig.ParseProject("[core]\nproject = \"my-proj\"\n")).IsEqualTo("my-proj");
+        await Assert.That(GcloudConfig.ParseProject("# project = decoy\n[core]\nproject = my-proj\n"))
+            .IsEqualTo("my-proj");
+        await Assert.That(GcloudConfig.ParseProject("[core]\nproject = one\nproject = two\n")).IsNull();
     }
 
     [Test]

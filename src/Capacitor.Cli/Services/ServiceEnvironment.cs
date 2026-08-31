@@ -112,10 +112,15 @@ static class ServiceEnvironment {
     /// the same silent capture every other key gets. Install time is the one moment this is
     /// legitimate: the operator is running the command, and the daemon itself still never reads a
     /// credential location of its own accord.</summary>
-    public static IReadOnlyDictionary<string, string> Capture(string? profileName, Core.ConfigRoot config, Core.UserHome home) =>
-        Build(profileName, Snapshot(), config, OperatingSystem.IsWindows(),
-            adcCredentialsPath: Harness.Antigravity.AntigravityAdcTrio.ExistingCredentialsPath(home),
-            gcloudProject: GcloudConfig.DefaultProject(home));
+    public static IReadOnlyDictionary<string, string> Capture(string? profileName, Core.ConfigRoot config, Core.UserHome home) {
+        // Windows derives nothing, so it must also LOOK at nothing: reading the credential location
+        // and discarding the result downstream is still the probe the boundary forbids.
+        var isWindows = OperatingSystem.IsWindows();
+
+        return Build(profileName, Snapshot(), config, isWindows,
+            adcCredentialsPath: isWindows ? null : Harness.Antigravity.AntigravityAdcTrio.ExistingCredentialsPath(home),
+            gcloudProject:      isWindows ? null : GcloudConfig.DefaultProject(home));
+    }
 
     static Dictionary<string, string> Snapshot() {
         var d = new Dictionary<string, string>();
@@ -129,7 +134,12 @@ static class ServiceEnvironment {
     /// other key here (which skips a present-but-empty value as if unset), these are baked
     /// VERBATIM whenever the key is present, empty or not. Silently dropping an empty directive
     /// on the way into the unit would let it vanish instead of failing closed.</summary>
-    static readonly string[] BakeEvenEmptyKeys = ["KCAP_CONSENT_SEED_DEFAULT", "KCAP_EXPECT_SERVER_URL"];
+    static readonly string[] BakeEvenEmptyKeys = [
+        "KCAP_CONSENT_SEED_DEFAULT", "KCAP_EXPECT_SERVER_URL",
+        // Same contract, for the same reason: an operator who exported an empty AGY_ADC_AUTH is
+        // refusing ADC auth, and dropping it here would let derivation hand them the 1 they declined.
+        "AGY_ADC_AUTH",
+    ];
 
     /// <summary>Pure: select the relevant keys from <paramref name="source"/>, pin the profile and the
     /// config root.</summary>

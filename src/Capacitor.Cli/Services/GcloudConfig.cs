@@ -27,12 +27,21 @@ static class GcloudConfig {
 
     /// <summary>Minimal INI walk: the <c>project</c> key inside the <c>[core]</c> section and
     /// nowhere else — the same key under another section (e.g. <c>[compute]</c>) means something
-    /// different to gcloud and must not be read as the default project.</summary>
+    /// different to gcloud and must not be read as the default project.
+    ///
+    /// <para>Two keys in one section is a file gcloud's own reader refuses, so this refuses it too
+    /// rather than picking a winner it cannot know: a wrong project is baked into a unit and surfaces
+    /// much later as an auth failure, where deriving nothing surfaces immediately as a partial trio.
+    /// Whole-line comments, trailing comments and a quoted value are all stripped — hand-edited files
+    /// carry all three, and each would otherwise be baked into the value verbatim.</para></summary>
     internal static string? ParseProject(string ini) {
         var inCore = false;
+        string? found = null;
 
         foreach (var raw in ini.Split('\n')) {
             var line = raw.Trim();
+
+            if (line.Length == 0 || line[0] is '#' or ';') continue;
 
             if (line.StartsWith('[')) {
                 inCore = line.Equals("[core]", StringComparison.OrdinalIgnoreCase);
@@ -44,11 +53,23 @@ static class GcloudConfig {
             var eq = line.IndexOf('=');
             if (eq <= 0 || !line[..eq].Trim().Equals("project", StringComparison.OrdinalIgnoreCase)) continue;
 
-            var value = line[(eq + 1)..].Trim();
+            if (found is not null) return null;
 
-            return value.Length > 0 ? value : null;
+            found = CleanValue(line[(eq + 1)..]);
         }
 
-        return null;
+        return found;
+    }
+
+    /// <summary>A trailing <c>#</c>/<c>;</c> comment removed, then one matching pair of surrounding
+    /// quotes. Null for an empty result, which is the same as the key being absent.</summary>
+    static string? CleanValue(string raw) {
+        var cut   = raw.IndexOfAny(['#', ';']);
+        var value = (cut >= 0 ? raw[..cut] : raw).Trim();
+
+        if (value.Length >= 2 && value[0] == value[^1] && value[0] is '"' or '\'')
+            value = value[1..^1].Trim();
+
+        return value.Length > 0 ? value : null;
     }
 }
