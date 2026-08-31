@@ -97,7 +97,15 @@
             <StackPanel Spacing="6">
                 <TextBox x:Name="ComposerInput" Classes="kcapEmbedded" Text="{Binding ComposerText}" AcceptsReturn="True" TextWrapping="Wrap"
                          MinHeight="38" MaxHeight="160" Background="Transparent" BorderThickness="0"
-                         PlaceholderText="Write a message" />
+                         PlaceholderText="Write a message" IsVisible="{Binding !IsReadOnlyParticipant}" />
+                <!-- A flow participant is addressed through the flow protocol, never messaged
+                     directly, so the banner replaces the input rather than overlaying a dead one. -->
+                <Border x:Name="ReadOnlyBanner" IsVisible="{Binding IsReadOnlyParticipant}"
+                        Background="{StaticResource KcapWarningDimBrush}" BorderBrush="{StaticResource KcapWarningBrush}"
+                        BorderThickness="1" CornerRadius="8" Padding="12,7">
+                    <TextBlock Text="{Binding ReadOnlyNotice, StringFormat='Read-only: {0}'}"
+                               Foreground="{StaticResource KcapWarningBrush}" TextWrapping="Wrap" />
+                </Border>
                 <Grid ColumnDefinitions="*,Auto,Auto,Auto,Auto">
                     <TextBlock Text="{Binding ComposerHint}" FontSize="11" Foreground="{StaticResource KcapFaintBrush}"
                                VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
@@ -108,7 +116,8 @@
                                VerticalAlignment="Center" />
                     <Button x:Name="SendButton" Grid.Column="4" Content="Send" Command="{Binding SendCommand}" Margin="12,0,0,0"
                             Padding="12,4" FontSize="12" FontWeight="SemiBold" CornerRadius="7"
-                            Background="{StaticResource KcapAccentBrush}" Foreground="#07120E" />
+                            Background="{StaticResource KcapAccentBrush}" Foreground="#07120E"
+                            IsVisible="{Binding !IsReadOnlyParticipant}" />
                 </Grid>
             </StackPanel>
         </Border>
