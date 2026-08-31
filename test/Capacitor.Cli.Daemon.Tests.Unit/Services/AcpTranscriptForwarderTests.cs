@@ -473,10 +473,9 @@ public class AcpTranscriptForwarderTests {
         await Assert.That(sent.Count(static e => e.Ephemeral)).IsEqualTo(2);
     }
 
-    /// <summary>The regression this fix exists for: against a server that sequences canonical
-    /// envelopes only, an ephemeral-heavy batch must not read as a terminal-drop. Numbering
-    /// ephemerals put _highestSent above any AcceptedSeq the server could return, so the loop
-    /// stopped forwarding within seconds and the rest of the session's transcript was lost.</summary>
+    /// <summary>Against a server that sequences canonical envelopes only, an ephemeral-heavy batch
+    /// must not read as a terminal-drop: the high-water mark the ack is compared against counts
+    /// canonical envelopes only, so AcceptedSeq can reach it. Every canonical envelope still lands.</summary>
     [Test]
     public async Task An_ack_counting_only_canonical_envelopes_is_not_a_terminal_drop() {
         var channel = NewChannel();
