@@ -97,11 +97,7 @@ public class CodexLauncherTests {
         await Assert.That(args).DoesNotContain("gpt-5.6-luna");
     }
 
-    void WriteCodexConfig(string toml) {
-        var dir = System.IO.Path.Combine(Home.Path, ".codex");
-        Directory.CreateDirectory(dir);
-        File.WriteAllText(System.IO.Path.Combine(dir, "config.toml"), toml);
-    }
+    void WriteCodexConfig(string toml) => Home.CreateFile([".codex", "config.toml"], toml);
 
     [Test]
     public async Task BuildArgs_uses_never_approval_for_hosted_codex() {

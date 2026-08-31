@@ -5081,10 +5081,9 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     [LoggerMessage(Level = LogLevel.Warning, Message = "ACP final transcript drain for agent {AgentId} exceeded its {Seconds}s budget — proceeding to end the session; any undrained transcript is lost")]
     partial void LogAcpFinalDrainTimedOut(string agentId, double seconds);
 
-    // These three said the transcript scan was a fallback behind a session-start hook. There is no
-    // such leg here: the scan below is the only place agent.SessionId is ever assigned, and the
-    // vendor's own hook posts to the SERVER. Naming a primary that does not exist sends whoever
-    // reads a stalled launch to look at hooks.
+    // The transcript scan is the only place agent.SessionId is ever assigned — the vendor's own
+    // session-start hook posts to the SERVER, not here — so none of these three may describe it as a
+    // fallback behind some other link.
     [LoggerMessage(Level = LogLevel.Information, Message = "Agent {AgentId} linked to session {SessionId} by matching its transcript file")]
     partial void LogSessionIdDetected(string agentId, string sessionId);
 

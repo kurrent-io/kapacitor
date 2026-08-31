@@ -322,7 +322,9 @@ public static class CodexConfigToml {
         if (!File.Exists(configPath)) return ReadOnlyDictionary<string, string>.Empty;
 
         try {
-            var root = TomlSerializer.Deserialize(File.ReadAllText(configPath), _tomlTypeInfo.TableInfo);
+            // Shared read: Codex writes this file itself — the migration entry read here is one it
+            // wrote — and a write-denying open locks it out of its own config on Windows.
+            var root = TomlSerializer.Deserialize(File.ReadAllTextShared(configPath), _tomlTypeInfo.TableInfo);
 
             if (root is null || !root.TryGetValue("notice", out var notice) || notice is not TomlTable noticeTable)
                 return ReadOnlyDictionary<string, string>.Empty;
