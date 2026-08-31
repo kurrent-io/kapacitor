@@ -101,9 +101,13 @@ internal sealed partial class AcpChildProcess : IAcpProcess {
 
     void Capture(string line) {
         lock (_diagnosticsGate) {
-            if (_diagnostics.Length >= DiagnosticsCap) return;
+            var room = DiagnosticsCap - _diagnostics.Length;
+            if (room <= 0) return;
 
-            _diagnostics.Append(line).Append('\n');
+            // Truncated per append, not merely gated on it: a vendor that writes one enormous line —
+            // a stack trace, a base64 payload — would otherwise store all of it and carry it into a
+            // Warning, which is the bound this cap exists to hold.
+            _diagnostics.Append(line.AsSpan(0, Math.Min(line.Length, room - 1))).Append('\n');
         }
     }
 

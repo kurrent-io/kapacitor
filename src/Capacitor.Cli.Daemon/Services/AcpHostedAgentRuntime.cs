@@ -1287,7 +1287,7 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
             // or chunk).
             LogTurnStarted(_agentId, _vendor);
 
-            using var silenceNotice = ArmTurnSilenceNotice();
+            using var silenceNotice = ArmTurnSilenceNotice(turn);
 
             try {
                 await SendPromptAsync(connection, turn, ct).ConfigureAwait(false);
@@ -1788,7 +1788,13 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
         // below: the content was genuinely produced, and by the time the channel is completed nothing
         // downstream is reading idle state for this agent anyway.
         ActivityClock?.Advance();
-        Interlocked.Increment(ref _envelopesEmitted);
+
+        // Named positively, so a metadata kind added later cannot accidentally count as the agent
+        // speaking: usage and session-info envelopes reach here with no turn in flight at all, and a
+        // vendor that pings usage while producing nothing would otherwise read as a healthy turn.
+        if (envelope.Kind is AcpEventKind.AssistantText or AcpEventKind.AssistantThinking
+                          or AcpEventKind.ToolCall or AcpEventKind.ToolResult or AcpEventKind.Plan)
+            Interlocked.Increment(ref _turnOutputEnvelopes);
 
         lock (_aggregationLock) {
             if (_transcript.Reader.Count >= _transcriptCapacity) {
@@ -2410,9 +2416,9 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
         }
     }
 
-    /// <summary>Every envelope this runtime has emitted. Read only as a difference across a silence
-    /// window — the absolute value means nothing.</summary>
-    long _envelopesEmitted;
+    /// <summary>Envelopes that represent the agent actually saying something. Read only as a
+    /// difference across a silence window — the absolute value means nothing.</summary>
+    long _turnOutputEnvelopes;
 
     /// <summary>How long an interactive turn may produce nothing before the user is told. Long enough
     /// that an ordinary slow first token stays quiet (a rate-limited gemini backs off ~70s per
@@ -2425,17 +2431,17 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     /// <see cref="_firstOutputDeadline"/>, which does reap, and two voices on one silence would
     /// contradict each other. Nor into a review flow's transcript, which is consumed as the round's
     /// output — not every reviewer vendor carries that deadline, so the two conditions are separate.</summary>
-    IDisposable ArmTurnSilenceNotice() {
+    IDisposable ArmTurnSilenceNotice(PendingTurn turn) {
         if (_isReviewFlow || _firstOutputDeadline is not null) return NullDisposable.Instance;
 
         var cts = new CancellationTokenSource();
-        _ = WatchForTurnSilenceAsync(cts.Token);
+        _ = WatchForTurnSilenceAsync(turn, cts.Token);
 
         return cts;
     }
 
-    async Task WatchForTurnSilenceAsync(CancellationToken ct) {
-        var before = Interlocked.Read(ref _envelopesEmitted);
+    async Task WatchForTurnSilenceAsync(PendingTurn turn, CancellationToken ct) {
+        var before = Interlocked.Read(ref _turnOutputEnvelopes);
 
         try {
             await Task.Delay(TurnSilenceWindow, _timeProvider, ct).ConfigureAwait(false);
@@ -2443,7 +2449,16 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
             return; // the turn ended inside the window — nothing to report
         }
 
-        if (Interlocked.Read(ref _envelopesEmitted) != before) return;
+        // The delay can complete and queue its continuation while the turn is ending, so neither the
+        // token nor the counter alone proves the turn is still running: a note published after the
+        // agent answered would be a lie about the state it describes. The registration is the truth.
+        lock (_reconnectLock) {
+            if (_inFlight is not { } f || !ReferenceEquals(f.Turn, turn)) return;
+        }
+
+        if (ct.IsCancellationRequested) return;
+
+        if (Interlocked.Read(ref _turnOutputEnvelopes) != before) return;
 
         var diagnostics = _installed.Process.Diagnostics;
 
