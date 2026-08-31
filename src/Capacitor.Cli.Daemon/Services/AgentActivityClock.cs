@@ -108,13 +108,23 @@ internal sealed class AgentActivityClock(TimeProvider time) {
         lock (_gate) AdvanceLocked();
     }
 
+    /// <summary>Fired on the turn's FALLING edge only (in-flight true → false) — the moment the
+    /// server needs an out-of-cycle report, since idleness starts here and the next periodic tick is
+    /// up to 60s away. A turn start needs no report of its own: the delivered input already fires one.</summary>
+    public Action? OnTurnEnded { get; set; }
+
     /// <summary>Turn start/end — also counts as activity, independent of accompanying envelope
     /// traffic.</summary>
     public void SetTurnInFlight(bool value) {
+        bool ended;
         lock (_gate) {
+            ended = _turnInFlight && !value;
             _turnInFlight = value;
             AdvanceLocked();
         }
+        // Outside the lock, same rule as OnLaunchStageChanged: the callback's send reads this
+        // clock's own (independently guarded) properties.
+        if (ended) OnTurnEnded?.Invoke();
     }
 
     /// <summary>A handshake stage transition (spawned → initialized → session_created → model_set) —

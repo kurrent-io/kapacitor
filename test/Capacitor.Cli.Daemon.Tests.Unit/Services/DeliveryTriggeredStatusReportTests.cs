@@ -189,21 +189,21 @@ public class DeliveryTriggeredStatusReportTests {
         await Assert.That(seqs[1]).IsEqualTo(1UL);
     }
 
-    /// <summary>Contract pin for the "no correlation nonce" half of the design: the unsolicited
-    /// delivery-triggered report reuses the ONE report shape, and that shape carries no nonce/echo
-    /// member at all — so it is structurally incapable of masquerading as the answer to a correlated
-    /// server-side status request. Should a correlated request/echo ever be added to this DTO, this
-    /// test fails and forces the unsolicited emission to be re-examined (it must leave the field
-    /// unset) rather than silently inheriting it.</summary>
+    /// <summary>The unsolicited delivery-triggered report reuses the ONE report shape but must leave
+    /// <see cref="DaemonStatusReport.EchoNonce"/> unset: a nonce belongs only to the report answering
+    /// the server's own correlated request, and an unsolicited report carrying one could masquerade
+    /// as that answer and confirm an idle-marker claim the daemon never attested for.</summary>
     [Test]
-    public async Task The_report_shape_carries_no_correlation_nonce() {
-        var reportMembers = typeof(DaemonStatusReport).GetProperties().Select(p => p.Name);
-        var agentMembers  = typeof(LiveAgentInfo).GetProperties().Select(p => p.Name);
+    public async Task The_delivery_triggered_report_carries_no_echo_nonce() {
+        var server = new CaptureServerConnection();
 
-        foreach (var name in reportMembers.Concat(agentMembers)) {
-            await Assert.That(name.Contains("nonce", StringComparison.OrdinalIgnoreCase)).IsFalse();
-            await Assert.That(name.Contains("echo", StringComparison.OrdinalIgnoreCase)).IsFalse();
-        }
+        await using var orch  = AgentOrchestratorHarness.BuildOrchestrator(server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+        var             agent = orch.SeedAgentForTest("dispatch-report-nonce", pty: new RecordingPtyProcess());
+
+        await orch.HandleSendInputForTest(new SendInputCommand(agent.Id, "hello", null));
+
+        await WaitHarness.PollUntilAsync(() => server.StatusReportCount >= 1);
+        await Assert.That(server.StatusReports[0].EchoNonce).IsNull();
     }
 
     /// <summary><see cref="ServerConnection"/> double that can PARK its first

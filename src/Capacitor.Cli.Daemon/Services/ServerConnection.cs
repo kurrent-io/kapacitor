@@ -125,6 +125,10 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     public event Func<StopAgentV2, Task>?    OnStopAgentV2;
     public event Action<AckProcessedPrefix>? OnAckProcessedPrefix;
     public event Func<Task>?                 OnRequestStatusReport;
+    /// <summary>The correlated variant: the server's <c>RequestStatusReport2</c> hands over a nonce
+    /// the answering report must echo (<c>DaemonStatusReport.EchoNonce</c>) — sent only to a daemon
+    /// whose connect advertised <c>SupportsCorrelatedStatusReports</c>.</summary>
+    public event Func<string, Task>?         OnRequestStatusReport2;
 
     /// <summary>Phase B2-b (sequenced-settlement design §4.2.4): snapshot of the un-acked resolved-
     /// candidates ledger, re-advertised on <c>DaemonConnect</c> (mirrors <see cref="GetLiveAgents"/>).
@@ -255,6 +259,8 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
         // OnRequestStatusReport ends in the same gated SendDaemonStatusReportOnceAsync, and awaiting it
         // inline here would park this receive loop behind another emission's whole hub send.
         _hub.On("RequestStatusReport", () => { _ = Task.Run(() => SafeInvoke("RequestStatusReport", () => OnRequestStatusReport?.Invoke())); return Task.CompletedTask; });
+        // Same offload shape as RequestStatusReport above, for the same reason.
+        _hub.On<StatusReportRequest>("RequestStatusReport2", req => { _ = Task.Run(() => SafeInvoke("RequestStatusReport2", () => OnRequestStatusReport2?.Invoke(req.Nonce))); return Task.CompletedTask; });
 
         // Client-result invocations for per-phase eval dispatch.
         _hub.On<PrepareEvalCommand, PrepareResult>("PrepareEval",
@@ -677,7 +683,8 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
                     // Launch-time ACP permission-preset advertisement: the supported vendors that route
                     // permissions through the ACP bridge. Null on an unwired/early-startup config;
                     // wire-compatible with old servers (ignored).
-                    AcpPresetVendors: _config.AcpPresetVendors
+                    AcpPresetVendors: _config.AcpPresetVendors,
+                    SupportsCorrelatedStatusReports: true
                 ),
                 cancellationToken: _ct
             );
