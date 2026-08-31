@@ -77,9 +77,9 @@ internal sealed partial class AcpChildProcess : IAcpProcess {
                 if (line.Length == 0) continue;
 
                 // Retained whatever the log level does: the operator opts into per-line logging, not
-                // into being able to explain a stall after the fact, and the vendor writes its whole
-                // diagnosis here (gemini's "Attempt N failed: RATE_LIMIT_EXCEEDED … Retrying after
-                // 70650ms" reached a live daemon and was thrown away). Daemon-local only.
+                // into being able to explain a stall afterwards, and a vendor that goes silent on the
+                // wire writes its whole diagnosis here — a rate-limit retry banner reaches stderr and
+                // nowhere else. Daemon-local; never forwarded.
                 Capture(line);
 
                 // KCAP_ACP_DEBUG_FRAMES gate (Off by default) — stderr can carry paths, prompt

@@ -1789,8 +1789,8 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
         // downstream is reading idle state for this agent anyway.
         ActivityClock?.Advance();
 
-        // Named positively, so a metadata kind added later cannot accidentally count as the agent
-        // speaking: usage and session-info envelopes reach here with no turn in flight at all, and a
+        // Named positively, so a metadata kind added later cannot count as the agent speaking by
+        // accident: usage and session-info envelopes reach here with no turn in flight at all, and a
         // vendor that pings usage while producing nothing would otherwise read as a healthy turn.
         if (envelope.Kind is AcpEventKind.AssistantText or AcpEventKind.AssistantThinking
                           or AcpEventKind.ToolCall or AcpEventKind.ToolResult or AcpEventKind.Plan)
@@ -2437,7 +2437,17 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
         var cts = new CancellationTokenSource();
         _ = WatchForTurnSilenceAsync(turn, cts.Token);
 
-        return cts;
+        // Cancel, then dispose: disposing a CancellationTokenSource does not cancel its token, so
+        // returning it directly would leave the watcher holding its delay for the whole window after
+        // every turn.
+        return new CancelOnDispose(cts);
+    }
+
+    sealed class CancelOnDispose(CancellationTokenSource cts) : IDisposable {
+        public void Dispose() {
+            cts.Cancel();
+            cts.Dispose();
+        }
     }
 
     async Task WatchForTurnSilenceAsync(PendingTurn turn, CancellationToken ct) {

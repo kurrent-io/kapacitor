@@ -2,6 +2,8 @@ using Capacitor.Cli.Core;
 using Capacitor.Cli.Daemon.Acp;
 using Capacitor.Cli.Daemon.Services;
 using Capacitor.Cli.Daemon.Tests.Unit.Acp;
+using System.Diagnostics;
+using System.Runtime.Versioning;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Time.Testing;
 
@@ -95,6 +97,30 @@ public class AcpTurnSilenceNoticeTests {
         }
 
         return null;
+    }
+
+    /// A line longer than the cap must not ride into the retained buffer whole — the bound is what
+    /// keeps a malformed child from leaving a large string resident for the session.
+    [Test]
+    [UnsupportedOSPlatform("windows")]
+    public async Task Retained_stderr_stays_within_its_cap_for_a_single_enormous_line() {
+        Skip.Unless(!OperatingSystem.IsWindows(), "Spawns a POSIX shell.");
+
+        var psi = new ProcessStartInfo("/bin/sh") {
+            RedirectStandardError = true, RedirectStandardOutput = true, RedirectStandardInput = true,
+        };
+        psi.ArgumentList.Add("-c");
+        psi.ArgumentList.Add("awk 'BEGIN { while (i++ < 20000) printf \"x\"; print \"\" }' 1>&2");
+
+        await using var child = new AcpChildProcess(Process.Start(psi)!, NullLogger.Instance);
+
+        await child.WaitForExitAsync(TimeSpan.FromSeconds(10));
+
+        var deadline = DateTime.UtcNow + HangGuard;
+        while (child.Diagnostics is null && DateTime.UtcNow < deadline) await Task.Delay(10);
+
+        await Assert.That(child.Diagnostics).IsNotNull();
+        await Assert.That(child.Diagnostics!.Length).IsLessThanOrEqualTo(4096);
     }
 
     [Test]
