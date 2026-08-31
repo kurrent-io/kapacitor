@@ -31,22 +31,22 @@ public class ClaudeElicitationTests {
     }
 
     [Test]
-    [Arguments("""{"questions":[]}""")]                                              // empty array
-    [Arguments("""{"questions":{}}""")]                                              // not an array
-    [Arguments("""{"noquestions":true}""")]                                          // missing
-    [Arguments("""[1,2]""")]                                                         // input not an object
-    [Arguments("""{"questions":["notanobject"]}""")]                                 // entry not an object
-    [Arguments("""{"questions":[{"question":""}]}""")]                               // blank text
-    [Arguments("""{"questions":[{"question":"   "}]}""")]                            // whitespace text
-    [Arguments("""{"questions":[{"header":"h"}]}""")]                                // missing text
-    [Arguments("""{"questions":[{"question":42}]}""")]                               // wrong-typed text
-    [Arguments("""{"questions":[{"question":"Q"},{"question":"Q"}]}""")]             // duplicate texts
-    [Arguments("""{"questions":[{"question":"Q","multiSelect":"yes"}]}""")]          // non-boolean flag
-    [Arguments("""{"questions":[{"question":"Q","multiSelect":true,"multi_select":false}]}""")] // conflicting spellings
-    [Arguments("""{"questions":[{"question":"Q","options":{}}]}""")]                 // options not an array
-    [Arguments("""{"questions":[{"question":"Q","options":["x"]}]}""")]              // option not an object
-    [Arguments("""{"questions":[{"question":"Q","options":[{"label":""}]}]}""")]     // blank label
-    [Arguments("""{"questions":[{"question":"Q","options":[{"nolabel":1}]}]}""")]    // missing label
+    [Arguments("""{"questions":[]}""")]
+    [Arguments("""{"questions":{}}""")]
+    [Arguments("""{"noquestions":true}""")]
+    [Arguments("""[1,2]""")]
+    [Arguments("""{"questions":["notanobject"]}""")]
+    [Arguments("""{"questions":[{"question":""}]}""")]
+    [Arguments("""{"questions":[{"question":"   "}]}""")]
+    [Arguments("""{"questions":[{"header":"h"}]}""")]
+    [Arguments("""{"questions":[{"question":42}]}""")]
+    [Arguments("""{"questions":[{"question":"Q"},{"question":"Q"}]}""")]
+    [Arguments("""{"questions":[{"question":"Q","multiSelect":"yes"}]}""")]
+    [Arguments("""{"questions":[{"question":"Q","multiSelect":true,"multi_select":false}]}""")]
+    [Arguments("""{"questions":[{"question":"Q","options":{}}]}""")]
+    [Arguments("""{"questions":[{"question":"Q","options":["x"]}]}""")]
+    [Arguments("""{"questions":[{"question":"Q","options":[{"label":""}]}]}""")]
+    [Arguments("""{"questions":[{"question":"Q","options":[{"nolabel":1}]}]}""")]
     [Arguments("not json")]
     [Arguments(null)]
     public async Task Malformed_protocol_fields_fail_the_parse(string? payload) {
@@ -107,7 +107,6 @@ public class ClaudeElicitationTests {
         var overCap = $$"""{"questions":[{"question":"{{padded}}"}]}""";
         await Assert.That(ClaudeElicitation.TryParse(overCap)).IsNull();
 
-        // Exactly the cap INCLUDING padding passes.
         var atCap = " " + new string('q', ClaudeElicitation.MaxQuestionTextChars - 1);
         var underCap = $$"""{"questions":[{"question":"{{atCap}}"}]}""";
         var parsed = ClaudeElicitation.TryParse(underCap);
@@ -218,18 +217,18 @@ public class ClaudeElicitationTests {
     public async Task Invalid_answer_sets_throw() {
         var q = Parsed(MixedPayload);
         List<IReadOnlyList<ElicitationAnswer>> bad = [
-            [new ElicitationAnswer("Q1", ["A"], null)],                                                 // missing Q2
-            [new ElicitationAnswer("Q1", ["A"], null), new ElicitationAnswer("Q1", ["B"], null)],       // duplicate key
-            [new ElicitationAnswer("Q1", ["A"], null), new ElicitationAnswer("Nope", ["X"], null)],     // unknown key
-            [new ElicitationAnswer("Q1", ["C"], null), new ElicitationAnswer("Q2", ["X"], null)],       // label not an option
-            [new ElicitationAnswer("Q1", ["A"], null), new ElicitationAnswer("Q2", ["X", "X"], null)],  // label twice
-            [new ElicitationAnswer("Q1", ["A", "B"], null), new ElicitationAnswer("Q2", ["X"], null)],  // two for single-select
-            [new ElicitationAnswer("Q1", ["A"], "extra"), new ElicitationAnswer("Q2", ["X"], null)],    // label AND other for single-select
-            [new ElicitationAnswer("Q1", [], null), new ElicitationAnswer("Q2", ["X"], null)],          // neither for single-select
-            [new ElicitationAnswer("Q1", ["A"], null), new ElicitationAnswer("Q2", [], null)],          // empty multi-select
-            [new ElicitationAnswer("Q1", ["A"], null), new ElicitationAnswer("Q2", [], "   ")],         // blank other
+            [new ElicitationAnswer("Q1", ["A"], null)],
+            [new ElicitationAnswer("Q1", ["A"], null), new ElicitationAnswer("Q1", ["B"], null)],
+            [new ElicitationAnswer("Q1", ["A"], null), new ElicitationAnswer("Nope", ["X"], null)],
+            [new ElicitationAnswer("Q1", ["C"], null), new ElicitationAnswer("Q2", ["X"], null)],
+            [new ElicitationAnswer("Q1", ["A"], null), new ElicitationAnswer("Q2", ["X", "X"], null)],
+            [new ElicitationAnswer("Q1", ["A", "B"], null), new ElicitationAnswer("Q2", ["X"], null)],
+            [new ElicitationAnswer("Q1", ["A"], "extra"), new ElicitationAnswer("Q2", ["X"], null)],
+            [new ElicitationAnswer("Q1", [], null), new ElicitationAnswer("Q2", ["X"], null)],
+            [new ElicitationAnswer("Q1", ["A"], null), new ElicitationAnswer("Q2", [], null)],
+            [new ElicitationAnswer("Q1", ["A"], null), new ElicitationAnswer("Q2", [], "   ")],
             [new ElicitationAnswer("Q1", ["A"], null),
-             new ElicitationAnswer("Q2", [], new string('x', ClaudeElicitation.MaxOtherTextChars + 1))], // over-cap other
+             new ElicitationAnswer("Q2", [], new string('x', ClaudeElicitation.MaxOtherTextChars + 1))],
         ];
         foreach (var answers in bad)
             await Assert.That(() => ClaudeElicitation.ComposeAnswers(q, answers)).Throws<ArgumentException>();

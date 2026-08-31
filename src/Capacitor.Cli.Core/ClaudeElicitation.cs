@@ -77,7 +77,6 @@ public static class ClaudeElicitation {
         return s is not null && s.Length <= maxChars && s.AsSpan().Trim().Length > 0 ? s : null;
     }
 
-    // Display field: a non-blank string is used; wrong type or whitespace reads as absent.
     static string? DisplayString(JsonElement obj, string name) {
         var s = obj.Str(name)?.Trim();
         return s is { Length: > 0 } ? s : null;
