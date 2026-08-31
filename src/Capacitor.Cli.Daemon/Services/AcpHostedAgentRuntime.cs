@@ -904,7 +904,7 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     /// </summary>
     public async Task StartAsync(
             string cwd, string? initialPrompt, CancellationToken ct, string? requestedModel = null,
-            IReadOnlyList<AcpMcpServerSpec>? mcpServers = null) {
+            IReadOnlyList<AcpMcpServerSpec>? mcpServers = null, string? modelOwedAnExplanation = null) {
         _cwd            = cwd;
         _requestedModel = requestedModel;
         // Captured for session/load: a resume must hand the agent the SAME server list the
@@ -1030,6 +1030,13 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
         // one consolidated Info log carrying the negotiated protocol version, loadSession, and the
         // resolved model (null if none was requested/matched).
         LogHandshakeOk(_agentId, _negotiatedProtocolVersion, _negotiatedCapabilities.LoadSession, _resolvedModel);
+
+        // A dropped model is only knowable after session/new publishes the vendor's list, so nothing
+        // upstream can refuse the launch over it: the agent runs, answering as a model the user did
+        // not pick. Names the model the LAUNCH asked for, which is not always the one that reached
+        // the selector. Emitted before the initial turn is enqueued, so it precedes that turn's output.
+        if (modelOwedAnExplanation is { Length: > 0 } owed && _resolvedModel is null)
+            EmitModelFallbackNote(owed);
 
         // The session is established (initialize + session/new both completed) — the caller
         // (orchestrator) can now treat this agent as live. Enqueue the initial turn without
@@ -2393,6 +2400,17 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
             return true;
         }
     }
+
+    /// <summary>Tells the user, in the transcript itself, that the model they picked is not the one
+    /// answering. Worded for every reason the selector returns null — no match in the published list,
+    /// a list published in no shape it reads, or the agent refusing the selection RPC — since which
+    /// one it was does not reach here.</summary>
+    void EmitModelFallbackNote(string requestedModel) =>
+        EmitEnvelope(new AcpEventEnvelope(
+            Seq: 0,
+            Kind: AcpEventKind.SystemNote,
+            Text: $"{_vendor} could not apply the model '{requestedModel}'; this session is running {_vendor}'s default model instead.",
+            TimestampIso: NowIso()));
 
     /// <summary>The §8 surfacing envelope — emitted after commit and settlement, before reopen,
     /// while the worker is still parked, so it deterministically precedes every resumed envelope.

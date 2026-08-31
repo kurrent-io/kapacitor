@@ -332,7 +332,8 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
                 ctx.Prompt,
                 launchDeadline?.Token ?? ct,
                 ResolveRequestedModel(descriptor, config, ctx),
-                mcpServers
+                mcpServers,
+                ModelOwedAnExplanation(ctx)
             ).ConfigureAwait(false);
         } catch (OperationCanceledException ex) when (launchDeadline is { IsCancellationRequested: true }
                                                 && !ct.IsCancellationRequested) {
@@ -690,21 +691,28 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
     internal static bool UsesMcpNameAllowlistArgv(AcpVendorDescriptor descriptor) =>
         descriptor.Vendor == AcpVendorDescriptors.Gemini.Vendor;
 
-    /// <summary>
-    /// Merges the per-launch model override with the daemon-wide default —
-    /// <paramref name="ctx"/>'s own <c>Model</c> takes precedence when the launch specifies one,
-    /// else falls back to <paramref name="descriptor"/>'s <c>ResolveDefaultModel</c>. Mirrors the
-    /// existing <c>"default"</c>-sentinel convention <c>CodexLauncher.AddModelArg</c> already uses
-    /// for "no override requested" (the UI dispatches the literal string <c>"default"</c>, not an
-    /// empty string, when the user hasn't picked a model). The merged value is still a bare family
-    /// prefix or an exact <c>modelId</c> — final resolution against the session's
-    /// <c>availableModels</c> happens in <see cref="AcpHostedAgentRuntime"/> via
-    /// <see cref="Capacitor.Cli.Core.Acp.AcpModelResolver"/>.
-    /// </summary>
+    /// <summary>Whether the model reaching the runtime is the launch's own pick rather than the
+    /// daemon-wide default. The UI dispatches the literal string <c>"default"</c>, not an empty one,
+    /// when the user picked nothing (the same sentinel convention <c>CodexLauncher.AddModelArg</c>
+    /// reads).</summary>
+    static bool LaunchPickedTheModel(RuntimeStartContext ctx) =>
+        !string.IsNullOrEmpty(ctx.Model) && !string.Equals(ctx.Model, "default", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>The model the user is owed an explanation for if selection does not apply it, or null
+    /// when nothing was picked. A default the vendor does not publish is deliberately not disclosed —
+    /// nobody asked for it, and a note on every launch trains the user to ignore it. A pick the
+    /// orchestrator already cleared is still disclosed: that path drops it precisely because the
+    /// vendor cannot apply one, so it is the case most in need of saying so.</summary>
+    static string? ModelOwedAnExplanation(RuntimeStartContext ctx) =>
+        ctx.DroppedModelPick is { Length: > 0 } dropped ? dropped
+            : LaunchPickedTheModel(ctx) ? ctx.Model
+            : null;
+
+    /// <summary>The merged value is a bare family prefix or an exact <c>modelId</c>; resolution
+    /// against the session's <c>availableModels</c> happens in <see cref="AcpHostedAgentRuntime"/>
+    /// via <see cref="Capacitor.Cli.Core.Acp.AcpModelResolver"/>.</summary>
     static string? ResolveRequestedModel(AcpVendorDescriptor descriptor, DaemonConfig config, RuntimeStartContext ctx) =>
-        !string.IsNullOrEmpty(ctx.Model) && !string.Equals(ctx.Model, "default", StringComparison.OrdinalIgnoreCase)
-            ? ctx.Model
-            : descriptor.ResolveDefaultModel(config);
+        LaunchPickedTheModel(ctx) ? ctx.Model : descriptor.ResolveDefaultModel(config);
 
     /// <summary>
     /// PURE builder for a real launch's spawn shape — no process side effects. StartRealProcess is
