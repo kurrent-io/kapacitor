@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Collections.ObjectModel;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
@@ -306,6 +307,38 @@ public static class CodexConfigToml {
                 : null;
         } catch {
             return null;
+        }
+    }
+
+    /// <summary>
+    /// Reads the <c>[notice.model_migrations]</c> table — the old-slug to new-slug map Codex writes
+    /// once the operator has answered its model-migration dialog. Launching with a slug this maps
+    /// re-raises that dialog, and the dialog is modal and pre-<c>thread/start</c>: nothing correlates
+    /// the session until it is answered, and a TUI parked on it still renders, so no stuck-launch
+    /// watchdog fires either. Ordinal keys, matching how Codex writes them. Read-only; never throws;
+    /// empty when the file is missing, unreadable, or carries no such table.
+    /// </summary>
+    public static IReadOnlyDictionary<string, string> ReadModelMigrations(string configPath) {
+        if (!File.Exists(configPath)) return ReadOnlyDictionary<string, string>.Empty;
+
+        try {
+            var root = TomlSerializer.Deserialize(File.ReadAllText(configPath), _tomlTypeInfo.TableInfo);
+
+            if (root is null || !root.TryGetValue("notice", out var notice) || notice is not TomlTable noticeTable)
+                return ReadOnlyDictionary<string, string>.Empty;
+
+            if (!noticeTable.TryGetValue("model_migrations", out var migrations) || migrations is not TomlTable table)
+                return ReadOnlyDictionary<string, string>.Empty;
+
+            var map = new Dictionary<string, string>(StringComparer.Ordinal);
+
+            foreach (var (from, to) in table)
+                if (to is string target && !string.IsNullOrWhiteSpace(target))
+                    map[from] = target;
+
+            return map;
+        } catch {
+            return ReadOnlyDictionary<string, string>.Empty;
         }
     }
 

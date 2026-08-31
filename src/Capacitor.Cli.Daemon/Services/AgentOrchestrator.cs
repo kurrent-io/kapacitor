@@ -4474,6 +4474,11 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
     static readonly HashSet<string> ValidEffortLevels = ["low", "medium", "high", "max"];
 
+    /// <summary>When an unlinked launch stops being ordinary slowness and starts being worth saying
+    /// out loud. A healthy codex links in about five seconds, so a minute is far past normal while
+    /// still well short of the poll timeout that ends detection entirely.</summary>
+    static readonly TimeSpan SessionIdSlowWarnAfter = TimeSpan.FromSeconds(60);
+
     static readonly TimeSpan SessionIdPollInterval = TimeSpan.FromSeconds(2);
     static readonly TimeSpan SessionIdPollTimeout  = TimeSpan.FromMinutes(3);
 
@@ -4511,6 +4516,8 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(agent.ReadCts.Token, _shutdownCts.Token);
             var discovery = new TranscriptDiscovery(TimeProvider.System, SessionIdPollInterval, SessionIdPollTimeout);
 
+            _ = WarnIfStillUnlinkedAsync(agent, cts.Token);
+
             var found = await discovery.RunAsync(locate, async winner => {
                 // Mutation first, pulse second — and the pulse before any server call, which can
                 // stall on a reconnect and must never hold the app's status push hostage.
@@ -4528,6 +4535,20 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         } catch (Exception ex) {
             LogSessionIdDetectFailed(ex, agent.Id);
         }
+    }
+
+    /// <summary>Says, once and early, what the operator is otherwise left to infer from three minutes
+    /// of nothing. Never cancels or reaps the launch — detection keeps running to its own timeout,
+    /// and a slow link still resolves.</summary>
+    async Task WarnIfStillUnlinkedAsync(AgentInstance agent, CancellationToken ct) {
+        try {
+            await Task.Delay(SessionIdSlowWarnAfter, ct).ConfigureAwait(false);
+        } catch (OperationCanceledException) {
+            return;
+        }
+
+        if (agent.SessionId is null)
+            LogSessionIdSlow(agent.Id, SessionIdSlowWarnAfter.TotalSeconds, SessionIdPollTimeout.TotalSeconds);
     }
 
     async Task RunHeartbeatLoopAsync(CancellationToken ct) {
@@ -5050,14 +5071,21 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     [LoggerMessage(Level = LogLevel.Warning, Message = "ACP final transcript drain for agent {AgentId} exceeded its {Seconds}s budget — proceeding to end the session; any undrained transcript is lost")]
     partial void LogAcpFinalDrainTimedOut(string agentId, double seconds);
 
-    [LoggerMessage(Level = LogLevel.Information, Message = "Agent {AgentId} linked to session {SessionId} via its transcript file (session-start hook fallback)")]
+    // These three said the transcript scan was a fallback behind a session-start hook. There is no
+    // such leg here: the scan below is the only place agent.SessionId is ever assigned, and the
+    // vendor's own hook posts to the SERVER. Naming a primary that does not exist sends whoever
+    // reads a stalled launch to look at hooks.
+    [LoggerMessage(Level = LogLevel.Information, Message = "Agent {AgentId} linked to session {SessionId} by matching its transcript file")]
     partial void LogSessionIdDetected(string agentId, string sessionId);
 
-    [LoggerMessage(Level = LogLevel.Information, Message = "No transcript matched agent {AgentId}'s worktree within {Seconds:F0}s; session id stays hook-provided (or unknown if the hook failed)")]
+    [LoggerMessage(Level = LogLevel.Warning, Message = "No transcript matched agent {AgentId}'s worktree within {Seconds:F0}s, so it has no session id: the surface cannot leave 'waiting for session to start'. The child may be parked on a startup prompt — a TUI sitting on one still renders, so it does not read as stuck.")]
     partial void LogSessionIdNotDetected(string agentId, double seconds);
 
-    [LoggerMessage(Level = LogLevel.Warning, Message = "Transcript-based session-id detection failed for agent {AgentId} (continuing; the session-start hook remains the primary link)")]
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Transcript-based session-id detection failed for agent {AgentId}; nothing else assigns one, so this agent stays unlinked")]
     partial void LogSessionIdDetectFailed(Exception ex, string agentId);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Agent {AgentId} still has no session id {Seconds:F0}s after spawn; the surface is showing 'waiting for session to start'. Detection continues until {TimeoutSeconds:F0}s.")]
+    partial void LogSessionIdSlow(string agentId, double seconds, double timeoutSeconds);
 
     [GeneratedRegex(@"\x1B\[[0-9;]*[A-Za-z]|\x1B\].*?\x07|\x1B[()][AB012]|\x1B\[[\?]?[0-9;]*[hlm]")]
     private static partial Regex StripAnsiRegex();
