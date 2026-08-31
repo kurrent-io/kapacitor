@@ -153,16 +153,28 @@ public sealed class TerminalTabViewModel : ReactiveObject {
         RaiseSendProjections();
     }
 
+    /// Invalidate, but only while `ownerToken` is still the current one -- as a SINGLE atomic
+    /// step. Compare-then-Invalidate would be two, and BeginAttempt runs on whatever thread
+    /// called ReattachCommand.Execute (not necessarily the UI one), so a claim landing between
+    /// them would be advanced past by the increment that follows: the replacement attempt
+    /// retired by the very outcome this guard exists to keep out of its way.
+    void InvalidateOwner(int ownerToken) {
+        _gateOpen = false;
+        SendInFlight = false;
+        Interlocked.CompareExchange(ref _openingToken, ownerToken + 1, ownerToken);
+        RaiseSendProjections();
+    }
+
     /// The one place State is assigned. An attempt-owned publish (Connecting, Attached) carries
     /// its token and is discarded when that token is stale.
     ///
     /// A terminal state renders whether or not its token is still current -- an explicit detach
-    /// invalidates BEFORE the Detached outcome it asked for arrives -- but invalidates only while
-    /// its own attempt still holds the token. A reattach takes its token before it disposes the
-    /// client whose outcome this is, so bumping past a stale one would retire the replacement
-    /// attempt that already owns it, silently discarding its Connecting and Attached. `null` is
-    /// the unconditional form, for the invalidations no attempt owns (a removal, the resolve
-    /// gate's verdicts).
+    /// invalidates BEFORE the Detached outcome it asked for arrives -- but advances the token
+    /// only while its own attempt still holds it. A reattach takes its token before it disposes
+    /// the client whose outcome this is, so advancing past a stale one would retire the
+    /// replacement attempt that already owns it, silently discarding its Connecting and Attached.
+    /// `null` is the unconditional form, for the invalidations no attempt owns (a removal, the
+    /// resolve gate's verdicts).
     void Publish(TerminalSessionState state, int? ownerToken) {
         if (state.Phase is TerminalSessionPhase.Connecting or TerminalSessionPhase.Attached) {
             if (ownerToken != Volatile.Read(ref _openingToken)) return;
@@ -174,8 +186,8 @@ public sealed class TerminalTabViewModel : ReactiveObject {
         // State first: Invalidate raises the projections, and they must not be read against the
         // state this publish is replacing.
         State = state;
-        if (ownerToken is null || ownerToken == Volatile.Read(ref _openingToken)) Invalidate();
-        else RaiseSendProjections(); // the owning attempt closed the gate already; only State moved
+        if (ownerToken is { } owner) InvalidateOwner(owner);
+        else Invalidate();
     }
 
     /// Synchronous acceptance on the UI thread: true means the text is on its way through the

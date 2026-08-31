@@ -421,12 +421,12 @@ public class TerminalTabViewModelTests {
         });
     }
 
-    /// The deterministic half of Cancel_dispose_orderings above: the retired attempt's own
-    /// outcome rendering while the reattach that retired it is parked on its dispose. Reattach
-    /// takes its opening token BEFORE that dispose, so if the outcome invalidates unconditionally
-    /// it retires the very attempt that is mid-flight -- either aborting it at the post-dispose
-    /// token check (no second client at all) or, a few instructions later, leaving its Connecting
-    /// discarded on a token that is already stale.
+    /// A retired attempt's own terminal outcome, rendering while the reattach that retired it is
+    /// parked on its dispose, leaves that reattach intact: it still swaps in its own client and
+    /// settles on Connecting. Parking the dispose is what makes the ordering deterministic rather
+    /// than a race -- the reattach holds its opening token across that whole window, which is
+    /// precisely the stretch in which the generation guard does not yet distinguish the two
+    /// attempts, so the token is the only thing keeping them apart.
     [Test]
     [NotInParallel("AvaloniaSession")]
     public async Task An_outcome_landing_inside_the_reattach_dispose_window_leaves_the_reattach_alone() {
