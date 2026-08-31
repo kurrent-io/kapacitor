@@ -107,9 +107,27 @@ static class ServiceEnvironment {
     /// inert variable into the one serializer that cannot hold it safely buys nothing.</para></summary>
     const string TokenCommandKey = "KCAP_COPILOT_TOKEN_CMD";
 
-    /// <summary>Production entry point: capture from the current process env.</summary>
-    public static IReadOnlyDictionary<string, string> Capture(string? profileName, Core.ConfigRoot config) =>
-        Build(profileName, Snapshot(), config, OperatingSystem.IsWindows());
+    /// <summary>Production entry point: capture from the current process env, completing the
+    /// Antigravity ADC trio from gcloud's own on-disk state where the operator exported nothing —
+    /// the same silent capture every other key gets. Install time is the one moment this is
+    /// legitimate: the operator is running the command, and the daemon itself still never reads a
+    /// credential location of its own accord.</summary>
+    public static IReadOnlyDictionary<string, string> Capture(string? profileName, Core.ConfigRoot config, Core.UserHome home) =>
+        Build(profileName, Snapshot(), config, OperatingSystem.IsWindows(),
+            adcCredentialsPath: ExistingAdcPath(home),
+            gcloudProject: GcloudConfig.DefaultProject(home));
+
+    /// <summary>The ADC well-known path, only when the file is actually there — deriving the path
+    /// without the file would bake a broken half-configuration.</summary>
+    static string? ExistingAdcPath(Core.UserHome home) {
+        try {
+            var path = Path.Combine(home.Path, ".config", "gcloud", "application_default_credentials.json");
+
+            return File.Exists(path) ? path : null;
+        } catch {
+            return null;
+        }
+    }
 
     static Dictionary<string, string> Snapshot() {
         var d = new Dictionary<string, string>();
@@ -130,7 +148,7 @@ static class ServiceEnvironment {
     /// <param name="isWindows">Platform, passed rather than probed so the exclusion is testable.</param>
     public static IReadOnlyDictionary<string, string> Build(
             string? profileName, IReadOnlyDictionary<string, string> source, Core.ConfigRoot config,
-            bool isWindows = false) {
+            bool isWindows = false, string? adcCredentialsPath = null, string? gcloudProject = null) {
         var env = new Dictionary<string, string>(StringComparer.Ordinal);
         string[] keys = isWindows
             ? [.. Keys, .. ReviewerConsentKeys, .. GoogleConfigKeys]
@@ -141,12 +159,49 @@ static class ServiceEnvironment {
         }
         if (!string.IsNullOrEmpty(profileName)) env["KCAP_PROFILE"] = profileName; // explicit pin wins
 
+        // The Antigravity ADC trio, completed from gcloud's own state where the operator exported
+        // nothing. Exported values always win — derivation fills silence, it never argues. POSIX
+        // only: Windows carries no GOOGLE_APPLICATION_CREDENTIALS at all (no owner-only unit
+        // guarantee), so the trio can never complete there and a derived half would only mislead.
+        // Deriving into the UNIT (not the operator's shell) is load-bearing: AGY_ADC_AUTH=1 in an
+        // interactive shell disables agy's hook capture for the operator's own sessions.
+        if (!isWindows) {
+            if (!env.ContainsKey("GOOGLE_APPLICATION_CREDENTIALS") && !string.IsNullOrEmpty(adcCredentialsPath))
+                env["GOOGLE_APPLICATION_CREDENTIALS"] = adcCredentialsPath;
+
+            // The flag rides the credential: without a reachable ADC file, AGY_ADC_AUTH=1 is a
+            // broken half-configuration (agy fails auth outright).
+            if (env.ContainsKey("GOOGLE_APPLICATION_CREDENTIALS") && !env.ContainsKey("AGY_ADC_AUTH"))
+                env["AGY_ADC_AUTH"] = "1";
+
+            if (!env.ContainsKey("GOOGLE_CLOUD_PROJECT") && !env.ContainsKey("GOOGLE_CLOUD_PROJECT_ID")
+                && !string.IsNullOrEmpty(gcloudProject))
+                env["GOOGLE_CLOUD_PROJECT"] = gcloudProject;
+        }
+
         // From the installer's context rather than captured from its environment: a unit inherits
         // nothing, so a captured root would be baked only when one happened to be exported — and the
         // supervisor's own HOME would decide the rest.
         env[Core.ConfigRoot.ConfigDirEnvVar] = config.Directory;
 
         return env;
+    }
+
+    /// <summary>The hosted-agy auth trio's state in a built environment, for the install path to
+    /// report: <c>AnyPresent</c> false means agy is simply not configured (nothing to say);
+    /// <c>Missing</c> non-empty with <c>AnyPresent</c> true is a partial trio — never a working agy
+    /// configuration, so always worth a warning. Either project spelling satisfies the project leg.</summary>
+    internal static (bool AnyPresent, IReadOnlyList<string> Missing) AgyTrio(IReadOnlyDictionary<string, string> env) {
+        var hasProject     = env.ContainsKey("GOOGLE_CLOUD_PROJECT") || env.ContainsKey("GOOGLE_CLOUD_PROJECT_ID");
+        var hasFlag        = env.ContainsKey("AGY_ADC_AUTH");
+        var hasCredentials = env.ContainsKey("GOOGLE_APPLICATION_CREDENTIALS");
+
+        var missing = new List<string>();
+        if (!hasProject)     missing.Add("GOOGLE_CLOUD_PROJECT");
+        if (!hasFlag)        missing.Add("AGY_ADC_AUTH");
+        if (!hasCredentials) missing.Add("GOOGLE_APPLICATION_CREDENTIALS");
+
+        return (missing.Count < 3, missing);
     }
 
     /// <summary>

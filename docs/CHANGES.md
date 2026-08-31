@@ -67,6 +67,20 @@ retry the request.
 nothing left to do. Treating the two the same would leave the request outstanding on a server that would
 have answered it.
 
+## Service install derives the Antigravity ADC trio
+
+Hosted `agy` runs under a per-launch isolated `HOME`, which hides both the interactive OAuth login and
+ADC's well-known location — so the daemon can only authenticate it through three unit-carried variables,
+and an operator with a fully working interactive `agy` still saw `antigravity_reviewer_auth_unavailable`
+after every reinstall because two of the three were exported nowhere. Install now completes the trio
+silently, the same capture every other key gets: the credential path from ADC's well-known file (only when
+it exists), `AGY_ADC_AUTH=1` riding the credential (the flag alone is a broken half-configuration), the
+project from the environment or gcloud's active config. Exported values always win.
+
+Two boundaries hold. Derivation lives in the installer the operator is running, never the daemon — the
+daemon still reads no credential location of its own accord. And the flag lands in the UNIT only: exported
+interactively, `AGY_ADC_AUTH=1` disables agy's hook capture, so the shell is exactly where it must not go.
+
 ## The import outcome reaches the first-run flow
 
 The flow's `import-outcome` route folded a report into `FirstRunFlowState.ImportOutcome` and had no

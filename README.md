@@ -1051,21 +1051,25 @@ reasons, and can never deliver its result. The grant admits those named tools an
 **Give the daemon durable credentials.** An unattended reviewer's stdin is closed, so it cannot complete an
 interactive login — an unauthenticated `agy` fails the launch with a coded
 `antigravity_reviewer_auth_unavailable` rather than hanging. Application Default Credentials are the
-supported setup:
+supported setup, and the service install completes them for you:
 
 ```bash
 gcloud auth application-default login
-export GOOGLE_CLOUD_PROJECT=<your-project>
-export AGY_ADC_AUTH=1                           # selects ADC; without it agy still demands an OAuth login
-export GOOGLE_APPLICATION_CREDENTIALS="$HOME/.config/gcloud/application_default_credentials.json"
+kcap daemon service install --name "$(whoami)"   # captures/derives the trio into the unit
 ```
 
-All three are required. The credential path looks redundant — ADC has a well-known default location, and
-that is exactly where `gcloud auth application-default login` just wrote it — but a reviewer launch
-redirects `HOME` to a per-launch state directory, so the default location is not visible to the child.
-Without the explicit path `agy` reports `authentication required. Run 'agy' to log in.` even with the
-other two set correctly. The daemon does not fill this in for you: it never reads a credential location
-of its own accord, only forwards what you exported.
+The daemon needs all three of `GOOGLE_CLOUD_PROJECT`, `AGY_ADC_AUTH=1` and
+`GOOGLE_APPLICATION_CREDENTIALS`. The install captures any you exported and silently derives the rest:
+the credential path from ADC's well-known location (only when the file is actually there), `AGY_ADC_AUTH=1`
+alongside it, and the project from your environment or gcloud's own active configuration. Exported values
+always win. The explicit path looks redundant — ADC has a well-known default location — but a reviewer
+launch redirects `HOME` to a per-launch state directory, so the default location is not visible to the
+child. Derivation happens in the installer, at your command; the daemon itself still never reads a
+credential location of its own accord — it only forwards what the unit carries.
+
+Deliberately unit-only: do **not** export `AGY_ADC_AUTH=1` in your interactive shell — under ADC auth agy
+fires no hooks, so that export would stop kcap capturing your own interactive Antigravity sessions. The
+unit's copy reaches only daemon-spawned children.
 
 **Minimum version.** Containment here depends on the installed build honouring `HOME` and reading no other
 global config source, so the daemon records a minimum `agy` version at the first startup that finds `agy`
@@ -1146,8 +1150,10 @@ kcap daemon service install --name "$(whoami)"    # captures the setting into th
 ```
 
 The Antigravity ADC variables (`GOOGLE_CLOUD_PROJECT`, `AGY_ADC_AUTH`, `GOOGLE_APPLICATION_CREDENTIALS`)
-are captured by the same install, so a daemon installed *before* this shipped must be reinstalled from an
-interactive shell to pick them up. `KCAP_ANTIGRAVITY_PATH` is **not** captured — like the other vendor path
+are captured — and, where you exported nothing, derived from gcloud's own state — by the same install, so a
+daemon installed *before* this shipped must be reinstalled to pick them up. The install prints an
+`Antigravity:` line naming a complete capture, or the missing pieces of a partial one (a partial trio is
+never a working hosted-agy configuration). `KCAP_ANTIGRAVITY_PATH` is **not** captured — like the other vendor path
 overrides, set it where the unit can see it if you need a non-default value.
 
 Install prints a `Consent:` line naming each reviewer variable it captured. That freeze is the point to

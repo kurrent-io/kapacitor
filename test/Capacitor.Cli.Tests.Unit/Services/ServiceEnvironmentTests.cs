@@ -331,4 +331,113 @@ public class ServiceEnvironmentTests {
 
         await Assert.That(env["AGY_ADC_AUTH"]).IsEqualTo("1");
     }
+
+    // ── Antigravity ADC trio derivation ──
+
+    [Test]
+    public async Task Build_derives_the_adc_path_and_flag_when_the_well_known_file_exists() {
+        var env = ServiceEnvironment.Build(null, new Dictionary<string, string>(), Config.Root,
+            adcCredentialsPath: "/h/.config/gcloud/application_default_credentials.json");
+
+        await Assert.That(env["GOOGLE_APPLICATION_CREDENTIALS"])
+            .IsEqualTo("/h/.config/gcloud/application_default_credentials.json");
+        await Assert.That(env["AGY_ADC_AUTH"]).IsEqualTo("1");
+    }
+
+    [Test]
+    public async Task Build_prefers_an_exported_credentials_path_over_the_derived_one() {
+        var src = new Dictionary<string, string> { ["GOOGLE_APPLICATION_CREDENTIALS"] = "/custom/adc.json" };
+
+        var env = ServiceEnvironment.Build(null, src, Config.Root, adcCredentialsPath: "/derived/adc.json");
+
+        await Assert.That(env["GOOGLE_APPLICATION_CREDENTIALS"]).IsEqualTo("/custom/adc.json");
+    }
+
+    /// <summary>An exported value is the operator's word, whatever it says — derivation only fills
+    /// silence, it never argues.</summary>
+    [Test]
+    public async Task Build_does_not_flip_an_exported_adc_auth_value() {
+        var src = new Dictionary<string, string> { ["AGY_ADC_AUTH"] = "0" };
+
+        var env = ServiceEnvironment.Build(null, src, Config.Root, adcCredentialsPath: "/derived/adc.json");
+
+        await Assert.That(env["AGY_ADC_AUTH"]).IsEqualTo("0");
+    }
+
+    /// <summary>The flag without a credential path is a broken half-configuration this code must
+    /// never manufacture: agy under AGY_ADC_AUTH=1 with no reachable ADC fails auth outright.</summary>
+    [Test]
+    public async Task Build_leaves_the_flag_unset_without_a_credentials_path() {
+        var env = ServiceEnvironment.Build(null, new Dictionary<string, string>(), Config.Root);
+
+        await Assert.That(env.ContainsKey("AGY_ADC_AUTH")).IsFalse();
+        await Assert.That(env.ContainsKey("GOOGLE_APPLICATION_CREDENTIALS")).IsFalse();
+    }
+
+    [Test]
+    public async Task Build_derives_the_project_from_gcloud_when_neither_spelling_is_exported() {
+        var env = ServiceEnvironment.Build(null, new Dictionary<string, string>(), Config.Root,
+            gcloudProject: "gcloud-proj");
+
+        await Assert.That(env["GOOGLE_CLOUD_PROJECT"]).IsEqualTo("gcloud-proj");
+    }
+
+    [Test]
+    public async Task Build_keeps_an_exported_project_over_the_gcloud_one() {
+        var byName = ServiceEnvironment.Build(null,
+            new Dictionary<string, string> { ["GOOGLE_CLOUD_PROJECT"] = "exported" },
+            Config.Root, gcloudProject: "gcloud-proj");
+        await Assert.That(byName["GOOGLE_CLOUD_PROJECT"]).IsEqualTo("exported");
+
+        var byId = ServiceEnvironment.Build(null,
+            new Dictionary<string, string> { ["GOOGLE_CLOUD_PROJECT_ID"] = "exported-id" },
+            Config.Root, gcloudProject: "gcloud-proj");
+        await Assert.That(byId.ContainsKey("GOOGLE_CLOUD_PROJECT")).IsFalse();
+    }
+
+    /// <summary>Windows carries no GOOGLE_APPLICATION_CREDENTIALS at all (unit files there have no
+    /// owner-only guarantee), so the trio can never complete and derivation stays off wholesale.</summary>
+    [Test]
+    public async Task Windows_build_derives_nothing() {
+        var env = ServiceEnvironment.Build(null, new Dictionary<string, string>(), Config.Root,
+            isWindows: true, adcCredentialsPath: "/derived/adc.json", gcloudProject: "gcloud-proj");
+
+        await Assert.That(env.ContainsKey("GOOGLE_APPLICATION_CREDENTIALS")).IsFalse();
+        await Assert.That(env.ContainsKey("AGY_ADC_AUTH")).IsFalse();
+        await Assert.That(env.ContainsKey("GOOGLE_CLOUD_PROJECT")).IsFalse();
+    }
+
+    [Test]
+    public async Task AgyTrio_reports_complete_partial_and_absent() {
+        var complete = ServiceEnvironment.AgyTrio(new Dictionary<string, string> {
+            ["GOOGLE_CLOUD_PROJECT"] = "p", ["AGY_ADC_AUTH"] = "1",
+            ["GOOGLE_APPLICATION_CREDENTIALS"] = "/adc.json",
+        });
+        await Assert.That(complete.AnyPresent).IsTrue();
+        await Assert.That(complete.Missing).IsEmpty();
+
+        var partial = ServiceEnvironment.AgyTrio(new Dictionary<string, string> {
+            ["GOOGLE_CLOUD_PROJECT"] = "p",
+        });
+        await Assert.That(partial.AnyPresent).IsTrue();
+        await Assert.That(partial.Missing).IsEquivalentTo(new[] { "AGY_ADC_AUTH", "GOOGLE_APPLICATION_CREDENTIALS" });
+
+        var idSpelling = ServiceEnvironment.AgyTrio(new Dictionary<string, string> {
+            ["GOOGLE_CLOUD_PROJECT_ID"] = "p", ["AGY_ADC_AUTH"] = "1",
+            ["GOOGLE_APPLICATION_CREDENTIALS"] = "/adc.json",
+        });
+        await Assert.That(idSpelling.Missing).IsEmpty();
+
+        var absent = ServiceEnvironment.AgyTrio(new Dictionary<string, string>());
+        await Assert.That(absent.AnyPresent).IsFalse();
+    }
+
+    [Test]
+    public async Task GcloudConfig_parses_the_core_project() {
+        await Assert.That(GcloudConfig.ParseProject("[core]\nproject = my-proj\naccount = a@b.c\n"))
+            .IsEqualTo("my-proj");
+        await Assert.That(GcloudConfig.ParseProject("[compute]\nproject = wrong-section\n")).IsNull();
+        await Assert.That(GcloudConfig.ParseProject("")).IsNull();
+        await Assert.That(GcloudConfig.ParseProject("[core]\nproject =\n")).IsNull();
+    }
 }
