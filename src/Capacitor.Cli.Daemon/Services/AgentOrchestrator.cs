@@ -3499,6 +3499,15 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         }
     }
 
+    /// <summary>True only for input that IS the command — exactly <c>/quit</c> or <c>/exit</c>
+    /// after trimming — never for prose that merely mentions one.</summary>
+    internal static bool IsQuitCommand(string text) {
+        var trimmed = text.AsSpan().Trim();
+
+        return trimmed.Equals("/quit", StringComparison.OrdinalIgnoreCase)
+            || trimmed.Equals("/exit", StringComparison.OrdinalIgnoreCase);
+    }
+
     async Task HandleSendInput(SendInputCommand cmd) {
         var (agentId, text, attachmentIds) = cmd;
 
@@ -3513,6 +3522,16 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         }
 
         LogSendInputReceived(agentId, agent.Runtime.Vendor, text.Length, attachmentIds?.Length ?? 0);
+
+        // A quit command typed into chat: a runtime with no TUI has nothing that interprets it, so
+        // forwarding would hand the text to the model as an ordinary prompt — at best role-played
+        // ("Quitting"), never a stop. Translate it onto the same serial lane a server stop rides.
+        // PTY runtimes keep receiving the text verbatim: their TUI owns the command's meaning.
+        if (!agent.Runtime.EmitsTerminalOutput && IsQuitCommand(text)) {
+            LogSendInputQuitCommand(agentId, agent.Runtime.Vendor);
+            await HandleUnsequencedStopAgent(agentId);
+            return;
+        }
 
         // Codex turn diagnostic: whether to run the post-send rollout probe, plus this round's
         // generation and the rollout length sampled just BEFORE delivery. Declared out here so both
@@ -4858,6 +4877,9 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "SendInput dropped: agent {AgentId} is private — server-origin input is ignored")]
     partial void LogSendInputPrivateAgent(string agentId);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "SendInput to agent {AgentId} is a quit command; {Vendor} has no TUI to interpret it, stopping the agent instead of forwarding")]
+    partial void LogSendInputQuitCommand(string agentId, string vendor);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "SendInput dropped: agent {AgentId} was already claimed by the reviewer reaper and is being stopped — the round's dispatch fails here and the server heals it on resubmit")]
     partial void LogSendInputReapClaimed(string agentId);
