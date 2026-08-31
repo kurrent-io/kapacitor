@@ -194,7 +194,7 @@ internal sealed partial class CodexLauncher(
             AppendMcpIsolationArgs(args, ctx, appServer: false);
         }
 
-        AddModelArg(args, ctx.Model, ctx.AgentId);
+        AddModelArg(args, ctx);
 
         var effort = ctx.Effort;
 
@@ -413,11 +413,16 @@ internal sealed partial class CodexLauncher(
 
     /// Append `-m &lt;model&gt;` unless the model is empty or the "default" no-override sentinel
     /// (see <see cref="IsConcreteModel"/>).
-    void AddModelArg(List<string> args, string? model, string agentId) {
-        if (!IsConcreteModel(model)) return;
+    void AddModelArg(List<string> args, LauncherContext ctx) {
+        if (!IsConcreteModel(ctx.Model)) return;
 
         args.Add("-m");
-        args.Add(MigratedModel(model!, agentId));
+        // A reviewer's model is pinned and priced by the server, which validates the slug it sent and
+        // not whatever this host's config would swap it for — a round that reviewed under a
+        // substituted model would carry an authority it does not have. A reviewer that parks on the
+        // migration dialog instead is reaped by its first-output deadline, which is the visible
+        // failure this trade prefers.
+        args.Add(ctx.IsReviewFlow || ctx.IsReview ? ctx.Model! : MigratedModel(ctx.Model!, ctx.AgentId));
     }
 
     /// <summary>The slug Codex would end up on anyway, when its own
@@ -471,7 +476,7 @@ internal sealed partial class CodexLauncher(
         args.Add("-c");
         args.Add($"mcp_servers.{serverName}.env={{{envList}}}");
 
-        AddModelArg(args, ctx.Model, ctx.AgentId);
+        AddModelArg(args, ctx);
 
         args.Add("--no-alt-screen");
         args.Add("--");

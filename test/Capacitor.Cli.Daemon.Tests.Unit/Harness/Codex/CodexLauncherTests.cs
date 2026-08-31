@@ -85,6 +85,18 @@ public class CodexLauncherTests {
         await Assert.That(args).DoesNotContain("gpt-5.6-luna");
     }
 
+    /// <summary>A reviewer's model is pinned and priced by the server against the slug it sent; a
+    /// round produced under a locally-substituted model would carry an authority it does not have.</summary>
+    [Test]
+    public async Task BuildArgs_never_migrates_a_reviewer_launch_model() {
+        WriteCodexConfig("[notice.model_migrations]\n\"gpt-5.4-mini\" = \"gpt-5.6-luna\"\n");
+
+        var args = NewLauncher().BuildArgs(NewCtx(model: "gpt-5.4-mini", isReviewFlow: true)).Args;
+
+        await Assert.That(args).Contains("gpt-5.4-mini");
+        await Assert.That(args).DoesNotContain("gpt-5.6-luna");
+    }
+
     void WriteCodexConfig(string toml) {
         var dir = System.IO.Path.Combine(Home.Path, ".codex");
         Directory.CreateDirectory(dir);

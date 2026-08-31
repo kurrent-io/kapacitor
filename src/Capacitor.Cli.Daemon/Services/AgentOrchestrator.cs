@@ -4516,7 +4516,13 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(agent.ReadCts.Token, _shutdownCts.Token);
             var discovery = new TranscriptDiscovery(TimeProvider.System, SessionIdPollInterval, SessionIdPollTimeout);
 
-            _ = WarnIfStillUnlinkedAsync(agent, cts.Token);
+            // Cancelled and awaited in the finally below, never merely dropped: an agent that exits
+            // inside the window is finalized and cleaned up without anyone touching ReadCts, and a
+            // warning that lands after that describes an agent nobody has any more.
+            using var warnCts  = CancellationTokenSource.CreateLinkedTokenSource(cts.Token);
+            var       warnTask = WarnIfStillUnlinkedAsync(agent, warnCts.Token);
+
+            try {
 
             var found = await discovery.RunAsync(locate, async winner => {
                 // Mutation first, pulse second — and the pulse before any server call, which can
@@ -4532,6 +4538,10 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             }, cts.Token);
 
             if (!found && !cts.IsCancellationRequested) LogSessionIdNotDetected(agent.Id, SessionIdPollTimeout.TotalSeconds);
+            } finally {
+                warnCts.Cancel();
+                await warnTask.ConfigureAwait(false);
+            }
         } catch (Exception ex) {
             LogSessionIdDetectFailed(ex, agent.Id);
         }
