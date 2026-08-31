@@ -606,11 +606,30 @@ internal sealed partial class AcpInteractionBridge(
     /// </summary>
     static readonly HashSet<string> AffirmativeOutcomes = ["allow", "allow_once", "allow_always", "answered"];
 
+    /// <summary>Outcomes that mean the user said no to THIS tool call, as opposed to abandoning the
+    /// turn. The distinction is the agent's to act on: <c>cancelled</c> tells it the prompt turn went
+    /// away, while a selected reject option tells it this call was refused and the turn continues.
+    /// Recognized ones only — an unknown string still falls through to <c>cancelled</c>.</summary>
+    static readonly HashSet<string> NegativeOutcomes = ["deny", "deny_once", "deny_always", "reject", "reject_once", "reject_always"];
+
+    static readonly HashSet<string> RejectKinds = ["reject_once", "reject_always"];
+
     static JsonElement MapPermissionDecision(AcpInteractionDecision decision, IReadOnlyList<PermissionOptionDto> options) {
-        // Fail-safe allowlist: only a RECOGNIZED affirmative outcome can ever produce "selected".
-        // Everything else — deny, cancel, an unrecognized/typo'd string, or no options offered —
-        // maps to cancelled. There is deliberately no "default: selected" path anywhere below.
-        if (options.Count == 0 || !AffirmativeOutcomes.Contains(decision.Outcome))
+        if (options.Count == 0)
+            return CancelledResult()!.Value;
+
+        // A refusal is answered with the agent's own reject option where it offered one. Answering
+        // `cancelled` instead tells the agent the prompt turn was cancelled — a different thing, and
+        // one an agent may respond to by tearing the session down rather than moving on.
+        if (NegativeOutcomes.Contains(decision.Outcome))
+            return TrySelectReject(decision, options) is { } rejection
+                ? SelectedResult(rejection)
+                : CancelledResult()!.Value;
+
+        // Fail-safe allowlist: only a RECOGNIZED affirmative outcome can ever produce an allow
+        // "selected". An unrecognized/typo'd string maps to cancelled. There is deliberately no
+        // "default: selected" path anywhere below.
+        if (!AffirmativeOutcomes.Contains(decision.Outcome))
             return CancelledResult()!.Value;
 
         // Fresh-review fix: resolve by OptionId ONLY, and FAIL CLOSED with no first-option
@@ -632,6 +651,31 @@ internal sealed partial class AcpInteractionBridge(
         var matched = options.FirstOrDefault(o => o.OptionId == optionId);
 
         return matched is not null ? SelectedResult(matched) : CancelledResult()!.Value;
+    }
+
+    /// <summary>The reject option to answer a refusal with, or null when the agent offered none (the
+    /// caller then falls back to <c>cancelled</c> — with no way to say no, saying nothing is honest).
+    /// An explicitly chosen id wins, but ONLY when it resolves to a reject-kind option: a refusal must
+    /// never be able to select an allow, whatever id came back with it. Otherwise the least-privilege
+    /// reject, preferring <c>reject_once</c> over <c>reject_always</c>, and never guessing between two
+    /// of the same kind — the standing-refusal case is exactly where a wrong pick persists.</summary>
+    static PermissionOptionDto? TrySelectReject(
+            AcpInteractionDecision decision, IReadOnlyList<PermissionOptionDto> options) {
+        var rejects = options.Where(o => o.Kind is { } k && RejectKinds.Contains(k)).ToArray();
+
+        if (decision.SelectedOptionId is { } optionId)
+            return rejects.FirstOrDefault(o => o.OptionId == optionId);
+
+        var once   = rejects.Where(o => o.Kind == "reject_once").ToArray();
+        var always = rejects.Where(o => o.Kind == "reject_always").ToArray();
+
+        var chosen = once.Length == 1 ? once[0] : always.Length == 1 ? always[0] : null;
+
+        return chosen is not null
+            && !string.IsNullOrWhiteSpace(chosen.OptionId)
+            && rejects.Count(o => o.OptionId == chosen.OptionId) == 1
+                ? chosen
+                : null;
     }
 
     /// <summary>

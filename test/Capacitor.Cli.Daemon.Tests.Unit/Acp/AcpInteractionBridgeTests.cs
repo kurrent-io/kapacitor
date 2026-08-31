@@ -21,6 +21,14 @@ public class AcpInteractionBridgeTests {
     const string AgentId      = "agent-1";
     const string AcpSessionId = "fc2e09cf-f4b0-4463-9dc1-bda11268896b";
 
+    static JsonElement KindedPermissionParams(params (string Id, string Kind)[] options) {
+        var optionsJson = string.Join(",", options.Select(o =>
+            $$"""{"optionId":"{{o.Id}}","name":"{{o.Id}}","kind":"{{o.Kind}}"}"""));
+        var json = $$"""{"sessionId":"{{AcpSessionId}}","toolCall":{"toolCallId":"call-1","title":"Run ls"},"options":[{{optionsJson}}]}""";
+
+        return JsonDocument.Parse(json).RootElement.Clone();
+    }
+
     static JsonElement PermissionRequestParams(string[] optionIds) {
         var optionsJson = string.Join(",", optionIds.Select(id => $$"""{"optionId":"{{id}}","name":"{{id}}","kind":"allow_once"}"""));
         var json = $$"""{"sessionId":"{{AcpSessionId}}","toolCall":{"toolCallId":"call-1","title":"Run ls"},"options":[{{optionsJson}}]}""";
@@ -57,19 +65,91 @@ public class AcpInteractionBridgeTests {
         await Assert.That(outcome.GetProperty("optionId").GetString()).IsEqualTo("allow-once");
     }
 
+    /// <summary>A refusal is the agent's own reject option, not a cancelled turn: the two mean
+    /// different things to the agent, and only one of them says this call was refused.</summary>
     [Test]
-    public async Task RequestPermission_DenyOutcome_ReturnsCancelledResult() {
+    public async Task RequestPermission_DenyOutcome_SelectsTheAgentsRejectOption() {
         var bridge = new AcpInteractionBridge(
             requestInteraction: (req, ct) => Task.FromResult(new AcpInteractionDecision("deny", null, null, null, null, null)),
             agentId: AgentId,
             logger: NullLogger.Instance);
 
-        var request = new AcpRequest(1, "session/request_permission", PermissionRequestParams(["allow-once", "deny"]));
+        var request = new AcpRequest(1, "session/request_permission", KindedPermissionParams(
+            ("allow-once", "allow_once"), ("no", "reject_once")));
 
         var result = await bridge.HandleAsync(request, CancellationToken.None);
 
         var outcome = result!.Value.GetProperty("outcome");
-        await Assert.That(outcome.GetProperty("outcome").GetString()).IsEqualTo("cancelled");
+        await Assert.That(outcome.GetProperty("outcome").GetString()).IsEqualTo("selected");
+        await Assert.That(outcome.GetProperty("optionId").GetString()).IsEqualTo("no");
+    }
+
+    /// <summary>With no way to say no, saying nothing is the honest answer — and the one thing a
+    /// refusal must never do is select an allow.</summary>
+    [Test]
+    public async Task RequestPermission_DenyOutcome_WithNoRejectOptionOffered_ReturnsCancelled() {
+        var bridge = new AcpInteractionBridge(
+            requestInteraction: (req, ct) => Task.FromResult(new AcpInteractionDecision("deny", null, null, null, null, null)),
+            agentId: AgentId,
+            logger: NullLogger.Instance);
+
+        var request = new AcpRequest(1, "session/request_permission", PermissionRequestParams(["allow-once", "allow-always"]));
+
+        var result = await bridge.HandleAsync(request, CancellationToken.None);
+
+        await Assert.That(result!.Value.GetProperty("outcome").GetProperty("outcome").GetString()).IsEqualTo("cancelled");
+    }
+
+    /// <summary>An id that resolves to an ALLOW cannot ride in on a refusal, whatever sent it.</summary>
+    [Test]
+    public async Task RequestPermission_DenyOutcome_NamingAnAllowOptionId_ReturnsCancelled() {
+        var bridge = new AcpInteractionBridge(
+            requestInteraction: (req, ct) => Task.FromResult(new AcpInteractionDecision("deny", "allow-once", null, null, null, null)),
+            agentId: AgentId,
+            logger: NullLogger.Instance);
+
+        var request = new AcpRequest(1, "session/request_permission", KindedPermissionParams(
+            ("allow-once", "allow_once"), ("no", "reject_once")));
+
+        var result = await bridge.HandleAsync(request, CancellationToken.None);
+
+        await Assert.That(result!.Value.GetProperty("outcome").GetProperty("outcome").GetString()).IsEqualTo("cancelled");
+    }
+
+    /// <summary>Two rejects of the same kind is an ambiguous refusal; a standing one is exactly where
+    /// a guessed pick persists past this call.</summary>
+    [Test]
+    public async Task RequestPermission_DenyOutcome_WithTwoRejectAlwaysAndNoChoice_ReturnsCancelled() {
+        var bridge = new AcpInteractionBridge(
+            requestInteraction: (req, ct) => Task.FromResult(new AcpInteractionDecision("deny", null, null, null, null, null)),
+            agentId: AgentId,
+            logger: NullLogger.Instance);
+
+        var request = new AcpRequest(1, "session/request_permission", KindedPermissionParams(
+            ("no-a", "reject_always"), ("no-b", "reject_always")));
+
+        var result = await bridge.HandleAsync(request, CancellationToken.None);
+
+        await Assert.That(result!.Value.GetProperty("outcome").GetProperty("outcome").GetString()).IsEqualTo("cancelled");
+    }
+
+    /// <summary>reject_once over reject_always: a refusal of one call must not silently become a
+    /// standing one.</summary>
+    [Test]
+    public async Task RequestPermission_DenyOutcome_PrefersRejectOnceOverRejectAlways() {
+        var bridge = new AcpInteractionBridge(
+            requestInteraction: (req, ct) => Task.FromResult(new AcpInteractionDecision("deny", null, null, null, null, null)),
+            agentId: AgentId,
+            logger: NullLogger.Instance);
+
+        var request = new AcpRequest(1, "session/request_permission", KindedPermissionParams(
+            ("never", "reject_always"), ("not-now", "reject_once")));
+
+        var result = await bridge.HandleAsync(request, CancellationToken.None);
+
+        var outcome = result!.Value.GetProperty("outcome");
+        await Assert.That(outcome.GetProperty("outcome").GetString()).IsEqualTo("selected");
+        await Assert.That(outcome.GetProperty("optionId").GetString()).IsEqualTo("not-now");
     }
 
     [Test]
