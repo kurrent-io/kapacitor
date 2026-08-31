@@ -50,6 +50,55 @@ public class CodexLauncherTests {
         DisableTableOverride(args) is { } table
         && table.Contains($"\"{name}\"={{enabled=false", StringComparison.Ordinal);
 
+    /// <summary>Codex raises a modal migration dialog when launched with a slug its own
+    /// <c>[notice.model_migrations]</c> retires, and that dialog sits before <c>thread/start</c> —
+    /// no session id, no correlation, and a parked TUI that still renders so no watchdog fires. The
+    /// argv is the only place this can be prevented.</summary>
+    [Test]
+    public async Task BuildArgs_launches_with_the_slug_codex_migrated_the_requested_one_to() {
+        WriteCodexConfig("[notice.model_migrations]\n\"gpt-5.4-mini\" = \"gpt-5.6-luna\"\n");
+
+        var args = NewLauncher().BuildArgs(NewCtx(model: "gpt-5.4-mini")).Args;
+
+        await Assert.That(args).Contains("gpt-5.6-luna");
+        await Assert.That(args).DoesNotContain("gpt-5.4-mini");
+    }
+
+    [Test]
+    public async Task BuildArgs_leaves_an_unmigrated_model_alone() {
+        WriteCodexConfig("[notice.model_migrations]\n\"gpt-5.2\" = \"gpt-5.6\"\n");
+
+        var args = NewLauncher().BuildArgs(NewCtx(model: "gpt-5.3-codex")).Args;
+
+        await Assert.That(args).Contains("gpt-5.3-codex");
+    }
+
+    /// <summary>The "default" sentinel means no override at all, so codex resolves from its own
+    /// config — substituting here would turn a no-override launch into a pinned one.</summary>
+    [Test]
+    public async Task BuildArgs_passes_no_model_for_the_default_sentinel_whatever_the_map_says() {
+        WriteCodexConfig("[notice.model_migrations]\n\"default\" = \"gpt-5.6-luna\"\n");
+
+        var args = NewLauncher().BuildArgs(NewCtx(model: "default")).Args;
+
+        await Assert.That(args).DoesNotContain("-m");
+        await Assert.That(args).DoesNotContain("gpt-5.6-luna");
+    }
+
+    /// <summary>A reviewer's model is pinned and priced by the server against the slug it sent; a
+    /// round produced under a locally-substituted model would carry an authority it does not have.</summary>
+    [Test]
+    public async Task BuildArgs_never_migrates_a_reviewer_launch_model() {
+        WriteCodexConfig("[notice.model_migrations]\n\"gpt-5.4-mini\" = \"gpt-5.6-luna\"\n");
+
+        var args = NewLauncher().BuildArgs(NewCtx(model: "gpt-5.4-mini", isReviewFlow: true)).Args;
+
+        await Assert.That(args).Contains("gpt-5.4-mini");
+        await Assert.That(args).DoesNotContain("gpt-5.6-luna");
+    }
+
+    void WriteCodexConfig(string toml) => Home.CreateFile([".codex", "config.toml"], toml);
+
     [Test]
     public async Task BuildArgs_uses_never_approval_for_hosted_codex() {
         var args = NewLauncher().BuildArgs(NewCtx(isReviewFlow: true)).Args;

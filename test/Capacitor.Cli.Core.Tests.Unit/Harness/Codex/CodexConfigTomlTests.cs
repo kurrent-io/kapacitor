@@ -13,6 +13,33 @@ public class CodexConfigTomlTests {
     static TomlTable ReadToml(string path) =>
         TomlSerializer.Deserialize<TomlTable>(File.ReadAllText(path))!;
 
+    // ── ReadModelMigrations ────────────────────────────
+
+    /// <summary>The shape Codex writes once its migration dialog has been answered. Reading it is
+    /// what lets a launch skip that dialog, so the nested-table walk has to match Codex's own layout
+    /// rather than a top-level key.</summary>
+    [Test]
+    public async Task ReadModelMigrations_reads_the_nested_notice_table() {
+        using var tmp = new TempDir();
+        var path = tmp.CreateFile("config.toml",
+            "model = \"gpt-5.6-luna\"\n\n[notice.model_migrations]\n\"gpt-5.4-mini\" = \"gpt-5.6-luna\"\n\"gpt-5.2\" = \"gpt-5.6\"\n");
+
+        var migrations = CodexConfigToml.ReadModelMigrations(path);
+
+        await Assert.That(migrations["gpt-5.4-mini"]).IsEqualTo("gpt-5.6-luna");
+        await Assert.That(migrations["gpt-5.2"]).IsEqualTo("gpt-5.6");
+    }
+
+    [Test]
+    public async Task ReadModelMigrations_is_empty_when_the_table_is_absent_or_the_file_is_not() {
+        using var tmp = new TempDir();
+
+        await Assert.That(CodexConfigToml.ReadModelMigrations(tmp.PathTo("missing.toml"))).IsEmpty();
+        await Assert.That(CodexConfigToml.ReadModelMigrations(tmp.CreateFile("bare.toml", "model = \"x\"\n"))).IsEmpty();
+        await Assert.That(CodexConfigToml.ReadModelMigrations(tmp.CreateFile("other.toml", "[notice]\nseen = true\n"))).IsEmpty();
+        await Assert.That(CodexConfigToml.ReadModelMigrations(tmp.CreateFile("bad.toml", "this is not toml ]["))).IsEmpty();
+    }
+
     // ── BuildAllowDomains ────────────────────────────────────────────────────
 
     [Test]

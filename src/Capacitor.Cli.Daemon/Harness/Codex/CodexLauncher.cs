@@ -194,7 +194,7 @@ internal sealed partial class CodexLauncher(
             AppendMcpIsolationArgs(args, ctx, appServer: false);
         }
 
-        AddModelArg(args, ctx.Model);
+        AddModelArg(args, ctx);
 
         var effort = ctx.Effort;
 
@@ -413,11 +413,36 @@ internal sealed partial class CodexLauncher(
 
     /// Append `-m &lt;model&gt;` unless the model is empty or the "default" no-override sentinel
     /// (see <see cref="IsConcreteModel"/>).
-    static void AddModelArg(List<string> args, string? model) {
-        if (IsConcreteModel(model)) {
-            args.Add("-m");
-            args.Add(model!);
-        }
+    void AddModelArg(List<string> args, LauncherContext ctx) {
+        if (!IsConcreteModel(ctx.Model)) return;
+
+        args.Add("-m");
+        // A reviewer's model is pinned and priced by the server, which validates the slug it sent and
+        // not whatever this host's config would swap it for — a round that reviewed under a
+        // substituted model would carry an authority it does not have. A reviewer that parks on the
+        // migration dialog instead is reaped by its first-output deadline, which is the visible
+        // failure this trade prefers.
+        args.Add(ctx.IsReviewFlow || ctx.IsReview ? ctx.Model! : MigratedModel(ctx.Model!, ctx.AgentId));
+    }
+
+    /// <summary>The slug Codex would end up on anyway, when its own
+    /// <c>[notice.model_migrations]</c> maps the one asked for. Passing the retired slug instead
+    /// raises a modal migration dialog before <c>thread/start</c>: nothing correlates the session
+    /// while it is up, a parked TUI still renders so no stuck-launch watchdog fires, and the user sits
+    /// on "Waiting for session to start…" until something answers it. Read from the operator's own
+    /// acknowledged map, never a table of ours — Codex owns which model replaces which, and an
+    /// unacknowledged migration is not in there to read.</summary>
+    string MigratedModel(string model, string agentId) {
+        var migrations = CodexConfigToml.ReadModelMigrations(_paths.ConfigToml);
+
+        if (!migrations.TryGetValue(model, out var migrated)
+         || string.IsNullOrWhiteSpace(migrated)
+         || string.Equals(migrated, model, StringComparison.Ordinal))
+            return model;
+
+        LogModelMigrated(agentId, model, migrated);
+
+        return migrated;
     }
 
     /// Review launch: inject the same kcap-review MCP server Claude gets, but via
@@ -428,7 +453,7 @@ internal sealed partial class CodexLauncher(
     /// Sandbox/approval stay FIXED here by design: the PR-review path sits outside the
     /// caller-posture seam, and a posture supplied with this launch kind is rejected upstream by
     /// CodexPosturePolicy rather than reaching this method.
-    static LaunchArgs BuildReviewArgs(LauncherContext ctx, ReviewLaunchBuilder.ReviewLaunch launch) {
+    LaunchArgs BuildReviewArgs(LauncherContext ctx, ReviewLaunchBuilder.ReviewLaunch launch) {
         const string serverName = "kcap-review";
         var          mcp        = launch.Mcp;
 
@@ -451,7 +476,7 @@ internal sealed partial class CodexLauncher(
         args.Add("-c");
         args.Add($"mcp_servers.{serverName}.env={{{envList}}}");
 
-        AddModelArg(args, ctx.Model);
+        AddModelArg(args, ctx);
 
         args.Add("--no-alt-screen");
         args.Add("--");
@@ -517,6 +542,9 @@ internal sealed partial class CodexLauncher(
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Tools array of length {Count} ignored for vendor=codex (no allowlist concept) — agent {AgentId}")]
     partial void LogToolsIgnoredForCodex(string agentId, int count);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Agent {AgentId}: codex retired model '{Requested}'; launching with '{Migrated}' from its own acknowledged migration map, which is what codex would resolve after prompting.")]
+    partial void LogModelMigrated(string agentId, string requested, string migrated);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "MCP allowlist entry '{Name}' is not a kcap-owned server — skipping (agent {AgentId})")]
     partial void LogAllowlistEntryUnknown(string name, string agentId);
