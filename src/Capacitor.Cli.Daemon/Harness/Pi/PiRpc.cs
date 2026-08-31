@@ -99,9 +99,12 @@ internal static class PiRpc {
     ///
     /// <list type="bullet">
     /// <item><description><c>message_end</c> with an assistant message maps each content item, IN
-    /// ORDER, to <c>assistant_text</c> / <c>assistant_thinking</c> / <c>tool_call</c>, then appends
-    /// ONE trailing <c>usage</c> envelope when the message carries a <c>usage</c> block. Every
-    /// envelope's <see cref="AcpEventEnvelope.Model"/> is the message's own <c>"model"</c> field, else
+    /// ORDER, to <c>assistant_text</c> / <c>assistant_thinking</c> / <c>tool_call</c>; a
+    /// <c>stopReason</c> of <c>"error"</c> then appends ONE <c>system_note</c> carrying the
+    /// message's <c>errorMessage</c> (capped at <see cref="ExtensionNoteTextCap"/>) — a failed turn
+    /// usually has EMPTY content, so this note is its only visible trace; finally ONE trailing
+    /// <c>usage</c> envelope when the message carries a <c>usage</c> block. Every envelope's
+    /// <see cref="AcpEventEnvelope.Model"/> is the message's own <c>"model"</c> field, else
     /// <paramref name="fallbackModel"/>.</description></item>
     /// <item><description><c>message_end</c> with a user message maps to ONE <c>user_message</c>
     /// envelope carrying the concatenated text — content may be a plain string or a content-part
@@ -193,6 +196,19 @@ internal static class PiRpc {
                         break;
                 }
             }
+        }
+
+        // A provider-side turn failure arrives as stopReason "error" with the detail in
+        // errorMessage — usually alongside EMPTY content, so without this arm the failure
+        // translates to nothing and the hosted session reads as hung. "aborted" is excluded:
+        // the daemon's own graceful stop sends the abort, so it is not a failure to report.
+        if (message.Str("stopReason") == "error") {
+            (envelopes ??= []).Add(new AcpEventEnvelope(
+                Kind: AcpEventKind.SystemNote,
+                Text: message.Str("errorMessage") is { Length: > 0 } error
+                    ? Cap($"Pi turn failed: {error}")
+                    : "Pi turn failed (no error detail from Pi).",
+                Model: model));
         }
 
         if (message.Obj("usage") is { } usage) {

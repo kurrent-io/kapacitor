@@ -132,6 +132,96 @@ public class PiRpcTests {
         await Assert.That(envelopes[0].Model).IsEqualTo("fallback-model");
     }
 
+    // ---- ToEnvelopes: errored assistant message_end ----
+    //
+    // Pi reports a provider-side turn failure as an assistant message_end with empty content,
+    // stopReason "error" and the detail in errorMessage. The system note is that failure's only
+    // visible trace — untranslated, the hosted session reads as hung.
+
+    [Test]
+    public async Task Errored_assistant_message_end_yields_a_system_note_with_the_error() {
+        const string line = """
+            {"type":"message_end","message":{"role":"assistant","content":[],"model":"pi-large",
+                "usage":{"input":0,"output":0},"stopReason":"error",
+                "errorMessage":"400 rate limited"}}
+            """;
+
+        var frame = PiRpc.TryParseLine(line);
+        var envelopes = PiRpc.ToEnvelopes(frame!, fallbackModel: null);
+
+        await Assert.That(envelopes.Count).IsEqualTo(2);
+        await Assert.That(envelopes[0].Kind).IsEqualTo(AcpEventKind.SystemNote);
+        await Assert.That(envelopes[0].Text).IsEqualTo("Pi turn failed: 400 rate limited");
+        await Assert.That(envelopes[0].Model).IsEqualTo("pi-large");
+        await Assert.That(envelopes[1].Kind).IsEqualTo(AcpEventKind.Usage);
+    }
+
+    [Test]
+    public async Task Errored_assistant_message_end_without_errorMessage_still_yields_a_note() {
+        const string line = """
+            {"type":"message_end","message":{"role":"assistant","content":[],"stopReason":"error"}}
+            """;
+
+        var frame = PiRpc.TryParseLine(line);
+        var envelopes = PiRpc.ToEnvelopes(frame!, fallbackModel: null);
+
+        await Assert.That(envelopes.Count).IsEqualTo(1);
+        await Assert.That(envelopes[0].Kind).IsEqualTo(AcpEventKind.SystemNote);
+        await Assert.That(envelopes[0].Text).IsEqualTo("Pi turn failed (no error detail from Pi).");
+    }
+
+    [Test]
+    public async Task Errored_assistant_message_end_error_text_is_capped_at_500_characters() {
+        var longError = new string('x', 800);
+        var line = $$$"""
+            {"type":"message_end","message":{"role":"assistant","content":[],"stopReason":"error",
+                "errorMessage":"{{{longError}}}"}}
+            """;
+
+        var frame = PiRpc.TryParseLine(line);
+        var envelopes = PiRpc.ToEnvelopes(frame!, fallbackModel: null);
+
+        await Assert.That(envelopes.Count).IsEqualTo(1);
+        await Assert.That(envelopes[0].Kind).IsEqualTo(AcpEventKind.SystemNote);
+        await Assert.That(envelopes[0].Text!.Length).IsEqualTo(500);
+    }
+
+    [Test]
+    public async Task Errored_assistant_message_end_keeps_partial_content_and_usage_stays_trailing() {
+        const string line = """
+            {"type":"message_end","message":{"role":"assistant","content":[
+                {"type":"text","text":"partial"}
+            ],"usage":{"input":7,"output":0},"stopReason":"error","errorMessage":"boom"}}
+            """;
+
+        var frame = PiRpc.TryParseLine(line);
+        var envelopes = PiRpc.ToEnvelopes(frame!, fallbackModel: null);
+
+        await Assert.That(envelopes.Count).IsEqualTo(3);
+        await Assert.That(envelopes[0].Kind).IsEqualTo(AcpEventKind.AssistantText);
+        await Assert.That(envelopes[0].Text).IsEqualTo("partial");
+        await Assert.That(envelopes[1].Kind).IsEqualTo(AcpEventKind.SystemNote);
+        await Assert.That(envelopes[1].Text).IsEqualTo("Pi turn failed: boom");
+        await Assert.That(envelopes[2].Kind).IsEqualTo(AcpEventKind.Usage);
+    }
+
+    /// <summary>An aborted turn is a stop somebody asked for — the daemon's own graceful stop
+    /// sends the abort — so it must not read as a failure note on every wind-down.</summary>
+    [Test]
+    public async Task Aborted_assistant_message_end_yields_no_note() {
+        const string line = """
+            {"type":"message_end","message":{"role":"assistant","content":[
+                {"type":"text","text":"cut short"}
+            ],"stopReason":"aborted"}}
+            """;
+
+        var frame = PiRpc.TryParseLine(line);
+        var envelopes = PiRpc.ToEnvelopes(frame!, fallbackModel: null);
+
+        await Assert.That(envelopes.Count).IsEqualTo(1);
+        await Assert.That(envelopes[0].Kind).IsEqualTo(AcpEventKind.AssistantText);
+    }
+
     // ---- ToEnvelopes: user message_end ----
 
     [Test]

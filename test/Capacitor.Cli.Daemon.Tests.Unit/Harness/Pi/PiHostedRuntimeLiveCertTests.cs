@@ -117,11 +117,16 @@ public class PiHostedRuntimeLiveCertTests {
 
             // (b) The prompted turn's assistant_text reply must carry the nonce, observed over the
             // SAME channel the daemon forwards to the server.
-            var (sawNonce, collected) = await CollectUntilNonceAsync(runtime.Envelopes, nonce, TurnTimeout);
+            var (sawNonce, turnError, collected) = await CollectUntilNonceAsync(runtime.Envelopes, nonce, TurnTimeout);
 
             Console.WriteLine($"[pi-hosted-live] observed {collected.Count} transcript envelope(s):");
             foreach (var env in collected)
                 Console.WriteLine($"[pi-hosted-live]   kind={env.Kind} text={env.Text}");
+
+            await Assert.That(turnError).IsNull()
+                .Because("the prompted turn failed on the Pi/provider side — an ENVIRONMENT fault "
+                       + "(check the provider auth/usage this machine's `pi` runs under), not a "
+                       + $"runtime defect: {turnError}");
 
             await Assert.That(sawNonce).IsTrue()
                 .Because($"expected an assistant_text envelope containing '{nonce}' within {TurnTimeout} "
@@ -142,9 +147,11 @@ public class PiHostedRuntimeLiveCertTests {
     }
 
     /// <summary>Drains <paramref name="envelopes"/> until an <c>assistant_text</c> envelope's
-    /// <see cref="AcpEventEnvelope.Text"/> contains <paramref name="nonce"/> (ordinal), or
-    /// <paramref name="timeout"/> elapses.</summary>
-    static async Task<(bool SawNonce, List<AcpEventEnvelope> Collected)> CollectUntilNonceAsync(
+    /// <see cref="AcpEventEnvelope.Text"/> contains <paramref name="nonce"/> (ordinal), a turn-failed
+    /// <c>system_note</c> arrives (an environment fault — provider auth/usage — that would otherwise
+    /// burn the whole timeout and report as opaque dead air), or <paramref name="timeout"/>
+    /// elapses.</summary>
+    static async Task<(bool SawNonce, string? TurnError, List<AcpEventEnvelope> Collected)> CollectUntilNonceAsync(
             ChannelReader<AcpEventEnvelope> envelopes, string nonce, TimeSpan timeout) {
         var collected = new List<AcpEventEnvelope>();
 
@@ -158,7 +165,12 @@ public class PiHostedRuntimeLiveCertTests {
                     if (env.Kind == AcpEventKind.AssistantText
                             && env.Text is { Length: > 0 } text
                             && text.Contains(nonce, StringComparison.Ordinal))
-                        return (true, collected);
+                        return (true, null, collected);
+
+                    if (env.Kind == AcpEventKind.SystemNote
+                            && env.Text is { } note
+                            && note.StartsWith("Pi turn failed", StringComparison.Ordinal))
+                        return (false, note, collected);
                 }
             }
         } catch (OperationCanceledException) {
@@ -166,7 +178,7 @@ public class PiHostedRuntimeLiveCertTests {
             // observed either way.
         }
 
-        return (false, collected);
+        return (false, null, collected);
     }
 
     /// <summary>Best-effort <c>pi --version</c> capture for the test log — never asserted on, purely
