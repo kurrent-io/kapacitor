@@ -192,11 +192,21 @@ internal sealed class AcpTranscriptForwarder {
                     if (drained is null)
                         return;
 
-                    foreach (var envelope in drained)
+                    // Canonical-only bookkeeping. Ephemerals are fire-and-forget: not retained for
+                    // resend, and not counted in the high-water mark the ack is compared against. An
+                    // all-ephemeral batch therefore leaves _highestSent untouched, so the ack that
+                    // follows cannot look like a terminal-drop.
+                    foreach (var envelope in drained.Where(static e => !e.Ephemeral))
                         _unacked[envelope.Seq] = envelope;
 
-                    _highestSent = drained[^1].Seq;
-                    batch        = drained;
+                    for (var i = drained.Length - 1; i >= 0; i--) {
+                        if (drained[i].Ephemeral) continue;
+
+                        _highestSent = drained[i].Seq;
+                        break;
+                    }
+
+                    batch = drained;
                 }
 
                 var ack = await SendWithRetryAsync(batch, ct).ConfigureAwait(false);
@@ -262,8 +272,14 @@ internal sealed class AcpTranscriptForwarder {
     /// <summary>
     /// Blocks until at least one new envelope is available (or the channel completes), then drains
     /// everything immediately available too — "batch opportunistically" per the design spec — and
-    /// stamps each with the next monotonic seq. Returns <see langword="null"/> when the channel has
-    /// completed with nothing left to read.
+    /// stamps each CANONICAL envelope with the next monotonic seq. Returns <see langword="null"/> when
+    /// the channel has completed with nothing left to read.
+    ///
+    /// <para>Ephemeral envelopes consume NO sequence number: they ride the same batch in arrival order,
+    /// are excluded from the server's dup/gap logic, and never advance any cursor. Numbering them would
+    /// inflate this side's <c>_highestSent</c> past the <c>AcceptedSeq</c> the server can ever return
+    /// (it sequences canonical envelopes only), which the ack loop would read as a terminal-drop and
+    /// stop forwarding for the rest of the session.</para>
     /// </summary>
     async Task<AcpEventEnvelope[]?> DrainNewEnvelopesAsync(CancellationToken ct) {
         if (!await _envelopes.WaitToReadAsync(ct).ConfigureAwait(false))
@@ -272,7 +288,7 @@ internal sealed class AcpTranscriptForwarder {
         List<AcpEventEnvelope>? batch = null;
 
         while (_envelopes.TryRead(out var raw))
-            (batch ??= []).Add(raw with { Seq = _nextSeq++ });
+            (batch ??= []).Add(raw.Ephemeral ? raw : raw with { Seq = _nextSeq++ });
 
         return batch?.ToArray();
     }
