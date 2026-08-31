@@ -116,7 +116,10 @@ public class TerminalSendGateTests {
             await vm.CurrentRunForTesting!;
             gate.SetResult();
             await reattach;
-            await Assert.That(factory.Created.Count).IsEqualTo(1); // the drained outcome retired the attempt
+            // The outcome retires nothing here: reattach took the opening token before it disposed
+            // the client whose outcome that is, so its own attempt survives and swaps in.
+            await Assert.That(factory.Created.Count).IsEqualTo(2);
+            await Assert.That(vm.State.Phase).IsEqualTo(TerminalSessionPhase.Connecting);
 
             await vm.ReattachCommand.Execute();
             var client2 = factory.Created[^1];
