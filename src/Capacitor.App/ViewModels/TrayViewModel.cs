@@ -156,12 +156,12 @@ public sealed class TrayViewModel : ReactiveObject, IDisposable {
         var (state, count) = Project(status, snap);
         var baseState = state; // the row's own verdict (rows 1-10), before either upgrade below
 
-        // Row 11: pending consent, a pending permission request, or a pending question asserts
-        // Attention only while Connected — the owner has something waiting. Judged against
-        // baseState (not state) so a later independent upgrade can never make this fire
-        // retroactively; connection-trouble rows above already left baseState at something other
-        // than Idle/Running, so they keep precedence for free, and the running-count badge (count)
-        // keeps the agent count regardless.
+        // Pending consent, a pending permission request, or a pending question asserts Attention
+        // only while Connected — the owner has something waiting. Judged against baseState (not
+        // state) so a later independent upgrade can never make this fire retroactively;
+        // connection-trouble rows above already left baseState non-Idle/Running and keep
+        // precedence for free, and the running-count badge (count) keeps the agent count
+        // regardless.
         var pendingAttention = status.State == AttachState.Connected && (pendingConsent > 0 || pendingSummary.Total > 0)
             && baseState is TrayState.Idle or TrayState.Running;
         if (pendingAttention) state = TrayState.Attention;
