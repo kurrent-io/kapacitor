@@ -35,6 +35,13 @@ internal interface IHostedAgentRuntimeFactory {
     /// </summary>
     bool IsAvailable();
 
+    /// <summary>The binary this factory would launch — the one whose <c>--version</c> identifies the
+    /// build a launch actually gets. Every factory already resolves it to answer
+    /// <see cref="IsAvailable"/>, so asking here is what keeps the advertised version and the admitted
+    /// build one answer: a vendor-keyed map beside them drifts, and the drift is silent (the operator
+    /// reads "CLI version unknown" for a vendor the gate just admitted on a resolved version).</summary>
+    string CliPath { get; }
+
     /// <summary>
     /// Whether this vendor can host a fully UNATTENDED agent (<see cref="LaunchKind.ReviewFlow"/>).
     /// The orchestrator refuses an unattended launch for a vendor that returns <c>false</c>.

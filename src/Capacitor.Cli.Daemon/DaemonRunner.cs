@@ -1379,26 +1379,24 @@ public static partial class DaemonRunner {
         var capabilities = new List<UnattendedVendorCapability>();
         foreach (var vendor in unattended) {
             var factory = factories.First(f => string.Equals(f.Vendor, vendor, StringComparison.Ordinal));
-            var (cliPath, policyVersion) = vendor switch {
-                "claude"  => (config.ClaudePath, ClaudeLauncherPolicyVersion),
-                "cursor"  => (config.CursorPath, CursorLauncherPolicyVersion),
-                // The advertised codex policy version is chosen from the SAME resolved field the
-                // launch router uses (config.CodexAppServerActive), so the certified policy and the
-                // transport actually launched can never diverge.
-                "codex"   => (config.CodexPath,
-                              config.CodexAppServerActive ? CodexAppServerLauncherPolicyVersion : CodexLauncherPolicyVersion),
-                "copilot" => (config.CopilotPath, CopilotLauncherPolicyVersion),
-                // Named rather than left to the generic arm, which advertises CliVersion: null — there
-                // is a real configured path here to probe, and the floor is stated in that version.
-                AntigravityVendor => (config.AntigravityPath, AntigravityLauncherPolicyVersion),
-                // Named for the same reason as Antigravity above, and found the same way: a live dev
-                // daemon logged "Unattended vendor 'opencode': CLI version unknown" while the gate had
-                // just admitted it on a resolved version, because the gate probes
-                // descriptor.ResolveBinaryPath and this map did not know the vendor. Two answers about
-                // one build, and the WRONG one is what reaches the server and the operator's log — the
-                // first place anyone looks when a reviewer misbehaves.
-                "opencode" => (config.OpenCodePath, OpenCodeLauncherPolicyVersion),
-                _         => ("", $"{vendor}-unattended-v1")
+            // The binary comes from the factory that would launch it, never from a vendor-keyed map
+            // here: the map form shipped twice with a vendor missing, and each time the daemon told
+            // the operator "CLI version unknown" for a vendor the gate had just admitted on a
+            // resolved version — the wrong one of two answers about one build, in the first place
+            // anyone looks when a reviewer misbehaves. Only the policy version is genuinely per
+            // vendor, and a missing arm there is a wrong string rather than a silent nothing.
+            var cliPath = factory.CliPath;
+            var policyVersion = vendor switch {
+                "claude"  => ClaudeLauncherPolicyVersion,
+                "cursor"  => CursorLauncherPolicyVersion,
+                // Chosen from the SAME resolved field the launch router uses
+                // (config.CodexAppServerActive), so the certified policy and the transport actually
+                // launched can never diverge.
+                "codex"   => config.CodexAppServerActive ? CodexAppServerLauncherPolicyVersion : CodexLauncherPolicyVersion,
+                "copilot" => CopilotLauncherPolicyVersion,
+                AntigravityVendor => AntigravityLauncherPolicyVersion,
+                "opencode" => OpenCodeLauncherPolicyVersion,
+                _         => $"{vendor}-unattended-v1"
             };
             // Trust-by-default: a vendor's borrowed-review capability is a property of its FACTORY,
             // never of the installed build's identity. Gating this on an exact-build match made an
