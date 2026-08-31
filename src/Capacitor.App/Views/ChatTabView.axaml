@@ -93,13 +93,16 @@
                                             <Setter Property="BorderBrush" Value="{StaticResource KcapAccentBrush}" />
                                         </Style>
                                     </Border.Styles>
-                                    <StackPanel Spacing="8">
+                                    <StackPanel Spacing="8" IsEnabled="{Binding !IsBusy}">
                                         <ItemsControl ItemsSource="{Binding Questions}">
                                             <ItemsControl.ItemTemplate>
                                                 <DataTemplate x:DataType="vm:QuestionGroupViewModel">
                                                     <StackPanel Spacing="5" Margin="0,0,0,4">
-                                                        <TextBlock Text="{Binding Header}" FontSize="10" FontWeight="SemiBold" Foreground="{StaticResource KcapMutedBrush}"
-                                                                   IsVisible="{Binding Header, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                                                        <Border Background="{StaticResource KcapSurfaceBrush}" CornerRadius="4" Padding="5,1" HorizontalAlignment="Left"
+                                                                IsVisible="{Binding Header, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
+                                                            <TextBlock Text="{Binding Header}" FontSize="10" FontWeight="SemiBold" Foreground="{StaticResource KcapMutedBrush}"
+                                                                       TextTrimming="CharacterEllipsis" />
+                                                        </Border>
                                                         <TextBlock Text="{Binding Text}" FontWeight="SemiBold" FontSize="13" TextWrapping="Wrap"
                                                                    Foreground="{StaticResource KcapTextBrush}" />
                                                         <ItemsControl ItemsSource="{Binding Options}">
@@ -114,7 +117,7 @@
                                                                             <StackPanel>
                                                                                 <TextBlock Text="{Binding Label}" Foreground="{StaticResource KcapTextBrush}" />
                                                                                 <TextBlock Text="{Binding Description}" FontSize="11" Foreground="{StaticResource KcapMutedBrush}"
-                                                                                           TextWrapping="Wrap"
+                                                                                           TextWrapping="Wrap" MaxLines="3" TextTrimming="CharacterEllipsis"
                                                                                            IsVisible="{Binding Description, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
                                                                             </StackPanel>
                                                                         </Button>
@@ -122,7 +125,7 @@
                                                                             <StackPanel>
                                                                                 <TextBlock Text="{Binding Label}" Foreground="{StaticResource KcapTextBrush}" />
                                                                                 <TextBlock Text="{Binding Description}" FontSize="11" Foreground="{StaticResource KcapMutedBrush}"
-                                                                                           TextWrapping="Wrap"
+                                                                                           TextWrapping="Wrap" MaxLines="3" TextTrimming="CharacterEllipsis"
                                                                                            IsVisible="{Binding Description, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
                                                                             </StackPanel>
                                                                         </CheckBox>
