@@ -120,7 +120,7 @@ sealed class DaemonServiceCommands(
         if (daemonPath is null) { await Console.Error.WriteLineAsync(DaemonCommands.DaemonNotFoundMessage()); return 1; }
 
         var profileName = DaemonCommands.ExtractFlagValue(args, "--profile") ?? profiles.Resolution.ProfileName;
-        var env = new Dictionary<string, string>(ServiceEnvironment.Capture(profileName, root)) {
+        var env = new Dictionary<string, string>(ServiceEnvironment.Capture(profileName, root, home)) {
             ["KCAP_DAEMON_SUPERVISED"] = id,   // name-specific; daemon honors it only when == its sanitized --name
         };
 
@@ -171,6 +171,20 @@ sealed class DaemonServiceCommands(
             // these became opt-outs, a captured `0` DISABLES, and the old "the reviewer it enables stays on"
             // text was exactly backwards for that case. Classified through the same Core parser the daemon
             // reads, so the notice and the daemon can never disagree about a value's meaning.
+            // The hosted-agy trio's state, said out loud for the same reason the consent flags are:
+            // the unit outlives the shell, and a partial trio is never a working agy configuration —
+            // silence here is how a reinstall that changed nothing goes unnoticed.
+            var (agyPresent, agyMissing) = Capacitor.Cli.Harness.Antigravity.AntigravityAdcTrio.Status(env);
+            if (agyPresent && agyMissing.Count == 0) {
+                await Console.Out.WriteLineAsync(
+                    "  Antigravity: ADC trio captured into the unit — hosted agy can authenticate.");
+            } else if (agyPresent) {
+                await Console.Out.WriteLineAsync(
+                    $"  Antigravity: PARTIAL ADC capture — missing {string.Join(", ", agyMissing)}. "
+                  + "Hosted agy cannot authenticate until the unit carries all three "
+                  + "(run `gcloud auth application-default login`, then reinstall).");
+            }
+
             foreach (var flag in ServiceEnvironment.CarriedConsentFlags(env)) {
                 var effect = ReviewerConsent.IsEnabled(env[flag])
                     ? "keeps that reviewer ENABLED (already the default)"
@@ -467,7 +481,7 @@ sealed class DaemonServiceCommands(
 
         // The app's MutationEnv overlay, in-process: seed born-prompt + the expected server the gate
         // and the daemon's own boot both re-read. Everything else comes from the ambient capture.
-        var env = EnsureUnitEnv(profileName, serverUrl, ServiceEnvironment.Capture(profileName, root));
+        var env = EnsureUnitEnv(profileName, serverUrl, ServiceEnvironment.Capture(profileName, root, home));
         env["KCAP_DAEMON_SUPERVISED"] = id;
         var logPath = root.Path($"daemon-{id}.log");
         var spec    = new ServiceSpec(id, daemonPath, logPath, env, []);

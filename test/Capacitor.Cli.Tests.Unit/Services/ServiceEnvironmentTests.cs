@@ -331,4 +331,124 @@ public class ServiceEnvironmentTests {
 
         await Assert.That(env["AGY_ADC_AUTH"]).IsEqualTo("1");
     }
+
+    // ── Antigravity ADC trio derivation ──
+
+    [Test]
+    public async Task Build_derives_the_adc_path_and_flag_when_the_well_known_file_exists() {
+        var env = ServiceEnvironment.Build(null, new Dictionary<string, string>(), Config.Root,
+            adcCredentialsPath: "/h/.config/gcloud/application_default_credentials.json");
+
+        await Assert.That(env["GOOGLE_APPLICATION_CREDENTIALS"])
+            .IsEqualTo("/h/.config/gcloud/application_default_credentials.json");
+        await Assert.That(env["AGY_ADC_AUTH"]).IsEqualTo("1");
+    }
+
+    [Test]
+    public async Task Build_prefers_an_exported_credentials_path_over_the_derived_one() {
+        var src = new Dictionary<string, string> { ["GOOGLE_APPLICATION_CREDENTIALS"] = "/custom/adc.json" };
+
+        var env = ServiceEnvironment.Build(null, src, Config.Root, adcCredentialsPath: "/derived/adc.json");
+
+        await Assert.That(env["GOOGLE_APPLICATION_CREDENTIALS"]).IsEqualTo("/custom/adc.json");
+    }
+
+    /// <summary>An exported value is the operator's word, whatever it says — derivation only fills
+    /// silence, it never argues.</summary>
+    /// <summary>An empty export is the operator declining ADC auth, not an absent key — derivation
+    /// must not hand them the 1 they declined.</summary>
+    [Test]
+    public async Task Build_keeps_an_exported_empty_adc_auth_over_the_derived_flag() {
+        var env = ServiceEnvironment.Build(null,
+            new Dictionary<string, string> { ["AGY_ADC_AUTH"] = "" },
+            Config.Root, adcCredentialsPath: "/derived/adc.json");
+
+        await Assert.That(env["AGY_ADC_AUTH"]).IsEqualTo("");
+    }
+
+    [Test]
+    public async Task Build_does_not_flip_an_exported_adc_auth_value() {
+        var src = new Dictionary<string, string> { ["AGY_ADC_AUTH"] = "0" };
+
+        var env = ServiceEnvironment.Build(null, src, Config.Root, adcCredentialsPath: "/derived/adc.json");
+
+        await Assert.That(env["AGY_ADC_AUTH"]).IsEqualTo("0");
+    }
+
+    /// <summary>The flag without a credential path is a broken half-configuration this code must
+    /// never manufacture: agy under AGY_ADC_AUTH=1 with no reachable ADC fails auth outright.</summary>
+    [Test]
+    public async Task Build_leaves_the_flag_unset_without_a_credentials_path() {
+        var env = ServiceEnvironment.Build(null, new Dictionary<string, string>(), Config.Root);
+
+        await Assert.That(env.ContainsKey("AGY_ADC_AUTH")).IsFalse();
+        await Assert.That(env.ContainsKey("GOOGLE_APPLICATION_CREDENTIALS")).IsFalse();
+    }
+
+    [Test]
+    public async Task Build_derives_the_project_from_gcloud_when_neither_spelling_is_exported() {
+        var env = ServiceEnvironment.Build(null, new Dictionary<string, string>(), Config.Root,
+            gcloudProject: "gcloud-proj");
+
+        await Assert.That(env["GOOGLE_CLOUD_PROJECT"]).IsEqualTo("gcloud-proj");
+    }
+
+    [Test]
+    public async Task Build_keeps_an_exported_project_over_the_gcloud_one() {
+        var env = ServiceEnvironment.Build(null,
+            new Dictionary<string, string> { ["GOOGLE_CLOUD_PROJECT"] = "exported" },
+            Config.Root, gcloudProject: "gcloud-proj");
+
+        await Assert.That(env["GOOGLE_CLOUD_PROJECT"]).IsEqualTo("exported");
+    }
+
+    /// <summary>The alternate spelling is a Gemini affordance; agy reads only the canonical key, so an
+    /// exported id must not suppress deriving it — that combination is what reports a complete trio
+    /// over a unit agy cannot authenticate with.</summary>
+    [Test]
+    public async Task Build_derives_the_canonical_project_alongside_an_exported_id_spelling() {
+        var env = ServiceEnvironment.Build(null,
+            new Dictionary<string, string> { ["GOOGLE_CLOUD_PROJECT_ID"] = "exported-id" },
+            Config.Root, gcloudProject: "gcloud-proj");
+
+        await Assert.That(env["GOOGLE_CLOUD_PROJECT"]).IsEqualTo("gcloud-proj");
+        await Assert.That(env["GOOGLE_CLOUD_PROJECT_ID"]).IsEqualTo("exported-id");
+    }
+
+    /// <summary>Windows carries no GOOGLE_APPLICATION_CREDENTIALS at all (unit files there have no
+    /// owner-only guarantee), so the trio can never complete and derivation stays off wholesale.
+    /// <see cref="ServiceEnvironment.Capture"/> also skips looking either source up on Windows —
+    /// reading a credential location and discarding it is still the probe the boundary forbids, and
+    /// only that caller can prove it, since Build is handed the values already read.</summary>
+    [Test]
+    public async Task Windows_build_derives_nothing() {
+        var env = ServiceEnvironment.Build(null, new Dictionary<string, string>(), Config.Root,
+            isWindows: true, adcCredentialsPath: "/derived/adc.json", gcloudProject: "gcloud-proj");
+
+        await Assert.That(env.ContainsKey("GOOGLE_APPLICATION_CREDENTIALS")).IsFalse();
+        await Assert.That(env.ContainsKey("AGY_ADC_AUTH")).IsFalse();
+        await Assert.That(env.ContainsKey("GOOGLE_CLOUD_PROJECT")).IsFalse();
+    }
+
+    /// <summary>A hand-edited config carries comments and quotes, and two keys in one section is a
+    /// file gcloud's own reader refuses — a guessed winner would be baked into a unit and only surface
+    /// later as an auth failure.</summary>
+    [Test]
+    public async Task GcloudConfig_strips_comments_and_quotes_and_refuses_a_duplicate_key() {
+        await Assert.That(GcloudConfig.ParseProject("[core]\nproject = my-proj # the one we use\n"))
+            .IsEqualTo("my-proj");
+        await Assert.That(GcloudConfig.ParseProject("[core]\nproject = \"my-proj\"\n")).IsEqualTo("my-proj");
+        await Assert.That(GcloudConfig.ParseProject("# project = decoy\n[core]\nproject = my-proj\n"))
+            .IsEqualTo("my-proj");
+        await Assert.That(GcloudConfig.ParseProject("[core]\nproject = one\nproject = two\n")).IsNull();
+    }
+
+    [Test]
+    public async Task GcloudConfig_parses_the_core_project() {
+        await Assert.That(GcloudConfig.ParseProject("[core]\nproject = my-proj\naccount = a@b.c\n"))
+            .IsEqualTo("my-proj");
+        await Assert.That(GcloudConfig.ParseProject("[compute]\nproject = wrong-section\n")).IsNull();
+        await Assert.That(GcloudConfig.ParseProject("")).IsNull();
+        await Assert.That(GcloudConfig.ParseProject("[core]\nproject =\n")).IsNull();
+    }
 }

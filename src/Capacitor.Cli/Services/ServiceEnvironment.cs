@@ -107,9 +107,20 @@ static class ServiceEnvironment {
     /// inert variable into the one serializer that cannot hold it safely buys nothing.</para></summary>
     const string TokenCommandKey = "KCAP_COPILOT_TOKEN_CMD";
 
-    /// <summary>Production entry point: capture from the current process env.</summary>
-    public static IReadOnlyDictionary<string, string> Capture(string? profileName, Core.ConfigRoot config) =>
-        Build(profileName, Snapshot(), config, OperatingSystem.IsWindows());
+    /// <summary>Production entry point: capture from the current process env, completing the
+    /// Antigravity ADC trio from gcloud's own on-disk state where the operator exported nothing —
+    /// the same silent capture every other key gets. Install time is the one moment this is
+    /// legitimate: the operator is running the command, and the daemon itself still never reads a
+    /// credential location of its own accord.</summary>
+    public static IReadOnlyDictionary<string, string> Capture(string? profileName, Core.ConfigRoot config, Core.UserHome home) {
+        // Windows derives nothing, so it must also LOOK at nothing: reading the credential location
+        // and discarding the result downstream is still the probe the boundary forbids.
+        var isWindows = OperatingSystem.IsWindows();
+
+        return Build(profileName, Snapshot(), config, isWindows,
+            adcCredentialsPath: isWindows ? null : Harness.Antigravity.AntigravityAdcTrio.ExistingCredentialsPath(home),
+            gcloudProject:      isWindows ? null : GcloudConfig.DefaultProject(home));
+    }
 
     static Dictionary<string, string> Snapshot() {
         var d = new Dictionary<string, string>();
@@ -123,14 +134,19 @@ static class ServiceEnvironment {
     /// other key here (which skips a present-but-empty value as if unset), these are baked
     /// VERBATIM whenever the key is present, empty or not. Silently dropping an empty directive
     /// on the way into the unit would let it vanish instead of failing closed.</summary>
-    static readonly string[] BakeEvenEmptyKeys = ["KCAP_CONSENT_SEED_DEFAULT", "KCAP_EXPECT_SERVER_URL"];
+    static readonly string[] BakeEvenEmptyKeys = [
+        "KCAP_CONSENT_SEED_DEFAULT", "KCAP_EXPECT_SERVER_URL",
+        // Same contract, for the same reason: an operator who exported an empty AGY_ADC_AUTH is
+        // refusing ADC auth, and dropping it here would let derivation hand them the 1 they declined.
+        "AGY_ADC_AUTH",
+    ];
 
     /// <summary>Pure: select the relevant keys from <paramref name="source"/>, pin the profile and the
     /// config root.</summary>
     /// <param name="isWindows">Platform, passed rather than probed so the exclusion is testable.</param>
     public static IReadOnlyDictionary<string, string> Build(
             string? profileName, IReadOnlyDictionary<string, string> source, Core.ConfigRoot config,
-            bool isWindows = false) {
+            bool isWindows = false, string? adcCredentialsPath = null, string? gcloudProject = null) {
         var env = new Dictionary<string, string>(StringComparer.Ordinal);
         string[] keys = isWindows
             ? [.. Keys, .. ReviewerConsentKeys, .. GoogleConfigKeys]
@@ -140,6 +156,11 @@ static class ServiceEnvironment {
             if (!string.IsNullOrEmpty(v) || BakeEvenEmptyKeys.Contains(key)) env[key] = v;
         }
         if (!string.IsNullOrEmpty(profileName)) env["KCAP_PROFILE"] = profileName; // explicit pin wins
+
+        // POSIX only: Windows carries no GOOGLE_APPLICATION_CREDENTIALS at all (no owner-only unit
+        // guarantee), so the trio can never complete there and a derived half would only mislead.
+        if (!isWindows)
+            Harness.Antigravity.AntigravityAdcTrio.Complete(env, adcCredentialsPath, gcloudProject);
 
         // From the installer's context rather than captured from its environment: a unit inherits
         // nothing, so a captured root would be baked only when one happened to be exported — and the
