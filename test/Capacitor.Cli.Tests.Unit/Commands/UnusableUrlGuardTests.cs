@@ -13,6 +13,10 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 /// catch-all every one of these paths already has, so an effect-only assertion passes with the guard
 /// deleted; six review rounds found exactly that, repeatedly.</para>
 /// </summary>
+// The two spawn guards below install WatcherManager.ProcessStarterForTesting and Dispose nulls it,
+// both process-global: a concurrent peer's spawn lands in this class's counter, and its own override
+// is cleared under it. Bare, as every other writer of that seam already carries.
+[NotInParallel]
 public class UnusableUrlGuardTests : IDisposable {
     [TempHome] public required TempHome Home { get; init; }
 

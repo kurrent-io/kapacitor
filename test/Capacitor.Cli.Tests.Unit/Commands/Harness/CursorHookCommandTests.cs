@@ -144,7 +144,9 @@ public class CursorHookCommandTests {
     // is still stuck undelivered. Simulates: sessionStart is already spooled from a prior failed
     // invocation; this invocation's top-of-method drain retries it and hits a transient failure
     // (503) so it stays queued, while postToolUse's own POST succeeds.
-    [Test]
+    // Bare NotInParallel: the spawn override is process-wide, so any concurrent peer's spawn lands
+    // in this list. The class key is not enough — its cohort excludes only the env-override readers.
+    [Test, NotInParallel]
     public async Task telemetry_hook_does_not_recovery_spawn_while_an_earlier_canonical_event_is_still_stuck() {
         var sid = Guid.NewGuid().ToString("N");
         var spool = new HookSpool(Config.PathTo("spool"));
