@@ -7,6 +7,66 @@ Not release notes. Each entry is written as of the change that produced it and i
 code moves on; where an entry disagrees with the code, the code wins.
 
 
+## The flow can enable the daemon as a service
+
+`kcap daemon service ensure` existed with no caller in the product. Making the browser able to ask for it
+needed the ladder separated from the verb: `EvaluateEnsureAsync` decides and mutates, `Ensure` reports,
+and both the terminal and the flow reach the machine through the one ladder — so the outcome a screen
+renders cannot diverge from the outcome the verb would have printed.
+
+**The ladder's vocabulary does not fit the wire, and the collapse is load-bearing rather than tidy.** The
+flow's outcome and reason sets are closed and the server refuses an unrecognised token outright, after
+which the report is retried for ever and the request stays outstanding — so a screen waits on an answer
+that already happened. `EnsureFlowMap` collapses roughly twenty tokens into a handful under one rule:
+`refused` means nothing was mutated, `failed` means a transaction ran and did not land, which is the
+ladder's own attention-versus-failing-arm split.
+
+Three rows are not what a first pass would write. **Viability refuses rather than fails** — it is proven
+before anything destructive, so routing it to `failed` would claim a transaction that never ran and offer
+a retry against an unusable pinned URL that cannot succeed. **`package_inconsistent` is keyed on the
+reason and never on the exit**, because the start gate raises the same token as the viability abort, and
+keying on the exit puts a retry button on a broken install. And **`plain_failure` is not "busy"**: off
+launchd, exit 1 is lock contention *or* a manager error, and only one of those retries into working.
+
+**`installed` and `started` collapse; `verified` does not.** No copy distinguishes install from start, and
+`already_enabled` already separates "nothing needed" from "we did something" — but only launchd runs the
+verified transaction, so off it nothing proves the daemon came up and answered. Two success tokens keep
+"reachable now" a claim the ladder is willing to make.
+
+**Nothing is reported about the service, and that is not a simplification.** The offer was going to be
+conditioned on whether the daemon already ran as a service, reported on the flow create. But the create
+runs before login selects a tenant, and the service *id* comes from the daemon name that setup does not
+collect until after the browser leg — so the fact would have been a claim about a service whose identity
+is chosen later. There is no point in the flow at which it can be made honest. The offer is therefore
+unconditional and the ladder decides at action time, where the profile is known: someone who already has
+it gets `already_enabled`, which reads honestly, and someone running `setup` has very likely not set it
+up.
+
+**The wait spinner comes down for this capability and not for the shim.** The shim prompts through
+osascript and writes nothing; the verify transaction writes its coded lines, and two live renderables
+cannot share a console — the same reason the import takes it down.
+
+**And it is performed after setup's own steps, not in the browser leg's poll loop.** A unit bakes the
+profile name, the expected server URL and the daemon name; the leg runs before the step that commits any
+of them. Acting there installs a unit for the profile the process started with — the wrong server after a
+login that adopted another tenant, or a service named for a daemon the user is about to rename, leaving
+the one they do use uninstalled. So the leg does not advertise the capability at all (an unadvertised one
+is left outstanding rather than reported, which is exactly the "asked, waiting" state the screen already
+renders), and the request is finished afterwards against the profile setup just *wrote* rather than a
+re-resolution of it — CLI, environment and repository precedence can each land somewhere else. The
+report is retried a bounded number of times there, because unlike the poll loop there is no next tick.
+
+**The deferred client's auth status is checked, not assumed.** The client factory hands one back whether
+or not the stored token is usable — that is what its `AuthStatus` return is for — and an expired or
+missing token leaves a client whose poll 401s, answering an empty body that reads as nothing having been
+asked. So an unchecked status reproduces the silent no-op a raw `HttpClient` would. An unusable status names the
+recovery instead, which by then is `kcap login` and the verb itself: the browser is gone and nothing will
+retry the request.
+
+**`NoAuthRequired` is usable and runs it**, unlike in the browser leg, which skips there because it has
+nothing left to do. Treating the two the same would leave the request outstanding on a server that would
+have answered it.
+
 ## The import outcome reaches the first-run flow
 
 The flow's `import-outcome` route folded a report into `FirstRunFlowState.ImportOutcome` and had no

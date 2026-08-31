@@ -604,6 +604,8 @@ public sealed class BrowserFirstRunFlow(
                     // outcome that threw is the state this lane exists to avoid. An internal cancellation
                     // that is not the caller's lands here too, which is what it is.
                     result = new FirstRunMachineActionResult(FirstRunMachineActionOutcomes.Failed, null);
+                } finally {
+                    progress.ActionEnded();
                 }
 
                 // Recorded before the report, so a POST that fails cannot re-raise the prompt.

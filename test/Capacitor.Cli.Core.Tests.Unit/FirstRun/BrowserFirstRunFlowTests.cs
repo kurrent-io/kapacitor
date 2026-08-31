@@ -190,8 +190,9 @@ public class BrowserFirstRunFlowTests {
             log.Add("open");
         }
 
-        public int Discoveries { get; private set; }
+        public int Discoveries  { get; private set; }
         public int ImportEnds   { get; private set; }
+        public int ActionsEnded { get; private set; }
 
         public List<(int Repos, int? Sessions)> Imports { get; } = [];
 
@@ -218,6 +219,11 @@ public class BrowserFirstRunFlowTests {
         public void PerformingAction(string capability) {
             log.Add("warn");
             Performing.Add(capability);
+        }
+
+        public void ActionEnded() {
+            log.Add("action-ended");
+            ActionsEnded++;
         }
 
         public void Discovering() {

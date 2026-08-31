@@ -380,8 +380,16 @@ public class DaemonShimCommandsTests {
         await Assert.That(json).DoesNotContain("exit_code");
     }
 
+    /// <summary>
+    /// The live flow lane advertises the shim and nothing else.
+    ///
+    /// <para><b>The daemon service is the absence that matters.</b> Its unit bakes settings the steps after
+    /// this leg have not written, so it is performed at the end of setup — and an unadvertised capability
+    /// is left outstanding by the loop rather than reported, which is the state the screen renders as
+    /// having asked.</para>
+    /// </summary>
     [Test]
-    public async Task The_flow_host_advertises_only_the_capability_it_can_perform() {
+    public async Task The_flow_host_advertises_only_the_capability_it_can_perform_mid_flow() {
         await Assert.That(new SetupMachineActions().Capabilities).IsEquivalentTo(
             new[] { FirstRunMachineCapabilities.PathShim });
     }

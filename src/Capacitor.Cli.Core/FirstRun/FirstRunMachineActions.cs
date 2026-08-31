@@ -27,7 +27,12 @@ public static class FirstRunMachineCapabilities {
     /// <summary>Put <c>kcap</c> on the login shell's PATH — <c>kcap daemon shim ensure</c>.</summary>
     public const string PathShim = "path_shim";
 
-    public static readonly IReadOnlyList<string> All = [PathShim];
+    /// <summary>Make the machine reachable while nobody is at it — <c>kcap daemon service ensure</c>.
+    /// <b>Writes to the console while it runs</b>, unlike the shim, so a host rendering a live wait has
+    /// to close it first.</summary>
+    public const string DaemonService = "daemon_service";
+
+    public static readonly IReadOnlyList<string> All = [PathShim, DaemonService];
 
     public static bool IsKnown(string? capability) =>
         capability is not null && All.Contains(capability, StringComparer.Ordinal);
@@ -58,8 +63,22 @@ public static class FirstRunMachineActionOutcomes {
     /// <summary>Nothing was attempted; <see cref="FirstRunMachineActionReasons"/> names the row.</summary>
     public const string Refused = "refused";
 
-    public static readonly IReadOnlyList<string> All =
-        [AlreadyOnPath, Installed, InstalledNotOnPath, Cancelled, Failed, Refused];
+    /// <summary>The service is running, and the transaction proved the daemon came up and answered.
+    /// <b>Effectively macOS-only</b>: only launchd runs the verified transaction.</summary>
+    public const string Enabled = "enabled";
+
+    /// <summary>The unit was written and started, and nothing confirmed the daemon stayed up. Not a
+    /// weaker success — a narrower claim, and the copy has to make the same distinction.</summary>
+    public const string EnabledUnverified = "enabled_unverified";
+
+    /// <summary>The service was already running under a validated daemon pid, and nothing was
+    /// touched.</summary>
+    public const string AlreadyEnabled = "already_enabled";
+
+    public static readonly IReadOnlyList<string> All = [
+        AlreadyOnPath, Installed, InstalledNotOnPath, Cancelled, Failed, Refused,
+        Enabled, EnabledUnverified, AlreadyEnabled
+    ];
 
     public static bool IsKnown(string? outcome) =>
         outcome is not null && All.Contains(outcome, StringComparer.Ordinal);
@@ -80,8 +99,27 @@ public static class FirstRunMachineActionReasons {
     /// <summary>Something else already sits at the destination and was left untouched.</summary>
     public const string Conflict = "conflict";
 
-    public static readonly IReadOnlyList<string> All =
-        [ProbeUnknown, UnsupportedPlatform, NoCliPath, Conflict];
+    /// <summary>
+    /// Nothing was mutated and the machine's state moved underneath us, so a retry re-decides and
+    /// usually proceeds. <b>The only reason here that means "try again".</b>
+    ///
+    /// <para>Two mechanisms share it — a held service lock, and a unit appearing after the state was
+    /// read — so the copy must not name a transaction: one of them is not one.</para>
+    /// </summary>
+    public const string ServiceBusy = "service_busy";
+
+    /// <summary>There is nothing to run the service <i>for</i>: no profile, no usable server URL, or no
+    /// daemon binary. Stable, so no retry.</summary>
+    public const string NotConfigured = "not_configured";
+
+    /// <summary>The machine is in a state the ladder will not mutate, or an install that cannot be
+    /// repaired from here. <b>Never promise a retry</b> — something is wrong rather than busy.</summary>
+    public const string NeedsAttention = "needs_attention";
+
+    public static readonly IReadOnlyList<string> All = [
+        ProbeUnknown, UnsupportedPlatform, NoCliPath, Conflict,
+        ServiceBusy, NotConfigured, NeedsAttention
+    ];
 
     public static bool IsKnown(string? reason) =>
         reason is not null && All.Contains(reason, StringComparer.Ordinal);
