@@ -33,11 +33,12 @@ namespace Capacitor.App.ViewModels;
 ///   real clients.
 ///   A call that loses the try-enter is a clean no-op, not a queued retry.
 /// * Send gate (_openingToken): who may accept composer text. BeginAttempt and Invalidate are its
-///   only advances; an attempt may open the gate only while the token it carries is still current,
-///   and a publish that is not an attempt's own Connecting/Attached invalidates -- a terminal
-///   outcome only while its OWN attempt still holds the token, since a reattach takes its token
-///   before it disposes the client whose outcome it is retiring. State has one assignment site,
-///   Publish, which applies both rules.
+///   only advances, and the gate is DERIVED from ownership (_gateOpenToken == _openingToken), so
+///   an advance closes it with nothing to remember and no window in which a passed token check
+///   still opens one. A publish that is not an attempt's own Connecting/Attached invalidates -- a
+///   terminal outcome only while its OWN attempt still holds the token, since a reattach takes
+///   its token before it disposes the client whose outcome it is retiring. State has one
+///   assignment site, Publish, which applies both rules.
 ///
 /// UI affinity: the resolve gate mutates State after ObserveOn(RxSchedulers.MainThreadScheduler)
 /// or RxSchedulers.MainThreadScheduler.Schedule(...) (the TimeProvider timer fires off-thread in
@@ -90,7 +91,12 @@ public sealed class TerminalTabViewModel : ReactiveObject {
     // live while it awaits the old client's disposal, and a detach leaves both unchanged while it
     // awaits the detach write.
     int _openingToken;
-    bool _gateOpen;
+    // Which attempt's Attached opened the gate, rather than a flag any of them may set. Open is
+    // then DERIVED from ownership, so advancing the token is itself what closes the gate: an
+    // attempt whose token check passed and whose gate-opening write lands after a concurrent
+    // BeginAttempt opens nothing, and no invalidation path has to remember to close it. Starts at
+    // a value no token takes, since Interlocked.Increment hands out 1 upwards.
+    int _gateOpenToken = -1;
     bool _sendInFlight;
     Task? _delivery;
 
@@ -105,16 +111,19 @@ public sealed class TerminalTabViewModel : ReactiveObject {
         }
     }
 
+    /// The gate itself: the attempt that opened it still owns the token.
+    bool GateOpen => Volatile.Read(ref _gateOpenToken) == Volatile.Read(ref _openingToken);
+
     /// Bound; the one authority TrySendText itself consults, so can-execute and acceptance can
     /// never disagree.
-    public bool CanAcceptText => _gateOpen && !_sendInFlight;
+    public bool CanAcceptText => GateOpen && !_sendInFlight;
 
     /// Bound; the gate folded into the state, so a hint built from it is true in every window.
     public SendAvailability SendAvailability {
         get {
             if (_sendInFlight) return SendAvailability.Sending;
             if (State is { Phase: TerminalSessionPhase.Attached, ReadOnly: false })
-                return _gateOpen ? SendAvailability.Ready : SendAvailability.Transitioning;
+                return GateOpen ? SendAvailability.Ready : SendAvailability.Transitioning;
             return State.Phase switch {
                 TerminalSessionPhase.Attached => SendAvailability.ReadOnly,
                 TerminalSessionPhase.Resolving or TerminalSessionPhase.Connecting => SendAvailability.Connecting,
@@ -126,7 +135,7 @@ public sealed class TerminalTabViewModel : ReactiveObject {
     }
 
     internal int OpeningTokenForTesting => Volatile.Read(ref _openingToken);
-    internal bool SendGateOpenForTesting => _gateOpen;
+    internal bool SendGateOpenForTesting => GateOpen;
     internal Task? PendingDeliveryForTesting => _delivery;
 
     void RaiseSendProjections() {
@@ -137,7 +146,6 @@ public sealed class TerminalTabViewModel : ReactiveObject {
     /// Closes the gate and hands the caller a fresh token, which that attempt carries for its
     /// whole life.
     int BeginAttempt() {
-        _gateOpen = false;
         SendInFlight = false;
         var token = Interlocked.Increment(ref _openingToken);
         RaiseSendProjections();
@@ -147,7 +155,6 @@ public sealed class TerminalTabViewModel : ReactiveObject {
     /// Advances ownership past every attempt alive: an already-closed gate still allocates, since
     /// a callback queued mid-Connecting must lose its right to open.
     void Invalidate() {
-        _gateOpen = false;
         SendInFlight = false;
         Interlocked.Increment(ref _openingToken);
         RaiseSendProjections();
@@ -159,7 +166,6 @@ public sealed class TerminalTabViewModel : ReactiveObject {
     /// them would be advanced past by the increment that follows: the replacement attempt
     /// retired by the very outcome this guard exists to keep out of its way.
     void InvalidateOwner(int ownerToken) {
-        _gateOpen = false;
         SendInFlight = false;
         Interlocked.CompareExchange(ref _openingToken, ownerToken + 1, ownerToken);
         RaiseSendProjections();
@@ -179,7 +185,8 @@ public sealed class TerminalTabViewModel : ReactiveObject {
         if (state.Phase is TerminalSessionPhase.Connecting or TerminalSessionPhase.Attached) {
             if (ownerToken != Volatile.Read(ref _openingToken)) return;
             State = state;
-            if (state is { Phase: TerminalSessionPhase.Attached, ReadOnly: false }) _gateOpen = true;
+            if (state is { Phase: TerminalSessionPhase.Attached, ReadOnly: false })
+                Volatile.Write(ref _gateOpenToken, ownerToken.Value);
             RaiseSendProjections();
             return;
         }
