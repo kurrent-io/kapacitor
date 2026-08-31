@@ -60,15 +60,16 @@ public class CorrelatedStatusReportTests {
             server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
         var agent = orch.SeedAgentForTest("turn-edge-1", status: "Running");
 
-        agent.ActivityClock.SetTurnInFlight(true); // turn START: no out-of-cycle send
+        agent.ActivityClock.SetTurnInFlight(true);
         await Task.Delay(50);
         await Assert.That(server.SendCount).IsEqualTo(0);
 
-        agent.ActivityClock.SetTurnInFlight(false); // falling edge: the one send
+        agent.ActivityClock.SetTurnInFlight(false);
         await WaitHarness.PollUntilAsync(() => server.SendCount >= 1);
         await Assert.That(server.SendCount).IsEqualTo(1);
 
-        agent.ActivityClock.SetTurnInFlight(false); // level, not an edge: nothing
+        // The repeat is the point: the trigger is the falling edge, not the level.
+        agent.ActivityClock.SetTurnInFlight(false);
         await Task.Delay(50);
         await Assert.That(server.SendCount).IsEqualTo(1);
     }
