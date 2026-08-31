@@ -303,9 +303,9 @@ public class DaemonRunnerAntigravityFloorTests {
     }
 
     /// <summary>The version comes from the factory that would launch the binary, so a vendor the
-    /// policy-version switch has no arm for still advertises the build it would run. That switch is
-    /// the recurring hazard: gemini and kiro reached a live daemon reported as "CLI version unknown"
-    /// while the gate had just admitted them on a resolved version.</summary>
+    /// policy-version switch has no arm for still advertises the build it would run. The stub is a
+    /// real executable because that is the only thing separating a derived path from a fixed one —
+    /// the policy version is identical either way.</summary>
     [Test]
     [UnsupportedOSPlatform("windows")]
     public async Task AVendorThePolicySwitchDoesNotNameStillAdvertisesItsProbedVersion() {

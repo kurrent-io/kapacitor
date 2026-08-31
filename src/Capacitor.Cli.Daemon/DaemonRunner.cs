@@ -1380,10 +1380,9 @@ public static partial class DaemonRunner {
         foreach (var vendor in unattended) {
             var factory = factories.First(f => string.Equals(f.Vendor, vendor, StringComparison.Ordinal));
             // The binary comes from the factory that would launch it, never from a vendor-keyed map
-            // here: the map form shipped twice with a vendor missing, and each time the daemon told
-            // the operator "CLI version unknown" for a vendor the gate had just admitted on a
-            // resolved version — the wrong one of two answers about one build, in the first place
-            // anyone looks when a reviewer misbehaves. Only the policy version is genuinely per
+            // here: a map is a second answer about one build, and the vendor it forgets is advertised
+            // as "CLI version unknown" while the admission gate resolves it fine — the wrong answer
+            // reaching the operator's log and the server. Only the policy version is genuinely per
             // vendor, and a missing arm there is a wrong string rather than a silent nothing.
             var cliPath = factory.CliPath;
             var policyVersion = vendor switch {
