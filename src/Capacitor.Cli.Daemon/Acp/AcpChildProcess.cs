@@ -26,8 +26,24 @@ internal sealed partial class AcpChildProcess : IAcpProcess {
     readonly string                  _vendor;
     readonly CancellationTokenSource _stderrDrainCts = new();
     readonly Task                    _stderrDrainTask;
+    readonly Lock                    _diagnosticsGate = new();
+    readonly Queue<string>           _diagnostics     = new();
 
     int _disposed;
+    int _diagnosticsLength;
+
+    /// <summary>Enough to carry a startup/auth error or a retry banner and the context around it, and
+    /// small enough that a chatty long-lived child cannot grow the daemon's heap over a whole
+    /// session.</summary>
+    const int DiagnosticsCap = 4096;
+
+    /// <summary>The most recent stderr within the cap, oldest lines evicted first. Recency rather
+    /// than a first-N buffer because the two readers want different moments and only recency serves
+    /// both: a failed launch has written nothing else yet, while a turn that goes silent an hour in
+    /// would otherwise be explained by startup chatter that filled the buffer and never left.</summary>
+    public string? Diagnostics {
+        get { lock (_diagnosticsGate) return _diagnostics.Count == 0 ? null : string.Join('\n', _diagnostics); }
+    }
 
     /// <param name="debugFrames">
     /// <c>KCAP_ACP_DEBUG_FRAMES</c> (<see cref="DaemonConfig.DebugFrames"/>) — off by default. When
@@ -63,6 +79,12 @@ internal sealed partial class AcpChildProcess : IAcpProcess {
 
                 if (line.Length == 0) continue;
 
+                // Retained whatever the log level does: the operator opts into per-line logging, not
+                // into being able to explain a stall afterwards, and a vendor that goes silent on the
+                // wire writes its whole diagnosis here — a rate-limit retry banner reaches stderr and
+                // nowhere else. Daemon-local; never forwarded.
+                Capture(line);
+
                 // KCAP_ACP_DEBUG_FRAMES gate (Off by default) — stderr can carry paths, prompt
                 // fragments, or error detail, so it is only logged verbatim when explicitly opted in;
                 // otherwise only its length is logged.
@@ -77,6 +99,20 @@ internal sealed partial class AcpChildProcess : IAcpProcess {
             // Pipe torn down (process killed mid-read) — expected on teardown.
         } catch (ObjectDisposedException) {
             // Stream disposed out from under us (process.Dispose() raced the read) — expected.
+        }
+    }
+
+    void Capture(string line) {
+        // Truncated before it is stored, not merely gated on the running total: one enormous line —
+        // a stack trace, a base64 payload — would otherwise blow the cap on its own.
+        var kept = line.Length > DiagnosticsCap ? line[..DiagnosticsCap] : line;
+
+        lock (_diagnosticsGate) {
+            _diagnostics.Enqueue(kept);
+            _diagnosticsLength += kept.Length + 1;
+
+            while (_diagnosticsLength > DiagnosticsCap && _diagnostics.Count > 1)
+                _diagnosticsLength -= _diagnostics.Dequeue().Length + 1;
         }
     }
 
