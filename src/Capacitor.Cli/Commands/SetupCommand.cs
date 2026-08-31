@@ -892,15 +892,23 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
         if (browserAnswers.FlowId is { } browserFlowId) {
             try {
                 // Through the same authenticated choke point the leg uses. Every flow route is
-                // authenticated, and a raw client polls into a 401 whose empty body is indistinguishable
-                // from "nothing was asked" — so an unauthenticated one here enables nothing, silently.
-                var (deferredHttp, _) = await HttpClientExtensions.CreateClientWithAuthStatusAsync(
+                // authenticated, and a poll that 401s answers an empty body — indistinguishable from
+                // nothing having been asked — so an unusable client here enables nothing, silently.
+                var (deferredHttp, deferredAuth) = await HttpClientExtensions.CreateClientWithAuthStatusAsync(
                     config, saved, serverUrl, autoRetryUnauthorized: true);
 
                 using var deferred = deferredHttp;
 
-                await SetupDaemonService.RunAsync(
-                    new FirstRunFlowClient(deferred), serverUrl, browserFlowId, config, saved, home);
+                // The status is the point of the factory: it hands back a client either way, and an
+                // expired or missing token leaves one that cannot poll. Checked rather than assumed, or
+                // the silent path is exactly the one above with a better-looking constructor.
+                if (deferredAuth is AuthStatus.Ok)
+                    await SetupDaemonService.RunAsync(
+                        new FirstRunFlowClient(deferred), serverUrl, browserFlowId, config, saved, home);
+                else if (deferredAuth != AuthStatus.NoAuthRequired)
+                    AnsiConsole.MarkupLine(
+                        "  [dim]Did not finish the daemon service request: the stored token is not usable. "
+                      + "Run 'kcap login', then 'kcap daemon service ensure'.[/]");
             } catch (Exception ex) when (ex is not OperationCanceledException) {
                 // Best-effort, as the rest of this leg is: the request stays outstanding and the screen
                 // goes on saying it asked, which is honest. Setup finishing matters more.

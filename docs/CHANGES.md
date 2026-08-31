@@ -56,6 +56,13 @@ renders), and the request is finished afterwards against the profile setup just 
 re-resolution of it — CLI, environment and repository precedence can each land somewhere else. The
 report is retried a bounded number of times there, because unlike the poll loop there is no next tick.
 
+**The deferred client's auth status is checked, not assumed.** The client factory hands one back whether
+or not the stored token is usable — that is what its `AuthStatus` return is for — and an expired or
+missing token leaves a client whose poll 401s, answering an empty body that reads as nothing having been
+asked. So an unchecked status reproduces the silent no-op a raw `HttpClient` would. A non-Ok status names
+the recovery instead, which by then is `kcap login` and the verb itself: the browser is gone and nothing
+will retry the request.
+
 ## The import outcome reaches the first-run flow
 
 The flow's `import-outcome` route folded a report into `FirstRunFlowState.ImportOutcome` and had no
