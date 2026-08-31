@@ -319,15 +319,30 @@ sealed class CaptureServerConnection() : ServerConnection(
         }
     }
 
-    /// <summary>Every (agentId, event) pair passed to AppendAgentRunEventAsync, in call order — the
-    /// only place a run's stop REASON is observable, and the reason is what distinguishes a daemon
-    /// that went away from a user who asked it to stop.</summary>
+    /// <summary>Every (agentId, event) pair passed to AppendAgentRunEventAsync, in call order.</summary>
     public List<(string AgentId, object Event)> RunEvents { get; } = [];
 
     public override Task AppendAgentRunEventAsync(string agentId, object evt) {
         lock (RunEvents) RunEvents.Add((agentId, evt));
 
         return Task.CompletedTask;
+    }
+
+    /// <summary>Every shutdown report, with the state of the token it was handed. The token matters
+    /// more than the arguments: every other method on the real connection bakes in one that is
+    /// already cancelled during teardown, so a report made with a cancelled token sends nothing and
+    /// says nothing about it — a double that ignored the token would pass either way.</summary>
+    public List<(string AgentId, string Status, string Reason, bool TokenAlreadyCancelled)> ShutdownReports { get; } = [];
+
+    /// <summary>When set, the shutdown report blocks on this until its own token cancels — the hung
+    /// server a shutdown must not wait on.</summary>
+    public bool ShutdownReportHangs { get; init; }
+
+    public override async Task ReportAgentEndedForShutdownAsync(
+            string agentId, string? sessionId, string status, string reason, int? exitCode, CancellationToken ct) {
+        lock (ShutdownReports) ShutdownReports.Add((agentId, status, reason, ct.IsCancellationRequested));
+
+        if (ShutdownReportHangs) await Task.Delay(Timeout.Infinite, ct);
     }
 
     // ── Task 8: resolved-model report capture ──────────────────────────────────

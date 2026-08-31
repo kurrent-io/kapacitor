@@ -4756,7 +4756,10 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     /// this runs <c>_shutdownCts</c> is cancelled, and passing that token would cancel every call
     /// before it left. Best-effort throughout — teardown continues whatever this manages to say.</summary>
     async Task ReportAgentsEndedForShutdownAsync() {
-        var live = _agents.Values.Where(a => !a.IsPrivate).ToList();
+        // Only agents this teardown still owns. One whose own finalizer already ran has reported its
+        // real ending and is waiting on cleanup; reporting it again would append a second stop event
+        // over the top of a truer one and race that finalizer's unregister.
+        var live = _agents.Values.Where(a => !a.IsPrivate && a.Status is "Starting" or "Running").ToList();
 
         if (live.Count == 0) return;
 
@@ -4771,12 +4774,15 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 return;
             }
 
+            // Not Completed: this daemon killed the child, whatever it was in the middle of, and a
+            // run reported as completed is a failure classified as success. The reason carries the
+            // distinction from a run that failed on its own.
+            SetAgentStatus(agent, "Failed");
+
             try {
-                await _server.AgentStatusChangedAsync(agent.Id, "Completed", agent.SessionId).WaitAsync(budget.Token);
-                await _server.AppendAgentRunEventAsync(agent.Id, new AgentRunStopped(DaemonShutdownStopReason, agent.Runtime.ExitCode))
+                await _server.ReportAgentEndedForShutdownAsync(
+                    agent.Id, agent.SessionId, "Failed", DaemonShutdownStopReason, agent.Runtime.ExitCode, budget.Token)
                     .WaitAsync(budget.Token);
-                await _server.EndAgentSessionAsync(agent.Id, DaemonShutdownStopReason).WaitAsync(budget.Token);
-                await _server.AgentUnregisteredAsync(agent.Id).WaitAsync(budget.Token);
 
                 LogShutdownReported(agent.Id);
             } catch (OperationCanceledException) {

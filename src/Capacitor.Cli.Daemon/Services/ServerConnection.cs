@@ -910,6 +910,63 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     public virtual Task AgentUnregisteredAsync(string agentId)
         => _hub.InvokeAsync("AgentUnregistered", new AgentUnregistered(agentId), cancellationToken: _ct);
 
+    /// <summary>
+    /// The one report a shutting-down daemon can still make. Every other method here bakes in
+    /// <c>_ct</c>, which is <c>ApplicationStopping</c> and therefore already cancelled by the time
+    /// teardown reaches this — so a caller using them at that point sends nothing and cannot tell.
+    /// This one takes the caller's own live token and uses it throughout, including for the run event,
+    /// which normally rides a background queue whose drain is dead for the same reason.
+    ///
+    /// <para>Best-effort by contract: every step is contained, and a failure in one does not skip the
+    /// rest. Nothing here retries — the caller is holding a shutdown open.</para>
+    /// </summary>
+    public virtual async Task ReportAgentEndedForShutdownAsync(
+            string agentId, string? sessionId, string status, string reason, int? exitCode, CancellationToken ct) {
+        await SafeShutdownStepAsync(
+            () => _hub.InvokeAsync("AgentStatusChanged", new AgentStatusChanged(agentId, status, sessionId), cancellationToken: ct),
+            agentId, "status");
+
+        await SafeShutdownStepAsync(
+            () => PostAgentRunEventAsync(agentId, new AgentRunStopped(reason, exitCode), ct), agentId, "run-stopped");
+
+        await SafeShutdownStepAsync(
+            () => _hub.InvokeAsync<EndAgentSessionResult>("EndAgentSession", agentId, reason, cancellationToken: ct),
+            agentId, "session-end");
+
+        await SafeShutdownStepAsync(
+            () => _hub.InvokeAsync("AgentUnregistered", new AgentUnregistered(agentId), cancellationToken: ct),
+            agentId, "unregister");
+    }
+
+    async Task SafeShutdownStepAsync(Func<Task> step, string agentId, string label) {
+        try {
+            await step();
+        } catch (Exception ex) {
+            LogShutdownReportStepFailed(ex, agentId, label);
+        }
+    }
+
+    /// <summary>The queued run-event POST, sent directly on the caller's token. Same endpoint and
+    /// payload shape as the drain, without its retry loop.</summary>
+    async Task PostAgentRunEventAsync(string agentId, object evt, CancellationToken ct) {
+        var data = JsonSerializer.SerializeToNode(evt, evt.GetType(), CapacitorJsonContext.Default)!.AsObject();
+        var payload = new JsonObject { ["event_type"] = evt.GetType().Name, ["data"] = data }.ToJsonString();
+
+        _httpClient ??= new();
+
+        var resolution = await new TokenStore(_config.ConfigRoot)
+            .GetValidTokensForServerAsync(_config.Profiles.Name, _config.ServerUrl, ct);
+
+        if (resolution.Tokens?.AccessToken is not null)
+            _httpClient.DefaultRequestHeaders.Authorization = new("Bearer", resolution.Tokens.AccessToken);
+
+        var response = await _httpClient.PostAsync(
+            $"{_config.ServerUrl.TrimEnd('/')}/api/agent-runs/{agentId}/events",
+            new StringContent(payload, Encoding.UTF8, "application/json"), ct);
+
+        response.EnsureSuccessStatusCode();
+    }
+
     public virtual Task LaunchFailedAsync(string agentId, string reason)
         => _hub.InvokeAsync("LaunchFailed", new LaunchFailed(agentId, reason), cancellationToken: _ct);
 
@@ -1616,6 +1673,9 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
 
     [LoggerMessage(Level = LogLevel.Information, Message = "EndAgentSession for agent {AgentId} interrupted by a connection drop (retry {Attempt}); waiting for the daemon connection to recover before retrying")]
     partial void LogEndSessionRetry(string agentId, int attempt);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Shutdown report step '{Step}' failed for agent {AgentId}")]
+    partial void LogShutdownReportStepFailed(Exception ex, string agentId, string step);
 
     [LoggerMessage(Level = LogLevel.Information, Message = "AcpSessionStarted for agent {AgentId} interrupted by a connection drop (retry {Attempt}); waiting for the daemon connection to recover before retrying")]
     partial void LogAcpSessionStartedRetry(string agentId, int attempt);
