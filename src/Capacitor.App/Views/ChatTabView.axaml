@@ -101,7 +101,7 @@
                                                         <Border Background="{StaticResource KcapSurfaceBrush}" CornerRadius="4" Padding="5,1" HorizontalAlignment="Left"
                                                                 IsVisible="{Binding Header, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
                                                             <TextBlock Text="{Binding Header}" FontSize="10" FontWeight="SemiBold" Foreground="{StaticResource KcapMutedBrush}"
-                                                                       TextTrimming="CharacterEllipsis" />
+                                                                       TextTrimming="CharacterEllipsis" MaxLines="1" />
                                                         </Border>
                                                         <TextBlock Text="{Binding Text}" FontWeight="SemiBold" FontSize="13" TextWrapping="Wrap"
                                                                    Foreground="{StaticResource KcapTextBrush}" />
