@@ -133,6 +133,40 @@ public class AcpInteractionBridgeTests {
         await Assert.That(result!.Value.GetProperty("outcome").GetProperty("outcome").GetString()).IsEqualTo("cancelled");
     }
 
+    /// <summary>An echoed id that two options share addresses neither: the agent resolves it by its
+    /// own rule, and one of the answers is not the refusal that was made.</summary>
+    [Test]
+    public async Task RequestPermission_DenyOutcome_WithADuplicatedOptionId_ReturnsCancelled() {
+        var bridge = new AcpInteractionBridge(
+            requestInteraction: (req, ct) => Task.FromResult(new AcpInteractionDecision("deny", "no", null, null, null, null)),
+            agentId: AgentId,
+            logger: NullLogger.Instance);
+
+        var request = new AcpRequest(1, "session/request_permission", KindedPermissionParams(
+            ("no", "reject_always"), ("no", "reject_once")));
+
+        var result = await bridge.HandleAsync(request, CancellationToken.None);
+
+        await Assert.That(result!.Value.GetProperty("outcome").GetProperty("outcome").GetString()).IsEqualTo("cancelled");
+    }
+
+    /// <summary>Sharing an id with an ALLOW makes it just as unaddressable, and the wrong resolution
+    /// there grants what was refused.</summary>
+    [Test]
+    public async Task RequestPermission_DenyOutcome_WithAnIdSharedWithAnAllow_ReturnsCancelled() {
+        var bridge = new AcpInteractionBridge(
+            requestInteraction: (req, ct) => Task.FromResult(new AcpInteractionDecision("deny", null, null, null, null, null)),
+            agentId: AgentId,
+            logger: NullLogger.Instance);
+
+        var request = new AcpRequest(1, "session/request_permission", KindedPermissionParams(
+            ("same", "allow_once"), ("same", "reject_once")));
+
+        var result = await bridge.HandleAsync(request, CancellationToken.None);
+
+        await Assert.That(result!.Value.GetProperty("outcome").GetProperty("outcome").GetString()).IsEqualTo("cancelled");
+    }
+
     /// <summary>reject_once over reject_always: a refusal of one call must not silently become a
     /// standing one.</summary>
     [Test]

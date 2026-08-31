@@ -609,8 +609,11 @@ internal sealed partial class AcpInteractionBridge(
     /// <summary>Outcomes that mean the user said no to THIS tool call, as opposed to abandoning the
     /// turn. The distinction is the agent's to act on: <c>cancelled</c> tells it the prompt turn went
     /// away, while a selected reject option tells it this call was refused and the turn continues.
-    /// Recognized ones only — an unknown string still falls through to <c>cancelled</c>.</summary>
-    static readonly HashSet<string> NegativeOutcomes = ["deny", "deny_once", "deny_always", "reject", "reject_once", "reject_always"];
+    /// One entry because the canonical vocabulary has one — the literal value of the same
+    /// server-side constant <see cref="AffirmativeOutcomes"/> mirrors, kept as a copy for the same
+    /// AOT/trim reason. <c>cancel</c> and <c>timeout</c> are deliberately absent: they really are the
+    /// turn going away, and an unrecognized string falls through to <c>cancelled</c> too.</summary>
+    static readonly HashSet<string> NegativeOutcomes = ["deny"];
 
     static readonly HashSet<string> RejectKinds = ["reject_once", "reject_always"];
 
@@ -664,18 +667,22 @@ internal sealed partial class AcpInteractionBridge(
         var rejects = options.Where(o => o.Kind is { } k && RejectKinds.Contains(k)).ToArray();
 
         if (decision.SelectedOptionId is { } optionId)
-            return rejects.FirstOrDefault(o => o.OptionId == optionId);
+            return Addressable(rejects.FirstOrDefault(o => o.OptionId == optionId), options);
 
         var once   = rejects.Where(o => o.Kind == "reject_once").ToArray();
         var always = rejects.Where(o => o.Kind == "reject_always").ToArray();
 
-        var chosen = once.Length == 1 ? once[0] : always.Length == 1 ? always[0] : null;
+        return Addressable(once.Length == 1 ? once[0] : always.Length == 1 ? always[0] : null, options);
+    }
 
-        return chosen is not null
-            && !string.IsNullOrWhiteSpace(chosen.OptionId)
-            && rejects.Count(o => o.OptionId == chosen.OptionId) == 1
-                ? chosen
-                : null;
+    /// <summary>The option, or null when its id cannot address exactly it. The wire deserializer
+    /// enforces neither non-blank nor unique ids, so an echoed id that is blank or shared with
+    /// another offered option — a second reject, or an allow — names no single option: the agent
+    /// resolves it by its own rule, and one of the answers is not the one refused.</summary>
+    static PermissionOptionDto? Addressable(PermissionOptionDto? chosen, IReadOnlyList<PermissionOptionDto> options) {
+        if (chosen is null || string.IsNullOrWhiteSpace(chosen.OptionId)) return null;
+
+        return options.Count(o => o.OptionId == chosen.OptionId) == 1 ? chosen : null;
     }
 
     /// <summary>
