@@ -38,14 +38,8 @@ sealed class FakePermissionService : IPermissionService {
             .StartWith((IReadOnlySet<string>)new HashSet<string>());
     public IObservable<PendingSummary> Summary =>
         Cache.Connect()
-            .QueryWhenChanged(q => Summarize(q.Items))
+            .QueryWhenChanged(q => PendingSummary.From(q.Items))
             .StartWith(new PendingSummary(0, 0));
-
-    static PendingSummary Summarize(IEnumerable<PendingPermissionRequest> items) {
-        int permissions = 0, questions = 0;
-        foreach (var item in items) { if (item.Questions is null) permissions++; else questions++; }
-        return new PendingSummary(permissions, questions);
-    }
 
     public void Add(PendingPermissionRequest entry) => Cache.AddOrUpdate(entry);
     public void Remove(string requestId) => Cache.Remove(requestId);

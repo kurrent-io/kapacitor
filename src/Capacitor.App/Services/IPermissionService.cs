@@ -35,6 +35,12 @@ public sealed class PendingPermissionRequest {
 
 public readonly record struct PendingSummary(int Permissions, int Questions) {
     public int Total => Permissions + Questions;
+
+    public static PendingSummary From(IEnumerable<PendingPermissionRequest> items) {
+        int permissions = 0, questions = 0;
+        foreach (var item in items) { if (item.Questions is null) permissions++; else questions++; }
+        return new PendingSummary(permissions, questions);
+    }
 }
 
 public interface IPermissionService : IDisposable {

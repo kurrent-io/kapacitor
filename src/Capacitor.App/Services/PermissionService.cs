@@ -42,14 +42,8 @@ public sealed class PermissionService : IPermissionService {
             .StartWith((IReadOnlySet<string>)_cache.Items.Select(p => p.AgentId).ToHashSet(StringComparer.Ordinal));
     public IObservable<PendingSummary> Summary =>
         _cache.Connect()
-            .QueryWhenChanged(q => Summarize(q.Items))
-            .StartWith(Summarize(_cache.Items));
-
-    static PendingSummary Summarize(IEnumerable<PendingPermissionRequest> items) {
-        int permissions = 0, questions = 0;
-        foreach (var item in items) { if (item.Questions is null) permissions++; else questions++; }
-        return new PendingSummary(permissions, questions);
-    }
+            .QueryWhenChanged(q => PendingSummary.From(q.Items))
+            .StartWith(PendingSummary.From(_cache.Items));
 
     public async Task<PermissionResolveOutcome> ResolveAsync(PendingPermissionRequest target, PermissionAnswer answer, CancellationToken ct) {
         var decision = answer == PermissionAnswer.Deny ? "deny" : "allow";
