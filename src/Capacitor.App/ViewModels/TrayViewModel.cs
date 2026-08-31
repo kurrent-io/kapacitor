@@ -130,12 +130,13 @@ public sealed class TrayViewModel : ReactiveObject, IDisposable {
                 "IPauseController.State, IConsentService.PendingCount, and IPermissionService.Summary must replay a value on subscribe."))
             .DisposeWith(_disposables);
 
-        // Edge-triggered passive refresh (spec §6): fired once on the attach-state transition
-        // INTO Connected, not on every snapshot/state emission that follows — so the toggle is
+        // Edge-triggered passive refresh: fired once on the attach-state transition INTO
+        // Connected, not on every snapshot/state emission that follows — so the toggle is
         // usually verified before the FIRST menu open instead of waiting for the adapter's
         // NeedsUpdate kick on the second. DistinctUntilChanged means a later Connected push with
-        // no real state change (or a snapshot-only update) is a no-op here; the §6 lane drops a
-        // redundant refresh while busy, so this can never race the NeedsUpdate-triggered one.
+        // no real state change (or a snapshot-only update) is a no-op here; the refresh path
+        // itself drops a redundant refresh while busy, so this can never race the
+        // NeedsUpdate-triggered one.
         service.Status
             .Select(s => s.State)
             .DistinctUntilChanged()
@@ -154,7 +155,7 @@ public sealed class TrayViewModel : ReactiveObject, IDisposable {
             string daemonName, AttachStatus status, DaemonStatusDto? snap, PauseState pauseState,
             IReadOnlySet<string> stopsInFlight, int pendingConsent, string? lifecycleAttention, PendingSummary pendingSummary) {
         var (state, count) = Project(status, snap);
-        var baseState = state; // the row's own verdict (rows 1-10), before either upgrade below
+        var baseState = state; // the connection/agent-count verdict, before either upgrade below
 
         // Pending consent, a pending permission request, or a pending question asserts Attention
         // only while Connected — the owner has something waiting. Judged against baseState (not
@@ -166,15 +167,13 @@ public sealed class TrayViewModel : ReactiveObject, IDisposable {
             && baseState is TrayState.Idle or TrayState.Running;
         if (pendingAttention) state = TrayState.Attention;
 
-        // spec §6: a lifecycle Attention call (e.g. a restore-verification failure, an orphan
-        // label repair affordance) only ever upgrades a GENUINELY fine row (Idle/Running) — judged
-        // against baseState, never against the already-Attention state a connection-trouble row
-        // (2, 5, 6, 9, 10) produced on its own. A `state is ... or
-        // TrayState.Attention` check would let ANY co-occurring Attention row hand its header line to a
-        // stale/unrelated lifecycle message, masking exactly the text the comment claimed to
-        // protect (e.g. "reconnecting to server" swallowed by a leftover repair-affordance line).
-        // When active it also wins the header body over pendingAttention's generic text in
-        // HeaderText — both are judged off the same baseState, so either or both can be active.
+        // A lifecycle attention message (e.g. a restore-verification failure, an orphan label
+        // repair affordance) only ever upgrades a state that is genuinely fine (Idle/Running),
+        // judged against baseState — never a state a connection-trouble mapping already set.
+        // Judging against the live `state` instead would let a stale, unrelated repair-affordance
+        // line replace the connection text in the header (e.g. "reconnecting to server"). When
+        // active it also wins the header body over pendingAttention's generic text in HeaderText
+        // — both are judged off the same baseState, so either or both can be active.
         var lifecycleAttentionActive = !string.IsNullOrEmpty(lifecycleAttention)
             && baseState is TrayState.Idle or TrayState.Running;
         if (lifecycleAttentionActive) state = TrayState.Attention;
