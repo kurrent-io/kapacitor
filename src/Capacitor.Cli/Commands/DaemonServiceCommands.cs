@@ -174,7 +174,7 @@ sealed class DaemonServiceCommands(
             // The hosted-agy trio's state, said out loud for the same reason the consent flags are:
             // the unit outlives the shell, and a partial trio is never a working agy configuration —
             // silence here is how a reinstall that changed nothing goes unnoticed.
-            var (agyPresent, agyMissing) = ServiceEnvironment.AgyTrio(env);
+            var (agyPresent, agyMissing) = Capacitor.Cli.Harness.Antigravity.AntigravityAdcTrio.Status(env);
             if (agyPresent && agyMissing.Count == 0) {
                 await Console.Out.WriteLineAsync(
                     "  Antigravity: ADC trio captured into the unit — hosted agy can authenticate.");

@@ -1062,7 +1062,8 @@ The daemon needs all three of `GOOGLE_CLOUD_PROJECT`, `AGY_ADC_AUTH=1` and
 `GOOGLE_APPLICATION_CREDENTIALS`. The install captures any you exported and silently derives the rest:
 the credential path from ADC's well-known location (only when the file is actually there), `AGY_ADC_AUTH=1`
 alongside it, and the project from your environment or gcloud's own active configuration. Exported values
-always win. The explicit path looks redundant — ADC has a well-known default location — but a reviewer
+always win. Only the canonical `GOOGLE_CLOUD_PROJECT` counts here — `GOOGLE_CLOUD_PROJECT_ID` is carried
+for Gemini, which honours both, and does not satisfy agy's project leg. The explicit path looks redundant — ADC has a well-known default location — but a reviewer
 launch redirects `HOME` to a per-launch state directory, so the default location is not visible to the
 child. Derivation happens in the installer, at your command; the daemon itself still never reads a
 credential location of its own accord — it only forwards what the unit carries.

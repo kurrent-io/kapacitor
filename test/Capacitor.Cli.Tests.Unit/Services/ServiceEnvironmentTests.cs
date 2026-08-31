@@ -384,15 +384,24 @@ public class ServiceEnvironmentTests {
 
     [Test]
     public async Task Build_keeps_an_exported_project_over_the_gcloud_one() {
-        var byName = ServiceEnvironment.Build(null,
+        var env = ServiceEnvironment.Build(null,
             new Dictionary<string, string> { ["GOOGLE_CLOUD_PROJECT"] = "exported" },
             Config.Root, gcloudProject: "gcloud-proj");
-        await Assert.That(byName["GOOGLE_CLOUD_PROJECT"]).IsEqualTo("exported");
 
-        var byId = ServiceEnvironment.Build(null,
+        await Assert.That(env["GOOGLE_CLOUD_PROJECT"]).IsEqualTo("exported");
+    }
+
+    /// <summary>The alternate spelling is a Gemini affordance; agy reads only the canonical key, so an
+    /// exported id must not suppress deriving it — that combination is what reports a complete trio
+    /// over a unit agy cannot authenticate with.</summary>
+    [Test]
+    public async Task Build_derives_the_canonical_project_alongside_an_exported_id_spelling() {
+        var env = ServiceEnvironment.Build(null,
             new Dictionary<string, string> { ["GOOGLE_CLOUD_PROJECT_ID"] = "exported-id" },
             Config.Root, gcloudProject: "gcloud-proj");
-        await Assert.That(byId.ContainsKey("GOOGLE_CLOUD_PROJECT")).IsFalse();
+
+        await Assert.That(env["GOOGLE_CLOUD_PROJECT"]).IsEqualTo("gcloud-proj");
+        await Assert.That(env["GOOGLE_CLOUD_PROJECT_ID"]).IsEqualTo("exported-id");
     }
 
     /// <summary>Windows carries no GOOGLE_APPLICATION_CREDENTIALS at all (unit files there have no
@@ -405,31 +414,6 @@ public class ServiceEnvironmentTests {
         await Assert.That(env.ContainsKey("GOOGLE_APPLICATION_CREDENTIALS")).IsFalse();
         await Assert.That(env.ContainsKey("AGY_ADC_AUTH")).IsFalse();
         await Assert.That(env.ContainsKey("GOOGLE_CLOUD_PROJECT")).IsFalse();
-    }
-
-    [Test]
-    public async Task AgyTrio_reports_complete_partial_and_absent() {
-        var complete = ServiceEnvironment.AgyTrio(new Dictionary<string, string> {
-            ["GOOGLE_CLOUD_PROJECT"] = "p", ["AGY_ADC_AUTH"] = "1",
-            ["GOOGLE_APPLICATION_CREDENTIALS"] = "/adc.json",
-        });
-        await Assert.That(complete.AnyPresent).IsTrue();
-        await Assert.That(complete.Missing).IsEmpty();
-
-        var partial = ServiceEnvironment.AgyTrio(new Dictionary<string, string> {
-            ["GOOGLE_CLOUD_PROJECT"] = "p",
-        });
-        await Assert.That(partial.AnyPresent).IsTrue();
-        await Assert.That(partial.Missing).IsEquivalentTo(new[] { "AGY_ADC_AUTH", "GOOGLE_APPLICATION_CREDENTIALS" });
-
-        var idSpelling = ServiceEnvironment.AgyTrio(new Dictionary<string, string> {
-            ["GOOGLE_CLOUD_PROJECT_ID"] = "p", ["AGY_ADC_AUTH"] = "1",
-            ["GOOGLE_APPLICATION_CREDENTIALS"] = "/adc.json",
-        });
-        await Assert.That(idSpelling.Missing).IsEmpty();
-
-        var absent = ServiceEnvironment.AgyTrio(new Dictionary<string, string>());
-        await Assert.That(absent.AnyPresent).IsFalse();
     }
 
     [Test]
