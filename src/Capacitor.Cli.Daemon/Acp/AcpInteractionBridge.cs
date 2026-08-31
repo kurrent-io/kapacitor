@@ -557,52 +557,17 @@ internal sealed partial class AcpInteractionBridge(
     partial void LogUnattendedPermissionFrameForbidden(string agentId, string toolTitle, string toolKind);
 
     /// <summary>
-    /// Maps a resolved <see cref="AcpInteractionDecision"/> to the ACP outcome result shape.
+    /// Maps a resolved <see cref="AcpInteractionDecision"/> to the ACP outcome result shape, by two
+    /// allowlists and no fallthrough: an outcome on neither list is <c>cancelled</c>, so a typo, a
+    /// corrupted decision, or a vocabulary the daemon has not been taught cannot grant or refuse
+    /// anything. Both lists are literal copies of the server's canonical values — the daemon does not
+    /// reference the server-only <c>InterruptOutcomes</c> type, per the AOT/trim constraints.
     ///
-    /// <b>Spec-review Finding 2 (security-critical, fail-safe-by-default):</b> this method uses
-    /// an EXPLICIT ALLOWLIST of recognized affirmative outcome strings (<c>"allow"</c>/
-    /// <c>"allow_once"</c>/<c>"allow_always"</c>/<c>"answered"</c> — the daemon does not reference
-    /// the server-only <c>InterruptOutcomes</c> type per this plan's AOT/trim Global Constraints, so
-    /// these are the literal string values of the SAME canonical vocabulary Task A2 documents, kept
-    /// in sync by the <c>AffirmativeOutcomes</c> constant below) rather than a denylist of recognized
-    /// negative outcomes with an "everything else selects" fallthrough. The PRIOR shape
-    /// (<c>decision.Outcome is "deny" or "cancel" ? cancelled : selected</c>) meant ANY unrecognized
-    /// outcome string — a typo (the canonical negative outcome is <c>"cancel"</c>, NOT
-    /// <c>"cancelled"</c> — see Task A2's Interfaces note for exactly this drift happening once
-    /// already in this plan), a future outcome vocabulary addition the daemon hasn't been updated
-    /// for, or a malformed/corrupted decision — fell through to <c>selected</c>/<c>options[0]</c>,
-    /// i.e. GRANTED permission for an outcome nobody explicitly asked to grant. Fail-safe now means:
-    /// not on the allowlist → always <see cref="CancelledResult"/>, full stop, regardless of how many
-    /// options were offered.
-    ///
-    /// <b>Fresh-review finding (this revision): a null <see cref="AcpInteractionDecision.SelectedOptionId"/>
-    /// used to STILL fall back to the first offered option even for a recognized affirmative
-    /// outcome</b> — an earlier draft of this fix treated "no id supplied" as "assume the human meant
-    /// the first option," which is exactly the same class of bug spec-review Finding 2 exists to
-    /// close: an ACP options request with two-or-more offered options (e.g. "Allow once" / "Deny")
-    /// resolved via a decision-submit path that (for whatever reason — a bug, a stale client, a
-    /// future code path that forgets to thread the id) omits <see cref="AcpInteractionDecision.SelectedOptionId"/>
-    /// would silently grant `options[0]` — often "Allow" — regardless of what the human actually
-    /// intended, or even whether the human ever saw the request. This method now FAILS CLOSED for
-    /// that case too: for an ACP interaction that offered ANY options, an affirmative outcome with
-    /// a null/unknown/unresolvable <see cref="AcpInteractionDecision.SelectedOptionId"/> ALWAYS maps
-    /// to <c>cancelled</c> — there is NO first-option fallback anywhere in this method, full stop.
-    /// The only way to get a <c>selected</c> result is an explicit, resolvable <c>SelectedOptionId</c>
-    /// matching one of the offered <see cref="PermissionOptionDto.OptionId"/>s.
-    ///
-    /// For a recognized affirmative outcome (spec-review Finding 6): selects the option whose
-    /// <see cref="PermissionOptionDto.OptionId"/> matches <see cref="AcpInteractionDecision.SelectedOptionId"/> —
-    /// NEVER by re-matching <see cref="PermissionOptionDto.Name"/>/<see cref="AcpInteractionDecision.SelectedOptionLabel"/>,
-    /// since duplicate or reordered option labels (which the ACP wire shape does not forbid) would
-    /// otherwise resolve to the wrong option. Two cases, both fail-closed: a
-    /// <see cref="AcpInteractionDecision.SelectedOptionId"/> that matches an offered
-    /// <see cref="PermissionOptionDto.OptionId"/> → that option, <c>selected</c>; ANYTHING else — no
-    /// id supplied at all (<see langword="null"/>), or an id that matches NONE of the offered
-    /// options — → <c>cancelled</c> (an absent or unresolvable id, whether from a decision-submit
-    /// path that forgot to echo one back or a correlation bug/stale/replayed decision, must never
-    /// silently grant an arbitrary option instead).
-    /// <c>"deny"</c>/<c>"cancel"</c>, no options offered at all, or ANY other outcome string not on
-    /// the allowlist above, map to <c>cancelled</c>.
+    /// <para>Selection is by <see cref="AcpInteractionDecision.SelectedOptionId"/> against the
+    /// OFFERED options, never by name or label, which the wire shape lets repeat or reorder. An
+    /// affirmative outcome with no id, or an id matching none of them, is <c>cancelled</c>: there is
+    /// no first-option fallback anywhere here, because "no specific option chosen" must never resolve
+    /// to whichever one the agent happened to list first — usually the allow.</para>
     /// </summary>
     static readonly HashSet<string> AffirmativeOutcomes = ["allow", "allow_once", "allow_always", "answered"];
 
