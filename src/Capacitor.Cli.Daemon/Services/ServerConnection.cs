@@ -130,6 +130,10 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     /// whose connect advertised <c>SupportsCorrelatedStatusReports</c>.</summary>
     public event Func<string, Task>?         OnRequestStatusReport2;
 
+    /// <summary>What the connect payload claims for RequestStatusReport2 — the live handler itself, so
+    /// the claim and the routing cannot drift apart.</summary>
+    internal bool AdvertisesCorrelatedStatusReports => OnRequestStatusReport2 is not null;
+
     /// <summary>Phase B2-b (sequenced-settlement design §4.2.4): snapshot of the un-acked resolved-
     /// candidates ledger, re-advertised on <c>DaemonConnect</c> (mirrors <see cref="GetLiveAgents"/>).
     /// Optional — null when not wired (tests / early startup) ⇒ no candidates advertised.</summary>
@@ -684,7 +688,10 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
                     // permissions through the ACP bridge. Null on an unwired/early-startup config;
                     // wire-compatible with old servers (ignored).
                     AcpPresetVendors: _config.AcpPresetVendors,
-                    SupportsCorrelatedStatusReports: true
+                    // Read off the handler, never asserted: an unwired connection (early startup,
+                    // a test, a second ServerConnection) would otherwise invite RequestStatusReport2
+                    // frames that its null-conditional invoke answers with silence.
+                    SupportsCorrelatedStatusReports: AdvertisesCorrelatedStatusReports
                 ),
                 cancellationToken: _ct
             );

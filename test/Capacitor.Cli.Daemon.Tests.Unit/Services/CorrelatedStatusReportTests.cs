@@ -53,6 +53,21 @@ public class CorrelatedStatusReportTests {
         await Assert.That(request.Nonce).IsEqualTo("n-2");
     }
 
+    /// <summary>The advertisement is the server's licence to send RequestStatusReport2, and the
+    /// receive seam answers through a null-conditional invoke — so a connection nothing subscribed to
+    /// must not claim it, or the request is met with silence rather than a report.</summary>
+    [Test]
+    public async Task An_unwired_connection_does_not_advertise_correlated_status_reports() {
+        var unwired = new ServerConnection(
+            new DaemonConfig { Name = "test", ServerUrl = "http://127.0.0.1:1" },
+            NullLoggerFactory.Instance,
+            NullLogger<ServerConnection>.Instance);
+        await Assert.That(unwired.AdvertisesCorrelatedStatusReports).IsFalse();
+
+        unwired.OnRequestStatusReport2 += _ => Task.CompletedTask;
+        await Assert.That(unwired.AdvertisesCorrelatedStatusReports).IsTrue();
+    }
+
     [Test]
     public async Task Turn_end_triggers_exactly_one_out_of_cycle_send() {
         var server = new StatusReportCountingConnection();
