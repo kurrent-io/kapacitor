@@ -40,12 +40,24 @@ public sealed class PermissionService : IPermissionService {
         _cache.Connect()
             .QueryWhenChanged(q => (IReadOnlySet<string>)q.Items.Select(p => p.AgentId).ToHashSet(StringComparer.Ordinal))
             .StartWith((IReadOnlySet<string>)_cache.Items.Select(p => p.AgentId).ToHashSet(StringComparer.Ordinal));
+    public IObservable<PendingSummary> Summary =>
+        _cache.Connect()
+            .QueryWhenChanged(q => PendingSummary.From(q.Items))
+            .StartWith(PendingSummary.From(_cache.Items));
 
     public async Task<PermissionResolveOutcome> ResolveAsync(PendingPermissionRequest target, PermissionAnswer answer, CancellationToken ct) {
         var decision = answer == PermissionAnswer.Deny ? "deny" : "allow";
         var apply = answer == PermissionAnswer.AllowAlways ? ClaudePermissions.AlwaysAllow(target.ToolName) : (System.Text.Json.JsonElement?)null;
-        var dto = new PermissionResolveDto(target.RequestId, decision, apply, null);
+        return await SendResolveAsync(new PermissionResolveDto(target.RequestId, decision, apply, null), ct).ConfigureAwait(false);
+    }
 
+    public async Task<PermissionResolveOutcome> AnswerAsync(PendingPermissionRequest target, IReadOnlyList<ElicitationAnswer> answers, CancellationToken ct) {
+        if (target.Questions is null) throw new ArgumentException("not an elicitation entry", nameof(target));
+        var updated = ClaudeElicitation.ComposeAnswers(target.Questions, answers);
+        return await SendResolveAsync(new PermissionResolveDto(target.RequestId, "allow", null, updated), ct).ConfigureAwait(false);
+    }
+
+    async Task<PermissionResolveOutcome> SendResolveAsync(PermissionResolveDto dto, CancellationToken ct) {
         PermissionAckDto ack;
         try {
             ack = await _ops.ResolvePermissionAsync(dto, ct).ConfigureAwait(false);
@@ -56,7 +68,7 @@ public sealed class PermissionService : IPermissionService {
             return new PermissionResolveOutcome(PermissionResolveKind.TransportFailure, ex.Message);
         }
 
-        Conclude(target.RequestId);
+        Conclude(dto.RequestId);
         return new PermissionResolveOutcome(ack.Ok ? PermissionResolveKind.Applied : PermissionResolveKind.AlreadyDecided, ack.Error);
     }
 

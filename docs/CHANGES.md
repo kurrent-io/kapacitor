@@ -385,6 +385,20 @@ starts never runs its `finally`. Every caller-controlled wire string is bounded 
 ids are canonicalized by GUID parse, and a request kept for a subscriber that then leaves has no
 clock — it lives until the agent exits, the same stale card a TUI answer leaves.
 
+## Elicitation question cards for PTY sessions
+
+A PTY Claude session's `AskUserQuestion` already reaches the app as a pending permission entry
+(the `PermissionRequest` hook rides the permission lane end to end), so the desktop renders it
+as an answerable question card instead of a broken Allow/Deny card — classification is app-side,
+on the entry it already receives, and the answer is the existing resolve frame with `allow` plus
+the documented `updatedInput` answers shape. No wire, daemon, or CLI change: the feature works
+against any daemon advertising `permission/1`, and AI-2197 defines its own frames later for the
+structured ACP vendors. Core's `ClaudeElicitation` owns the contract: a strict, capped,
+parser-created immutable model and a composer that validates every answer against it, which is
+what bounds the outgoing resolve frame by arithmetic. An unparseable or oversized payload falls
+back to the permission card (Allow = let the TUI ask) with "Allow always" hidden for the
+question tool.
+
 ## Launch and stop command routing
 
 The receive pump no longer awaits launch/stop EXECUTION for either command format: arrival order is

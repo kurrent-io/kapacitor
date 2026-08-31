@@ -1062,4 +1062,32 @@ public class TrayViewModelTests {
             await Assert.That(vm.MenuModel.State).IsEqualTo(TrayState.Running);
         });
     }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Pending_questions_split_the_header_wording() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var service = new FakeDaemonClientService();
+            var pause = new FakePauseController();
+            var actions = NewActions(service);
+            var consent = new FakeConsentService();
+            using var permissions = new FakePermissionService();
+            using var vm = new TrayViewModel(service, pause, actions, consent, permissions: permissions);
+
+            service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, ["permission/1"]));
+            service.SnapshotsSubject.OnNext(FakeDaemonClientService.Snap(active: 1));
+            await Assert.That(vm.MenuModel.State).IsEqualTo(TrayState.Running);
+
+            permissions.Add(PermissionEntries.Question("q1"));
+            await Assert.That(vm.MenuModel.State).IsEqualTo(TrayState.Attention);
+            await Assert.That(vm.MenuModel.Header).IsEqualTo("daemon-a: 1 question waiting");
+
+            permissions.Add(PermissionEntries.Entry("r1"));
+            await Assert.That(vm.MenuModel.Header).IsEqualTo("daemon-a: 1 question waiting, 1 permission request waiting");
+
+            permissions.Remove("q1");
+            permissions.Remove("r1");
+            await Assert.That(vm.MenuModel.State).IsEqualTo(TrayState.Running);
+        });
+    }
 }

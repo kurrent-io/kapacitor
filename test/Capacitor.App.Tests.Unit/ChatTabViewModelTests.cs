@@ -65,8 +65,8 @@ public class ChatTabViewModelTests {
     public async Task A_request_already_cached_when_the_tab_opens_lights_the_row_at_once() {
         await RunOnUiAsync(async () => {
             var h = Claude(seed: p => p.Add(PermissionEntries.Entry("r1", "a1")));
-            await WaitUntilAsync(() => h.Chat.PendingPermissions.Count == 1, what: "the replayed card");
-            await Assert.That(h.Chat.HasPendingPermissions).IsTrue();
+            await WaitUntilAsync(() => h.Chat.PendingCards.Count == 1, what: "the replayed card");
+            await Assert.That(h.Chat.HasPendingCards).IsTrue();
             await h.TeardownAsync();
         });
     }
@@ -273,13 +273,13 @@ public class ChatTabViewModelTests {
             h.Permissions.Add(PermissionEntries.Entry("r2", "a1", requestedAt: "2026-08-28T10:00:02.0000000+00:00"));
             h.Permissions.Add(PermissionEntries.Entry("r1", "a1", requestedAt: "2026-08-28T10:00:01.0000000+00:00"));
             h.Permissions.Add(PermissionEntries.Entry("rX", "other", requestedAt: "2026-08-28T10:00:00.0000000+00:00"));
-            await WaitUntilAsync(() => h.Chat.PendingPermissions.Count == 2, what: "two cards");
-            await Assert.That(h.Chat.PendingPermissions.Select(c => c.RequestId).ToArray()).IsEquivalentTo(new[] { "r1", "r2" }, CollectionOrdering.Matching);
-            await Assert.That(h.Chat.HasPendingPermissions).IsTrue();
+            await WaitUntilAsync(() => h.Chat.PendingCards.Count == 2, what: "two cards");
+            await Assert.That(h.Chat.PendingCards.Select(c => c.RequestId).ToArray()).IsEquivalentTo(new[] { "r1", "r2" }, CollectionOrdering.Matching);
+            await Assert.That(h.Chat.HasPendingCards).IsTrue();
 
             h.Permissions.Remove("r1");
-            await WaitUntilAsync(() => h.Chat.PendingPermissions.Count == 1, what: "one card left");
-            await Assert.That(h.Chat.PendingPermissions[0].RequestId).IsEqualTo("r2");
+            await WaitUntilAsync(() => h.Chat.PendingCards.Count == 1, what: "one card left");
+            await Assert.That(h.Chat.PendingCards[0].RequestId).IsEqualTo("r2");
             await h.TeardownAsync();
         });
     }
@@ -290,10 +290,29 @@ public class ChatTabViewModelTests {
         await RunOnUiAsync(async () => {
             var h = Claude();
             h.Permissions.Add(PermissionEntries.Entry("r1", "a1", toolName: "Read", toolInputJson: """{"file_path":"/repo/x/src/a.cs"}"""));
-            await WaitUntilAsync(() => h.Chat.PendingPermissions.Count == 1, what: "the card");
-            await Assert.That(h.Chat.PendingPermissions[0].Detail).IsEqualTo("/repo/x/src/a.cs");
+            await WaitUntilAsync(() => h.Chat.PendingCards.Count == 1, what: "the card");
+            await Assert.That(((PermissionCardViewModel)h.Chat.PendingCards[0]).Detail).IsEqualTo("/repo/x/src/a.cs");
             await h.PushAsync(Dto(transcriptPath: null));
-            await WaitUntilAsync(() => h.Chat.PendingPermissions[0].Detail == "src/a.cs", what: "relative once the root lands");
+            await WaitUntilAsync(() => ((PermissionCardViewModel)h.Chat.PendingCards[0]).Detail == "src/a.cs", what: "relative once the root lands");
+            await h.TeardownAsync();
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Question_entries_become_question_cards_beside_permission_cards() {
+        await RunOnUiAsync(async () => {
+            var h = Claude(p => {
+                p.Add(PermissionEntries.Entry("r1", requestedAt: "2026-08-28T10:00:00.0000000+00:00"));
+                p.Add(PermissionEntries.Question("q1", requestedAt: "2026-08-28T10:00:01.0000000+00:00"));
+            });
+            await WaitUntilAsync(() => h.Chat.PendingCards.Count == 2, what: "both cards");
+            await Assert.That(h.Chat.PendingCards[0]).IsTypeOf<PermissionCardViewModel>();
+            await Assert.That(h.Chat.PendingCards[1]).IsTypeOf<QuestionCardViewModel>();
+
+            h.Permissions.Remove("q1");
+            await WaitUntilAsync(() => h.Chat.PendingCards.Count == 1, what: "question card removed");
+            await Assert.That(h.Chat.PendingCards[0].RequestId).IsEqualTo("r1");
             await h.TeardownAsync();
         });
     }

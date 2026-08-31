@@ -60,12 +60,12 @@
                    Foreground="{StaticResource KcapMutedBrush}" FontSize="12.5"
                    HorizontalAlignment="Center" VerticalAlignment="Center" />
 
-        <Border x:Name="PermissionRow" Grid.Row="1" Margin="22,0,22,4" IsVisible="{Binding HasPendingPermissions}">
+        <Border x:Name="NeedsYouRow" Grid.Row="1" Margin="22,0,22,4" IsVisible="{Binding HasPendingCards}">
             <StackPanel Spacing="6">
                 <TextBlock Text="NEEDS YOU" FontSize="10" FontWeight="SemiBold" Foreground="{StaticResource KcapMutedBrush}" />
                 <ScrollViewer MaxHeight="260" VerticalScrollBarVisibility="Auto">
-                    <ItemsControl ItemsSource="{Binding PendingPermissions}">
-                        <ItemsControl.ItemTemplate>
+                    <ItemsControl ItemsSource="{Binding PendingCards}">
+                        <ItemsControl.DataTemplates>
                             <DataTemplate x:DataType="vm:PermissionCardViewModel">
                                 <Border Background="{StaticResource KcapSurfaceRaisedBrush}" BorderBrush="{StaticResource KcapAccentBrush}"
                                         BorderThickness="1" CornerRadius="10" Padding="13,10" Margin="0,0,0,6">
@@ -85,7 +85,79 @@
                                     </StackPanel>
                                 </Border>
                             </DataTemplate>
-                        </ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="vm:QuestionCardViewModel">
+                                <Border Background="{StaticResource KcapSurfaceRaisedBrush}" BorderBrush="{StaticResource KcapAccentBrush}"
+                                        BorderThickness="1" CornerRadius="10" Padding="13,10" Margin="0,0,0,6">
+                                    <Border.Styles>
+                                        <Style Selector="Button.selected">
+                                            <Setter Property="BorderBrush" Value="{StaticResource KcapAccentBrush}" />
+                                        </Style>
+                                    </Border.Styles>
+                                    <StackPanel Spacing="8" IsEnabled="{Binding !IsBusy}">
+                                        <ItemsControl ItemsSource="{Binding Questions}">
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate x:DataType="vm:QuestionGroupViewModel">
+                                                    <StackPanel Spacing="5" Margin="0,0,0,4">
+                                                        <Border Background="{StaticResource KcapSurfaceBrush}" CornerRadius="4" Padding="5,1" HorizontalAlignment="Left"
+                                                                IsVisible="{Binding Header, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
+                                                            <TextBlock Text="{Binding Header}" FontSize="10" FontWeight="SemiBold" Foreground="{StaticResource KcapMutedBrush}"
+                                                                       TextTrimming="CharacterEllipsis" MaxLines="1" />
+                                                        </Border>
+                                                        <TextBlock Text="{Binding Text}" FontWeight="SemiBold" FontSize="13" TextWrapping="Wrap"
+                                                                   Foreground="{StaticResource KcapTextBrush}" />
+                                                        <ItemsControl ItemsSource="{Binding Options}">
+                                                            <ItemsControl.ItemTemplate>
+                                                                <DataTemplate x:DataType="vm:QuestionOptionViewModel">
+                                                                    <StackPanel Margin="0,0,0,2">
+                                                                        <Button IsVisible="{Binding !IsMulti}" Command="{Binding PickCommand}"
+                                                                                Classes.selected="{Binding IsSelected}"
+                                                                                HorizontalAlignment="Stretch" HorizontalContentAlignment="Left"
+                                                                                Padding="10,5" FontSize="12" CornerRadius="7"
+                                                                                Background="{StaticResource KcapSurfaceBrush}" BorderBrush="{StaticResource KcapBorderBrush}" BorderThickness="1">
+                                                                            <StackPanel>
+                                                                                <TextBlock Text="{Binding Label}" Foreground="{StaticResource KcapTextBrush}" />
+                                                                                <TextBlock Text="{Binding Description}" FontSize="11" Foreground="{StaticResource KcapMutedBrush}"
+                                                                                           TextWrapping="Wrap" MaxLines="3" TextTrimming="CharacterEllipsis"
+                                                                                           IsVisible="{Binding Description, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                                                                            </StackPanel>
+                                                                        </Button>
+                                                                        <CheckBox IsVisible="{Binding IsMulti}" IsChecked="{Binding IsSelected}" FontSize="12">
+                                                                            <StackPanel>
+                                                                                <TextBlock Text="{Binding Label}" Foreground="{StaticResource KcapTextBrush}" />
+                                                                                <TextBlock Text="{Binding Description}" FontSize="11" Foreground="{StaticResource KcapMutedBrush}"
+                                                                                           TextWrapping="Wrap" MaxLines="3" TextTrimming="CharacterEllipsis"
+                                                                                           IsVisible="{Binding Description, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                                                                            </StackPanel>
+                                                                        </CheckBox>
+                                                                    </StackPanel>
+                                                                </DataTemplate>
+                                                            </ItemsControl.ItemTemplate>
+                                                        </ItemsControl>
+                                                        <DockPanel>
+                                                            <Button DockPanel.Dock="Right" Content="Answer" Command="{Binding EnterCommand}"
+                                                                    IsVisible="{Binding ShowsOtherAnswer}" Margin="6,0,0,0"
+                                                                    Padding="10,4" FontSize="12" CornerRadius="7"
+                                                                    Background="{StaticResource KcapAccentBrush}" Foreground="#07120E" />
+                                                            <TextBox Text="{Binding OtherText}" PlaceholderText="Other…" MaxLength="{Binding MaxOtherLength}"
+                                                                     AcceptsReturn="False" FontSize="12" MinHeight="30">
+                                                                <TextBox.KeyBindings>
+                                                                    <KeyBinding Gesture="Enter" Command="{Binding EnterCommand}" />
+                                                                </TextBox.KeyBindings>
+                                                            </TextBox>
+                                                        </DockPanel>
+                                                    </StackPanel>
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                        <TextBlock Text="{Binding ErrorText}" FontSize="11" Foreground="{StaticResource KcapDangerBrush}"
+                                                   IsVisible="{Binding ErrorText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                                        <Button Content="Submit" Command="{Binding SubmitCommand}" IsVisible="{Binding ShowsSubmit}"
+                                                HorizontalAlignment="Right" Padding="12,4" FontSize="12" FontWeight="SemiBold" CornerRadius="7"
+                                                Background="{StaticResource KcapAccentBrush}" Foreground="#07120E" />
+                                    </StackPanel>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.DataTemplates>
                     </ItemsControl>
                 </ScrollViewer>
             </StackPanel>

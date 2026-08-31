@@ -1,4 +1,5 @@
 using System.Globalization;
+using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.LocalIpc;
 using DynamicData;
 
@@ -16,6 +17,9 @@ public sealed class PendingPermissionRequest {
         Dto = dto;
         RequestedAt = DateTimeOffset.TryParse(dto.RequestedAt, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var t)
             ? t : DateTimeOffset.MinValue;
+        Questions = dto.Vendor == "claude" && dto.ToolName == ClaudeElicitation.ToolName && !dto.ToolInputOmitted
+            ? ClaudeElicitation.TryParse(ToolInputJson)
+            : null;
     }
 
     public PermissionPendingDto Dto { get; }
@@ -26,6 +30,17 @@ public sealed class PendingPermissionRequest {
     public string? ToolInputJson => Dto.ToolInput?.GetRawText();
     public bool ToolInputOmitted => Dto.ToolInputOmitted;
     public DateTimeOffset RequestedAt { get; }
+    public ElicitationQuestions? Questions { get; }
+}
+
+public readonly record struct PendingSummary(int Permissions, int Questions) {
+    public int Total => Permissions + Questions;
+
+    public static PendingSummary From(IEnumerable<PendingPermissionRequest> items) {
+        int permissions = 0, questions = 0;
+        foreach (var item in items) { if (item.Questions is null) permissions++; else questions++; }
+        return new PendingSummary(permissions, questions);
+    }
 }
 
 public interface IPermissionService : IDisposable {
@@ -35,5 +50,10 @@ public interface IPermissionService : IDisposable {
     IObservable<int> PendingCount { get; }
     /// The distinct agent ids in the cache; replays the current set on subscribe.
     IObservable<IReadOnlySet<string>> AgentsWithPending { get; }
+    /// One consistent pair per emission, from a single cache snapshot; replays on subscribe.
+    IObservable<PendingSummary> Summary { get; }
     Task<PermissionResolveOutcome> ResolveAsync(PendingPermissionRequest target, PermissionAnswer answer, CancellationToken ct);
+    /// Answers a classified AskUserQuestion entry (Questions non-null; ArgumentException otherwise,
+    /// as for an invalid answer set — both thrown before anything reaches the wire).
+    Task<PermissionResolveOutcome> AnswerAsync(PendingPermissionRequest target, IReadOnlyList<ElicitationAnswer> answers, CancellationToken ct);
 }

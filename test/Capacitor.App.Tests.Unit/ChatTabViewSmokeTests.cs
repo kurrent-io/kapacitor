@@ -460,20 +460,43 @@ public class ChatTabViewSmokeTests {
     public async Task Card_renders_with_its_buttons_and_the_row_collapses_when_empty() {
         await RunOnUiAsync(async () => {
             var host = new Host();
-            var row = host.View.FindControl<Border>("PermissionRow")!;
+            var row = host.View.FindControl<Border>("NeedsYouRow")!;
             await Assert.That(row.IsVisible).IsFalse();
 
             host.Permissions.Add(PermissionEntries.Entry("r1", "a1", toolName: "Bash"));
-            await WaitUntilAsync(() => host.Chat.PendingPermissions.Count == 1, what: "the card");
+            await WaitUntilAsync(() => host.Chat.PendingCards.Count == 1, what: "the card");
             Dispatcher.UIThread.RunJobs();
             await Assert.That(row.IsVisible).IsTrue();
             var buttons = row.GetVisualDescendants().OfType<Button>().Select(b => b.Content?.ToString() ?? "").ToArray();
             await Assert.That(buttons).IsEquivalentTo(new[] { "Deny", "Allow always", "Allow" });
 
             host.Permissions.Remove("r1");
-            await WaitUntilAsync(() => host.Chat.PendingPermissions.Count == 0, what: "cleared");
+            await WaitUntilAsync(() => host.Chat.PendingCards.Count == 0, what: "cleared");
             Dispatcher.UIThread.RunJobs();
             await Assert.That(row.IsVisible).IsFalse();
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Question_card_renders_options_other_and_coexists_with_a_permission_card() {
+        await RunOnUiAsync(async () => {
+            var host = new Host();
+            host.Permissions.Add(PermissionEntries.Entry("r1"));
+            host.Permissions.Add(PermissionEntries.Question("q1"));
+            host.Settle();
+
+            // A plain-text button (Allow, Deny, Submit…) yields its Content directly; an option
+            // button's Content is the Label/Description StackPanel, so its first TextBlock stands in.
+            var buttons = host.View.GetVisualDescendants().OfType<Button>()
+                .Select(b => b.Content as string ?? b.GetVisualDescendants().OfType<TextBlock>().FirstOrDefault()?.Text)
+                .ToList();
+            await Assert.That(buttons).Contains("Allow");
+            await Assert.That(buttons).Contains("A");
+            var otherBoxes = host.View.GetVisualDescendants().OfType<TextBox>()
+                .Where(t => t.PlaceholderText == "Other…").ToList();
+            await Assert.That(otherBoxes.Count).IsEqualTo(1);
+            await Assert.That(host.View.GetVisualDescendants().OfType<TextBlock>().Any(t => t.Text == "Pick")).IsTrue();
         });
     }
 }
