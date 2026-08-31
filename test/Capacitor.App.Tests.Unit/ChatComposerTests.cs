@@ -113,6 +113,42 @@ public class ChatComposerTests {
         });
     }
 
+    /// A flow participant is unmessageable by kind, not by handshake: even a read-write attach
+    /// (an older daemon that doesn't flag protected attaches) must leave the composer closed.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task A_flow_participant_chat_never_sends_even_over_a_writable_attach() {
+        await RunOnUiAsync(async () => {
+            var daemon = new FakeDaemonClientService();
+            var factory = new FakeTerminalAttachClientFactory();
+            var time = new FakeTimeProvider();
+            var terminal = new TerminalTabViewModel("r1", daemon, factory.Factory, () => new FakeTerminalSurface(), time);
+            var chat = new ChatTabViewModel(
+                "r1", daemon, terminal, TranscriptProjection.For("claude"), new RecordingOpener(), time, new FakePermissionService());
+            daemon.Agents.AddOrUpdate(
+                Agent("r1", "claude", hasTerminal: true, kind: "review-flow") with { FlowRunId = "f1", FlowRole = "reviewer" });
+            await (terminal.PendingResolveWorkForTesting ?? Task.CompletedTask);
+            await factory.Created.Single().TriggerAttached([]);
+
+            await Assert.That(terminal.CanAcceptText).IsTrue();
+            await Assert.That(chat.IsReadOnlyParticipant).IsTrue();
+            await Assert.That(chat.ReadOnlyNotice).IsEqualTo("review-flow agent (flow f1, role reviewer)");
+            chat.ComposerText = "hello";
+            await Assert.That(await chat.SendCommand.CanExecute.FirstAsync()).IsFalse();
+            await Assert.That(chat.ComposerHint).IsEqualTo("");
+            await chat.TeardownAsync();
+        });
+    }
+
+    [Test]
+    public async Task Participant_notice_mirrors_the_daemon_protection_reason() {
+        await Assert.That(ChatTabViewModel.ParticipantNotice(Agent("a", "claude", true))).IsEqualTo("");
+        await Assert.That(ChatTabViewModel.ParticipantNotice(Agent("a", "claude", true, kind: "review"))).IsEqualTo("review agent");
+        await Assert.That(ChatTabViewModel.ParticipantNotice(
+            Agent("a", "claude", true, kind: "review-flow") with { FlowRunId = "f1" })).IsEqualTo("review-flow agent (flow f1)");
+        await Assert.That(ChatTabViewModel.ParticipantNotice(Agent("a", "claude", true, kind: "sidekick"))).IsEqualTo("sidekick agent");
+    }
+
     /// Thread identity: the hint's own change lands on the UI thread even when the terminal's
     /// state flips from a pool thread.
     [Test]

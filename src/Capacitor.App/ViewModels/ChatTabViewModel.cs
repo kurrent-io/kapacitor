@@ -101,6 +101,29 @@ public sealed class ChatTabViewModel : ReactiveObject {
     string _statusText = "";
     public string StatusText { get => _statusText; private set => this.RaiseAndSetIfChanged(ref _statusText, value); }
 
+    bool _isReadOnlyParticipant;
+    /// True for a flow participant (any kind other than "agent"): the view swaps the composer
+    /// input for the read-only banner, and the send gate refuses regardless of the terminal
+    /// attach — the kind, not the handshake, is what makes the session unmessageable.
+    public bool IsReadOnlyParticipant {
+        get => _isReadOnlyParticipant;
+        private set => this.RaiseAndSetIfChanged(ref _isReadOnlyParticipant, value);
+    }
+
+    string _readOnlyNotice = "";
+    public string ReadOnlyNotice { get => _readOnlyNotice; private set => this.RaiseAndSetIfChanged(ref _readOnlyNotice, value); }
+
+    /// Why this session cannot be messaged, or "" for an ordinary agent. Mirrors the wording of
+    /// the daemon's attach-time ProtectionReason so the chat banner and the terminal banner name
+    /// the same block identically; an unrecognised kind fails safe as protected, like
+    /// AgentActionService.IsProtectedKind.
+    internal static string ParticipantNotice(AgentStatusDto dto) {
+        if (!AgentActionService.IsProtectedKind(dto.Kind)) return "";
+        var role = string.IsNullOrEmpty(dto.FlowRole) ? "" : $", role {dto.FlowRole}";
+        var flow = string.IsNullOrEmpty(dto.FlowRunId) ? "" : $" (flow {dto.FlowRunId}{role})";
+        return $"{dto.Kind} agent{flow}";
+    }
+
     IBrush _statusDot = SessionStatusDots.For("");
     public IBrush StatusDot { get => _statusDot; private set => this.RaiseAndSetIfChanged(ref _statusDot, value); }
 
@@ -176,17 +199,21 @@ public sealed class ChatTabViewModel : ReactiveObject {
             })
             .DisposeWith(_disposables);
 
+        // The banner carries the read-only explanation for a flow participant, so the hint
+        // goes blank there instead of offering a reply that can never be sent.
         _composerHint = Observable.CombineLatest(
                 terminal.WhenAnyValue(t => t.SendAvailability, t => t.State, (availability, state) => (availability, state)),
                 this.WhenAnyValue(x => x.VendorLabel),
-                (t, label) => HintFor(t.availability, t.state, label))
+                this.WhenAnyValue(x => x.IsReadOnlyParticipant),
+                (t, label, readOnly) => readOnly ? "" : HintFor(t.availability, t.state, label))
             .ToProperty(this, x => x.ComposerHint, HintFor(terminal.SendAvailability, terminal.State, ""))
             .DisposeWith(_disposables);
 
         var canSend = Observable.CombineLatest(
             this.WhenAnyValue(x => x.ComposerText),
             terminal.WhenAnyValue(t => t.CanAcceptText),
-            (text, can) => can && !string.IsNullOrWhiteSpace(text));
+            this.WhenAnyValue(x => x.IsReadOnlyParticipant),
+            (text, can, readOnly) => can && !readOnly && !string.IsNullOrWhiteSpace(text));
         SendCommand = ReactiveCommand.Create(() => {
             if (_terminal.TrySendText(ComposerText)) ComposerText = "";
         }, canSend);
@@ -208,6 +235,9 @@ public sealed class ChatTabViewModel : ReactiveObject {
     }
 
     void OnDto(AgentStatusDto dto) {
+        var notice = ParticipantNotice(dto);
+        ReadOnlyNotice = notice;
+        IsReadOnlyParticipant = notice.Length > 0;
         _vendor = dto.Vendor;
         _root = dto.RepoPath;
         _rootSubject.OnNext(dto.RepoPath);
