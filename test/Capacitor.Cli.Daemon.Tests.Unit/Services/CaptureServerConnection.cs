@@ -319,8 +319,16 @@ sealed class CaptureServerConnection() : ServerConnection(
         }
     }
 
-    public override Task AppendAgentRunEventAsync(string agentId, object evt)
-        => Task.CompletedTask;
+    /// <summary>Every (agentId, event) pair passed to AppendAgentRunEventAsync, in call order — the
+    /// only place a run's stop REASON is observable, and the reason is what distinguishes a daemon
+    /// that went away from a user who asked it to stop.</summary>
+    public List<(string AgentId, object Event)> RunEvents { get; } = [];
+
+    public override Task AppendAgentRunEventAsync(string agentId, object evt) {
+        lock (RunEvents) RunEvents.Add((agentId, evt));
+
+        return Task.CompletedTask;
+    }
 
     // ── Task 8: resolved-model report capture ──────────────────────────────────
     /// <summary>Every legacy (agentId, model) pair passed to ReportAgentResolvedModelAsync — proves
