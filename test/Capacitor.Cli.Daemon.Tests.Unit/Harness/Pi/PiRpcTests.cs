@@ -135,8 +135,8 @@ public class PiRpcTests {
     // ---- ToEnvelopes: errored assistant message_end ----
     //
     // Pi reports a provider-side turn failure as an assistant message_end with empty content,
-    // stopReason "error" and the detail in errorMessage. Without a translation arm for it, the
-    // failure reaches no surface at all: the hosted session just goes silent (#709).
+    // stopReason "error" and the detail in errorMessage. The system note is that failure's only
+    // visible trace — untranslated, the hosted session reads as hung.
 
     [Test]
     public async Task Errored_assistant_message_end_yields_a_system_note_with_the_error() {
