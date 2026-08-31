@@ -389,11 +389,13 @@ public class TerminalTabViewModelTests {
     public async Task Cancel_dispose_orderings_each_yield_one_recorded_state() {
         await RunOnUiAsync(async () => {
             // Three interleavings of "the retired attempt's own outcome" racing "reattach's
-            // retire step" (immediate completion, yielded completion, and a bare TrySetResult
-            // fired from its own background Task) -- regardless of ordering, the VM settles on
-            // exactly one coherent State (attempt 2's Connecting; the generation check makes
-            // attempt 1's outcome a no-op whichever side of the retiring increment it lands on)
-            // and the client is disposed exactly once.
+            // retire step": immediate completion, one yield later, and one scheduler tick later
+            // (late enough that the retiring generation bump has typically already happened).
+            // Regardless of ordering the VM settles on exactly one coherent State -- attempt 2's
+            // Connecting -- and the client is disposed exactly once. Two guards get it there and
+            // NEITHER covers the other's window: past the retiring increment the generation check
+            // makes attempt 1's outcome a no-op, and before it the outcome renders but leaves the
+            // opening token attempt 2 already holds alone, so attempt 2's Connecting still lands.
             for (var i = 0; i < 3; i++) {
                 var (_, factory, _, vm, client1) = await BuildConnectingAsync(agentId: $"race{i}");
                 var run1 = vm.CurrentRunForTesting!;
@@ -405,7 +407,10 @@ public class TerminalTabViewModelTests {
                         await Task.Yield();
                         client1.Result.TrySetResult(new AttachOutcome.Exited(1));
                     }),
-                    _ => Task.Run(() => client1.Result.TrySetResult(new AttachOutcome.Exited(1))),
+                    _ => Task.Run(async () => {
+                        await Task.Delay(1);
+                        client1.Result.TrySetResult(new AttachOutcome.Exited(1));
+                    }),
                 };
                 await Task.WhenAll(reattach, raceOther, run1);
 
@@ -413,6 +418,36 @@ public class TerminalTabViewModelTests {
                 await Assert.That(vm.State.Phase).IsEqualTo(TerminalSessionPhase.Connecting);
                 await Assert.That(factory.Created.Count).IsEqualTo(2);
             }
+        });
+    }
+
+    /// A retired attempt's own terminal outcome, rendering while the reattach that retired it is
+    /// parked on its dispose, leaves that reattach intact: it still swaps in its own client and
+    /// settles on Connecting. Parking the dispose is what makes the ordering deterministic rather
+    /// than a race -- the reattach holds its opening token across that whole window, which is
+    /// precisely the stretch in which the generation guard does not yet distinguish the two
+    /// attempts, so the token is the only thing keeping them apart.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task An_outcome_landing_inside_the_reattach_dispose_window_leaves_the_reattach_alone() {
+        await RunOnUiAsync(async () => {
+            var gate = new TaskCompletionSource();
+            var (_, factory, _, vm, client1) = await BuildConnectingAsync(configureNext: c => c.DisposeGate = gate);
+            var run1 = vm.CurrentRunForTesting!;
+
+            var reattach = Task.Run(() => vm.ReattachCommand.Execute().ToTask());
+            await WaitUntilAsync(() => client1.DisposeCalls == 1, what: "reattach parked on the old client's dispose");
+
+            // The fake terminalizes the run it retires (Detached), exactly as the real client's
+            // own eager terminalizer does; awaiting run1 lands that publish before the gate opens.
+            await run1;
+            await Assert.That(vm.State.Phase).IsEqualTo(TerminalSessionPhase.Detached);
+
+            gate.SetResult();
+            await reattach;
+
+            await Assert.That(factory.Created.Count).IsEqualTo(2);
+            await Assert.That(vm.State.Phase).IsEqualTo(TerminalSessionPhase.Connecting);
         });
     }
 
