@@ -29,6 +29,25 @@ public class AcpTranscriptForwarderTests {
     static AcpEventEnvelope NewTextEnvelope(string text) =>
         new() { Kind = AcpEventKind.AssistantText, Text = text }; // Seq=0 placeholder, per task 2's contract
 
+    static AcpEventEnvelope NewEphemeralEnvelope(string text) =>
+        new() { Kind = AcpEventKind.AssistantText, Text = text, Ephemeral = true, ItemId = "item-1" };
+
+    /// <summary>Acks the way the server actually does: it sequences CANONICAL envelopes only
+    /// (<c>envelopes.Where(e =&gt; !e.Ephemeral)</c>), so AcceptedSeq can never reflect an ephemeral.
+    /// A batch carrying no canonical envelope leaves the cursor exactly where it was.</summary>
+    static Func<AcpEventEnvelope[], CancellationToken, Task<AcpBatchAck>> ServerAccurateSend(
+            List<AcpEventEnvelope[]> observed) {
+        long accepted = -1;
+
+        return (batch, _) => {
+            observed.Add(batch);
+            foreach (var env in batch.Where(static e => !e.Ephemeral).OrderBy(static e => e.Seq))
+                if (env.Seq == accepted + 1) accepted = env.Seq;
+
+            return Task.FromResult(new AcpBatchAck(accepted, accepted));
+        };
+    }
+
     static Channel<AcpEventEnvelope> NewChannel() =>
         Channel.CreateUnbounded<AcpEventEnvelope>();
 
@@ -425,5 +444,150 @@ public class AcpTranscriptForwarderTests {
         // RunAsync swallows its own OperationCanceledException (mirrors AcpHostedAgentRuntime's
         // RunTurnWorkerAsync convention) — the task completes successfully, promptly, not hung.
         await runTask.WaitAsync(HangGuard);
+    }
+
+    // ── Ephemeral envelopes consume no canonical sequence number ───────────────────────
+
+    /// <summary>Ephemeral envelopes ride the batch in arrival order but are NOT numbered: numbering
+    /// them would both break canonical contiguity (the server reads a non-contiguous canonical seq as
+    /// a gap) and inflate the high-water mark the ack is compared against.</summary>
+    [Test]
+    public async Task Ephemeral_envelopes_do_not_consume_a_canonical_seq() {
+        var channel = NewChannel();
+        channel.Writer.TryWrite(NewTextEnvelope("a"));       // canonical -> seq 1
+        channel.Writer.TryWrite(NewEphemeralEnvelope("..")); // ephemeral -> unnumbered
+        channel.Writer.TryWrite(NewEphemeralEnvelope("...."));// ephemeral -> unnumbered
+        channel.Writer.TryWrite(NewTextEnvelope("b"));       // canonical -> seq 2 (contiguous)
+        channel.Writer.Complete();
+
+        var observed = new List<AcpEventEnvelope[]>();
+        var forwarder = NewForwarder(ServerAccurateSend(observed), channel.Reader);
+
+        await forwarder.RunAsync(CancellationToken.None).WaitAsync(HangGuard);
+
+        var sent = observed.SelectMany(static b => b).ToArray();
+        await Assert.That(sent.Where(static e => !e.Ephemeral).Select(static e => e.Seq))
+            .IsEquivalentTo(new long[] { 0, 1, 2 }); // initial envelope + two contiguous canonicals
+        await Assert.That(sent.Where(static e => e.Ephemeral).All(static e => e.Seq == 0)).IsTrue();
+        // Ephemerals still travel, in arrival order, in the same batch.
+        await Assert.That(sent.Count(static e => e.Ephemeral)).IsEqualTo(2);
+    }
+
+    /// <summary>Against a server that sequences canonical envelopes only, an ephemeral-heavy batch
+    /// must not read as a terminal-drop: the high-water mark the ack is compared against counts
+    /// canonical envelopes only, so AcceptedSeq can reach it. Every canonical envelope still lands.</summary>
+    [Test]
+    public async Task An_ack_counting_only_canonical_envelopes_is_not_a_terminal_drop() {
+        var channel = NewChannel();
+        channel.Writer.TryWrite(NewTextEnvelope("a"));         // canonical -> seq 1
+        channel.Writer.TryWrite(NewEphemeralEnvelope("x"));    // ephemeral
+        channel.Writer.TryWrite(NewEphemeralEnvelope("xy"));   // ephemeral
+        channel.Writer.TryWrite(NewEphemeralEnvelope("xyz"));  // ephemeral
+        channel.Writer.Complete();
+
+        var observed = new List<AcpEventEnvelope[]>();
+        var forwarder = NewForwarder(ServerAccurateSend(observed), channel.Reader);
+
+        await forwarder.RunAsync(CancellationToken.None).WaitAsync(HangGuard);
+
+        await Assert.That(forwarder.IsTerminal).IsFalse();
+        await Assert.That(forwarder.UnackedCount).IsEqualTo(0);
+        // Every canonical envelope reached the server and was acked.
+        await Assert.That(observed.SelectMany(static b => b).Count(static e => !e.Ephemeral)).IsEqualTo(2);
+    }
+
+    /// <summary>An ALL-ephemeral batch leaves the canonical cursor untouched, so its ack (AcceptedSeq
+    /// unchanged) reads as a normal ack rather than a terminal-drop, and a later canonical envelope is
+    /// still forwarded at the next seq. The canonical envelope is deliberately written only AFTER the
+    /// ephemeral-only batch has been observed: writing both up front lets the opportunistic drain
+    /// coalesce them into one MIXED batch, which would exercise the mixed case and leave an
+    /// all-ephemeral regression undetected.</summary>
+    [Test]
+    public async Task An_all_ephemeral_batch_leaves_the_cursor_untouched_and_does_not_stop_the_loop() {
+        var channel = NewChannel();
+        channel.Writer.TryWrite(NewEphemeralEnvelope("x"));
+        channel.Writer.TryWrite(NewEphemeralEnvelope("xy"));
+
+        var observed        = new List<AcpEventEnvelope[]>();
+        var inner           = ServerAccurateSend(observed);
+        var ephemeralOnly   = new TaskCompletionSource();
+
+        Task<AcpBatchAck> Send(AcpEventEnvelope[] batch, CancellationToken ct) {
+            var ack = inner(batch, ct);
+            // Signal (never await) from inside the delegate: the forwarder is single-in-flight, so by
+            // the time this batch is acked the next drain is what will pick up the canonical below.
+            if (batch.Length > 0 && batch.All(static e => e.Ephemeral)) ephemeralOnly.TrySetResult();
+
+            return ack;
+        }
+
+        var forwarder = NewForwarder(Send, channel.Reader);
+        var run       = forwarder.RunAsync(CancellationToken.None);
+
+        await ephemeralOnly.Task.WaitAsync(HangGuard);
+        channel.Writer.TryWrite(NewTextEnvelope("after"));
+        channel.Writer.Complete();
+
+        await run.WaitAsync(HangGuard);
+
+        await Assert.That(forwarder.IsTerminal).IsFalse();
+
+        // The batch that carried only ephemerals really was ephemeral-only...
+        var ephemeralOnlyBatches = observed.Where(static b => b.Length > 0 && b.All(static e => e.Ephemeral)).ToArray();
+        await Assert.That(ephemeralOnlyBatches.Length).IsEqualTo(1);
+        await Assert.That(ephemeralOnlyBatches[0].Length).IsEqualTo(2);
+
+        // ...and it consumed no sequence number: the later canonical still lands at seq 1.
+        var canonicalAfterInitial = observed.SelectMany(static b => b)
+            .Where(static e => !e.Ephemeral && e.Seq > 0).ToArray();
+        await Assert.That(canonicalAfterInitial.Length).IsEqualTo(1);
+        await Assert.That(canonicalAfterInitial[0].Seq).IsEqualTo(1L);
+    }
+
+    /// <summary>Excluding ephemerals from the unacked buffer must not break the gap-resend path: a
+    /// server-reported gap replays from the buffer, and what comes back is CANONICAL ONLY (ephemerals
+    /// are fire-and-forget and are never retained for resend). Models the server's gap rule directly —
+    /// report ExpectedNextSeq once, then accept — so the resend is exercised end to end rather than
+    /// asserted about.</summary>
+    [Test]
+    public async Task A_gap_resend_replays_canonical_envelopes_only() {
+        var channel = NewChannel();
+        channel.Writer.TryWrite(NewTextEnvelope("a"));      // canonical -> seq 1
+        channel.Writer.TryWrite(NewEphemeralEnvelope("x")); // ephemeral -> unnumbered, not retained
+        channel.Writer.TryWrite(NewTextEnvelope("b"));      // canonical -> seq 2
+        channel.Writer.Complete();
+
+        var observed     = new List<AcpEventEnvelope[]>();
+        var gapReported  = false;
+
+        Task<AcpBatchAck> Send(AcpEventEnvelope[] batch, CancellationToken _) {
+            observed.Add(batch);
+
+            // Batch 1 is the initial envelope (seq 0) — accept it. On the first batch carrying
+            // canonical seq 1, report a gap at 1 exactly once, forcing a resend from the buffer.
+            if (!gapReported && batch.Any(static e => !e.Ephemeral && e.Seq == 1)) {
+                gapReported = true;
+
+                return Task.FromResult(new AcpBatchAck(0, 0, ExpectedNextSeq: 1));
+            }
+
+            var highestCanonical = batch.Where(static e => !e.Ephemeral)
+                .Select(static e => e.Seq).DefaultIfEmpty(0L).Max();
+
+            return Task.FromResult(new AcpBatchAck(highestCanonical, highestCanonical));
+        }
+
+        var forwarder = NewForwarder(Send, channel.Reader);
+
+        await forwarder.RunAsync(CancellationToken.None).WaitAsync(HangGuard);
+
+        await Assert.That(gapReported).IsTrue();          // the gap path really was taken
+        await Assert.That(forwarder.IsTerminal).IsFalse(); // and it recovered rather than stopping
+        await Assert.That(forwarder.UnackedCount).IsEqualTo(0);
+
+        // The resend (the batch after the gap ack) replayed the buffer: canonical only, from seq 1.
+        var resend = observed[^1];
+        await Assert.That(resend.All(static e => !e.Ephemeral)).IsTrue();
+        await Assert.That(resend.Select(static e => e.Seq)).IsEquivalentTo(new long[] { 1, 2 });
     }
 }
