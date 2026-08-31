@@ -102,10 +102,10 @@ public sealed class TerminalTabViewModel : ReactiveObject {
 
     /// Bound; true from a send's acceptance until its delivery ends.
     public bool SendInFlight {
-        get => _sendInFlight;
+        get => Volatile.Read(ref _sendInFlight);
         private set {
-            if (_sendInFlight == value) return;
-            _sendInFlight = value;
+            if (Volatile.Read(ref _sendInFlight) == value) return;
+            Volatile.Write(ref _sendInFlight, value);
             this.RaisePropertyChanged();
             RaiseSendProjections();
         }
@@ -116,12 +116,12 @@ public sealed class TerminalTabViewModel : ReactiveObject {
 
     /// Bound; the one authority TrySendText itself consults, so can-execute and acceptance can
     /// never disagree.
-    public bool CanAcceptText => GateOpen && !_sendInFlight;
+    public bool CanAcceptText => GateOpen && !SendInFlight;
 
     /// Bound; the gate folded into the state, so a hint built from it is true in every window.
     public SendAvailability SendAvailability {
         get {
-            if (_sendInFlight) return SendAvailability.Sending;
+            if (SendInFlight) return SendAvailability.Sending;
             if (State is { Phase: TerminalSessionPhase.Attached, ReadOnly: false })
                 return GateOpen ? SendAvailability.Ready : SendAvailability.Transitioning;
             return State.Phase switch {
@@ -200,8 +200,14 @@ public sealed class TerminalTabViewModel : ReactiveObject {
     /// Synchronous acceptance on the UI thread: true means the text is on its way through the
     /// current client and the composer may clear; false means nothing was written.
     public bool TrySendText(string text) {
-        if (!CanAcceptText || _client is not { } client) return false;
+        // Token, then client, then token again: _client is only ever replaced (or nulled) AFTER an
+        // advance, so an unmoved token across the read proves this client is the one that token
+        // owns. Reading the client first instead pairs a retired client with its replacement's
+        // token -- which DeliverAsync's own check then reads as current, sending the submit CR
+        // into the client being disposed.
         var token = Volatile.Read(ref _openingToken);
+        if (!CanAcceptText || _client is not { } client) return false;
+        if (Volatile.Read(ref _openingToken) != token) return false;
         SendInFlight = true;
         _delivery = DeliverAsync(client, token, TerminalInputEncoder.Paste(text));
         return true;
@@ -497,17 +503,18 @@ public sealed class TerminalTabViewModel : ReactiveObject {
     /// retired the one identified by `generation` (0 means "no attempt identity yet" -- only the
     /// disposal half applies). See TryStartAttemptAsync's doc comment for why both are checked.
     bool Retired(int generation) =>
-        Volatile.Read(ref _resolveState) == ResolveDisposed || (generation != 0 && generation != _attemptGeneration);
+        Volatile.Read(ref _resolveState) == ResolveDisposed
+        || (generation != 0 && generation != Volatile.Read(ref _attemptGeneration));
 
     void WireSurface(ITerminalSurface surface, ITerminalAttachClient client, int generation) {
         // Read-only is belt and braces: the client itself also guards SendInputAsync/ResizeAsync,
         // but suppressing here means a read-only attach never even attempts the round trip.
         surface.InputProduced += bytes => {
-            if (generation != _attemptGeneration || State.ReadOnly) return;
+            if (Retired(generation) || State.ReadOnly) return;
             _ = client.SendInputAsync(bytes);
         };
         surface.Resized += (cols, rows) => {
-            if (generation != _attemptGeneration || State.ReadOnly) return;
+            if (Retired(generation) || State.ReadOnly) return;
             _ = client.ResizeAsync(cols, rows);
         };
     }
@@ -515,7 +522,7 @@ public sealed class TerminalTabViewModel : ReactiveObject {
     async Task OnAttachedAsync(int generation, int openingToken, ITerminalSurface surface, Utf8StreamDecoder decoder, byte[] snapshot, string? reason, CancellationToken ct) {
         var text = decoder.Decode(snapshot);
         await Dispatcher.UIThread.InvokeAsync(() => {
-            if (generation != _attemptGeneration) return;
+            if (Retired(generation)) return;
             surface.Feed(text);
             Publish(TerminalSessionState.Attached(reason), openingToken);
         }, DispatcherPriority.Default, ct);
@@ -524,7 +531,7 @@ public sealed class TerminalTabViewModel : ReactiveObject {
     async Task OnOutputAsync(int generation, ITerminalSurface surface, Utf8StreamDecoder decoder, byte[] bytes, CancellationToken ct) {
         var text = decoder.Decode(bytes);
         await Dispatcher.UIThread.InvokeAsync(() => {
-            if (generation != _attemptGeneration) return;
+            if (Retired(generation)) return;
             surface.Feed(text);
         }, DispatcherPriority.Default, ct);
     }
@@ -555,10 +562,10 @@ public sealed class TerminalTabViewModel : ReactiveObject {
 
     static string Describe(AttachCallbackException ex) => ex.InnerException?.Message ?? ex.Message;
 
-    // CancellationToken.None deliberately: a retired attempt's generation check (inside the
-    // dispatched action) already guards correctness, and the outcome must still apply when the
-    // attempt's own token is cancelled but the generation is still current (e.g. a graceful
-    // Detached racing TeardownAsync's early cts.Cancel()).
+    // CancellationToken.None deliberately: the Retired check inside the dispatched action already
+    // guards correctness, and the outcome must still apply when the attempt's own token is
+    // cancelled but the attempt is not yet retired (e.g. a graceful Detached racing
+    // TeardownAsync's early cts.Cancel(), which lands before its generation bump).
     //
     // Flushes the decoder here too, not just on every live frame: a terminal completion (Exited,
     // ConnectionLost, a mapped Failed) can land with a multibyte code point still buffered inside
@@ -568,7 +575,7 @@ public sealed class TerminalTabViewModel : ReactiveObject {
     // truncated stream).
     Task FinishAttemptAsync(int generation, int openingToken, ITerminalSurface surface, Utf8StreamDecoder decoder, TerminalSessionState state) =>
         Dispatcher.UIThread.InvokeAsync(() => {
-            if (generation != _attemptGeneration) return;
+            if (Retired(generation)) return;
             var remainder = decoder.Flush();
             if (remainder.Length > 0) surface.Feed(remainder);
             Publish(state, openingToken);
