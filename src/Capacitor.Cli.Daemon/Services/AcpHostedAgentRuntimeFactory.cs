@@ -230,6 +230,10 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
                 firstOutputDeadline: ReviewerLaunchTimeoutSeconds(descriptor, config, ctx) is { } firstOutputSeconds
                     ? TimeSpan.FromSeconds(firstOutputSeconds)
                     : null,
+                // Whether a silent turn has a person watching it. Not derivable from the deadline
+                // above: only some vendors carry one, so a reviewer without it would otherwise be
+                // told, in a transcript that is consumed as review output, to keep waiting.
+                isReviewFlow: ctx.IsReviewFlow,
                 // The set AllowlistedAutoApprove admits, built from the SAME injected specs and identity
                 // the trust argv is built from. Two derivations would let the reviewer be TRUSTED to call
                 // a tool the policy then refuses to approve — a round that dies on its own result call.

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 using Microsoft.Extensions.Logging;
 
 namespace Capacitor.Cli.Daemon.Acp;
@@ -26,8 +27,20 @@ internal sealed partial class AcpChildProcess : IAcpProcess {
     readonly string                  _vendor;
     readonly CancellationTokenSource _stderrDrainCts = new();
     readonly Task                    _stderrDrainTask;
+    readonly Lock                    _diagnosticsGate = new();
+    readonly StringBuilder           _diagnostics     = new();
 
     int _disposed;
+
+    /// <summary>Enough to carry a startup/auth error or a retry banner and the context around it, and
+    /// small enough that a chatty long-lived child cannot grow the daemon's heap over a whole
+    /// session. Over-cap output is dropped, never rotated — this exists to explain a failed launch or
+    /// a stalled turn, and that explanation is at the start.</summary>
+    const int DiagnosticsCap = 4096;
+
+    public string? Diagnostics {
+        get { lock (_diagnosticsGate) return _diagnostics.Length == 0 ? null : _diagnostics.ToString(); }
+    }
 
     /// <param name="debugFrames">
     /// <c>KCAP_ACP_DEBUG_FRAMES</c> (<see cref="DaemonConfig.DebugFrames"/>) — off by default. When
@@ -63,6 +76,12 @@ internal sealed partial class AcpChildProcess : IAcpProcess {
 
                 if (line.Length == 0) continue;
 
+                // Retained whatever the log level does: the operator opts into per-line logging, not
+                // into being able to explain a stall after the fact, and the vendor writes its whole
+                // diagnosis here (gemini's "Attempt N failed: RATE_LIMIT_EXCEEDED … Retrying after
+                // 70650ms" reached a live daemon and was thrown away). Daemon-local only.
+                Capture(line);
+
                 // KCAP_ACP_DEBUG_FRAMES gate (Off by default) — stderr can carry paths, prompt
                 // fragments, or error detail, so it is only logged verbatim when explicitly opted in;
                 // otherwise only its length is logged.
@@ -77,6 +96,14 @@ internal sealed partial class AcpChildProcess : IAcpProcess {
             // Pipe torn down (process killed mid-read) — expected on teardown.
         } catch (ObjectDisposedException) {
             // Stream disposed out from under us (process.Dispose() raced the read) — expected.
+        }
+    }
+
+    void Capture(string line) {
+        lock (_diagnosticsGate) {
+            if (_diagnostics.Length >= DiagnosticsCap) return;
+
+            _diagnostics.Append(line).Append('\n');
         }
     }
 

@@ -455,6 +455,10 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     /// </summary>
     readonly TimeSpan? _firstOutputDeadline;
 
+    /// <summary>Whether this launch's transcript is review output rather than a conversation someone
+    /// is watching. Decides who a silent turn is worth telling.</summary>
+    readonly bool _isReviewFlow;
+
     /// <summary>The <c>@server/tool</c> identities this launch injected — the set
     /// <see cref="AcpUnattendedInteractionPolicy.AllowlistedAutoApprove"/> approves. Null for every
     /// other policy.</summary>
@@ -612,12 +616,14 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
             KiroMcpSurfaceMonitor?                                                          mcpSurfaceMonitor = null,
             Action?                                                                         onDisposed = null,
             TimeSpan?                                                                       firstOutputDeadline = null,
+            bool                                                                            isReviewFlow = false,
             IReadOnlySet<string>?                                                           admittedToolIds = null,
             AcpLaunchPermissionPreset?                                                      acpPermissionPreset = null,
             Action<AcpAutoApprovalNotice>?                                                  notifyAutoApproval = null
         ) {
         _admittedToolIds = admittedToolIds;
         _firstOutputDeadline = firstOutputDeadline;
+        _isReviewFlow        = isReviewFlow;
         _mcpSurfaceMonitor = mcpSurfaceMonitor;
         _onDisposed        = onDisposed;
         _reconnect     = reconnect;
@@ -1281,6 +1287,8 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
             // or chunk).
             LogTurnStarted(_agentId, _vendor);
 
+            using var silenceNotice = ArmTurnSilenceNotice();
+
             try {
                 await SendPromptAsync(connection, turn, ct).ConfigureAwait(false);
             } catch (Exception ex) when (ex is not OperationCanceledException) {
@@ -1780,6 +1788,7 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
         // below: the content was genuinely produced, and by the time the channel is completed nothing
         // downstream is reading idle state for this agent anyway.
         ActivityClock?.Advance();
+        Interlocked.Increment(ref _envelopesEmitted);
 
         lock (_aggregationLock) {
             if (_transcript.Reader.Count >= _transcriptCapacity) {
@@ -2401,6 +2410,59 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
         }
     }
 
+    /// <summary>Every envelope this runtime has emitted. Read only as a difference across a silence
+    /// window — the absolute value means nothing.</summary>
+    long _envelopesEmitted;
+
+    /// <summary>How long an interactive turn may produce nothing before the user is told. Long enough
+    /// that an ordinary slow first token stays quiet (a rate-limited gemini backs off ~70s per
+    /// attempt, so a shorter window would fire mid-wave on a turn that recovers).</summary>
+    internal static readonly TimeSpan TurnSilenceWindow = TimeSpan.FromMinutes(3);
+
+    /// <summary>Watches one turn for total wire silence and, once, says so. Never reaps: a silent turn
+    /// is usually a vendor waiting out a retry it will win, and killing it would lose work the user
+    /// cannot see is coming. Armed only where nothing else bounds the turn — a reviewer launch has
+    /// <see cref="_firstOutputDeadline"/>, which does reap, and two voices on one silence would
+    /// contradict each other. Nor into a review flow's transcript, which is consumed as the round's
+    /// output — not every reviewer vendor carries that deadline, so the two conditions are separate.</summary>
+    IDisposable ArmTurnSilenceNotice() {
+        if (_isReviewFlow || _firstOutputDeadline is not null) return NullDisposable.Instance;
+
+        var cts = new CancellationTokenSource();
+        _ = WatchForTurnSilenceAsync(cts.Token);
+
+        return cts;
+    }
+
+    async Task WatchForTurnSilenceAsync(CancellationToken ct) {
+        var before = Interlocked.Read(ref _envelopesEmitted);
+
+        try {
+            await Task.Delay(TurnSilenceWindow, _timeProvider, ct).ConfigureAwait(false);
+        } catch (OperationCanceledException) {
+            return; // the turn ended inside the window — nothing to report
+        }
+
+        if (Interlocked.Read(ref _envelopesEmitted) != before) return;
+
+        var diagnostics = _installed.Process.Diagnostics;
+
+        LogTurnSilent(_agentId, _vendor, TurnSilenceWindow.TotalMinutes, diagnostics ?? "(the child wrote nothing to stderr)");
+
+        EmitEnvelope(new AcpEventEnvelope(
+            Seq: 0,
+            Kind: AcpEventKind.SystemNote,
+            Text: $"No output from {_vendor} for {TurnSilenceWindow.TotalMinutes:0} minutes. The agent is still "
+                + "running — vendors go quiet like this while retrying a rate-limited or unauthenticated model "
+                + "call. The daemon log carries whatever the child reported.",
+            TimestampIso: NowIso()));
+    }
+
+    sealed class NullDisposable : IDisposable {
+        public static readonly NullDisposable Instance = new();
+        public void Dispose() { }
+    }
+
     /// <summary>Tells the user, in the transcript itself, that the model they picked is not the one
     /// answering. Worded for every reason the selector returns null — no match in the published list,
     /// a list published in no shape it reads, or the agent refusing the selection RPC — since which
@@ -2709,6 +2771,9 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
 
     [LoggerMessage(Level = LogLevel.Information, Message = "ACP turn ended for agent {AgentId} (vendor={Vendor})")]
     partial void LogTurnEnded(string agentId, string vendor);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "ACP turn for agent {AgentId} (vendor={Vendor}) has produced nothing for {Minutes} minutes; the child is still running. Its stderr so far: {Diagnostics}")]
+    partial void LogTurnSilent(string agentId, string vendor, double minutes, string diagnostics);
 
     [LoggerMessage(Level = LogLevel.Error, Message = "ACP launch handshake wedged at stage '{Stage}': agentId={AgentId} did not advance within {CapSeconds}s — terminating the child.")]
     partial void LogLaunchStageTimeout(string agentId, string stage, double capSeconds);
