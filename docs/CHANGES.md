@@ -44,6 +44,16 @@ the caller's own catch drops the machine's entire harness report rather than one
 osascript and writes nothing; the verify transaction writes its coded lines, and two live renderables
 cannot share a console — the same reason the import takes it down.
 
+**And it is performed after setup's own steps, not in the browser leg's poll loop.** A unit bakes the
+profile name, the expected server URL and the daemon name; the leg runs before the step that commits any
+of them. Acting there installs a unit for the profile the process started with — the wrong server after a
+login that adopted another tenant, or a service named for a daemon the user is about to rename, leaving
+the one they do use uninstalled. So the leg does not advertise the capability at all (an unadvertised one
+is left outstanding rather than reported, which is exactly the "asked, waiting" state the screen already
+renders), and the request is finished afterwards against the profile setup just *wrote* rather than a
+re-resolution of it — CLI, environment and repository precedence can each land somewhere else. The
+report is retried a bounded number of times there, because unlike the poll loop there is no next tick.
+
 ## The import outcome reaches the first-run flow
 
 The flow's `import-outcome` route folded a report into `FirstRunFlowState.ImportOutcome` and had no

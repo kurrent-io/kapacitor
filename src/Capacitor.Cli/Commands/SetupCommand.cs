@@ -372,39 +372,27 @@ sealed class SetupImportLane(
 /// its own <c>kcap</c> verb runs, so the outcome the screen renders is the outcome the terminal would
 /// have printed.
 /// </summary>
-/// <param name="daemonService">The service ladder, returning null where the platform has no service
-/// manager. A seam for the same reason the shim's is: the ladder needs a resolved manager and a service
-/// id, and this class's job is the mapping.</param>
-sealed class SetupMachineActions(Func<Task<ServiceEnsureJson?>> daemonService) : IFirstRunMachineActions {
-    public IReadOnlyCollection<string> Capabilities { get; } =
-        [FirstRunMachineCapabilities.PathShim, FirstRunMachineCapabilities.DaemonService];
+/// <summary>
+/// What this host can do to the machine <i>while the flow is live</i>. One capability, reaching the same
+/// ladder <c>kcap daemon shim ensure</c> runs, so the outcome the screen renders is the outcome the
+/// terminal would have printed.
+///
+/// <para><b>The daemon service is deliberately absent.</b> Its unit bakes settings the steps after this
+/// leg have not written yet, so it is performed at the end of setup instead — see
+/// <see cref="SetupDaemonService"/>. The loop leaves an unadvertised capability outstanding rather than
+/// reporting it, which is the state the screen already renders as having asked.</para>
+/// </summary>
+sealed class SetupMachineActions : IFirstRunMachineActions {
+    public IReadOnlyCollection<string> Capabilities { get; } = [FirstRunMachineCapabilities.PathShim];
 
-    /// <summary>Production wiring: each capability reaches the ladder its own verb runs.</summary>
-    public static SetupMachineActions For(ConfigRoot config, ProfileContext profiles, UserHome home) =>
-        new(() => DaemonServiceCommands.FlowEnsureAsync(config, profiles, home));
+    public async Task<FirstRunMachineActionResult> PerformAsync(string capability, CancellationToken ct) {
+        if (capability != FirstRunMachineCapabilities.PathShim)
+            throw new ArgumentOutOfRangeException(nameof(capability), capability, "Not a capability this host advertises.");
 
-    public async Task<FirstRunMachineActionResult> PerformAsync(string capability, CancellationToken ct) =>
-        capability switch {
-            FirstRunMachineCapabilities.PathShim      => await PathShimAsync(ct),
-            FirstRunMachineCapabilities.DaemonService => await DaemonServiceAsync(),
-            _ => throw new ArgumentOutOfRangeException(
-                     nameof(capability), capability, "Not a capability this host advertises."),
-        };
-
-    static async Task<FirstRunMachineActionResult> PathShimAsync(CancellationToken ct) {
         var result = await DaemonShimCommands.EvaluateAsync(ct: ct);
 
         return new FirstRunMachineActionResult(result.Outcome, result.Reason);
     }
-
-    // No manager for this platform is a refusal the flow words itself, not a transaction that failed:
-    // nothing was attempted, and there is nothing the user could do about it here.
-    async Task<FirstRunMachineActionResult> DaemonServiceAsync() =>
-        await daemonService() is { } ladder
-            ? EnsureFlowMap.Map(ladder)
-            : new FirstRunMachineActionResult(
-                  FirstRunMachineActionOutcomes.Refused,
-                  FirstRunMachineActionReasons.UnsupportedPlatform);
 }
 
 public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBrowserLauncher browser, UserHome home) {
@@ -897,6 +885,23 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
         // this run just wrote.
         var saved = new ProfileContext(
             new(serverUrl, activeName, defaultProfile, null), await AppConfig.LoadProfileConfig(config));
+
+        // Here rather than in the browser leg, and after the write above rather than before it: the unit
+        // bakes the profile, the expected server and the daemon name, and `saved` is the only context that
+        // carries what this run actually chose.
+        if (browserAnswers.FlowId is { } browserFlowId) {
+            try {
+                using var deferred = new HttpClient();
+
+                await SetupDaemonService.RunAsync(
+                    new FirstRunFlowClient(deferred), serverUrl, browserFlowId, config, saved, home);
+            } catch (Exception ex) when (ex is not OperationCanceledException) {
+                // Best-effort, as the rest of this leg is: the request stays outstanding and the screen
+                // goes on saying it asked, which is honest. Setup finishing matters more.
+                AnsiConsole.MarkupLine(
+                    $"  [yellow]![/] Could not finish the daemon service request: {Markup.Escape(ex.Message)}");
+            }
+        }
 
         var finalTokens = await new TokenStore(config).LoadAsync(activeName);
 
@@ -1461,7 +1466,7 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
 
                 result = await new BrowserFirstRunFlow(
                         new FirstRunFlowClient(http), progress, browser,
-                        actions:   SetupMachineActions.For(config, profiles, home),
+                        actions:   new SetupMachineActions(),
                         importing: importing)
                     .RunAsync(serverUrl, report, CancellationToken.None);
             }
@@ -1485,7 +1490,8 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
         return new BrowserFlowAnswers(
             FirstRunFlowOutcomes.Agents(result),
             FirstRunFlowOutcomes.Import(result),
-            importing?.Failed == true);
+            importing?.Failed == true,
+            FlowId(result));
     }
 
     /// <summary>
@@ -1495,13 +1501,25 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
     /// rather than work to do — Step 6 reports it instead of prompting.</param>
     /// <param name="ImportFailed">A pass returned non-zero, so the closing summary must not report a
     /// backfill that did not happen.</param>
+    /// <param name="FlowId">The flow this leg ran, or null where none did. What the steps below need to
+    /// finish a capability the browser asked for and this leg deliberately did not perform.</param>
     internal sealed record BrowserFlowAnswers(
             FirstRunAgentsAnswer? Agents,
             FirstRunImportAnswer? Import,
-            bool                  ImportFailed = false) {
+            bool                  ImportFailed = false,
+            string?               FlowId       = null) {
         /// <summary>No browser leg ran, or it ended with nothing to spend.</summary>
         public static BrowserFlowAnswers None { get; } = new(null, null);
     }
+
+    /// <summary>The flow id off whichever result carries a view. A leg that never reached one has no flow
+    /// to finish anything against.</summary>
+    static string? FlowId(FirstRunFlowResult result) => result switch {
+        FirstRunFlowResult.Finished f  => f.View.FlowId,
+        FirstRunFlowResult.Abandoned a => a.View?.FlowId,
+        FirstRunFlowResult.Dismissed d => d.View?.FlowId,
+        _                              => null
+    };
 
     /// <summary>Whether the login shell resolves the CLI — see <see cref="ILoginShellProbe"/> for why
     /// that differs from this process's PATH. Bounded because it spawns a shell: a probe that did not
