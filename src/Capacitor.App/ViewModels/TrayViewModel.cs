@@ -92,8 +92,8 @@ public sealed class TrayViewModel : ReactiveObject, IDisposable {
             .StartWith((DaemonStatusDto?)null);
 
         // consent.PendingCount is DynamicData's CountChanged, which seeds the current count on
-        // subscribe (decompile-verified) — deliberately NOT StartWith(0)'d, which would inject a
-        // spurious extra 0 ahead of that seed and could flicker Attention at startup. A null
+        // subscribe — deliberately NOT StartWith(0)'d, which would inject a spurious extra 0
+        // ahead of that seed and could flicker Attention at startup. A null
         // lifecycleAttention (no live lifecycle controller) becomes Observable.Return(null): it
         // emits synchronously on subscribe and then completes, which is exactly the seed
         // CombineLatest needs — Rx.CombineLatest only completes once EVERY source has, so a

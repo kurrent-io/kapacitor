@@ -491,8 +491,8 @@ public class ChatTabViewSmokeTests {
             var buttons = host.View.GetVisualDescendants().OfType<Button>()
                 .Select(b => b.Content as string ?? b.GetVisualDescendants().OfType<TextBlock>().FirstOrDefault()?.Text)
                 .ToList();
-            await Assert.That(buttons).Contains("Allow");           // the permission card
-            await Assert.That(buttons).Contains("A");               // a question option button
+            await Assert.That(buttons).Contains("Allow");
+            await Assert.That(buttons).Contains("A");
             var otherBoxes = host.View.GetVisualDescendants().OfType<TextBox>()
                 .Where(t => t.PlaceholderText == "Other…").ToList();
             await Assert.That(otherBoxes.Count).IsEqualTo(1);
