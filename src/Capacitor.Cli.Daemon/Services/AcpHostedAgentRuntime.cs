@@ -2470,9 +2470,15 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
 
         if (Interlocked.Read(ref _turnOutputEnvelopes) != before) return;
 
+        // Behind the same gate the per-line drain uses: stderr can carry paths and prompt fragments,
+        // and a stall is not a reason to widen a privacy decision made about the same bytes. Its
+        // SIZE goes unconditionally, so an operator knows there is something to opt into.
         var diagnostics = _installed.Process.Diagnostics;
 
-        LogTurnSilent(_agentId, _vendor, TurnSilenceWindow.TotalMinutes, diagnostics ?? "(the child wrote nothing to stderr)");
+        if (_debugFrames && diagnostics is { Length: > 0 })
+            LogTurnSilentWithStderr(_agentId, _vendor, TurnSilenceWindow.TotalMinutes, AcpDebugFrameLog.Cap(diagnostics));
+        else
+            LogTurnSilent(_agentId, _vendor, TurnSilenceWindow.TotalMinutes, diagnostics?.Length ?? 0);
 
         EmitEnvelope(new AcpEventEnvelope(
             Seq: 0,
@@ -2797,8 +2803,11 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     [LoggerMessage(Level = LogLevel.Information, Message = "ACP turn ended for agent {AgentId} (vendor={Vendor})")]
     partial void LogTurnEnded(string agentId, string vendor);
 
-    [LoggerMessage(Level = LogLevel.Warning, Message = "ACP turn for agent {AgentId} (vendor={Vendor}) has produced nothing for {Minutes} minutes; the child is still running. Its stderr so far: {Diagnostics}")]
-    partial void LogTurnSilent(string agentId, string vendor, double minutes, string diagnostics);
+    [LoggerMessage(Level = LogLevel.Warning, Message = "ACP turn for agent {AgentId} (vendor={Vendor}) has produced nothing for {Minutes} minutes; the child is still running and has written {StderrChars} chars to stderr (set KCAP_ACP_DEBUG_FRAMES=1 to log it).")]
+    partial void LogTurnSilent(string agentId, string vendor, double minutes, int stderrChars);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "ACP turn for agent {AgentId} (vendor={Vendor}) has produced nothing for {Minutes} minutes; the child is still running. Its recent stderr: {Diagnostics}")]
+    partial void LogTurnSilentWithStderr(string agentId, string vendor, double minutes, string diagnostics);
 
     [LoggerMessage(Level = LogLevel.Error, Message = "ACP launch handshake wedged at stage '{Stage}': agentId={AgentId} did not advance within {CapSeconds}s — terminating the child.")]
     partial void LogLaunchStageTimeout(string agentId, string stage, double capSeconds);

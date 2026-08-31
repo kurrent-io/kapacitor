@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Text;
 using Microsoft.Extensions.Logging;
 
 namespace Capacitor.Cli.Daemon.Acp;
@@ -28,18 +27,22 @@ internal sealed partial class AcpChildProcess : IAcpProcess {
     readonly CancellationTokenSource _stderrDrainCts = new();
     readonly Task                    _stderrDrainTask;
     readonly Lock                    _diagnosticsGate = new();
-    readonly StringBuilder           _diagnostics     = new();
+    readonly Queue<string>           _diagnostics     = new();
 
     int _disposed;
+    int _diagnosticsLength;
 
     /// <summary>Enough to carry a startup/auth error or a retry banner and the context around it, and
     /// small enough that a chatty long-lived child cannot grow the daemon's heap over a whole
-    /// session. Over-cap output is dropped, never rotated — this exists to explain a failed launch or
-    /// a stalled turn, and that explanation is at the start.</summary>
+    /// session.</summary>
     const int DiagnosticsCap = 4096;
 
+    /// <summary>The most recent stderr within the cap, oldest lines evicted first. Recency rather
+    /// than a first-N buffer because the two readers want different moments and only recency serves
+    /// both: a failed launch has written nothing else yet, while a turn that goes silent an hour in
+    /// would otherwise be explained by startup chatter that filled the buffer and never left.</summary>
     public string? Diagnostics {
-        get { lock (_diagnosticsGate) return _diagnostics.Length == 0 ? null : _diagnostics.ToString(); }
+        get { lock (_diagnosticsGate) return _diagnostics.Count == 0 ? null : string.Join('\n', _diagnostics); }
     }
 
     /// <param name="debugFrames">
@@ -100,14 +103,16 @@ internal sealed partial class AcpChildProcess : IAcpProcess {
     }
 
     void Capture(string line) {
-        lock (_diagnosticsGate) {
-            var room = DiagnosticsCap - _diagnostics.Length;
-            if (room <= 0) return;
+        // Truncated before it is stored, not merely gated on the running total: one enormous line —
+        // a stack trace, a base64 payload — would otherwise blow the cap on its own.
+        var kept = line.Length > DiagnosticsCap ? line[..DiagnosticsCap] : line;
 
-            // Truncated per append, not merely gated on it: a vendor that writes one enormous line —
-            // a stack trace, a base64 payload — would otherwise store all of it and carry it into a
-            // Warning, which is the bound this cap exists to hold.
-            _diagnostics.Append(line.AsSpan(0, Math.Min(line.Length, room - 1))).Append('\n');
+        lock (_diagnosticsGate) {
+            _diagnostics.Enqueue(kept);
+            _diagnosticsLength += kept.Length + 1;
+
+            while (_diagnosticsLength > DiagnosticsCap && _diagnostics.Count > 1)
+                _diagnosticsLength -= _diagnostics.Dequeue().Length + 1;
         }
     }
 
