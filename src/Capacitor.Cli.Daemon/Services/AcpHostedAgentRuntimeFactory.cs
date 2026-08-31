@@ -699,16 +699,9 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
     static bool LaunchPickedTheModel(RuntimeStartContext ctx) =>
         !string.IsNullOrEmpty(ctx.Model) && !string.Equals(ctx.Model, "default", StringComparison.OrdinalIgnoreCase);
 
-    /// <summary>
-    /// Merges the per-launch model override with the daemon-wide default —
-    /// <paramref name="ctx"/>'s own <c>Model</c> takes precedence when the launch picked one, else
-    /// <paramref name="descriptor"/>'s <c>ResolveDefaultModel</c>. Shares
-    /// <see cref="LaunchPickedTheModel"/> with the fallback notice, so which value won here and
-    /// whether the user is told it was dropped cannot disagree. The merged value is still a bare
-    /// family prefix or an exact <c>modelId</c> — final resolution against the session's
-    /// <c>availableModels</c> happens in <see cref="AcpHostedAgentRuntime"/> via
-    /// <see cref="Capacitor.Cli.Core.Acp.AcpModelResolver"/>.
-    /// </summary>
+    /// <summary>The merged value is a bare family prefix or an exact <c>modelId</c>; resolution
+    /// against the session's <c>availableModels</c> happens in <see cref="AcpHostedAgentRuntime"/>
+    /// via <see cref="Capacitor.Cli.Core.Acp.AcpModelResolver"/>.</summary>
     static string? ResolveRequestedModel(AcpVendorDescriptor descriptor, DaemonConfig config, RuntimeStartContext ctx) =>
         LaunchPickedTheModel(ctx) ? ctx.Model : descriptor.ResolveDefaultModel(config);
 

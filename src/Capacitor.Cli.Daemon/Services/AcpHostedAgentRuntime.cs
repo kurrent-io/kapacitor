@@ -2401,13 +2401,14 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     }
 
     /// <summary>Tells the user, in the transcript itself, that the model they picked is not the one
-    /// answering — the daemon's own warning reaches only the daemon log, which the launching surface
-    /// never shows.</summary>
+    /// answering. Worded for every reason the selector returns null — no match in the published list,
+    /// a list published in no shape it reads, or the agent refusing the selection RPC — since which
+    /// one it was does not reach here.</summary>
     void EmitModelFallbackNote(string requestedModel) =>
         EmitEnvelope(new AcpEventEnvelope(
             Seq: 0,
             Kind: AcpEventKind.SystemNote,
-            Text: $"{_vendor} does not offer the model '{requestedModel}'; this session is running {_vendor}'s default model instead.",
+            Text: $"{_vendor} could not apply the model '{requestedModel}'; this session is running {_vendor}'s default model instead.",
             TimestampIso: NowIso()));
 
     /// <summary>The §8 surfacing envelope — emitted after commit and settlement, before reopen,

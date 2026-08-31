@@ -8,10 +8,9 @@ using Microsoft.Extensions.Time.Testing;
 namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 
 /// <summary>
-/// A requested model the vendor does not publish is dropped for the vendor's default — correct, and
-/// until now visible only in the daemon log, so the launcher kept showing the model the user picked
-/// while another one answered. These pin the note that tells them, and pin that a model which WAS
-/// applied stays silent (a note on every launch would train the user to ignore it).
+/// A model the launch picked but the vendor drops is disclosed in the transcript; a model that was
+/// applied, and a daemon-wide default the vendor drops, are not (a note on every launch would train
+/// the user to ignore it).
 /// </summary>
 public class AcpModelFallbackNoticeTests {
     static readonly TimeSpan HangGuard = TimeSpan.FromSeconds(10);
