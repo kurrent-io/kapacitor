@@ -146,7 +146,7 @@ public class PermissionServiceTests {
         await WaitUntilAsync(() => h.View.Count == 0, what: "cleared at Subscribed");
     }
 
-    static PermissionPendingDto Dto2(string id, string agent, string vendor, string toolName, string? toolInputJson, bool omitted = false) {
+    static PermissionPendingDto PendingDto(string id, string agent, string vendor, string toolName, string? toolInputJson, bool omitted = false) {
         System.Text.Json.JsonElement? input = null;
         if (toolInputJson is not null) { using var d = System.Text.Json.JsonDocument.Parse(toolInputJson); input = d.RootElement.Clone(); }
         return new PermissionPendingDto(id, agent, "s1", vendor, toolName, input, null, omitted, false, "2026-08-28T10:00:00.0000000+00:00");
@@ -158,13 +158,13 @@ public class PermissionServiceTests {
     public async Task Classification_requires_claude_the_tool_name_present_input_and_a_parse() {
         using var h = new Harness();
         await h.StartAsync();
-        var yes = await h.EmitAsync(Dto2("q1", "a1", "claude", ClaudeElicitation.ToolName, QuestionInput));
+        var yes = await h.EmitAsync(PendingDto("q1", "a1", "claude", ClaudeElicitation.ToolName, QuestionInput));
         await Assert.That(yes.Questions).IsNotNull();
-        var codex = await h.EmitAsync(Dto2("q2", "a1", "codex", ClaudeElicitation.ToolName, QuestionInput));
-        var wrongTool = await h.EmitAsync(Dto2("q3", "a1", "claude", "Bash", QuestionInput));
-        var omitted = await h.EmitAsync(Dto2("q4", "a1", "claude", ClaudeElicitation.ToolName, QuestionInput, omitted: true));
-        var nullInput = await h.EmitAsync(Dto2("q5", "a1", "claude", ClaudeElicitation.ToolName, null));
-        var unparseable = await h.EmitAsync(Dto2("q6", "a1", "claude", ClaudeElicitation.ToolName, """{"questions":[]}"""));
+        var codex = await h.EmitAsync(PendingDto("q2", "a1", "codex", ClaudeElicitation.ToolName, QuestionInput));
+        var wrongTool = await h.EmitAsync(PendingDto("q3", "a1", "claude", "Bash", QuestionInput));
+        var omitted = await h.EmitAsync(PendingDto("q4", "a1", "claude", ClaudeElicitation.ToolName, QuestionInput, omitted: true));
+        var nullInput = await h.EmitAsync(PendingDto("q5", "a1", "claude", ClaudeElicitation.ToolName, null));
+        var unparseable = await h.EmitAsync(PendingDto("q6", "a1", "claude", ClaudeElicitation.ToolName, """{"questions":[]}"""));
         foreach (var entry in new[] { codex, wrongTool, omitted, nullInput, unparseable })
             await Assert.That(entry.Questions).IsNull();
     }
@@ -173,7 +173,7 @@ public class PermissionServiceTests {
     public async Task Answer_sends_allow_with_updated_input_and_concludes_on_either_ack() {
         using var h = new Harness();
         await h.StartAsync();
-        var entry = await h.EmitAsync(Dto2("q1", "a1", "claude", ClaudeElicitation.ToolName, QuestionInput));
+        var entry = await h.EmitAsync(PendingDto("q1", "a1", "claude", ClaudeElicitation.ToolName, QuestionInput));
 
         h.Ops.QueuePermissionResolve(true);
         var applied = await h.Service.AnswerAsync(entry, [new ElicitationAnswer("Pick", ["B"], null)], CancellationToken.None);
@@ -184,13 +184,13 @@ public class PermissionServiceTests {
         await Assert.That(payload.UpdatedInput!.Value.Prop("answers")!.Value.Str("Pick")).IsEqualTo("B");
         await Assert.That(h.View.Count).IsEqualTo(0);
 
-        var second = await h.EmitAsync(Dto2("q2", "a1", "claude", ClaudeElicitation.ToolName, QuestionInput));
+        var second = await h.EmitAsync(PendingDto("q2", "a1", "claude", ClaudeElicitation.ToolName, QuestionInput));
         h.Ops.QueuePermissionResolve(false, "no pending permission request with that id");
         var already = await h.Service.AnswerAsync(second, [new ElicitationAnswer("Pick", ["A"], null)], CancellationToken.None);
         await Assert.That(already.Kind).IsEqualTo(PermissionResolveKind.AlreadyDecided);
         await Assert.That(h.View.Count).IsEqualTo(0);
 
-        var third = await h.EmitAsync(Dto2("q3", "a1", "claude", ClaudeElicitation.ToolName, QuestionInput));
+        var third = await h.EmitAsync(PendingDto("q3", "a1", "claude", ClaudeElicitation.ToolName, QuestionInput));
         h.Ops.QueuePermissionResolveFailure("daemon_unreachable");
         var failed = await h.Service.AnswerAsync(third, [new ElicitationAnswer("Pick", ["A"], null)], CancellationToken.None);
         await Assert.That(failed.Kind).IsEqualTo(PermissionResolveKind.TransportFailure);
@@ -205,11 +205,11 @@ public class PermissionServiceTests {
     public async Task Answer_rejects_an_unclassified_target_and_a_bad_answer_set_without_sending() {
         using var h = new Harness();
         await h.StartAsync();
-        var plain = await h.EmitAsync(Dto2("p1", "a1", "claude", "Bash", """{"command":"ls"}"""));
+        var plain = await h.EmitAsync(PendingDto("p1", "a1", "claude", "Bash", """{"command":"ls"}"""));
         await Assert.That(async () => await h.Service.AnswerAsync(plain, [new ElicitationAnswer("Pick", ["A"], null)], CancellationToken.None))
             .Throws<ArgumentException>();
 
-        var entry = await h.EmitAsync(Dto2("q1", "a1", "claude", ClaudeElicitation.ToolName, QuestionInput));
+        var entry = await h.EmitAsync(PendingDto("q1", "a1", "claude", ClaudeElicitation.ToolName, QuestionInput));
         await Assert.That(async () => await h.Service.AnswerAsync(entry, [], CancellationToken.None)).Throws<ArgumentException>();
         await Assert.That(h.Ops.PermissionResolveCalls).IsEqualTo(0);
         await Assert.That(h.View.Count).IsEqualTo(2);
@@ -219,7 +219,7 @@ public class PermissionServiceTests {
     public async Task A_resolved_push_landing_before_the_ack_ends_in_the_same_state() {
         using var h = new Harness();
         await h.StartAsync();
-        var entry = await h.EmitAsync(Dto2("q1", "a1", "claude", ClaudeElicitation.ToolName, QuestionInput));
+        var entry = await h.EmitAsync(PendingDto("q1", "a1", "claude", ClaudeElicitation.ToolName, QuestionInput));
 
         var gate = h.Ops.ArmPermissionResolve();
         var run = h.Service.AnswerAsync(entry, [new ElicitationAnswer("Pick", ["A"], null)], CancellationToken.None);
@@ -231,7 +231,7 @@ public class PermissionServiceTests {
         await Assert.That(h.View.Count).IsEqualTo(0);
 
         // The tombstoned id stays dead against a ghost replay.
-        h.Stream.EmitPending(Dto2("q1", "a1", "claude", ClaudeElicitation.ToolName, QuestionInput));
+        h.Stream.EmitPending(PendingDto("q1", "a1", "claude", ClaudeElicitation.ToolName, QuestionInput));
         await Task.Delay(50);
         await Assert.That(h.View.Count).IsEqualTo(0);
     }
@@ -244,8 +244,8 @@ public class PermissionServiceTests {
         await Assert.That(summaries[0]).IsEqualTo(new PendingSummary(0, 0));
 
         await h.StartAsync();
-        await h.EmitAsync(Dto2("p1", "a1", "claude", "Bash", """{"command":"ls"}"""));
-        await h.EmitAsync(Dto2("q1", "a1", "claude", ClaudeElicitation.ToolName, QuestionInput));
+        await h.EmitAsync(PendingDto("p1", "a1", "claude", "Bash", """{"command":"ls"}"""));
+        await h.EmitAsync(PendingDto("q1", "a1", "claude", ClaudeElicitation.ToolName, QuestionInput));
         await WaitUntilAsync(() => summaries[^1] == new PendingSummary(1, 1), what: "one of each");
 
         h.Stream.EmitResolved("q1", "server");

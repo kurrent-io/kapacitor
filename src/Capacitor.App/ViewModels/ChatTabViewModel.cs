@@ -54,11 +54,11 @@ public sealed class ChatTabViewModel : ReactiveObject {
 
     public IAvaloniaReadOnlyList<ChatItemViewModel> Items => _items;
 
-    public ReadOnlyObservableCollection<PendingCardViewModel> PendingPermissions { get; }
+    public ReadOnlyObservableCollection<PendingCardViewModel> PendingCards { get; }
     public IObservable<string?> Root => _rootSubject;
 
-    readonly ObservableAsPropertyHelper<bool> _hasPendingPermissions;
-    public bool HasPendingPermissions => _hasPendingPermissions.Value;
+    readonly ObservableAsPropertyHelper<bool> _hasPendingCards;
+    public bool HasPendingCards => _hasPendingCards.Value;
 
     ChatTabPhase _phase;
     public ChatTabPhase Phase {
@@ -141,23 +141,23 @@ public sealed class ChatTabViewModel : ReactiveObject {
                 ? (PendingCardViewModel)new PermissionCardViewModel(p, permissions, _rootSubject)
                 : new QuestionCardViewModel(p, permissions))
             .DisposeMany()
-            .SortAndBind(out var pendingPermissions, Comparer<PendingCardViewModel>.Create((a, b) => {
+            .SortAndBind(out var pendingCards, Comparer<PendingCardViewModel>.Create((a, b) => {
                 var byTime = a.RequestedAt.CompareTo(b.RequestedAt);
                 return byTime != 0 ? byTime : string.CompareOrdinal(a.RequestId, b.RequestId);
             }));
-        PendingPermissions = pendingPermissions;
+        PendingCards = pendingCards;
 
         // Hooked before the pipeline subscribes: on the UI thread the scheduler delivers an
         // already-populated cache inline, so a hook installed afterwards would miss the first fill.
         // The delegate-based overload, not the reflection one: ReadOnlyObservableCollection's
         // CollectionChanged is only reachable through this interface, and the reflection overload
         // (Observable.FromEventPattern(target, eventName)) looks up public events only.
-        var notifications = (INotifyCollectionChanged)pendingPermissions;
-        _hasPendingPermissions = Observable
+        var notifications = (INotifyCollectionChanged)pendingCards;
+        _hasPendingCards = Observable
             .FromEventPattern<NotifyCollectionChangedEventHandler, NotifyCollectionChangedEventArgs>(
                 h => notifications.CollectionChanged += h, h => notifications.CollectionChanged -= h)
-            .Select(_ => pendingPermissions.Count > 0)
-            .ToProperty(this, x => x.HasPendingPermissions, initialValue: pendingPermissions.Count > 0)
+            .Select(_ => pendingCards.Count > 0)
+            .ToProperty(this, x => x.HasPendingCards, initialValue: pendingCards.Count > 0)
             .DisposeWith(_disposables);
 
         cards.Subscribe().DisposeWith(_disposables);

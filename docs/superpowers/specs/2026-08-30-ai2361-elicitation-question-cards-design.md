@@ -221,9 +221,10 @@ Attention rule aggregate both kinds and need no change.
 small `PendingCardViewModel` base carrying what the pipeline and the row need
 (`RequestId`, `RequestedAt`, `IsBusy`, `ErrorText`, disposal), so one sorted
 collection — the existing `(RequestedAt, RequestId)` comparer — feeds the row.
-`PendingPermissions` keeps its name and becomes
-`ReadOnlyObservableCollection<PendingCardViewModel>`; `HasPendingPermissions`
-is unchanged. The view's `ItemsControl` moves from a single `DataTemplate` to
+`PendingPermissions` becomes `PendingCards` — a
+`ReadOnlyObservableCollection<PendingCardViewModel>` — and `HasPendingPermissions`
+becomes `HasPendingCards`: the row now holds both card kinds. The view's
+`ItemsControl` moves from a single `DataTemplate` to
 type-keyed `ItemsControl.DataTemplates` — the pattern the same file already
 uses for chat items. §1's caps bound a worst-case card at 8 question groups of
 16 options — a scale the row's existing `ScrollViewer` handles without

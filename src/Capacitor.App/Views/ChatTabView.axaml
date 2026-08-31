@@ -60,11 +60,11 @@
                    Foreground="{StaticResource KcapMutedBrush}" FontSize="12.5"
                    HorizontalAlignment="Center" VerticalAlignment="Center" />
 
-        <Border x:Name="PermissionRow" Grid.Row="1" Margin="22,0,22,4" IsVisible="{Binding HasPendingPermissions}">
+        <Border x:Name="PermissionRow" Grid.Row="1" Margin="22,0,22,4" IsVisible="{Binding HasPendingCards}">
             <StackPanel Spacing="6">
                 <TextBlock Text="NEEDS YOU" FontSize="10" FontWeight="SemiBold" Foreground="{StaticResource KcapMutedBrush}" />
                 <ScrollViewer MaxHeight="260" VerticalScrollBarVisibility="Auto">
-                    <ItemsControl ItemsSource="{Binding PendingPermissions}">
+                    <ItemsControl ItemsSource="{Binding PendingCards}">
                         <ItemsControl.DataTemplates>
                             <DataTemplate x:DataType="vm:PermissionCardViewModel">
                                 <Border Background="{StaticResource KcapSurfaceRaisedBrush}" BorderBrush="{StaticResource KcapAccentBrush}"

@@ -464,14 +464,14 @@ public class ChatTabViewSmokeTests {
             await Assert.That(row.IsVisible).IsFalse();
 
             host.Permissions.Add(PermissionEntries.Entry("r1", "a1", toolName: "Bash"));
-            await WaitUntilAsync(() => host.Chat.PendingPermissions.Count == 1, what: "the card");
+            await WaitUntilAsync(() => host.Chat.PendingCards.Count == 1, what: "the card");
             Dispatcher.UIThread.RunJobs();
             await Assert.That(row.IsVisible).IsTrue();
             var buttons = row.GetVisualDescendants().OfType<Button>().Select(b => b.Content?.ToString() ?? "").ToArray();
             await Assert.That(buttons).IsEquivalentTo(new[] { "Deny", "Allow always", "Allow" });
 
             host.Permissions.Remove("r1");
-            await WaitUntilAsync(() => host.Chat.PendingPermissions.Count == 0, what: "cleared");
+            await WaitUntilAsync(() => host.Chat.PendingCards.Count == 0, what: "cleared");
             Dispatcher.UIThread.RunJobs();
             await Assert.That(row.IsVisible).IsFalse();
         });
