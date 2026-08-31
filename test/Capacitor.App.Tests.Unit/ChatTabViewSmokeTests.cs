@@ -460,7 +460,7 @@ public class ChatTabViewSmokeTests {
     public async Task Card_renders_with_its_buttons_and_the_row_collapses_when_empty() {
         await RunOnUiAsync(async () => {
             var host = new Host();
-            var row = host.View.FindControl<Border>("PermissionRow")!;
+            var row = host.View.FindControl<Border>("NeedsYouRow")!;
             await Assert.That(row.IsVisible).IsFalse();
 
             host.Permissions.Add(PermissionEntries.Entry("r1", "a1", toolName: "Bash"));
