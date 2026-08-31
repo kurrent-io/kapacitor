@@ -199,9 +199,13 @@ public sealed class TerminalTabViewModel : ReactiveObject {
         // token -- which DeliverAsync's own check then reads as current, sending the submit CR
         // into the client being disposed.
         var token = Volatile.Read(ref _openingToken);
+        var inFlight = Volatile.Read(ref _sendInFlightToken);
         if (!CanAcceptText || _client is not { } client) return false;
         if (Volatile.Read(ref _openingToken) != token) return false;
-        Volatile.Write(ref _sendInFlightToken, token);
+        // Claim, rather than assign: CanAcceptText's in-flight half and the write that satisfies
+        // it are otherwise two steps, so two acceptances could both pass and the first delivery's
+        // clear would release the second while it is still writing.
+        if (Interlocked.CompareExchange(ref _sendInFlightToken, token, inFlight) != inFlight) return false;
         RaiseSendProjections();
         _delivery = DeliverAsync(client, token, TerminalInputEncoder.Paste(text));
         return true;
