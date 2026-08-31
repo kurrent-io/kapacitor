@@ -712,7 +712,8 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         // RequestStatusReport is answered by an immediate out-of-band DaemonStatusReport.
         _server.OnStopAgentV2          += HandleStopAgentV2;
         _server.OnAckProcessedPrefix   += ack => _processor?.AckPrefix(ack);
-        _server.OnRequestStatusReport  += SendDaemonStatusReportOnceAsync;
+        _server.OnRequestStatusReport  += () => SendDaemonStatusReportOnceAsync();
+        _server.OnRequestStatusReport2 += nonce => SendDaemonStatusReportOnceAsync(nonce);
         _server.GetHighestAcceptedSeq  =  () => _processor?.HighestAcceptedSeq;
         _server.GetLastProcessedSeq    =  () => _processor?.LastProcessedSeq;
         _server.GetQuarantined         =  () => [.. QuarantineSnapshot()];
@@ -1061,7 +1062,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     /// <summary>Phase B (D2): the daemon's self-report snapshot — its authoritative
     /// <see cref="ActiveCount"/> plus the live-agent metadata (and, once D4/Task 8 lands, the
     /// kill-quarantine). Pure; the send loop + tests share it.</summary>
-    internal DaemonStatusReport BuildStatusReport() =>
+    internal DaemonStatusReport BuildStatusReport(string? echoNonce = null) =>
         new(ActiveCount, [.. BuildLiveAgents()], [.. QuarantineSnapshot()],
             // Phase B2-b (sequenced-settlement design §4.2.4): re-advertise the durable resolved-
             // candidates ledger on every self-report until the server prunes it per-entry via
@@ -1086,7 +1087,8 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             HighestResolutionGeneration: _resolvedLedger?.HighestResolutionGeneration,
             // Surface 3 (new-harness detection): the last cached machine inventory (null until the first
             // send refreshes it); the server raises the "installed but not configured" notification from it.
-            HarnessInventory: CurrentHarnessInventory());
+            HarnessInventory: CurrentHarnessInventory(),
+            EchoNonce: echoNonce);
 
     /// <summary>Phase B2-b (sequenced-settlement design): the per-platform startup-reap-complete
     /// roll-up. A blocked known-id candidate (pending_marker / legacy_unresolvable /
@@ -1434,7 +1436,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     /// waiting further: invocation order, not completion order, is what the invariant needs, so
     /// dropping the wait here is safe while dropping the invocation itself out from under the gate
     /// would not be.</summary>
-    internal async Task SendDaemonStatusReportOnceAsync() {
+    internal async Task SendDaemonStatusReportOnceAsync(string? echoNonce = null) {
         // Surface 3: refresh the machine inventory before building the report. Cheap and self-throttled
         // (recomputes at most once per 6h); the first send is the effective startup evaluation.
         RefreshHarnessInventoryIfStale();
@@ -1453,7 +1455,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             // the same as an awaited failure.
             Task? send = null;
             try {
-                send = _server.DaemonStatusReportAsync(BuildStatusReport());
+                send = _server.DaemonStatusReportAsync(BuildStatusReport(echoNonce));
                 await send.WaitAsync(StatusReportSendTimeout, _shutdownCts.Token);
             } catch (TimeoutException) {
                 // The invocation already happened under the gate (see the gate's own doc), so wire
@@ -1592,7 +1594,10 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     /// builds its own clock silently loses the stage-report wiring. Shared with
     /// <see cref="SeedAgentForTest"/> so tests exercise the same wiring, never a test-only hookup.</summary>
     AgentActivityClock CreateActivityClock() =>
-        new(TimeProvider.System) { OnLaunchStageChanged = () => _ = SendStatusReportNowAsync() };
+        new(TimeProvider.System) {
+            OnLaunchStageChanged = () => _ = SendStatusReportNowAsync(),
+            OnTurnEnded          = () => _ = SendStatusReportNowAsync(),
+        };
 
     /// <summary>Phase B: test-only seam — insert a minimal <see cref="AgentInstance"/> (Noop
     /// PTY runtime, no real process/worktree) so unit tests can exercise <see cref="BuildLiveAgents"/>
@@ -3614,7 +3619,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             // Task.Run, not a bare discard — WaitAsync can complete synchronously on an uncontended
             // gate, which would otherwise run BuildStatusReport() (disk I/O) inline on this receive
             // loop while still holding BorrowedSnapshotGate.
-            _ = Task.Run(SendDaemonStatusReportOnceAsync);
+            _ = Task.Run(() => SendDaemonStatusReportOnceAsync());
 
             LogSendInputDelivered(agentId, agent.Runtime.Vendor, message.Length);
         } finally {

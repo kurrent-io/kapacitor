@@ -1012,6 +1012,7 @@ public sealed record CurationApplyResponse {
 [JsonSerializable(typeof(LiveAgentInfo))]
 [JsonSerializable(typeof(QuarantinedAgentInfo))]
 [JsonSerializable(typeof(DaemonStatusReport))]
+[JsonSerializable(typeof(StatusReportRequest))]
 // Surface 3 (new-harness detection): per-machine coding-agent inventory carried on the status report.
 [JsonSerializable(typeof(Capacitor.Cli.Core.Setup.HarnessInventory))]
 [JsonSerializable(typeof(Capacitor.Cli.Core.Setup.HarnessInventoryEntry))]
@@ -1700,8 +1701,17 @@ public readonly record struct DaemonStatusReport(
         long?                         HighestResolutionGeneration   = null,
         // Surface 3 (new-harness detection): this machine's coding-agent inventory. Additive/optional
         // — recomputed by the daemon on its own 6h in-memory cadence, attached to every report.
-        Capacitor.Cli.Core.Setup.HarnessInventory? HarnessInventory = null
+        Capacitor.Cli.Core.Setup.HarnessInventory? HarnessInventory = null,
+        // Echo of the nonce from a server-sent StatusReportRequest (RequestStatusReport2), null on
+        // every unsolicited report. The server's idle-marker coordinator confirms a claim only
+        // against the report carrying ITS nonce — an unechoed report can never confirm one.
+        string?                       EchoNonce                     = null
     );
+
+/// <summary>The server's correlated status-report request (hub method <c>RequestStatusReport2</c>,
+/// sent only to a daemon that advertised <see cref="DaemonConnect.SupportsCorrelatedStatusReports"/>).
+/// The daemon answers with an ordinary <see cref="DaemonStatusReport"/> echoing <see cref="Nonce"/>.</summary>
+public readonly record struct StatusReportRequest(string Nonce);
 
 // ── Phase B2-b (sequenced-settlement design): startup-completeness / heal-barrier report DTOs ──
 
@@ -1998,7 +2008,11 @@ public readonly record struct DaemonConnect(
         // hostable vendors that route permissions through the ACP bridge, computed INDEPENDENTLY of
         // unattended certification (a preset is an interactive-launch feature, not a reviewer one).
         // Null from a daemon predating this field. Trailing so the wire stays compatible.
-        string[]?                                  AcpPresetVendors = null
+        string[]?                                  AcpPresetVendors = null,
+        // Advertises the RequestStatusReport2 handler (nonce-echoed reports). False from a daemon
+        // predating it — the server then never sends the correlated request. Trailing name-bound
+        // field so the wire stays compatible.
+        bool                                       SupportsCorrelatedStatusReports = false
     );
 
 public sealed record UnattendedVendorCapability(
