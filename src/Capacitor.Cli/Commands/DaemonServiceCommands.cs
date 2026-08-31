@@ -45,6 +45,84 @@ sealed class DaemonServiceCommands(
     }
 
     /// <summary>
+    /// Runs the ensure ladder for the browser flow, or <b>null on a platform with no service
+    /// manager</b> — the caller renders that as its own refusal rather than as a failed transaction.
+    /// </summary>
+    internal static async Task<ServiceEnsureJson?> FlowEnsureAsync(
+            ConfigRoot root, ProfileContext profiles, UserHome home) {
+        DaemonServiceCommands verbs;
+
+        try {
+            verbs = ForFlow(root, profiles, home);
+        } catch (PlatformNotSupportedException) {
+            return null;
+        }
+
+        var (result, _) = await verbs.EvaluateEnsureAsync(profiles.Resolution.ProfileName);
+
+        return result;
+    }
+
+    /// <summary>
+    /// Whether the service is enabled, as the flow reports it once on the create: <c>true</c> reachable,
+    /// <c>false</c> not and <c>ensure</c> has a verb for it, <c>null</c> nothing claimable.
+    ///
+    /// <para><b>Never throws.</b> It resolves a service manager and runs a manager query — a subprocess —
+    /// and the caller's own catch drops the machine's whole harness report, so a failure here has to cost
+    /// one field rather than all of them.</para>
+    /// </summary>
+    internal static async Task<bool?> FlowServiceEnabledAsync(
+            ConfigRoot root, ProfileContext profiles, UserHome home) {
+        try {
+            return await ForFlow(root, profiles, home).ServiceEnabledAsync();
+        } catch (Exception) {
+            return null;
+        }
+    }
+
+    /// <summary>The flow's own resolution of the manager and the service id, matching
+    /// <see cref="DispatchAsync"/>'s with no command-line arguments to draw a daemon name from.</summary>
+    static DaemonServiceCommands ForFlow(ConfigRoot root, ProfileContext profiles, UserHome home) =>
+        new(DaemonStore.FromEnvironment(), root, profiles, ServiceManagerFactory.ForCurrentOs(root, home),
+            DaemonStore.Sanitize(DaemonNameResolver.Resolve([], profiles.DaemonName)), home);
+
+    /// <summary>
+    /// The fact behind the flow's offer, from the same evidence <see cref="Ensure"/> classifies.
+    ///
+    /// <para><b>Offerable, not merely absent.</b> The classifier is half of the ladder's refusal surface:
+    /// the rest is decided in the arms, so a fact taken from the classifier alone draws a button on a
+    /// machine whose only possible answer is no.</para>
+    /// </summary>
+    async Task<bool?> ServiceEnabledAsync() {
+        var profileName = profiles.Resolution.ProfileName;
+        var query       = manager.Query(id);
+
+        var decision = EnsureClassifier.Classify(
+            query.Probe, query.State, query.UnitPresent,
+            DaemonPidProbe.ValidatedPid(store, id),
+            ServiceTxnMarker.Exists(store, id), ServiceTxnLock.IsHeld(store, id),
+            query.JobPid, manager is LaunchdServiceManager);
+
+        if (decision.Action is EnsureAction.AlreadyEnabled) return true;
+        if (decision.Action is not (EnsureAction.Install or EnsureAction.Start)) return null;
+
+        if (LaunchdProfileRefusal(manager is LaunchdServiceManager, profileName, decision.Action)) return null;
+
+        // The same resolution the arms run, not a second reading of it: off launchd the profile name can
+        // be null, where this falls through to a URL the environment may supply — and a fact that missed
+        // that arm would withhold an offer the action would have taken.
+        if (await ResolveServerUrlAsync(profileName) is null) return null;
+
+        // An install bakes the daemon's path, and launchd's start gate compares that path against the
+        // unit's — so a missing daemon binary refuses on both. A plain start elsewhere restarts a unit
+        // that already names one, and demanding it there would withhold an offer that would have worked.
+        if ((decision.Action is EnsureAction.Install || manager is LaunchdServiceManager)
+            && UnitIdentity.ResolveDaemonBinary() is null) return null;
+
+        return false;
+    }
+
+    /// <summary>
     /// The <c>ExtraArgs</c> baked into a service unit, from the raw <c>--max-agents</c> flag value.
     ///
     /// <para>Validated here rather than only escaped at the unit writers. This is the ONLY caller-supplied
@@ -310,6 +388,24 @@ sealed class DaemonServiceCommands(
         // non-empty KCAP_PROFILE, so a bare `ensure` on launchd must still carry the resolved name.
         var profileName = DaemonCommands.ExtractFlagValue(args, "--profile") ?? profiles.Resolution.ProfileName;
 
+        var (result, exit) = await EvaluateEnsureAsync(profileName);
+
+        return await Report(result, exit, json);
+    }
+
+    /// <summary>
+    /// The ladder alone: what <see cref="Ensure"/> decided and did, with no console output of its own
+    /// and no reporting.
+    ///
+    /// <para><b>The one place the operation is composed</b>, so the browser flow and the verb cannot end
+    /// up running different ladders — the same split <c>DaemonShimCommands.EvaluateAsync</c> has, and for
+    /// the same reason.</para>
+    ///
+    /// <para><b>Not silent, though.</b> The mutating arms run the verify engine, which writes its coded
+    /// tokens to stderr; what this method drops is the verb's own reporting, not the transaction's
+    /// diagnostics. A caller that owns the terminal has to stop competing for it first.</para>
+    /// </summary>
+    internal async Task<(ServiceEnsureJson Result, int Exit)> EvaluateEnsureAsync(string? profileName) {
         var query     = manager.Query(id);
         var daemonPid = DaemonPidProbe.ValidatedPid(store, id);
         var txnActive = ServiceTxnLock.IsHeld(store, id);
@@ -330,22 +426,22 @@ sealed class DaemonServiceCommands(
         // unit is only coherent off-macOS, where there is no gate; there the plain arms stand.)
         if (LaunchdProfileRefusal(manager is LaunchdServiceManager, profileName, decision.Action)) {
             var refusedAction = decision.Action == EnsureAction.Install ? "install" : "start";
-            return await Report(new ServiceEnsureJson(id, state, refusedAction, "refused", null, "no_profile_configured"), 1, json);
+            return (new ServiceEnsureJson(id, state, refusedAction, "refused", null, "no_profile_configured"), 1);
         }
 
         switch (decision.Action) {
             case EnsureAction.AlreadyEnabled:
-                return await Report(new ServiceEnsureJson(id, state, "none", "already_enabled"), 0, json);
+                return (new ServiceEnsureJson(id, state, "none", "already_enabled"), 0);
             case EnsureAction.Attention:
-                return await Report(new ServiceEnsureJson(id, state, "none", "attention", null, decision.Reason), 1, json);
+                return (new ServiceEnsureJson(id, state, "none", "attention", null, decision.Reason), 1);
             case EnsureAction.Install:
-                return await EnsureInstall(profileName, state, json);
+                return await EnsureInstall(profileName, state);
             case EnsureAction.Start:
-                return await EnsureStart(profileName, state, json);
+                return await EnsureStart(profileName, state);
             default:
                 // Unreachable: Classify is total over EnsureAction. Kept as a fail-closed tail so an
                 // added enum member can never fall through to exit 0.
-                return await Report(new ServiceEnsureJson(id, state, "none", "attention", null, "status_unknown"), 1, json);
+                return (new ServiceEnsureJson(id, state, "none", "attention", null, "status_unknown"), 1);
         }
     }
 
@@ -381,8 +477,18 @@ sealed class DaemonServiceCommands(
         };
 
     /// <summary>Emit one ensure result: JSON on stdout when <c>--json</c>, a human line otherwise.
-    /// The exit code is decided by the caller, never derived from the outcome string.</summary>
+    /// The exit code is decided by the caller, never derived from the outcome string.
+    ///
+    /// <para>The two stderr lines are derived from the result rather than written where the row was
+    /// decided, so the ladder itself reports nothing: <c>recovery_surface=</c> wherever a surface was
+    /// mapped, and the install hint for the one refusal a user can act on directly.</para></summary>
     async Task<int> Report(ServiceEnsureJson result, int exit, bool json) {
+        if (result.Reason == "daemon_not_found")
+            await Console.Error.WriteLineAsync(DaemonCommands.DaemonNotFoundMessage());
+
+        if (result.Recovery is { } surface)
+            await Console.Error.WriteLineAsync($"recovery_surface={surface}");
+
         if (json) {
             await Console.Out.WriteLineAsync(ServiceEnsureRender.RenderJson(result));
             return exit;
@@ -403,16 +509,14 @@ sealed class DaemonServiceCommands(
     /// <summary>Install arm of <see cref="Ensure"/>: force-bake the born-<c>prompt</c> directive (and the
     /// expected-server pin the identity half of the start gate re-reads), then run the verified
     /// transaction on launchd or a plain install elsewhere.</summary>
-    async Task<int> EnsureInstall(string? profileName, string state, bool json) {
+    async Task<(ServiceEnsureJson, int)> EnsureInstall(string? profileName, string state) {
         var serverUrl = await ResolveServerUrlAsync(profileName);
         if (serverUrl is null)
-            return await Report(new ServiceEnsureJson(id, state, "install", "refused", null, "no_server_configured"), 1, json);
+            return (new ServiceEnsureJson(id, state, "install", "refused", null, "no_server_configured"), 1);
 
         var daemonPath = UnitIdentity.ResolveDaemonBinary();
-        if (daemonPath is null) {
-            await Console.Error.WriteLineAsync(DaemonCommands.DaemonNotFoundMessage());
-            return await Report(new ServiceEnsureJson(id, state, "install", "refused", null, "daemon_not_found"), 1, json);
-        }
+        if (daemonPath is null)
+            return (new ServiceEnsureJson(id, state, "install", "refused", null, "daemon_not_found"), 1);
 
         // The app's MutationEnv overlay, in-process: seed born-prompt + the expected server the gate
         // and the daemon's own boot both re-read. Everything else comes from the ambient capture.
@@ -440,8 +544,8 @@ sealed class DaemonServiceCommands(
             exit = await InstallPlain(spec, startNow: true);
         }
 
-        if (exit != 0) return await EnsureFailure(exit, gateReason, state, "install", json, viabilityReason, bootRefusalToken);
-        return await Report(new ServiceEnsureJson(id, state, "install", "installed", Verified: manager is LaunchdServiceManager), 0, json);
+        if (exit != 0) return EnsureFailure(exit, gateReason, state, "install", viabilityReason, bootRefusalToken);
+        return (new ServiceEnsureJson(id, state, "install", "installed", Verified: manager is LaunchdServiceManager), 0);
     }
 
     /// <summary>Pure: whether a launchd ensure run must refuse for want of a profile name. The start
@@ -477,10 +581,10 @@ sealed class DaemonServiceCommands(
 
     /// <summary>Start arm of <see cref="Ensure"/>: the gated, app-managed start on launchd (the gate
     /// fires because <see cref="EnsureGateEnv"/> carries the directive), plain elsewhere.</summary>
-    async Task<int> EnsureStart(string? profileName, string state, bool json) {
+    async Task<(ServiceEnsureJson, int)> EnsureStart(string? profileName, string state) {
         var serverUrl = await ResolveServerUrlAsync(profileName);
         if (serverUrl is null)
-            return await Report(new ServiceEnsureJson(id, state, "start", "refused", null, "no_server_configured"), 1, json);
+            return (new ServiceEnsureJson(id, state, "start", "refused", null, "no_server_configured"), 1);
 
         StartGateReason? gateReason = null;
         string? bootRefusalToken = null;
@@ -496,8 +600,8 @@ sealed class DaemonServiceCommands(
             exit = await StartPlain();
         }
 
-        if (exit != 0) return await EnsureFailure(exit, gateReason, state, "start", json, bootRefusalToken: bootRefusalToken);
-        return await Report(new ServiceEnsureJson(id, state, "start", "started", Verified: manager is LaunchdServiceManager), 0, json);
+        if (exit != 0) return EnsureFailure(exit, gateReason, state, "start", bootRefusalToken: bootRefusalToken);
+        return (new ServiceEnsureJson(id, state, "start", "started", Verified: manager is LaunchdServiceManager), 0);
     }
 
     /// <summary>Gate env for ensure's in-process engine: the directive the app's MutationEnv would
@@ -516,12 +620,11 @@ sealed class DaemonServiceCommands(
     /// and the <c>recovery_surface=</c> line is re-emitted when a surface is mapped. The verified
     /// flag matches this run's transaction (true on the launchd arms), and the exit code always
     /// passes through unchanged.</summary>
-    async Task<int> EnsureFailure(int exit, StartGateReason? gateReason, string state, string action, bool json,
+    (ServiceEnsureJson, int) EnsureFailure(int exit, StartGateReason? gateReason, string state, string action,
             string? viabilityReason = null, string? bootRefusalToken = null) {
         var verified = manager is LaunchdServiceManager;
         var (recovery, reason) = EnsureFailureMap.Map(exit, gateReason, verified, viabilityReason, bootRefusalToken);
-        if (recovery is not null) await Console.Error.WriteLineAsync($"recovery_surface={recovery}");
-        return await Report(new ServiceEnsureJson(id, state, action, "refused", recovery, reason, Verified: verified), exit, json);
+        return (new ServiceEnsureJson(id, state, action, "refused", recovery, reason, Verified: verified), exit);
     }
 
     /// <summary>

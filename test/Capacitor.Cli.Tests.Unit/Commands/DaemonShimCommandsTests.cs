@@ -380,10 +380,13 @@ public class DaemonShimCommandsTests {
         await Assert.That(json).DoesNotContain("exit_code");
     }
 
+    static SetupMachineActions FlowHost(ServiceEnsureJson? ladder = null) =>
+        new(() => Task.FromResult(ladder));
+
     [Test]
-    public async Task The_flow_host_advertises_only_the_capability_it_can_perform() {
-        await Assert.That(new SetupMachineActions().Capabilities).IsEquivalentTo(
-            new[] { FirstRunMachineCapabilities.PathShim });
+    public async Task The_flow_host_advertises_only_the_capabilities_it_can_perform() {
+        await Assert.That(FlowHost().Capabilities).IsEquivalentTo(
+            new[] { FirstRunMachineCapabilities.PathShim, FirstRunMachineCapabilities.DaemonService });
     }
 
     [Test]
@@ -391,7 +394,38 @@ public class DaemonShimCommandsTests {
         // The loop filters on Capabilities, so reaching here is a programming error rather than a
         // server sending something new — which is why it throws instead of reporting an outcome.
         await Assert.That(async () =>
-                await new SetupMachineActions().PerformAsync("reboot_the_laptop", CancellationToken.None))
+                await FlowHost().PerformAsync("reboot_the_laptop", CancellationToken.None))
             .Throws<ArgumentOutOfRangeException>();
+    }
+
+    // A platform with no service manager attempted nothing, so it refuses rather than reporting a
+    // transaction that failed — and the ladder is what says so by having nothing to return.
+    [Test]
+    public async Task A_platform_with_no_service_manager_refuses_rather_than_failing() {
+        var result = await FlowHost().PerformAsync(
+            FirstRunMachineCapabilities.DaemonService, CancellationToken.None);
+
+        await Assert.That(result.Outcome).IsEqualTo(FirstRunMachineActionOutcomes.Refused);
+        await Assert.That(result.Reason).IsEqualTo(FirstRunMachineActionReasons.UnsupportedPlatform);
+    }
+
+    // A ladder that throws must reach the poll loop, whose catch is what turns it into `failed`. Swallowing
+    // it here would report a refusal — "nothing was attempted" — over a machine something was attempted on.
+    [Test]
+    public async Task A_ladder_that_throws_is_not_turned_into_a_refusal() {
+        var host = new SetupMachineActions(
+            () => throw new InvalidOperationException("the manager query died"));
+
+        await Assert.That(async () =>
+                await host.PerformAsync(FirstRunMachineCapabilities.DaemonService, CancellationToken.None))
+            .Throws<InvalidOperationException>();
+    }
+
+    [Test]
+    public async Task The_flow_host_maps_the_ladder_it_was_given() {
+        var result = await FlowHost(new("kcap", "running", "none", "already_enabled"))
+            .PerformAsync(FirstRunMachineCapabilities.DaemonService, CancellationToken.None);
+
+        await Assert.That(result.Outcome).IsEqualTo(FirstRunMachineActionOutcomes.AlreadyEnabled);
     }
 }

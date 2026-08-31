@@ -106,13 +106,23 @@ sealed class SpectreFirstRunFlowProgress(IKeyWatcher? keys = null) : IFirstRunFl
         Refresh();
     }
 
-    public void PerformingAction(string capability) =>
+    public void PerformingAction(string capability) {
+        // The service ladder writes its own coded lines, so the spinner comes down first for exactly
+        // the reason the import takes it down: two live renderables cannot share a console. The shim
+        // prompts through osascript and writes nothing, so it keeps the spinner.
+        if (capability == FirstRunMachineCapabilities.DaemonService) _wait.Stop();
+
         Say(SetupAuthProgress.Indent(capability switch {
             FirstRunMachineCapabilities.PathShim =>
                 "The browser asked to put kcap on your terminal PATH. "
               + "[dim]Your Mac will ask for your password.[/]",
+            FirstRunMachineCapabilities.DaemonService =>
+                "The browser asked to run the agent daemon as a service, so this machine stays reachable.",
             _ => "The browser asked this machine to do something this version of kcap does not know."
         }));
+    }
+
+    public void ActionEnded() => Refresh();
 
     public void Discovering() => Say(SetupAuthProgress.Indent("Looking for past sessions on this machine…"));
 
@@ -358,21 +368,43 @@ sealed class SetupImportLane(
 }
 
 /// <summary>
-/// What this host can do to the machine when the browser asks. One capability, and it reaches the same
-/// ladder <c>kcap daemon shim ensure</c> runs, so the outcome the screen renders is the outcome the
-/// terminal would have printed.
+/// What this host can do to the machine when the browser asks. Each capability reaches the same ladder
+/// its own <c>kcap</c> verb runs, so the outcome the screen renders is the outcome the terminal would
+/// have printed.
 /// </summary>
-sealed class SetupMachineActions : IFirstRunMachineActions {
-    public IReadOnlyCollection<string> Capabilities { get; } = [FirstRunMachineCapabilities.PathShim];
+/// <param name="daemonService">The service ladder, returning null where the platform has no service
+/// manager. A seam for the same reason the shim's is: the ladder needs a resolved manager and a service
+/// id, and this class's job is the mapping.</param>
+sealed class SetupMachineActions(Func<Task<ServiceEnsureJson?>> daemonService) : IFirstRunMachineActions {
+    public IReadOnlyCollection<string> Capabilities { get; } =
+        [FirstRunMachineCapabilities.PathShim, FirstRunMachineCapabilities.DaemonService];
 
-    public async Task<FirstRunMachineActionResult> PerformAsync(string capability, CancellationToken ct) {
-        if (capability != FirstRunMachineCapabilities.PathShim)
-            throw new ArgumentOutOfRangeException(nameof(capability), capability, "Not a capability this host advertises.");
+    /// <summary>Production wiring: each capability reaches the ladder its own verb runs.</summary>
+    public static SetupMachineActions For(ConfigRoot config, ProfileContext profiles, UserHome home) =>
+        new(() => DaemonServiceCommands.FlowEnsureAsync(config, profiles, home));
 
+    public async Task<FirstRunMachineActionResult> PerformAsync(string capability, CancellationToken ct) =>
+        capability switch {
+            FirstRunMachineCapabilities.PathShim      => await PathShimAsync(ct),
+            FirstRunMachineCapabilities.DaemonService => await DaemonServiceAsync(),
+            _ => throw new ArgumentOutOfRangeException(
+                     nameof(capability), capability, "Not a capability this host advertises."),
+        };
+
+    static async Task<FirstRunMachineActionResult> PathShimAsync(CancellationToken ct) {
         var result = await DaemonShimCommands.EvaluateAsync(ct: ct);
 
         return new FirstRunMachineActionResult(result.Outcome, result.Reason);
     }
+
+    // No manager for this platform is a refusal the flow words itself, not a transaction that failed:
+    // nothing was attempted, and there is nothing the user could do about it here.
+    async Task<FirstRunMachineActionResult> DaemonServiceAsync() =>
+        await daemonService() is { } ladder
+            ? EnsureFlowMap.Map(ladder)
+            : new FirstRunMachineActionResult(
+                  FirstRunMachineActionOutcomes.Refused,
+                  FirstRunMachineActionReasons.UnsupportedPlatform);
 }
 
 public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBrowserLauncher browser, UserHome home) {
@@ -1420,7 +1452,8 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
 
                 var report = FirstRunMachineReport.EvaluateCurrent(
                     config, HarnessRegistry.FromEnvironment(home),
-                    Environment.MachineName, await LoginShellFindsCliAsync());
+                    Environment.MachineName, await LoginShellFindsCliAsync(),
+                    await DaemonServiceCommands.FlowServiceEnabledAsync(config, profiles, home));
 
                 importing = new SetupImportLane(config, profiles, home, _paths);
 
@@ -1428,7 +1461,7 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
 
                 result = await new BrowserFirstRunFlow(
                         new FirstRunFlowClient(http), progress, browser,
-                        actions:   new SetupMachineActions(),
+                        actions:   SetupMachineActions.For(config, profiles, home),
                         importing: importing)
                     .RunAsync(serverUrl, report, CancellationToken.None);
             }

@@ -33,8 +33,15 @@ public interface IFirstRunFlowProgress {
     /// <para><b>Said before it runs, not after.</b> The PATH shim raises an admin-password dialog, and a
     /// password prompt the user was not warned about — while they are looking at a browser — is
     /// indistinguishable from malware.</para>
+    ///
+    /// <para><b>Some capabilities write to the console while they run</b> — the service ladder emits its
+    /// coded tokens — so a host rendering the wait inline has to close it here, as it does for the
+    /// import, and reopen at <see cref="ActionEnded"/>.</para>
     /// </summary>
     void PerformingAction(string capability);
+
+    /// <summary>The action finished and polling resumes, so an inline wait has to reopen.</summary>
+    void ActionEnded();
 
     /// <summary>Discovery is about to scan this machine for importable history. Said out loud
     /// because it is the one pause long enough to read as a hang, and the screen is waiting on it.</summary>

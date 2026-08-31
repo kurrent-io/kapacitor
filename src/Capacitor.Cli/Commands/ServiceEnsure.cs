@@ -1,4 +1,5 @@
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.FirstRun;
 using Capacitor.Cli.Services;
 
 namespace Capacitor.Cli.Commands;
@@ -152,6 +153,60 @@ internal static class EnsureFailureMap {
         VerifyExit.StartGateDrift      => "verify_start_gate_drift",
         _                              => $"verify_unknown_{exit}",
     };
+}
+
+/// <summary>
+/// Collapses one ensure result into the first-run flow's closed vocabulary.
+///
+/// <para><b>Why a collapse at all.</b> The ladder emits far more tokens than the flow's wire admits, and
+/// the server rejects an unrecognised one outright — after which the CLI retries for ever, the request
+/// stays outstanding, and the screen waits on an answer that already happened.</para>
+///
+/// <para><b>The rule: <c>refused</c> means nothing was mutated, <c>failed</c> means a transaction ran and
+/// did not land.</b> That is the ladder's own attention-versus-failing-arm split, and every unmatched
+/// reason falls to <c>failed</c> — so a token added to the ladder later has to be weighed against the
+/// rule rather than left to land here by default.</para>
+/// </summary>
+internal static class EnsureFlowMap {
+    public static FirstRunMachineActionResult Map(ServiceEnsureJson result) => result.Outcome switch {
+        "already_enabled" => new(FirstRunMachineActionOutcomes.AlreadyEnabled, null),
+
+        // Install and start collapse — no copy distinguishes them — but verified does not: off launchd
+        // nothing proves the daemon came up, and "reachable now" is a claim the ladder refuses to make
+        // there.
+        "installed" or "started" => new(
+            result.Verified
+                ? FirstRunMachineActionOutcomes.Enabled
+                : FirstRunMachineActionOutcomes.EnabledUnverified,
+            null),
+
+        _ => Refusal(result.Reason),
+    };
+
+    static FirstRunMachineActionResult Refusal(string? reason) => reason switch {
+        // Nothing was mutated and the state moved underneath us: a held lock, or a unit that appeared
+        // after the state was read and made a fresh install refuse. A retry re-decides.
+        "txn_active" or "verify_contended" =>
+            Refused(FirstRunMachineActionReasons.ServiceBusy),
+
+        // Viability is proven before anything destructive, so an unusable pinned URL is a
+        // misconfiguration rather than a transaction that failed — and retrying it cannot help.
+        "no_profile_configured" or "no_server_configured" or "daemon_not_found" or "verify_viability" =>
+            Refused(FirstRunMachineActionReasons.NotConfigured),
+
+        // Rows the ladder will not touch, plus the whole start-gate family: that gate refuses in its
+        // first phase, before the marker write, so nothing was mutated — and every reason it gives means
+        // something else owns or has invalidated the install, which no retry can change.
+        "status_unknown" or "orphan_label" or "stale_marker" or "running_unconfirmed"
+            or "directive_missing" or "directive_invalid" or "identity_mismatch" or "foreign_binary"
+            or "evidence_unreadable" or "package_inconsistent" =>
+            Refused(FirstRunMachineActionReasons.NeedsAttention),
+
+        _ => new(FirstRunMachineActionOutcomes.Failed, null),
+    };
+
+    static FirstRunMachineActionResult Refused(string reason) =>
+        new(FirstRunMachineActionOutcomes.Refused, reason);
 }
 
 /// <summary>Pure renderer for the ensure result — kept separate from I/O so it's directly testable.</summary>

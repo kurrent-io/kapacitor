@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.Core.FirstRun;
 using Capacitor.Cli.Services;
 
 namespace Capacitor.Cli.Tests.Unit.Commands;
@@ -312,5 +313,205 @@ public class EnsureFailureMapTests {
         var (r, reason) = EnsureFailureMap.Map(1, null, verified: false);
         await Assert.That(r).IsNull();
         await Assert.That(reason).IsEqualTo("plain_failure");
+    }
+}
+
+/// <summary>
+/// The collapse of an ensure result into the first-run flow's closed vocabulary.
+///
+/// <para><b>What these pin is the one failure the wire cannot catch.</b> An unknown token is refused by
+/// the server and the report strands loudly; a token that is valid but wrong for the row is accepted, and
+/// shows up only as the wrong sentence and the wrong button — a retry offered on a broken install, or
+/// withheld from a busy one.</para>
+/// </summary>
+public class EnsureFlowMapTests {
+    static ServiceEnsureJson Ladder(string outcome, string? reason = null, bool verified = false) =>
+        new("kcap", "not_installed", "none", outcome, null, reason, verified);
+
+    [Test]
+    public async Task Already_enabled_says_so_rather_than_claiming_a_change() {
+        var r = EnsureFlowMap.Map(Ladder("already_enabled"));
+        await Assert.That(r.Outcome).IsEqualTo(FirstRunMachineActionOutcomes.AlreadyEnabled);
+        await Assert.That(r.Reason).IsNull();
+    }
+
+    [Test]
+    [Arguments("installed")]
+    [Arguments("started")]
+    public async Task Install_and_start_collapse_but_verified_does_not(string outcome) {
+        await Assert.That(EnsureFlowMap.Map(Ladder(outcome, verified: true)).Outcome)
+            .IsEqualTo(FirstRunMachineActionOutcomes.Enabled);
+
+        await Assert.That(EnsureFlowMap.Map(Ladder(outcome, verified: false)).Outcome)
+            .IsEqualTo(FirstRunMachineActionOutcomes.EnabledUnverified);
+    }
+
+    // Both sources mean the same thing to the screen: nothing was mutated and the machine's state moved
+    // under us, so a retry re-decides. `txn_active` is a held lock; `verify_contended` is either that or
+    // a fresh install refusing a unit that appeared after the state was read.
+    [Test]
+    [Arguments("txn_active")]
+    [Arguments("verify_contended")]
+    public async Task Nothing_mutated_and_the_state_moved_is_retryable(string reason) {
+        var r = EnsureFlowMap.Map(Ladder("attention", reason));
+        await Assert.That(r.Outcome).IsEqualTo(FirstRunMachineActionOutcomes.Refused);
+        await Assert.That(r.Reason).IsEqualTo(FirstRunMachineActionReasons.ServiceBusy);
+    }
+
+    // Viability is proven before anything destructive, so an unusable pinned URL is a misconfiguration
+    // rather than a transaction that failed — and no retry can help it.
+    [Test]
+    [Arguments("no_profile_configured")]
+    [Arguments("no_server_configured")]
+    [Arguments("daemon_not_found")]
+    [Arguments("verify_viability")]
+    public async Task Nothing_to_run_it_for_offers_no_retry(string reason) {
+        var r = EnsureFlowMap.Map(Ladder("refused", reason));
+        await Assert.That(r.Outcome).IsEqualTo(FirstRunMachineActionOutcomes.Refused);
+        await Assert.That(r.Reason).IsEqualTo(FirstRunMachineActionReasons.NotConfigured);
+    }
+
+    [Test]
+    [Arguments("status_unknown")]
+    [Arguments("orphan_label")]
+    [Arguments("stale_marker")]
+    [Arguments("running_unconfirmed")]
+    public async Task A_machine_the_ladder_will_not_touch_needs_attention(string reason) {
+        var r = EnsureFlowMap.Map(Ladder("attention", reason));
+        await Assert.That(r.Outcome).IsEqualTo(FirstRunMachineActionOutcomes.Refused);
+        await Assert.That(r.Reason).IsEqualTo(FirstRunMachineActionReasons.NeedsAttention);
+    }
+
+    /// <summary>
+    /// <c>package_inconsistent</c> has two sources — a viability abort's digest mismatch and the start
+    /// gate's binary hash check — and both mean a broken install. <b>Keyed on the reason, never on the
+    /// exit</b>: keying on the viability exit would send the start-gate source to the tail and put a
+    /// retry button on an install that cannot be retried into working.
+    /// </summary>
+    [Test]
+    public async Task Package_inconsistent_is_keyed_on_the_reason_not_the_exit() {
+        var viability = EnsureFailureMap.Map(VerifyExit.Viability, null, verified: true, viabilityReason: "package_inconsistent");
+        var startGate = EnsureFailureMap.Map(VerifyExit.StartGate, StartGateReason.PackageInconsistent, verified: true);
+
+        await Assert.That(startGate.Reason).IsEqualTo(viability.Reason);
+
+        foreach (var mapped in (FirstRunMachineActionResult[])[
+                     EnsureFlowMap.Map(Ladder("refused", viability.Reason)),
+                     EnsureFlowMap.Map(Ladder("refused", startGate.Reason))]) {
+            await Assert.That(mapped.Outcome).IsEqualTo(FirstRunMachineActionOutcomes.Refused);
+            await Assert.That(mapped.Reason).IsEqualTo(FirstRunMachineActionReasons.NeedsAttention);
+        }
+    }
+
+    /// <summary>
+    /// Every coded verify exit reaches the row the governing rule puts it in — <c>refused</c> where
+    /// nothing was mutated, <c>failed</c> where a transaction ran and did not land.
+    ///
+    /// <para><b>Driven off <see cref="VerifyExit"/>'s own members</b>, so an exit added to the ladder
+    /// fails here with nowhere to go rather than falling silently into the tail.</para>
+    /// </summary>
+    [Test]
+    public async Task Every_coded_exit_lands_on_the_row_the_rule_puts_it_in() {
+        var expected = new Dictionary<int, string?> {
+            [VerifyExit.Contended]           = FirstRunMachineActionReasons.ServiceBusy,
+            [VerifyExit.Viability]           = FirstRunMachineActionReasons.NotConfigured,
+            [VerifyExit.BootoutUnknown]      = null,
+            [VerifyExit.StopUnconfirmed]     = null,
+            [VerifyExit.ReadinessTimeout]    = null,
+            [VerifyExit.HelloValidation]     = null,
+            [VerifyExit.RollbackBudget]      = null,
+            [VerifyExit.RestoreVerification] = null,
+            [VerifyExit.StartGate]           = FirstRunMachineActionReasons.NeedsAttention,
+            [VerifyExit.StartGateDrift]      = null,
+        };
+
+        var codes = typeof(VerifyExit)
+            .GetFields()
+            .Where(f => f.IsLiteral && f.FieldType == typeof(int))
+            .Select(f => (int)f.GetRawConstantValue()!)
+            .Where(code => code != VerifyExit.Ok)
+            .ToList();
+
+        // The table has to cover the ladder, not the other way round: an unlisted exit is one nobody
+        // decided a row for.
+        await Assert.That(codes.Except(expected.Keys)).IsEmpty();
+
+        foreach (var code in codes) {
+            // A start-gate exit always carries a gate reason in production, so driving it without one
+            // would exercise a branch the engine never takes.
+            var gate = code == VerifyExit.StartGate ? StartGateReason.IdentityMismatch : (StartGateReason?)null;
+
+            var (_, reason) = EnsureFailureMap.Map(code, gate, verified: true);
+            var mapped      = EnsureFlowMap.Map(Ladder("refused", reason));
+
+            // `null` in the table means the tail: a transaction ran, so `failed` and no reason.
+            if (expected[code] is { } wanted) {
+                await Assert.That(mapped.Outcome).IsEqualTo(FirstRunMachineActionOutcomes.Refused);
+                await Assert.That(mapped.Reason).IsEqualTo(wanted);
+            } else {
+                await Assert.That(mapped.Outcome).IsEqualTo(FirstRunMachineActionOutcomes.Failed);
+                await Assert.That(mapped.Reason).IsNull();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Every start-gate reason refuses rather than fails, and none of them offers a retry: the gate
+    /// declines in its first phase, before the marker write, so nothing was mutated — and each reason
+    /// means something else owns or has invalidated the install.
+    ///
+    /// <para>Driven off <see cref="StartGateReason"/>'s own members, so a reason added to the gate has
+    /// to be given a row rather than falling into the tail with a retry button on it.</para>
+    /// </summary>
+    [Test]
+    public async Task Every_start_gate_reason_needs_attention_and_offers_no_retry() {
+        foreach (var reason in Enum.GetValues<StartGateReason>()) {
+            var (_, token) = EnsureFailureMap.Map(VerifyExit.StartGate, reason, verified: true);
+            var mapped     = EnsureFlowMap.Map(Ladder("refused", token));
+
+            await Assert.That(mapped.Outcome).IsEqualTo(FirstRunMachineActionOutcomes.Refused);
+            await Assert.That(mapped.Reason).IsEqualTo(FirstRunMachineActionReasons.NeedsAttention);
+        }
+    }
+
+    // Drift is the other half of the gate and belongs on the other side of the rule: it re-checks after
+    // the marker and a bootout, so a transaction genuinely ran and was rolled back.
+    [Test]
+    public async Task Gate_drift_failed_rather_than_refused_because_something_ran() {
+        var (_, token) = EnsureFailureMap.Map(VerifyExit.StartGateDrift, null, verified: true);
+        var mapped     = EnsureFlowMap.Map(Ladder("refused", token));
+
+        await Assert.That(mapped.Outcome).IsEqualTo(FirstRunMachineActionOutcomes.Failed);
+        await Assert.That(mapped.Reason).IsNull();
+    }
+
+    // A refusal whose reason matched no row belongs to the tail, and so does one carrying none at all.
+    [Test]
+    [Arguments("plain_failure")]
+    [Arguments(null)]
+    public async Task An_unmatched_refusal_falls_to_the_tail(string? reason) {
+        var r = EnsureFlowMap.Map(Ladder("refused", reason));
+        await Assert.That(r.Outcome).IsEqualTo(FirstRunMachineActionOutcomes.Failed);
+        await Assert.That(r.Reason).IsNull();
+    }
+
+    // Whatever the map produces has to be sayable on the wire: the server refuses an unrecognised token
+    // outright, after which the CLI retries for ever and the screen waits on an answer it already has.
+    [Test]
+    public async Task Nothing_it_produces_is_off_the_closed_sets() {
+        string?[] reasons = [
+            "txn_active", "verify_contended", "no_profile_configured", "no_server_configured",
+            "daemon_not_found", "verify_viability", "status_unknown", "orphan_label", "stale_marker",
+            "running_unconfirmed", "package_inconsistent", "plain_failure", "verify_readiness_timeout",
+            "server_expectation_mismatch", null
+        ];
+
+        foreach (var outcome in (string[])["already_enabled", "installed", "started", "attention", "refused"])
+        foreach (var reason in reasons) {
+            var r = EnsureFlowMap.Map(Ladder(outcome, reason));
+
+            await Assert.That(FirstRunMachineActionOutcomes.IsKnown(r.Outcome)).IsTrue();
+            await Assert.That(r.Reason is null || FirstRunMachineActionReasons.IsKnown(r.Reason)).IsTrue();
+        }
     }
 }

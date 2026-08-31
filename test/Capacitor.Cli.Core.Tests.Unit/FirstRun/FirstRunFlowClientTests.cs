@@ -20,9 +20,10 @@ public class FirstRunFlowClientTests {
 
     static FirstRunMachineReport Report(
             string? machine = null, Dictionary<string, FirstRunHarnessReport>? harnesses = null,
-            string[]? declined = null, bool? loginShellFindsCli = null, string? platform = null) =>
+            string[]? declined = null, bool? loginShellFindsCli = null, string? platform = null,
+            bool? daemonServiceEnabled = null) =>
         new(machine, machine is null ? null : "machine-1", harnesses ?? [], declined ?? [], loginShellFindsCli,
-            platform);
+            platform, daemonServiceEnabled);
 
     static string StateBody(string doneStatus) =>
         $$$"""
@@ -114,6 +115,25 @@ public class FirstRunFlowClientTests {
             server.FindLogEntries(Request.Create().WithPath(CreatePath).UsingPost())[0].RequestMessage.Body!)!;
 
         await Assert.That(body["platform"]!.GetValue<string>()).IsEqualTo("macos");
+    }
+
+    // The screen cannot see a service on somebody's laptop, so the offer exists only if this rides.
+    [Test]
+    public async Task CreateAsync_reports_whether_the_daemon_is_already_a_service() {
+        using var server = WireMockServer.Start();
+        server.Given(Request.Create().WithPath(CreatePath).UsingPost())
+            .RespondWith(Response.Create().WithStatusCode(200)
+                .WithBody(StateBody("Pending")).WithHeader("Content-Type", "application/json"));
+
+        using var http = new HttpClient();
+
+        await new FirstRunFlowClient(http).CreateAsync(
+            server.Urls[0], FlowId, Report("nostromo", daemonServiceEnabled: false), CancellationToken.None);
+
+        var body = JsonNode.Parse(
+            server.FindLogEntries(Request.Create().WithPath(CreatePath).UsingPost())[0].RequestMessage.Body!)!;
+
+        await Assert.That(body["daemon_service_enabled"]!.GetValue<bool>()).IsFalse();
     }
 
     [Test]

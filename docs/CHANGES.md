@@ -7,6 +7,43 @@ Not release notes. Each entry is written as of the change that produced it and i
 code moves on; where an entry disagrees with the code, the code wins.
 
 
+## The flow can enable the daemon as a service
+
+`kcap daemon service ensure` existed with no caller in the product. Making the browser able to ask for it
+needed the ladder separated from the verb: `EvaluateEnsureAsync` decides and mutates, `Ensure` reports,
+and both the terminal and the flow reach the machine through the one ladder — so the outcome a screen
+renders cannot diverge from the outcome the verb would have printed.
+
+**The ladder's vocabulary does not fit the wire, and the collapse is load-bearing rather than tidy.** The
+flow's outcome and reason sets are closed and the server refuses an unrecognised token outright, after
+which the report is retried for ever and the request stays outstanding — so a screen waits on an answer
+that already happened. `EnsureFlowMap` collapses roughly twenty tokens into a handful under one rule:
+`refused` means nothing was mutated, `failed` means a transaction ran and did not land, which is the
+ladder's own attention-versus-failing-arm split.
+
+Three rows are not what a first pass would write. **Viability refuses rather than fails** — it is proven
+before anything destructive, so routing it to `failed` would claim a transaction that never ran and offer
+a retry against an unusable pinned URL that cannot succeed. **`package_inconsistent` is keyed on the
+reason and never on the exit**, because the start gate raises the same token as the viability abort, and
+keying on the exit puts a retry button on a broken install. And **`plain_failure` is not "busy"**: off
+launchd, exit 1 is lock contention *or* a manager error, and only one of those retries into working.
+
+**`installed` and `started` collapse; `verified` does not.** No copy distinguishes install from start, and
+`already_enabled` already separates "nothing needed" from "we did something" — but only launchd runs the
+verified transaction, so off it nothing proves the daemon came up and answered. Two success tokens keep
+"reachable now" a claim the ladder is willing to make.
+
+**The reported fact is offerability, not state.** `daemon_service_enabled` is false only where `ensure`
+has a verb it could actually run: the classifier is half of the refusal surface, and the arms add three
+more after it, so a launchd machine with no resolvable profile classifies as an install and can then only
+refuse. Null covers both an ambiguous machine and one whose answer could only be no. Its derivation
+swallows everything, because it resolves a service manager and runs a manager query — a subprocess — and
+the caller's own catch drops the machine's entire harness report rather than one field.
+
+**The wait spinner comes down for this capability and not for the shim.** The shim prompts through
+osascript and writes nothing; the verify transaction writes its coded lines, and two live renderables
+cannot share a console — the same reason the import takes it down.
+
 ## The import outcome reaches the first-run flow
 
 The flow's `import-outcome` route folded a report into `FirstRunFlowState.ImportOutcome` and had no
