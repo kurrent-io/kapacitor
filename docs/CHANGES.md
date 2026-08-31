@@ -59,9 +59,13 @@ report is retried a bounded number of times there, because unlike the poll loop 
 **The deferred client's auth status is checked, not assumed.** The client factory hands one back whether
 or not the stored token is usable — that is what its `AuthStatus` return is for — and an expired or
 missing token leaves a client whose poll 401s, answering an empty body that reads as nothing having been
-asked. So an unchecked status reproduces the silent no-op a raw `HttpClient` would. A non-Ok status names
-the recovery instead, which by then is `kcap login` and the verb itself: the browser is gone and nothing
-will retry the request.
+asked. So an unchecked status reproduces the silent no-op a raw `HttpClient` would. An unusable status names the
+recovery instead, which by then is `kcap login` and the verb itself: the browser is gone and nothing will
+retry the request.
+
+**`NoAuthRequired` is usable and runs it**, unlike in the browser leg, which skips there because it has
+nothing left to do. Treating the two the same would leave the request outstanding on a server that would
+have answered it.
 
 ## The import outcome reaches the first-run flow
 

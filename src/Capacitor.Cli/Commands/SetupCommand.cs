@@ -902,10 +902,14 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
                 // The status is the point of the factory: it hands back a client either way, and an
                 // expired or missing token leaves one that cannot poll. Checked rather than assumed, or
                 // the silent path is exactly the one above with a better-looking constructor.
-                if (deferredAuth is AuthStatus.Ok)
+                //
+                // NoAuthRequired runs it. That status means the client is usable as it stands, so
+                // skipping on it would leave the request outstanding on a server that would have
+                // answered — the browser leg skips there only because it has nothing left to do.
+                if (deferredAuth is AuthStatus.Ok or AuthStatus.NoAuthRequired)
                     await SetupDaemonService.RunAsync(
                         new FirstRunFlowClient(deferred), serverUrl, browserFlowId, config, saved, home);
-                else if (deferredAuth != AuthStatus.NoAuthRequired)
+                else
                     AnsiConsole.MarkupLine(
                         "  [dim]Did not finish the daemon service request: the stored token is not usable. "
                       + "Run 'kcap login', then 'kcap daemon service ensure'.[/]");
