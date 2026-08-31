@@ -4742,10 +4742,10 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         }
     }
 
-    /// <summary>How long the whole shutdown report may take, across every agent. A shutdown that
-    /// waits on the server is a shutdown that can be killed mid-teardown, so this is a ceiling on the
-    /// pass rather than a per-call timeout: whatever is reported inside it is reported, and the rest
-    /// falls back to what happened before — the server learning only from the transport drop.</summary>
+    /// <summary>How long the whole shutdown report may take, across every agent. A shutdown that waits
+    /// on the server is a shutdown that can be killed mid-teardown, so this bounds the pass rather
+    /// than each call: agents past the ceiling go unreported, and the server is left to infer their
+    /// ending from the transport drop.</summary>
     internal static readonly TimeSpan ShutdownReportBudget = TimeSpan.FromSeconds(5);
 
     /// <summary>The reason stamped on a run this daemon ended by going away, distinct from the user
