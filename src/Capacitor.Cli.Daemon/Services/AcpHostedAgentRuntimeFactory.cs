@@ -333,7 +333,7 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
                 launchDeadline?.Token ?? ct,
                 ResolveRequestedModel(descriptor, config, ctx),
                 mcpServers,
-                LaunchPickedTheModel(ctx)
+                ModelOwedAnExplanation(ctx)
             ).ConfigureAwait(false);
         } catch (OperationCanceledException ex) when (launchDeadline is { IsCancellationRequested: true }
                                                 && !ct.IsCancellationRequested) {
@@ -692,12 +692,21 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
         descriptor.Vendor == AcpVendorDescriptors.Gemini.Vendor;
 
     /// <summary>Whether the model reaching the runtime is the launch's own pick rather than the
-    /// daemon-wide default. Only the pick is worth telling the user about when the vendor drops it —
-    /// a default the vendor does not publish would otherwise nag on every launch. The UI dispatches
-    /// the literal string <c>"default"</c>, not an empty one, when the user picked nothing (the same
-    /// sentinel convention <c>CodexLauncher.AddModelArg</c> reads).</summary>
+    /// daemon-wide default. The UI dispatches the literal string <c>"default"</c>, not an empty one,
+    /// when the user picked nothing (the same sentinel convention <c>CodexLauncher.AddModelArg</c>
+    /// reads).</summary>
     static bool LaunchPickedTheModel(RuntimeStartContext ctx) =>
         !string.IsNullOrEmpty(ctx.Model) && !string.Equals(ctx.Model, "default", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>The model the user is owed an explanation for if selection does not apply it, or null
+    /// when nothing was picked. A default the vendor does not publish is deliberately not disclosed —
+    /// nobody asked for it, and a note on every launch trains the user to ignore it. A pick the
+    /// orchestrator already cleared is still disclosed: that path drops it precisely because the
+    /// vendor cannot apply one, so it is the case most in need of saying so.</summary>
+    static string? ModelOwedAnExplanation(RuntimeStartContext ctx) =>
+        ctx.DroppedModelPick is { Length: > 0 } dropped ? dropped
+            : LaunchPickedTheModel(ctx) ? ctx.Model
+            : null;
 
     /// <summary>The merged value is a bare family prefix or an exact <c>modelId</c>; resolution
     /// against the session's <c>availableModels</c> happens in <see cref="AcpHostedAgentRuntime"/>

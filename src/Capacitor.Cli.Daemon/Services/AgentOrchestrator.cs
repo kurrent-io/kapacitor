@@ -1802,6 +1802,8 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         var modelDisposition = ModelSelectionLaunchPolicy.Evaluate(
             effectiveModel, runtimeFactory.SupportsModelSelection, cmd.ExplicitReviewerModel is not null);
 
+        string? droppedModelPick = null;
+
         if (modelDisposition != ModelSelectionDisposition.Honor) {
             // Non-null by construction: Evaluate returns Honor whenever the requested model is
             // null/blank, so reaching here means a model really was asked for. Captured before the
@@ -1817,7 +1819,8 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             }
 
             LogModelSelectionUnsupported(cmd.Vendor, unhonorableModel);
-            effectiveModel = null;
+            droppedModelPick = unhonorableModel;
+            effectiveModel   = null;
         }
 
         if (isReviewFlow && cmd.Borrowed && !runtimeFactory.SupportsBorrowedReviewFlow) {
@@ -2104,6 +2107,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 // runtime instead registers the handshake-confirmed model (see registeredModel),
                 // which can only narrow this request, never substitute a different one.
                 Model: effectiveModel,
+                DroppedModelPick: droppedModelPick,
                 Effort: effort,
                 Tools: tools,
                 IsReview: isReview,

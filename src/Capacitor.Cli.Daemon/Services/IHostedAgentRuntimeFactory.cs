@@ -206,6 +206,11 @@ internal sealed record RuntimeStartContext(
         // .ReviewFlowRedirectsHome is the other. The ONE thing AcpReviewFlowMcp reads, so the two
         // causes cannot end up expressed differently at the two ends of the same launch.
         bool               RequiresBrokeredResultDelivery = false,
+        // The model this launch asked for and did not get, when ModelSelectionLaunchPolicy cleared
+        // Model above so the dashboard is not told a model is live that isn't. Carried separately
+        // because the two answer different questions: Model is what the process runs, this is what
+        // the user is owed an explanation for.
+        string?            DroppedModelPick = null,
         // Caller-selected Codex sandbox/approval posture, carried verbatim from
         // LaunchAgentCommand.CodexPosture through to LauncherContext.CodexPosture. Non-null only for
         // an interactive daemon-owned-worktree Codex launch that passed the orchestrator's guard.

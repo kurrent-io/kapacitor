@@ -904,7 +904,7 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     /// </summary>
     public async Task StartAsync(
             string cwd, string? initialPrompt, CancellationToken ct, string? requestedModel = null,
-            IReadOnlyList<AcpMcpServerSpec>? mcpServers = null, bool modelWasPickedForThisLaunch = false) {
+            IReadOnlyList<AcpMcpServerSpec>? mcpServers = null, string? modelOwedAnExplanation = null) {
         _cwd            = cwd;
         _requestedModel = requestedModel;
         // Captured for session/load: a resume must hand the agent the SAME server list the
@@ -1033,9 +1033,10 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
 
         // A dropped model is only knowable after session/new publishes the vendor's list, so nothing
         // upstream can refuse the launch over it: the agent runs, answering as a model the user did
-        // not pick. Emitted before the initial turn is enqueued, so it precedes that turn's output.
-        if (modelWasPickedForThisLaunch && !string.IsNullOrWhiteSpace(requestedModel) && _resolvedModel is null)
-            EmitModelFallbackNote(requestedModel);
+        // not pick. Names the model the LAUNCH asked for, which is not always the one that reached
+        // the selector. Emitted before the initial turn is enqueued, so it precedes that turn's output.
+        if (modelOwedAnExplanation is { Length: > 0 } owed && _resolvedModel is null)
+            EmitModelFallbackNote(owed);
 
         // The session is established (initialize + session/new both completed) — the caller
         // (orchestrator) can now treat this agent as live. Enqueue the initial turn without

@@ -33,10 +33,10 @@ public class AcpModelFallbackNoticeTests {
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
-    static RuntimeStartContext MakeContext(string agentId, string? model) => new(
+    static RuntimeStartContext MakeContext(string agentId, string? model, string? droppedPick = null) => new(
         AgentId: agentId, Vendor: "cursor", SourceRepoPath: "/repo",
         Worktree: new WorktreeInfo(Path: "/abs/worktree", Branch: "branch-name", SourceRepo: "/repo"), Prompt: "",
-        Model: model, Effort: null, Tools: null,
+        Model: model, DroppedModelPick: droppedPick, Effort: null, Tools: null,
         IsReview: false, IsReviewFlow: false, Review: null,
         Cols: 80, Rows: 24, ServerUrl: null, DaemonBridgeUrl: null, CapacitorPath: "/usr/local/bin/kcap",
         ActivityClock: null);
@@ -102,6 +102,24 @@ public class AcpModelFallbackNoticeTests {
         await Assert.That(notes.Count).IsEqualTo(1);
         await Assert.That(notes[0]).Contains("gemini-3.7-flash");
         await Assert.That(notes[0]).Contains("cursor");
+    }
+
+    /// The orchestrator clears the model for a vendor whose selector cannot apply one, so the pick
+    /// never reaches the selector at all — the note has to come from what the launch asked for, not
+    /// from what the handshake was handed.
+    [Test]
+    public async Task A_pick_the_orchestrator_cleared_is_still_reported() {
+        await using var h = new Harness();
+        h.PublishModels("cursor-fast", "cursor-smart");
+        h.StartFakeAgentLoop();
+
+        var start = await h.Factory
+            .StartAsync(MakeContext("agent-cleared", model: null, droppedPick: "gemini-3.7-flash"), h.Cts.Token)
+            .WaitAsync(HangGuard);
+
+        var notes = SystemNotes(start.Transcript!).ToList();
+        await Assert.That(notes.Count).IsEqualTo(1);
+        await Assert.That(notes[0]).Contains("gemini-3.7-flash");
     }
 
     [Test]
