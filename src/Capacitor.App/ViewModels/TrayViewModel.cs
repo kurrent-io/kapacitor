@@ -145,8 +145,7 @@ public sealed class TrayViewModel : ReactiveObject, IDisposable {
             .DisposeWith(_disposables);
     }
 
-    /// Adapter's NeedsUpdate hook — trivially delegating; the drop-while-busy rule lives
-    /// in the IPauseController implementation.
+    /// IPauseController owns the drop-while-busy rule.
     public void RequestPauseRefresh() => _pause.RequestRefresh();
 
     public void Dispose() => _disposables.Dispose();
