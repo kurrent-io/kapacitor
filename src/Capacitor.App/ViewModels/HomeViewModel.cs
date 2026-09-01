@@ -3,6 +3,7 @@ using System.Reactive;
 using System.Reactive.Disposables;
 using System.Reactive.Disposables.Fluent;
 using System.Reactive.Linq;
+using System.Reactive.Subjects;
 using Capacitor.App.Services;
 using Capacitor.Cli.Core;
 using DynamicData;
@@ -15,6 +16,10 @@ namespace Capacitor.App.ViewModels;
 /// HomeViewModel.DefaultVendor when none was ever chosen there; Selected marks the entry that
 /// matches SelectedRepoPath under HomeViewModel's own path comparison.
 public sealed record RepositoryOption(string RepoPath, string Vendor, bool Selected);
+
+/// Whether a launch can reach a daemon right now, merged from the local attach state and the
+/// daemon's own upstream connection word — the same two inputs the footer's status line reads.
+internal enum LaunchAvailability { Ready, Pending, DaemonUnavailable, ServerDisconnected }
 
 /// The Home tab's view-model: repository + harness picker, a free-text goal, and
 /// the Start action that launches a session through ILaunchClient. Constructed once, like
@@ -40,6 +45,11 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
     /// — it just has to be reached from the session list, so this is a launch-succeeded wording, not
     /// a failure one (spec §3, entry-point guards).
     public const string UnusableIdMessage = "Launched, but the session id was unusable — open it from the session list.";
+
+    internal const string ConnectingNotice     = "Connecting to the server…";
+    internal const string DaemonDownNotice     = "The daemon isn't running — start it to launch sessions.";
+    internal const string ServerLostNotice     = "Not connected to the server — sign in again to reconnect.";
+    internal const string SignInExpiredNotice  = "Your sign-in has expired — sign in again.";
 
     readonly IDaemonClientService _daemon;
     readonly IAppStateStore _state;
@@ -98,6 +108,22 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
         private set => this.RaiseAndSetIfChanged(ref _startError, value);
     }
 
+    /// A 401 outcome is the only writer besides its own reset paths. A subject (not a reactive
+    /// property read via WhenAnyValue) so the ctor can compose it — see SessionRailViewModel's
+    /// _selectedAgentIdChanges for why WhenAnyValue is avoided in constructors here.
+    readonly BehaviorSubject<bool> _signInRequired = new(false);
+    readonly Action? _requestSignIn;
+
+    readonly ObservableAsPropertyHelper<string?> _connectionNotice;
+    /// Why launching is unavailable right now, or null when it isn't. The sign-in-expired text
+    /// wins over the connection-derived one — it is the more specific diagnosis.
+    public string? ConnectionNotice => _connectionNotice.Value;
+
+    readonly ObservableAsPropertyHelper<bool> _signInVisible;
+    public bool SignInVisible => _signInVisible.Value;
+
+    public ReactiveCommand<Unit, Unit> SignInCommand { get; }
+
     readonly ObservableAsPropertyHelper<IReadOnlyList<HarnessOption>> _harnesses;
     public IReadOnlyList<HarnessOption> Harnesses => _harnesses.Value;
 
@@ -130,11 +156,13 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
     /// The launch auto-open (MainWindowViewModel.OpenSessionIfCurrent), carrying that captured
     /// generation.
     /// </param>
+    /// <param name="requestSignIn">Opens the re-auth sign-in surface (App owns the window). Null
+    /// leaves the Sign in button inert — a HomeViewModel with no windows to open.</param>
     public HomeViewModel(
             IDaemonClientService daemon, IAppStateStore state, ILaunchClient launch,
             Func<Task<string[]>> knownRepos, CancellationToken shutdown = default,
             Action<string>? openSession = null, Func<int>? navigationGeneration = null,
-            Action<string, int>? openSessionIfCurrent = null) {
+            Action<string, int>? openSessionIfCurrent = null, Action? requestSignIn = null) {
         _daemon = daemon;
         _state = state;
         _launch = launch;
@@ -143,6 +171,7 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
         _openSession = openSession;
         _navigationGeneration = navigationGeneration;
         _openSessionIfCurrent = openSessionIfCurrent;
+        _requestSignIn = requestSignIn;
 
         // Never starts empty: a null SupportedVendors means "daemon
         // capability unknown", not "hosts nothing" — Build(null) offers everything until the first
@@ -168,8 +197,59 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
             .Subscribe()
             .DisposeWith(_disposables);
 
-        StartCommand = ReactiveCommand.CreateFromTask(StartAsync);
+        // The word is seeded with "" (no snapshot yet): AvailabilityFor only reads it once the
+        // attach state is Connected, by which point DaemonClientService's snapshot-before-Connected
+        // ordering guarantees a real value is there (MainWindowViewModel's identical seam comment).
+        var availability = daemon.Status.CombineLatest(
+            daemon.Snapshots.Select(s => s.Daemon.Connection).StartWith(""), AvailabilityFor);
+
+        // Explicit ObserveOn: ReactiveCommand does NOT reschedule the supplied canExecute, and a
+        // Status event arrives on the daemon client's pump thread (MainWindowViewModel's canStart
+        // comment) — without it CanExecuteChanged would touch the bound Button off the UI thread.
+        StartCommand = ReactiveCommand.CreateFromTask(
+            StartAsync,
+            availability.Select(a => a == LaunchAvailability.Ready)
+                .ObserveOn(RxSchedulers.MainThreadScheduler));
+
+        var signInState = availability
+            .CombineLatest(_signInRequired, (a, expired) => (Availability: a, Expired: expired))
+            .ObserveOn(RxSchedulers.MainThreadScheduler);
+        _connectionNotice = signInState.Select(t => NoticeFor(t.Availability, t.Expired))
+            .ToProperty(this, x => x.ConnectionNotice, ConnectingNotice)
+            .DisposeWith(_disposables);
+        _signInVisible = signInState
+            .Select(t => t.Expired || t.Availability == LaunchAvailability.ServerDisconnected)
+            .ToProperty(this, x => x.SignInVisible, initialValue: false)
+            .DisposeWith(_disposables);
+
+        SignInCommand = ReactiveCommand.Create(() => { _requestSignIn?.Invoke(); });
     }
+
+    /// The re-auth dialog's success lands here (App wires it): the expired flag lifts without
+    /// waiting for the next launch attempt to re-prove it.
+    public void NotifySignInCompleted() => _signInRequired.OnNext(false);
+
+    /// Local attach state is checked FIRST — the upstream word is only meaningful once the attach
+    /// is Connected (a stale retained snapshot might carry any word). Unknown upstream words read
+    /// as disconnected, matching the daemon's own catch-all spelling.
+    internal static LaunchAvailability AvailabilityFor(AttachStatus status, string daemonConnection) => status.State switch {
+        AttachState.Connecting  => LaunchAvailability.Pending,
+        AttachState.Unreachable => LaunchAvailability.DaemonUnavailable,
+        _ => daemonConnection switch {
+            "connected"                    => LaunchAvailability.Ready,
+            "connecting" or "reconnecting" => LaunchAvailability.Pending,
+            _                              => LaunchAvailability.ServerDisconnected,
+        },
+    };
+
+    internal static string? NoticeFor(LaunchAvailability availability, bool signInExpired) =>
+        signInExpired ? SignInExpiredNotice
+        : availability switch {
+            LaunchAvailability.Ready             => null,
+            LaunchAvailability.Pending           => ConnectingNotice,
+            LaunchAvailability.DaemonUnavailable => DaemonDownNotice,
+            _                                    => ServerLostNotice,
+        };
 
     // Constructor-scoped (like TrayViewModel/ActivityViewModel), not WhenActivated — the OAPH and
     // the Agents subscription above run for this object's whole lifetime, not a window's.
@@ -254,10 +334,14 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
 
         var outcome = await _launch.StartAsync(request, _shutdown);
         if (!outcome.Started) {
-            StartError = outcome.Error;
+            // Every finished attempt is fresh evidence, so the flag follows it both ways. An
+            // unauthorized outcome renders as the sign-in notice, never as raw transport text.
+            _signInRequired.OnNext(outcome.Unauthorized);
+            StartError = outcome.Unauthorized ? null : outcome.Error;
             return;
         }
 
+        _signInRequired.OnNext(false);
         StartError = null;
         Goal = ""; // the launch really did start — the goal is spent either way
         if (NormalizeAgentId(outcome.AgentId) is not { } agentId) {

@@ -103,11 +103,16 @@ public class WorkspaceNavigationTests {
         return nav.Attach.Created[^1];
     }
 
-    static HomeViewModel NewHome(Nav nav, ILaunchClient launch, string statePath) =>
-        new(nav.Daemon, new AppStateStore(statePath), launch, () => Task.FromResult(Array.Empty<string>()),
+    static HomeViewModel NewHome(Nav nav, ILaunchClient launch, string statePath) {
+        // StartCommand's canExecute gates on daemon + server both up; these tests launch, so the
+        // fixture models the connected steady state.
+        nav.Daemon.SnapshotsSubject.OnNext(FakeDaemonClientService.Snap());
+        nav.Daemon.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, null));
+        return new(nav.Daemon, new AppStateStore(statePath), launch, () => Task.FromResult(Array.Empty<string>()),
             openSession: nav.Vm.OpenSession,
             navigationGeneration: () => nav.Vm.NavigationGeneration,
             openSessionIfCurrent: nav.Vm.OpenSessionIfCurrent);
+    }
 
     [Test]
     [NotInParallel("AvaloniaSession")]

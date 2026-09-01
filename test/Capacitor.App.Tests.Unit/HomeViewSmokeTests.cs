@@ -33,6 +33,9 @@ public class HomeViewSmokeTests {
     static (HomeView View, HomeViewModel Vm, FakeDaemonClientService Service, RecordingLaunchClient Launch, TempDir Tmp) Build() {
         var tmp = TempDir.WithPathTo("app-state.json", out var path);
         var service = new FakeDaemonClientService();
+        // Connected steady state: StartCommand's canExecute gates on daemon + server both up.
+        service.SnapshotsSubject.OnNext(FakeDaemonClientService.Snap());
+        service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, null));
         var launch = new RecordingLaunchClient();
         var vm = new HomeViewModel(service, new AppStateStore(path), launch, () => Task.FromResult(Array.Empty<string>()));
         return (new HomeView { DataContext = vm }, vm, service, launch, tmp);
@@ -56,7 +59,10 @@ public class HomeViewSmokeTests {
             window.Show();
             Dispatcher.UIThread.RunJobs();
 
-            var names = new[] { "GoalInput", "RepositoryChip", "AgentChip", "StartButton", "StartErrorText" };
+            var names = new[] {
+                "GoalInput", "RepositoryChip", "AgentChip", "StartButton", "StartErrorText",
+                "ConnectionNoticeText", "HomeSignInButton",
+            };
             var resolved = names.ToDictionary(name => name, name => Find<Control>(window, name) is not null);
 
             window.Close();
@@ -70,6 +76,39 @@ public class HomeViewSmokeTests {
         await Assert.That(found["AgentChip"]).IsTrue();
         await Assert.That(found["StartButton"]).IsTrue();
         await Assert.That(found["StartErrorText"]).IsTrue();
+        await Assert.That(found["ConnectionNoticeText"]).IsTrue();
+        await Assert.That(found["HomeSignInButton"]).IsTrue();
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task The_notice_and_sign_in_button_follow_the_server_connection() {
+        var (noticeBefore, signInBefore, noticeAfter, noticeText, signInAfter) = await AvaloniaSession.DispatchAsync(() => {
+            var (_, vm, service, _, tmp) = Build();
+            using var _tmp = tmp;
+            var window = new Window { Content = new LauncherPaneView { DataContext = vm } };
+            window.Show();
+            Dispatcher.UIThread.RunJobs();
+
+            var notice = Find<TextBlock>(window, "ConnectionNoticeText")!;
+            var signIn = Find<Button>(window, "HomeSignInButton")!;
+            var before = (notice.IsVisible, signIn.IsVisible);
+
+            service.SnapshotsSubject.OnNext(FakeDaemonClientService.Snap(connection: "disconnected"));
+            Dispatcher.UIThread.RunJobs();
+            var after = (notice.IsVisible, notice.Text, signIn.IsVisible);
+
+            window.Close();
+            Dispatcher.UIThread.RunJobs();
+            vm.Dispose();
+            return (before.Item1, before.Item2, after.Item1, after.Item2, after.Item3);
+        });
+
+        await Assert.That(noticeBefore).IsFalse();
+        await Assert.That(signInBefore).IsFalse();
+        await Assert.That(noticeAfter).IsTrue();
+        await Assert.That(noticeText).IsEqualTo(HomeViewModel.ServerLostNotice);
+        await Assert.That(signInAfter).IsTrue();
     }
 
     [Test]

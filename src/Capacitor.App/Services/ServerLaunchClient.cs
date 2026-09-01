@@ -1,3 +1,4 @@
+using System.Net;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.Config;
@@ -26,10 +27,19 @@ public sealed class ServerLaunchClient(ConfigRoot config, ProfileContext? profil
         } catch (Exception ex) {
             // HubException carries the server's own rejection text (capacity, unknown vendor,
             // consent denial) — that IS the message Home should show, not a generic wrapper.
-            return new LaunchOutcome(false, null, ex.Message);
+            return new LaunchOutcome(false, null, ex.Message, IsUnauthorized(ex));
         } finally {
             _gate.Release();
         }
+    }
+
+    /// Walks the chain because SignalR surfaces the negotiate failure wrapped as often as bare.
+    internal static bool IsUnauthorized(Exception ex) {
+        for (Exception? e = ex; e is not null; e = e.InnerException) {
+            if (e is HttpRequestException { StatusCode: HttpStatusCode.Unauthorized }) return true;
+        }
+
+        return false;
     }
 
     /// Caller MUST already hold _gate — see StartAsync. Disposes and rebuilds a connection that

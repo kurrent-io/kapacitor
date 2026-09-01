@@ -2,7 +2,7 @@
                      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
                      xmlns:rxui="clr-namespace:ReactiveUI.Avalonia;assembly=ReactiveUI.Avalonia"
                      xmlns:vm="clr-namespace:Capacitor.App.ViewModels.Onboarding"
-                     xmlns:auth="clr-namespace:Capacitor.Cli.Core.Auth;assembly=Capacitor.Cli.Core"
+                     xmlns:views="clr-namespace:Capacitor.App.Views.Onboarding"
                      x:Class="Capacitor.App.Views.Onboarding.OnboardingWindow"
                      x:TypeArguments="vm:OnboardingViewModel"
                      x:DataType="vm:OnboardingViewModel"
@@ -43,127 +43,7 @@
         </DataTemplate>
 
         <DataTemplate DataType="vm:SignInStepViewModel">
-            <Grid RowDefinitions="Auto,Auto,Auto,Auto,*">
-                <StackPanel Grid.Row="0" Spacing="4">
-                    <TextBlock x:Name="SignInStatusText" Text="{Binding Status}" TextWrapping="Wrap"
-                               Classes.failed="{Binding StatusIsError}">
-                        <TextBlock.Styles>
-                            <!-- Only a failure is coloured: a cancelled sign-in is not an error. -->
-                            <Style Selector="TextBlock.failed">
-                                <Setter Property="Foreground" Value="#E53935" />
-                            </Style>
-                        </TextBlock.Styles>
-                    </TextBlock>
-                    <TextBlock x:Name="SignInDetailText" Text="{Binding StatusDetail}" TextWrapping="Wrap" Opacity="0.7"
-                               IsVisible="{Binding StatusDetail, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
-                </StackPanel>
-
-                <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="8" Margin="0,10,0,0">
-                    <Button x:Name="SignInButton" Content="Sign in" Command="{Binding SignInCommand}"
-                            IsEnabled="{Binding Idle}" />
-                    <Button x:Name="CancelSignInButton" Content="Cancel" Command="{Binding CancelCommand}"
-                            IsVisible="{Binding Busy}" />
-                </StackPanel>
-
-                <StackPanel Grid.Row="2" Spacing="6" Margin="0,10,0,0">
-                    <Button x:Name="OpenSignInUrlButton" Content="Open the sign-in page"
-                            Command="{Binding OpenSignInUrlCommand}"
-                            IsVisible="{Binding BrowserUrl, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
-
-                    <StackPanel Spacing="4"
-                                IsVisible="{Binding DeviceCode, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
-                        <TextBlock Text="Enter this code to finish signing in:" />
-                        <TextBlock x:Name="DeviceCodeText" Text="{Binding DeviceCode}" FontSize="22" FontWeight="Bold" />
-                        <Button x:Name="OpenVerificationUriButton" Content="{Binding VerificationUri}"
-                                Command="{Binding OpenVerificationUriCommand}" />
-                    </StackPanel>
-
-                    <TextBlock x:Name="WaitingText" Text="{Binding WaitingText}" Opacity="0.7"
-                               IsVisible="{Binding WaitingText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
-                    <TextBlock x:Name="ProvisioningText" Text="{Binding ProvisioningProgress}" TextWrapping="Wrap"
-                               IsVisible="{Binding ProvisioningProgress, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
-                </StackPanel>
-
-                <StackPanel Grid.Row="3" Spacing="8" Margin="0,10,0,0">
-                    <StackPanel Spacing="6" IsVisible="{Binding TenantPickerVisible}">
-                        <TextBlock Text="Which workspace would you like to use?" />
-                        <ListBox x:Name="TenantList" MaxHeight="120" ItemsSource="{Binding Tenants}"
-                                 SelectedItem="{Binding SelectedTenant, Mode=TwoWay}">
-                            <ListBox.ItemTemplate>
-                                <DataTemplate x:DataType="auth:DiscoveredTenant">
-                                    <TextBlock Text="{Binding Origin}" TextTrimming="CharacterEllipsis" />
-                                </DataTemplate>
-                            </ListBox.ItemTemplate>
-                        </ListBox>
-                        <StackPanel Orientation="Horizontal" Spacing="8">
-                            <Button x:Name="ConfirmTenantButton" Content="Use this workspace"
-                                    Command="{Binding ConfirmTenantCommand}" />
-                            <Button x:Name="CancelTenantButton" Content="Back" Command="{Binding CancelTenantCommand}" />
-                        </StackPanel>
-                    </StackPanel>
-
-                    <StackPanel Spacing="6" IsVisible="{Binding ModeChoiceVisible}">
-                        <TextBlock Text="No workspace was found for your account. How would you like to continue?"
-                                   TextWrapping="Wrap" />
-                        <StackPanel Orientation="Horizontal" Spacing="8">
-                            <Button x:Name="CreateWorkspaceButton" Content="Create a workspace"
-                                    Command="{Binding CreateWorkspaceCommand}" />
-                            <TextBox x:Name="ExistingWorkspaceBox" Width="180" Watermark="acme"
-                                     Text="{Binding ExistingWorkspaceInput, Mode=TwoWay}" />
-                            <Button x:Name="UseExistingWorkspaceButton" Content="I already have one"
-                                    Command="{Binding UseExistingWorkspaceCommand}" />
-                            <Button x:Name="CancelWorkspaceButton" Content="Cancel"
-                                    Command="{Binding CancelWorkspaceCommand}" />
-                        </StackPanel>
-                    </StackPanel>
-
-                    <StackPanel Spacing="6" IsVisible="{Binding OrgNamePromptVisible}">
-                        <TextBlock Text="Organization name" />
-                        <StackPanel Orientation="Horizontal" Spacing="8">
-                            <TextBox x:Name="OrgNameBox" Width="220" Text="{Binding OrgName, Mode=TwoWay}" />
-                            <Button x:Name="SubmitOrgNameButton" Content="Continue" Command="{Binding SubmitOrgNameCommand}" />
-                            <Button x:Name="CancelOrgNameButton" Content="Cancel" Command="{Binding CancelOrgNameCommand}" />
-                        </StackPanel>
-                    </StackPanel>
-
-                    <StackPanel Spacing="6" IsVisible="{Binding SlugPromptVisible}">
-                        <TextBlock Text="Workspace address" />
-                        <StackPanel Orientation="Horizontal" Spacing="8">
-                            <TextBox x:Name="SlugBox" Width="220" Text="{Binding Slug, Mode=TwoWay}" />
-                            <TextBlock Text=".kcap.ai" VerticalAlignment="Center" Opacity="0.7" />
-                            <Button x:Name="SubmitSlugButton" Content="Continue" Command="{Binding SubmitSlugCommand}" />
-                            <Button x:Name="CancelSlugButton" Content="Cancel" Command="{Binding CancelSlugCommand}" />
-                        </StackPanel>
-                        <TextBlock x:Name="SlugErrorText" Text="{Binding SlugError}" TextWrapping="Wrap" Foreground="#E53935"
-                                   IsVisible="{Binding SlugError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
-                    </StackPanel>
-
-                    <StackPanel Spacing="6" IsVisible="{Binding ConfirmVisible}">
-                        <TextBlock x:Name="ConfirmCreateText" Text="{Binding ConfirmText}" TextWrapping="Wrap" />
-                        <StackPanel Orientation="Horizontal" Spacing="8">
-                            <Button x:Name="ConfirmCreateButton" Content="Create" Command="{Binding ConfirmCreateCommand}" />
-                            <Button x:Name="DeclineCreateButton" Content="Not now" Command="{Binding DeclineCreateCommand}" />
-                        </StackPanel>
-                    </StackPanel>
-
-                    <StackPanel Spacing="6"
-                                IsVisible="{Binding QuarantineNotice, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
-                        <TextBlock x:Name="QuarantineNoticeText" Text="{Binding QuarantineNotice}" TextWrapping="Wrap" />
-                        <Button x:Name="AcknowledgeQuarantineButton" Content="Acknowledge"
-                                Command="{Binding AcknowledgeQuarantineCommand}" HorizontalAlignment="Left" />
-                    </StackPanel>
-                </StackPanel>
-
-                <ScrollViewer Grid.Row="4" Margin="0,10,0,0" VerticalScrollBarVisibility="Auto">
-                    <ItemsControl x:Name="SignInLog" ItemsSource="{Binding Log}">
-                        <ItemsControl.ItemTemplate>
-                            <DataTemplate x:DataType="x:String">
-                                <TextBlock Text="{Binding}" FontSize="12" Opacity="0.7" TextWrapping="Wrap" />
-                            </DataTemplate>
-                        </ItemsControl.ItemTemplate>
-                    </ItemsControl>
-                </ScrollViewer>
-            </Grid>
+            <views:SignInStepView />
         </DataTemplate>
 
         <DataTemplate DataType="vm:ShimStepViewModel">
