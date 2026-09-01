@@ -3527,9 +3527,10 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         public const string ReaperClaimedLate = "reaper_claimed_late";
     }
 
-    /// <summary>Reports a drop to the server, when the dispatch carried an id to name. Never throws
-    /// and never blocks the caller's own return: the drop has already happened, and a report that
-    /// fails must leave the daemon exactly where reporting nothing would.</summary>
+    /// <summary>Reports a drop to the server, when the dispatch carried an id to name. Never throws:
+    /// the drop has already happened, and a report that fails must leave the daemon exactly where
+    /// reporting nothing would. Callers inside a held section report after releasing it — the invoke
+    /// has no timeout of its own.</summary>
     async Task ReportInputDroppedAsync(SendInputCommand cmd, string reason) {
         if (cmd.DispatchId is not { } dispatchId) return;
 
@@ -3576,6 +3577,11 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         long? codexBaseline = null;
         long  codexGen      = 0;
 
+        // Set inside the section, reported outside it: the report is an unbounded server round trip,
+        // and awaiting one while holding this gate would hold every later input for that agent behind
+        // a stalled connection — and stretch the section the reaper's own claim races against.
+        string? dropReason = null;
+
         await agent.BorrowedSnapshotGate.WaitAsync(_shutdownCts.Token);
         try {
             // Losing side of the reap claim (round-dispatch grace §3): a reap-claimed agent gets
@@ -3583,7 +3589,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             // into a dying runtime) is deliberate; the server heals it on resubmit.
             if (agent.IsReapClaimed) {
                 LogSendInputReapClaimed(agentId);
-                await ReportInputDroppedAsync(cmd, SendInputDropReason.ReaperClaimed);
+                dropReason = SendInputDropReason.ReaperClaimed;
 
                 return;
             }
@@ -3609,7 +3615,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
             if (agent.IsReapClaimed) {
                 LogSendInputReapClaimedLate(agentId);
-                await ReportInputDroppedAsync(cmd, SendInputDropReason.ReaperClaimedLate);
+                dropReason = SendInputDropReason.ReaperClaimedLate;
 
                 return;
             }
@@ -3655,6 +3661,9 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             LogSendInputDelivered(agentId, agent.Runtime.Vendor, message.Length);
         } finally {
             agent.BorrowedSnapshotGate.Release();
+
+            // After the release, never before it — see dropReason's own note.
+            if (dropReason is { } reason) await ReportInputDroppedAsync(cmd, reason);
         }
 
         // Codex turn diagnostic: arm the post-send rollout-growth probe. Only reached on the
