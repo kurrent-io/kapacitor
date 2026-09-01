@@ -72,21 +72,82 @@ public class CodexHostedAgentRuntimeFactoryTests {
         Cols: 80, Rows: 24, ServerUrl: "https://t.example", DaemonBridgeUrl: null, CapacitorPath: "/opt/kcap");
 
     CodexHostedAgentRuntimeFactory Factory(
-            RecordingPtyFactory pty, bool appServerActive, CodexAppServerSpawnFactory? spawn = null) =>
+            RecordingPtyFactory pty, bool appServerActive, CodexAppServerSpawnFactory? spawn = null,
+            bool appServerInteractive = false) =>
         new(NewLauncher(), pty,
-            new DaemonConfig { CodexAppServerActive = appServerActive, Version = "0.146.0" },
+            new DaemonConfig {
+                CodexAppServerActive      = appServerActive,
+                CodexAppServerInteractive = appServerInteractive,
+                Version                   = "0.146.0",
+            },
             NullLoggerFactory.Instance, spawn);
 
     // ── Routing decision ─────────────────────────────────────────────────────────────────────
     [Test]
     [Arguments(false, true,  false)] // not active -> pty even for a review flow
-    [Arguments(true,  false, false)] // active but interactive -> pty
+    [Arguments(true,  false, false)] // active, interactive, not opted in -> pty
     [Arguments(true,  true,  true)]  // active + review flow -> app-server
     public async Task UsesAppServer_gates_on_active_AND_review_flow(bool active, bool isReviewFlow, bool expected) {
         using var wt = new TempDir();
         var factory = Factory(new RecordingPtyFactory(), active);
         await Assert.That(factory.UsesAppServer(Ctx(isReviewFlow, wt.Path))).IsEqualTo(expected);
     }
+
+    /// <summary>The per-daemon opt-in widens app-server to interactive launches on THIS daemon only.
+    /// Reviewers are unaffected by it, and it cannot switch a daemon whose transport is still PTY —
+    /// which is what lets one daemon run interactive on app-server while a fleet stays on PTY.</summary>
+    [Test]
+    [Arguments(true,  false, true,  true)]  // opted in + active, interactive launch -> app-server
+    [Arguments(true,  true,  true,  true)]  // opted in + active, review flow        -> app-server
+    [Arguments(false, false, true,  false)] // NOT opted in, interactive             -> pty
+    [Arguments(true,  false, false, false)] // opted in but transport still pty      -> pty
+    public async Task UsesAppServer_admits_interactive_only_where_the_daemon_opted_in(
+            bool interactiveOptIn, bool isReviewFlow, bool active, bool expected) {
+        using var wt = new TempDir();
+        var factory = Factory(new RecordingPtyFactory(), active, appServerInteractive: interactiveOptIn);
+        await Assert.That(factory.UsesAppServer(Ctx(isReviewFlow, wt.Path))).IsEqualTo(expected);
+    }
+
+    /// <summary>The opt-in names INTERACTIVE, and a PR review is not that. Expressed as "not a review
+    /// flow" the switch would move PR review too — a launch class the operator never opted in — so this
+    /// pins the third class explicitly rather than leaving it to the negative form.</summary>
+    [Test]
+    public async Task UsesAppServer_leaves_a_pr_review_on_pty_even_when_the_daemon_opted_in() {
+        using var wt = new TempDir();
+        var factory = Factory(new RecordingPtyFactory(), appServerActive: true, appServerInteractive: true);
+        var prReview = Ctx(isReviewFlow: false, wt.Path) with { IsReview = true };
+
+        await Assert.That(factory.UsesAppServer(prReview)).IsFalse();
+        // Control: the same daemon DOES take an interactive launch to app-server.
+        await Assert.That(factory.UsesAppServer(Ctx(isReviewFlow: false, wt.Path))).IsTrue();
+    }
+
+    /// <summary>The env spelling is the operator's only lever, so it is pinned directly: affirmative
+    /// spellings turn it on — trimmed and case-insensitive, so an ordinary shell export is not silently
+    /// discarded — and everything else, including "0", "false" and a typo, leaves it off. Off is the safe
+    /// direction; a value the parser does not know must never move a daemon.</summary>
+    [Test]
+    [Arguments("1", true)]
+    [Arguments("true", true)]
+    [Arguments("TRUE", true)]
+    [Arguments("True", true)]
+    [Arguments("yes", true)]
+    [Arguments("on", true)]
+    [Arguments("TrUe", true)]
+    [Arguments("ON", true)]
+    [Arguments("Yes", true)]
+    [Arguments("  true  ", true)]
+    [Arguments("\ttrue\n", true)]
+    [Arguments("   ", false)]
+    [Arguments("0", false)]
+    [Arguments("false", false)]
+    [Arguments("off", false)]
+    [Arguments("no", false)]
+    [Arguments("app-server", false)]
+    [Arguments("", false)]
+    [Arguments(null, false)]
+    public async Task Interactive_opt_in_accepts_only_affirmative_spellings(string? value, bool expected) =>
+        await Assert.That(CodexTransportDecision.IsInteractiveOptIn(value)).IsEqualTo(expected);
 
     [Test]
     public async Task Pty_transport_delegates_a_review_flow_to_the_pty_factory() {

@@ -252,6 +252,24 @@ public class ServiceEnvironmentTests {
             await Assert.That(env.ContainsKey(key)).IsFalse();
     }
 
+    /// <summary>Both Codex transport settings reach a service unit on BOTH platforms. The daemon reads
+    /// them from its own environment and nowhere else, so a unit missing them silently runs PTY.</summary>
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Codex_transport_selection_survives_a_service_install(bool isWindows) {
+        var source = new Dictionary<string, string> {
+            ["PATH"]                             = "/usr/bin",
+            ["KCAP_CODEX_TRANSPORT"]             = "app-server",
+            ["KCAP_CODEX_APPSERVER_INTERACTIVE"] = "1",
+        };
+
+        var env = ServiceEnvironment.Build(profileName: null, source: source, config: Config.Root, isWindows: isWindows);
+
+        await Assert.That(env.TryGetValue("KCAP_CODEX_TRANSPORT", out var t) ? t : null).IsEqualTo("app-server");
+        await Assert.That(env.TryGetValue("KCAP_CODEX_APPSERVER_INTERACTIVE", out var i) ? i : null).IsEqualTo("1");
+    }
+
     /// <summary>
     /// EVERY reviewer's opt-out reaches a service unit, on BOTH platforms, with a DISABLING value.
     ///

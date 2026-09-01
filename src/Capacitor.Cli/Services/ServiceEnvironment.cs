@@ -13,7 +13,10 @@ static class ServiceEnvironment {
     /// the unit is a file on disk.</summary>
     static readonly string[] Keys =
         ["PATH", "KCAP_PROFILE", "KCAP_URL", "KCAP_CLAUDE_PATH", "KCAP_CODEX_PATH",
-         "KCAP_CONSENT_SEED_DEFAULT", "KCAP_EXPECT_SERVER_URL"];
+         "KCAP_CONSENT_SEED_DEFAULT", "KCAP_EXPECT_SERVER_URL",
+         // Codex transport selection + interactive opt-in: the daemon reads both from its own
+         // environment and nowhere else, so the install has to carry them into the unit.
+         "KCAP_CODEX_TRANSPORT", "KCAP_CODEX_APPSERVER_INTERACTIVE"];
 
     /// <summary>
     /// The unattended reviewers' opt-OUT switches. Carried on every platform: these are booleans, not

@@ -21,10 +21,39 @@ internal static class CodexTransportDecision {
     /// selection.</summary>
     public const string VersionFloor = "0.146.0";
 
+    /// <summary>Binds the two environment variables that decide this daemon's Codex transport onto
+    /// <paramref name="config"/>. Both are read from the environment and nowhere else — no profile or
+    /// config-file binding — so the variable NAMES and the present-but-empty guard are part of the
+    /// contract an operator relies on, not incidental. Takes the lookup as a delegate so that contract is
+    /// testable without a process environment.
+    ///
+    /// <para>An absent or empty value leaves the existing setting alone rather than resetting it, matching
+    /// every other env binding in the daemon's startup.</para></summary>
+    public static void BindFromEnvironment(Capacitor.Cli.Daemon.DaemonConfig config, Func<string, string?> getEnv) {
+        if (getEnv("KCAP_CODEX_TRANSPORT") is { Length: > 0 } transport)
+            config.CodexTransport = transport;
+
+        if (getEnv("KCAP_CODEX_APPSERVER_INTERACTIVE") is { Length: > 0 } interactive)
+            config.CodexAppServerInteractive = IsInteractiveOptIn(interactive);
+    }
+
     /// <summary>Resolves the effective transport: app-server only when selected AND the installed
     /// build meets <see cref="VersionFloor"/>. An unknown/unparseable version fails toward PTY.</summary>
     public static bool UsesAppServer(string? transport, string? cliVersion) =>
         IsAppServerSelected(transport) && MeetsFloor(cliVersion);
+
+    /// <summary>Reads the per-daemon interactive opt-in from its environment value. Trimmed and
+    /// case-insensitive, matching the daemon's other environment booleans
+    /// (<c>DaemonRunner.ParseDebugFramesFlag</c>), over a superset of their vocabulary. Anything else —
+    /// including "0", "false" and any typo — leaves it OFF. Off is the safe direction: a mistyped value
+    /// keeps the daemon on the transport it already had rather than moving interactive hosting onto an
+    /// operator who did not ask for it.</summary>
+    public static bool IsInteractiveOptIn(string? value) =>
+        value?.Trim() is { Length: > 0 } v
+     && (v == "1"
+      || string.Equals(v, "true", StringComparison.OrdinalIgnoreCase)
+      || string.Equals(v, "yes",  StringComparison.OrdinalIgnoreCase)
+      || string.Equals(v, "on",   StringComparison.OrdinalIgnoreCase));
 
     /// <summary>Resolves the daemon-wide <c>CodexAppServerActive</c> at startup. The version probe is
     /// deferred behind the selection check so a PTY daemon (the default) never pays for it — which is
