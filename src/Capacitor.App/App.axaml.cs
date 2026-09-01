@@ -115,8 +115,12 @@ public partial class App : Application {
     WizardAuthService? _wizardAuth;
     ImportStepViewModel? _wizardImport;
     Window? _wizardWindow;
-    // Steady-state re-auth dialog, one at a time — a second Sign in click focuses it.
+    // Steady-state re-auth dialog, one at a time — a second Sign in click focuses it. The settle
+    // task is FinishSignInAsync for the most recent close; shutdown awaits it so a live attempt is
+    // cancelled (or a commit past the boundary finishes) before the process exits — the dialog's
+    // counterpart of the wizard sign-in quiesce.
     SignInWindow? _signInWindow;
+    Task? _reauthSettle;
     bool _shutdownStarted;
     bool _shutdownConfirmed;
     // 0 = normal shutdown. Set to 1 on a startup failure so the DEFERRED shutdown path (Cmd+Q /
@@ -399,7 +403,7 @@ public partial class App : Application {
         window.Closed += (_, _) => {
             graph.SignIn.PropertyChanged -= OnSignInChanged;
             _signInWindow = null;
-            _ = FinishSignInAsync(graph);
+            _reauthSettle = FinishSignInAsync(graph);
         };
 
         _signInWindow = window;
@@ -1179,6 +1183,13 @@ public partial class App : Application {
         // the UI thread this was invoked from. That is all it buys — the quiesce below still resumes
         // wherever ConfigureAwait(false) leaves it whenever IT suspends.
         await _workspaceTeardown.DrainAsync();
+
+        // Still on the UI thread (required by Close), and before the quiesce below: the dialog's
+        // own close path cancels a live re-auth attempt — or lets a commit already past the
+        // boundary finish — and the await stops the process exiting under it. Closed assigns
+        // _reauthSettle synchronously, so reading it after Close observes this close's task.
+        if (_signInWindow is { } reauthDialog) reauthDialog.Close();
+        if (_reauthSettle is { } reauthSettle) await reauthSettle.ConfigureAwait(false);
 
         // spec §3.6 + decision 2: an in-flight sign-in always settles, mutations get a bounded chance
         // to — both while the UI is still up, before teardown.
