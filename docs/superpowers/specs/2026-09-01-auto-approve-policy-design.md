@@ -43,8 +43,9 @@ repo, a third **ask** outcome, and every decision recorded for post-hoc audit.
 - An agentic reviewer (Codex-Guardian style, with shell access and a 90 s budget). The judge is a
   single-shot classifier.
 - Binding a hostile *local user*. Client-side enforcement cannot survive a user who removes or
-  bypasses kcap; strict governance (below) defends against drift, bootstrap gaps and accidents,
-  not against the machine's own operator.
+  bypasses kcap; strict governance (below) defends against drift, cache loss and accidents after
+  enrollment — not against the machine's own operator, and not before the first successful org
+  fetch.
 - Enforcing org denies the client has never received. When no valid org snapshot is available, an
   unmatched action passes through and the vendor's native auto-mode may run it; kcap cannot apply
   a rule it does not hold. Strict mode narrows kcap's own grants in that state (see Governance
@@ -83,9 +84,9 @@ of it is on this list, exhaustively:
 
 Everything else — including ordinary redirection (`git status > file` performs a write the argv
 does not show) and unexpanded globs (the executed argv would differ from the matched argv) — is
-**unanalyzed**: no segments, and normatively **never eligible for allow**. Unanalyzed commands
-still match deny and ask rules (see Matching), so unanalyzable syntax cannot evade a restriction,
-only forfeit auto-approval.
+**unanalyzed**: no segments, and normatively **never eligible for allow** — the one guarantee
+obfuscation can never defeat. Unanalyzed commands are still matched best-effort against deny and
+ask rules (see Matching).
 
 ## Policy documents
 
@@ -102,8 +103,8 @@ rules:
   - match: { kind: shell, command: "git push --force*" }
     outcome: deny
     reason: force-push goes through the PR lane
-  - match: { kind: shell, command: ["git status", "git diff", "dotnet build"] }
-    outcome: allow
+  - match: { kind: shell, command: ["git status *", "git diff *", "dotnet build *"] }
+    outcome: allow           # the trailing * is the visible opt-in to arbitrary extra argv
   - match: { kind: mcp_tool, server: "kcap-*" }
     outcome: allow
   - match: { kind: shell, command: "gh pr merge" }
@@ -136,25 +137,46 @@ patterns per matcher. The server refuses to activate an invalid org/team/project
   (see Failure taxonomy).
 - A matcher field that is absent matches anything; a matcher field that is present fails against an
   action where that field is missing.
-- `shell`, analyzed commands: matching is **token-wise prefix matching against the segment's argv**
-  (program is token 0), never against a joined display string — an argument containing a space can
-  never collide with two arguments. The pattern is split into tokens; `*`/`?` match within a
-  token; the pattern matches when its tokens match the segment's **first N argv tokens** (N =
-  pattern token count). So `git status` allows `git status --porcelain`, and `git push --force*`
-  denies `git push --force origin main` and `git push --force-with-lease`. A matcher may set
-  `exact: true` to require equal token counts instead.
-- `shell`, unanalyzed commands: deny/ask patterns are evaluated against the **raw command string**
-  as a substring glob — implicit `*` at both ends — deliberately broader than token matching, so
-  the unanalyzed form of a dangerous command can only over-trigger a restriction, never
-  under-trigger it relative to its analyzed form. Allow patterns never match an unanalyzed
-  command.
+- `shell` matching is **token-wise against argv tokens**, never against a joined display string —
+  an argument containing a space can never collide with two arguments. The pattern is split into
+  tokens; `*`/`?` match within a token; a final bare `*` pattern token is a **rest token** matching
+  zero or more remaining argv tokens. Anchoring and extent are **outcome-sensitive**:
+  - **Allow patterns** are anchored at token 0 and require **equal token counts** unless the
+    pattern ends in a rest token — broad auto-approval must be visible in the policy, never a
+    default. `git status` allows exactly `git status`; `git status *` also allows
+    `git status --porcelain`. This is deliberate: a prefix-default allow would silently authorize
+    side-effecting suffixes like `git diff --output=<file>`, and command families grow flags over
+    time.
+  - **Deny/ask patterns** match a **contiguous token run starting at any position** (so
+    `git push --force*` catches `git push --force origin main`, `git push --force-with-lease`,
+    and an env-wrapped `env FOO=1 git push --force`). Over-triggering — denying an `echo` that
+    merely mentions the tokens — is acceptable for outcomes that only tighten. `exact: true`
+    additionally anchors a deny/ask pattern at token 0 with equal counts.
+- `shell`, unanalyzed commands: never allow-eligible — that is the only guaranteed invariant, and
+  the spec claims no parity beyond it. Deny/ask patterns are evaluated best-effort against two
+  representations: (a) **lexable literal fragments** — the raw string is conservatively lexed
+  (whitespace runs collapsed, simple quoting resolved; ambiguous constructs abandoned) and
+  deny/ask token runs are matched anywhere within the resulting fragment stream, which normalizes
+  spacing and quoting differences; and (b) the **raw string as a substring glob** (implicit `*` at
+  both ends) as an additional signal. Obfuscation can still evade both; what it can never do is
+  earn an allow.
 - `file_*`: paths are resolved absolute against the session cwd and lexically normalized (`.`/`..`
   collapsed; no filesystem access, no symlink resolution — symlink escapes are the vendor sandbox
   layer's concern, not this policy's).
 - `network`: patterns match the normalized host; a matcher may pin a port. No redirect reasoning —
   we see the requested URL only.
-- **Outcome-sensitive collection**: deny and ask are any-match — one matching segment or path
-  suffices. Allow is all-covered — see the merge rule below.
+- `mcp_tool`: `server` and `tool` are each glob-matchable fields.
+- `other`: only the raw vendor `tool` name is matchable; the payload is deliberately not matchable
+  in v1 (it has no canonical representation, and globbing raw JSON invites divergent
+  implementations). An explicit `kind: other` allow rule is legal — it authorizes any payload of
+  that tool, a coarse grant an author makes visibly or not at all.
+- **Components per kind** (the units the merge rule counts): shell → its segments (unanalyzed:
+  none); `file_*` → its paths; `mcp_tool` → one component, the (server, tool) pair; `network` →
+  one component, the host[:port]; `other` → one component, the tool name. An action missing a
+  required field for its kind routes to `other`.
+- **Outcome-sensitive collection**: deny and ask are any-match — one matching component suffices.
+  Allow is all-covered — every component matched — which for the scalar kinds (`mcp_tool`,
+  `network`, `other`) means their single component matches an allow rule.
 
 ### Merge rule: tighten-only with full coverage
 
@@ -162,10 +184,10 @@ Outcomes are ordered `allow < ask < deny`. All scopes evaluate independently; pe
 
 1. If any deny rule matches any component (segment or path), the outcome is **deny**.
 2. Else if any ask rule matches any component, the outcome is **ask**.
-3. Else if the action has a **nonempty** component set and **every executable component** is
-   matched by an allow rule — every segment of an analyzed command, every path of a multi-path
-   action — the outcome is **allow**. An empty or invalid component set is never allow-eligible
-   (it normalizes to `other`).
+3. Else if the action has a **nonempty** component set (as defined per kind in Matching) and
+   **every component** is matched by an allow rule — every segment of an analyzed command, every
+   path of a multi-path action, the single component of a scalar kind — the outcome is **allow**.
+   An empty or invalid component set is never allow-eligible (it normalizes to `other`).
 4. Else the rules layer yields **nothing** (the action proceeds to the judge, or pass-through).
 
 Rule 3 is the coverage requirement: `git status && rm -rf x` with an allow on `git status` and no
@@ -376,33 +398,41 @@ behavior, so a degraded ask never reads as if execution actually paused.
 | Gemini | hook decision | at-prompt | seam spike |
 | others | — | — | seam spike (#738) |
 
-The seam spike also pins, per vendor, whether payloads carry a call id and a parent-turn id — the
-facts the journal fallback and the judge's lineage rule depend on.
+The seam spike also pins, per vendor, whether payloads carry a stable cross-seam call id and a
+parent-turn id, and whether hook delivery is ordered strongly enough for the FIFO fallback — a
+vendor whose seams offer neither sound correlation path ships without cross-seam stickiness, and
+the capability matrix says so.
 
 ### The per-call decision journal (normative)
 
 A local Claude call can traverse PreToolUse and then PermissionRequest; the journal makes the pair
 behave as one decision:
 
-- **Call identity**: the vendor's call id when the payload carries one. Otherwise correlation is an
-  **ordered pending queue per (session, input hash)**: the earlier seam appends its entry; the next
-  later-seam event with the same input hash consumes the head, FIFO, so overlapping identical
-  calls consume in arrival order and never share an entry or collapse into one audit event.
-  Unconsumed entries expire with the turn.
-- **Only emitted terminal decisions are journaled.** Entries are consume-once.
-- **Interactive sessions**: the engine decides at the earliest seam; the entry (allow, deny, or
-  ask) is terminal. A journaled **ask is sticky**: the forced prompt's PermissionRequest records
-  and forwards but never auto-answers — the point of the ask was that a human decides. The judge
-  runs at most once per call, at the earliest seam.
-- **Rendered sessions** (`KCAP_RENDERED_AGENT=1`): local seams evaluate **deterministic rules
-  only — the judge never runs at a rendered local seam**; judge consultation is deferred to the
-  daemon path, so a call is judged at most once there. Local seams may only tighten: PreToolUse
-  deny → terminal entry; PreToolUse ask → sticky entry, the prompt's PermissionRequest forwards to
-  the human lane as today; PreToolUse allow or no-decision → **nothing emitted, no journal entry**
-  — the call proceeds to the vendor's own flow, and if a prompt is raised, the daemon path
-  evaluates it: policy allow/deny answer the lane, ask/no-decision park for the human. A rendered
-  local seam never emits allow, and an unemitted allow is never journaled, so it can neither
-  pre-empt the daemon evaluation nor replay at another seam.
+- **Call identity**: the vendor's call id when the payload carries one — then every emitted
+  terminal decision (allow, deny, or ask) is journaled and correlated exactly.
+- **Fallback without a call id — asks only.** Allow and deny emitted at PreToolUse normally
+  prevent any later seam from firing, so journaling them would strand stale entries that a later
+  *identical* call could wrongly consume (a stale allow must never answer a prompt that a fresh
+  evaluation — or a changed judge window — would have asked about). The fallback therefore
+  journals **only ask entries**, in an ordered pending queue per (session, input hash): PreToolUse
+  appends its ask; the next PermissionRequest with the same input hash consumes the head, FIFO;
+  overlapping identical asks consume in arrival order; unconsumed entries expire with the turn. A
+  PermissionRequest with no pending ask for its input is a fresh call and is evaluated fresh.
+- **Entries are consume-once.** A journaled **ask is sticky**: the forced prompt's
+  PermissionRequest records and forwards but never auto-answers — the point of the ask was that a
+  human decides.
+- **Interactive sessions**: the engine decides at the earliest seam the call reaches; the judge
+  runs at most once per call, at that seam.
+- **Rendered sessions** (`KCAP_RENDERED_AGENT=1`): local seams invoke the engine in
+  **tighten-only evaluation mode** — the same mode strict governance uses: only deny/ask rules are
+  consulted, no allow is ever computed, and the judge never runs at a rendered local seam. There
+  is consequently no suppressed allow to record or journal — a rendered local seam that finds no
+  deny/ask has made no decision at all, so the audit contract (every engine decision recorded) and
+  the journal stay consistent by construction. PreToolUse deny → emitted, terminal; PreToolUse
+  ask → emitted, sticky, the prompt's PermissionRequest forwards to the human lane as today; no
+  deny/ask → nothing evaluated, nothing emitted, no entry. The daemon path then runs the one full
+  evaluation (rules, then judge — at most once per call) on any raised prompt: policy allow/deny
+  answer the lane, ask/no-decision park for the human.
 
 ### Hosted sessions
 
@@ -446,8 +476,9 @@ find.
 
 ## Testing
 
-- **Engine**: pure table-driven unit tests in Core.Tests.Unit — token-wise prefix matching (and
-  `exact: true`), the raw-string substring-glob rule for unanalyzed deny/ask, the coverage rule
+- **Engine**: pure table-driven unit tests in Core.Tests.Unit — outcome-sensitive token matching
+  (allow exact-or-rest-token, deny/ask any-position runs, `exact: true`), the lexable-fragment and
+  substring-glob rules for unanalyzed deny/ask, per-kind component sets, the coverage rule
   (partial allow coverage never authorizes; empty component sets never allow-eligible),
   tighten-only merge, caps aggregation (any off wins), and the allowlist shell grammar pinned
   construct-by-construct, including that redirection, expansion and globs are unanalyzed and that
@@ -458,9 +489,9 @@ find.
 - **Normalizers**: fixture tests from captured real hook payloads per vendor, including the
   guaranteed `other` fallback and empty-component routing.
 - **Seam adapters**: the existing hook-command pattern — stdin payload in, vendor decision JSON
-  out — covering the outcome × native table, the journal state machine (interactive and rendered,
-  consume-once, FIFO queue correlation for identical overlapping calls, rendered rules-only
-  evaluation), and that rendered seams never emit allow.
+  out — covering the outcome × native table and the journal state machine: consume-once, ask-only
+  FIFO fallback (a stale entry is never consumed by a later identical call), full journaling under
+  vendor call ids, and rendered tighten-only evaluation mode.
 - **Judge client**: WireMock contract tests — timeout → pass-through, budget split, the full cache
   key (window digest recomputation mid-turn, windowless-uncached, config-version separation),
   in-flight dedup, the truncation clamp mapping, and the lineage rule (no lineage → windowless).
@@ -493,25 +524,31 @@ is verified against the outcome × native table.
    best unmatched; an empty component set is never allow-eligible.
 2. An unanalyzed shell command never matches an allow rule; the analyzed grammar is an exhaustive
    allowlist (literal-token simple commands joined by top-level `&&`/`;`/`|`), so redirection,
-   expansion, globs, here-docs, process substitution and backgrounding are all unanalyzed; a
-   deny/ask pattern triggers at least as readily on the unanalyzed form of a command as on its
-   analyzed form.
-3. A wider scope's deny cannot be overridden by any narrower scope, the judge, or a preset.
-4. `caps.narrower_widening: off` removes every widening channel of repo/user scopes: allow rules,
+   expansion, globs, here-docs, process substitution and backgrounding are all unanalyzed.
+   Deny/ask patterns are evaluated against unanalyzed commands through both the lexable-fragment
+   token matcher and the substring glob; the spec claims no evasion-proof parity beyond the
+   allow-ineligibility guarantee.
+3. An allow pattern authorizes extra argv only through an explicit trailing rest token; without
+   one it requires equal token counts. Deny/ask patterns match a contiguous token run at any
+   position.
+4. A wider scope's deny cannot be overridden by any narrower scope, the judge, or a preset.
+5. `caps.narrower_widening: off` removes every widening channel of repo/user scopes: allow rules,
    judge enablement, and prompt participation. Any applicable `off` wins.
-5. A judge verdict is never reused outside its (session, snapshot, classifier config, action,
+6. A judge verdict is never reused outside its (session, snapshot, classifier config, action,
    window digest); a truncated action is never judge-allowed (allow → ask; ask/deny/uncertain
    unchanged); a verdict without established action→turn lineage is windowless and uncached.
-6. Every degradation is a recorded, user-visible event; no policy-integrity failure silently
+7. Every degradation is a recorded, user-visible event; no policy-integrity failure silently
    removes a loaded deny; under strict governance, a session without a valid org snapshot emits no
    allows and runs no judge.
-7. A rendered session's local seams evaluate deterministic rules only (no judge), can tighten but
-   never allow, and an unemitted rendered allow/no-decision leaves no journal entry.
-8. Requested and effective outcomes are both recorded whenever they differ.
-9. Journal entries are consume-once, correlated by vendor call id or FIFO per (session, input
-   hash): duplicate identical calls neither share a sticky decision nor collapse into one audit
-   event.
-10. A local document impersonating a server scope (or carrying caps/enforcement) is rejected as
+8. A rendered session's local seams run in tighten-only evaluation mode: only deny/ask rules are
+   consulted, no allow is ever computed (so none exists to record or journal), and the judge never
+   runs there.
+9. Requested and effective outcomes are both recorded whenever they differ.
+10. Journal entries are consume-once. With a vendor call id, all terminal decisions journal; the
+    no-id fallback journals asks only, FIFO per (session, input hash), so a stale allow/deny can
+    never be consumed by a later identical call, and duplicate identical asks neither share a
+    sticky decision nor collapse into one audit event.
+11. A local document impersonating a server scope (or carrying caps/enforcement) is rejected as
     malformed; unverified server-scope references disable the judge for the session.
 
 ## Deferred
