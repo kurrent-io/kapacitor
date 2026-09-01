@@ -26,6 +26,13 @@ internal static class CodexTransportDecision {
     public static bool UsesAppServer(string? transport, string? cliVersion) =>
         IsAppServerSelected(transport) && MeetsFloor(cliVersion);
 
+    /// <summary>Reads the per-daemon interactive opt-in from its environment value. Affirmative spellings
+    /// only; anything else — including "0", "false" and any typo — leaves it OFF. Off is the safe
+    /// direction: a mistyped value keeps the daemon on the transport it already had rather than moving
+    /// interactive hosting on an operator who did not ask for it.</summary>
+    public static bool IsInteractiveOptIn(string? value) =>
+        value is "1" or "true" or "TRUE" or "True" or "yes" or "on";
+
     /// <summary>Resolves the daemon-wide <c>CodexAppServerActive</c> at startup. The version probe is
     /// deferred behind the selection check so a PTY daemon (the default) never pays for it — which is
     /// why this owns the composition rather than the caller evaluating the probe eagerly.</summary>

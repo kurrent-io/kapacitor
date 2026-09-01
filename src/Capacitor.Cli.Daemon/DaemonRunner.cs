@@ -177,7 +177,7 @@ public static partial class DaemonRunner {
         // One resolved fact for both the launch router and the certification advertisement.
         if (Environment.GetEnvironmentVariable("KCAP_CODEX_APPSERVER_INTERACTIVE") is { Length: > 0 } envCodexInteractive)
             config.CodexAppServerInteractive =
-                envCodexInteractive is "1" or "true" or "TRUE" or "True" or "yes" or "on";
+                Harness.Codex.CodexTransportDecision.IsInteractiveOptIn(envCodexInteractive);
 
         config.CodexAppServerActive = Harness.Codex.CodexTransportDecision.ResolveActive(
             config.CodexTransport, () => ProbeCliVersion(config.CodexPath));

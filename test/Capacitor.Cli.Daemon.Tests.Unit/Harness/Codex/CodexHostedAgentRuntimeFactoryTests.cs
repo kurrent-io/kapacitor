@@ -108,6 +108,40 @@ public class CodexHostedAgentRuntimeFactoryTests {
         await Assert.That(factory.UsesAppServer(Ctx(isReviewFlow, wt.Path))).IsEqualTo(expected);
     }
 
+    /// <summary>The opt-in names INTERACTIVE, and a PR review is not that. Expressed as "not a review
+    /// flow" the switch would move PR review too — a launch class the operator never opted in — so this
+    /// pins the third class explicitly rather than leaving it to the negative form.</summary>
+    [Test]
+    public async Task UsesAppServer_leaves_a_pr_review_on_pty_even_when_the_daemon_opted_in() {
+        using var wt = new TempDir();
+        var factory = Factory(new RecordingPtyFactory(), appServerActive: true, appServerInteractive: true);
+        var prReview = Ctx(isReviewFlow: false, wt.Path) with { IsReview = true };
+
+        await Assert.That(factory.UsesAppServer(prReview)).IsFalse();
+        // Control: the same daemon DOES take an interactive launch to app-server.
+        await Assert.That(factory.UsesAppServer(Ctx(isReviewFlow: false, wt.Path))).IsTrue();
+    }
+
+    /// <summary>The env spelling is the operator's only lever, so it is pinned directly: affirmative
+    /// spellings turn it on and everything else — including "0", "false" and a typo — leaves it off.
+    /// Off is the safe direction; a value the parser does not know must never move a daemon.</summary>
+    [Test]
+    [Arguments("1", true)]
+    [Arguments("true", true)]
+    [Arguments("TRUE", true)]
+    [Arguments("True", true)]
+    [Arguments("yes", true)]
+    [Arguments("on", true)]
+    [Arguments("0", false)]
+    [Arguments("false", false)]
+    [Arguments("off", false)]
+    [Arguments("no", false)]
+    [Arguments("app-server", false)]
+    [Arguments("", false)]
+    [Arguments(null, false)]
+    public async Task Interactive_opt_in_accepts_only_affirmative_spellings(string? value, bool expected) =>
+        await Assert.That(CodexTransportDecision.IsInteractiveOptIn(value)).IsEqualTo(expected);
+
     [Test]
     public async Task Pty_transport_delegates_a_review_flow_to_the_pty_factory() {
         using var wt = new TempDir();

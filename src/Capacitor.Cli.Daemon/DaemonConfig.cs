@@ -172,9 +172,10 @@ public class DaemonConfig {
     /// reviewers keeps interactive on the PTY it has always used; an operator turns it on for one
     /// daemon (KCAP_CODEX_APPSERVER_INTERACTIVE) without touching anyone else.
     ///
-    /// <para>Scope: launches the SERVER dispatches (the web launch dialog, PR review, review flows).
-    /// `kcap agent start` spawns an attachable terminal through the local control socket, which never
-    /// reaches the runtime factory, so it stays PTY regardless.</para></summary>
+    /// <para>Scope: INTERACTIVE launches the SERVER dispatches (the web launch dialog). PR review and
+    /// review flows are untouched by this switch — review flows already take app-server wherever it is
+    /// selected, and PR review stays on PTY. `kcap agent start` spawns an attachable terminal through the
+    /// local control socket, which never reaches the runtime factory, so it stays PTY regardless.</para></summary>
     public bool CodexAppServerInteractive { get; set; }
 
     /// <summary>Seconds an interactive hosted Codex approval (<c>*/requestApproval</c>) waits for the

@@ -66,14 +66,16 @@ internal sealed class CodexHostedAgentRuntimeFactory : IHostedAgentRuntimeFactor
     public IReviewerModelResolver? ReviewerModelResolver               => _pty.ReviewerModelResolver;
     public bool             SupportsModelSelection                      => _pty.SupportsModelSelection;
 
-    /// <summary>App-server is used for a launch only when the daemon resolved it active AND the
-    /// launch is unattended (review-flow). An interactive launch always takes the PTY path — even
-    /// under an app-server selection — because interactive hosting is a later phase.</summary>
-    /// <summary>App-server hosts unattended reviewers wherever it is selected; interactive launches
-    /// join only where the operator opted that daemon in, so one daemon can run interactive on
-    /// app-server while the rest of a fleet stays on PTY.</summary>
+    /// <summary>App-server hosts unattended reviewers (review-flow) wherever the daemon resolved it
+    /// active. INTERACTIVE launches join only where the operator opted that daemon in, so one daemon can
+    /// run interactive on app-server while the rest of a fleet stays on PTY.
+    ///
+    /// <para>Interactive is stated positively — neither a review flow nor a PR review — rather than as
+    /// "not a review flow": the launch classes here are review-flow, PR review and interactive, so the
+    /// negative form would sweep PR review along with it and widen the opt-in past what it names.</para></summary>
     internal bool UsesAppServer(RuntimeStartContext ctx) =>
-        _config.CodexAppServerActive && (ctx.IsReviewFlow || _config.CodexAppServerInteractive);
+        _config.CodexAppServerActive
+     && (ctx.IsReviewFlow || (_config.CodexAppServerInteractive && !ctx.IsReview));
 
     public Task<HostedRuntimeStart> StartAsync(RuntimeStartContext ctx, CancellationToken ct) {
         // §2.7 B4: resume is app-server-only (thread/resume). A resume request routed to the PTY path can't
