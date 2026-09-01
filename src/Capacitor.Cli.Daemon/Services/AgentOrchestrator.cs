@@ -3517,16 +3517,43 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             || trimmed.Equals("/exit", StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>The reasons this daemon drops a dispatched input, as the server records them. Stable
+    /// tokens, not prose: the surface shows which one applied, and <c>unknown_agent</c> additionally
+    /// stands as per-id absence proof from the only daemon that could have hosted the agent.</summary>
+    internal static class SendInputDropReason {
+        public const string UnknownAgent      = "unknown_agent";
+        public const string PrivateAgent      = "private_agent";
+        public const string ReaperClaimed     = "reaper_claimed";
+        public const string ReaperClaimedLate = "reaper_claimed_late";
+    }
+
+    /// <summary>Reports a drop to the server, when the dispatch carried an id to name. Never throws
+    /// and never blocks the caller's own return: the drop has already happened, and a report that
+    /// fails must leave the daemon exactly where reporting nothing would.</summary>
+    async Task ReportInputDroppedAsync(SendInputCommand cmd, string reason) {
+        if (cmd.DispatchId is not { } dispatchId) return;
+
+        try {
+            await _server.SendInputRejectedAsync(dispatchId, cmd.AgentId, reason);
+        } catch (Exception ex) {
+            LogSendInputRejectReportFailed(ex, cmd.AgentId, reason);
+        }
+    }
+
     async Task HandleSendInput(SendInputCommand cmd) {
-        var (agentId, text, attachmentIds) = cmd;
+        var (agentId, text, attachmentIds, _) = cmd;
 
         if (!_agents.TryGetValue(agentId, out var agent)) {
             LogSendInputUnknownAgent(agentId, _agents.Count);
+            await ReportInputDroppedAsync(cmd, SendInputDropReason.UnknownAgent);
+
             return;
         }
 
         if (agent.IsPrivate) {
             LogSendInputPrivateAgent(agentId);
+            await ReportInputDroppedAsync(cmd, SendInputDropReason.PrivateAgent);
+
             return; // server-origin input ignored for private agents
         }
 
@@ -3556,6 +3583,8 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             // into a dying runtime) is deliberate; the server heals it on resubmit.
             if (agent.IsReapClaimed) {
                 LogSendInputReapClaimed(agentId);
+                await ReportInputDroppedAsync(cmd, SendInputDropReason.ReaperClaimed);
+
                 return;
             }
 
@@ -3580,6 +3609,8 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
             if (agent.IsReapClaimed) {
                 LogSendInputReapClaimedLate(agentId);
+                await ReportInputDroppedAsync(cmd, SendInputDropReason.ReaperClaimedLate);
+
                 return;
             }
 
@@ -4974,6 +5005,9 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
     [LoggerMessage(Level = LogLevel.Information, Message = "SendInput delivered to agent {AgentId}'s {Vendor} runtime ({Chars} chars)")]
     partial void LogSendInputDelivered(string agentId, string vendor, int chars);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Could not report the dropped input for agent {AgentId} ({Reason})")]
+    partial void LogSendInputRejectReportFailed(Exception ex, string agentId, string reason);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "SendInput dropped: agent {AgentId} not found on this daemon ({KnownAgents} agents registered)")]
     partial void LogSendInputUnknownAgent(string agentId, int knownAgents);

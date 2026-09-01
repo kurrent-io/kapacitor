@@ -1934,7 +1934,10 @@ public record BorrowProbeResult(
 public readonly record struct SendInputCommand(
         string    AgentId,
         string    Text,
-        string[]? AttachmentIds
+        string[]? AttachmentIds,
+        // Names this dispatch when the daemon has to refuse it. Null from a server that does not send
+        // one, in which case there is nothing to name and no refusal is reported.
+        Guid?     DispatchId = null
     );
 
 public readonly record struct ResizeTerminalCommand(

@@ -289,6 +289,16 @@ sealed class CaptureServerConnection() : ServerConnection(
     /// launch-catch + read-loop cleanup.</summary>
     public List<string> AgentUnregisteredCalls { get; } = [];
 
+    /// <summary>Every dropped-input report, in call order — the only place a drop reason becomes
+    /// observable to anyone but this daemon's own log.</summary>
+    public List<(Guid DispatchId, string AgentId, string Reason)> InputRejections { get; } = [];
+
+    public override Task SendInputRejectedAsync(Guid dispatchId, string agentId, string reason) {
+        lock (InputRejections) InputRejections.Add((dispatchId, agentId, reason));
+
+        return Task.CompletedTask;
+    }
+
     public override Task AgentUnregisteredAsync(string agentId) {
         lock (AgentUnregisteredCalls) AgentUnregisteredCalls.Add(agentId);
         OnAgentUnregistered?.Invoke();
