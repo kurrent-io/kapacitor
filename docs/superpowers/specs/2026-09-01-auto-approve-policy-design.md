@@ -170,24 +170,31 @@ patterns per matcher. The server refuses to activate an invalid org/team/project
   in v1 (it has no canonical representation, and globbing raw JSON invites divergent
   implementations). An explicit `kind: other` allow rule is legal — it authorizes any payload of
   that tool, a coarse grant an author makes visibly or not at all.
-- **Components per kind** (the units the merge rule counts): shell → its segments (unanalyzed:
-  none); `file_*` → its paths; `mcp_tool` → one component, the (server, tool) pair; `network` →
-  one component, the host[:port]; `other` → one component, the tool name. An action missing a
-  required field for its kind routes to `other`.
-- **Outcome-sensitive collection**: deny and ask are any-match — one matching component suffices.
-  Allow is all-covered — every component matched — which for the scalar kinds (`mcp_tool`,
-  `network`, `other`) means their single component matches an allow rule.
+- **Two component sets per action.** *Restriction components* are what deny/ask rules match
+  (any-match); *coverage components* are what allow rules must fully cover. For analyzed shell,
+  file, and scalar kinds the two sets coincide: segments, paths, or the single (server, tool) /
+  host[:port] / tool-name component. An **unanalyzed shell action has one synthetic
+  restriction-only component — its raw command string** — on which fragment hits, substring-glob
+  hits, and coarse field-absent `{ kind: shell }` matchers all land, and an **empty coverage set**,
+  so it is never allow-eligible. An `other` action whose payload carries no raw tool name gets a
+  sentinel restriction component that field-present matchers never match but kind-level matchers
+  do — normalization failure always leaves a nonempty restriction-matchable identity. No action
+  has an empty restriction set.
+- **Outcome-sensitive collection**: deny and ask are any-match over the restriction components —
+  one hit suffices, so an unanalyzed command matching a fragment or raw deny *is* denied, not
+  merely flagged. Allow is all-covered over the coverage components, which for the scalar kinds
+  means their single component matches an allow rule.
 
 ### Merge rule: tighten-only with full coverage
 
 Outcomes are ordered `allow < ask < deny`. All scopes evaluate independently; per action:
 
-1. If any deny rule matches any component (segment or path), the outcome is **deny**.
-2. Else if any ask rule matches any component, the outcome is **ask**.
-3. Else if the action has a **nonempty** component set (as defined per kind in Matching) and
-   **every component** is matched by an allow rule — every segment of an analyzed command, every
-   path of a multi-path action, the single component of a scalar kind — the outcome is **allow**.
-   An empty or invalid component set is never allow-eligible (it normalizes to `other`).
+1. If any deny rule matches any **restriction component**, the outcome is **deny**.
+2. Else if any ask rule matches any **restriction component**, the outcome is **ask**.
+3. Else if the action has a **nonempty coverage set** (as defined per kind in Matching) and
+   **every coverage component** is matched by an allow rule — every segment of an analyzed
+   command, every path of a multi-path action, the single component of a scalar kind — the
+   outcome is **allow**. An empty coverage set is never allow-eligible.
 4. Else the rules layer yields **nothing** (the action proceeds to the judge, or pass-through).
 
 Rule 3 is the coverage requirement: `git status && rm -rf x` with an allow on `git status` and no
@@ -399,9 +406,14 @@ behavior, so a degraded ask never reads as if execution actually paused.
 | others | — | — | seam spike (#738) |
 
 The seam spike also pins, per vendor, whether payloads carry a stable cross-seam call id and a
-parent-turn id, and whether hook delivery is ordered strongly enough for the FIFO fallback — a
-vendor whose seams offer neither sound correlation path ships without cross-seam stickiness, and
-the capability matrix says so.
+parent-turn id, whether hook delivery is ordered strongly enough for the FIFO fallback, and
+whether every forced prompt reliably yields exactly one later at-prompt event (and whether
+cancellation/completion is observable). **A vendor with neither sound correlation path does not
+emit ask at its pre-decision seam at all**: a computed ask degrades there to pass-through
+(requested ask, effective pass-through, both recorded), so no forced prompt can exist whose
+stickiness the at-prompt seam cannot honor — the pre-decision seam owns this degradation. Ask
+remains available at that vendor's at-prompt seam, where leaving the prompt standing needs no
+correlation. The capability matrix advertises exactly this.
 
 ### The per-call decision journal (normative)
 
@@ -410,13 +422,19 @@ behave as one decision:
 
 - **Call identity**: the vendor's call id when the payload carries one — then every emitted
   terminal decision (allow, deny, or ask) is journaled and correlated exactly.
-- **Fallback without a call id — asks only.** Allow and deny emitted at PreToolUse normally
-  prevent any later seam from firing, so journaling them would strand stale entries that a later
-  *identical* call could wrongly consume (a stale allow must never answer a prompt that a fresh
-  evaluation — or a changed judge window — would have asked about). The fallback therefore
-  journals **only ask entries**, in an ordered pending queue per (session, input hash): PreToolUse
-  appends its ask; the next PermissionRequest with the same input hash consumes the head, FIFO;
-  overlapping identical asks consume in arrival order; unconsumed entries expire with the turn. A
+- **Fallback without a call id — asks only, restrictive-safe, best-effort provenance.** Allow and
+  deny emitted at PreToolUse normally prevent any later seam from firing, so journaling them would
+  strand stale entries that a later *identical* call could wrongly consume — and a stale allow
+  must never answer a prompt that a fresh evaluation would have asked about. The fallback
+  therefore journals **only ask entries**, in an ordered pending queue per (session, input hash),
+  and its guarantee is deliberately asymmetric: **while any pending ask exists for an input hash,
+  no PermissionRequest for that input is auto-answered** — the arriving event consumes the head
+  entry and the prompt stands. A stale entry (a forced prompt the vendor never raised, a
+  cancelled call, a failed hook) can therefore only make a later identical call *more*
+  restrictive — one extra human prompt — never less; entries expire with the turn. Cross-seam
+  **provenance under the fallback is best-effort**: the consumed entry may belong to a different
+  identical call, so the decision event carries an explicit correlation-ambiguity flag instead of
+  claiming exact per-call identity. Exact provenance exists only under vendor call ids. A
   PermissionRequest with no pending ask for its input is a fresh call and is evaluated fresh.
 - **Entries are consume-once.** A journaled **ask is sticky**: the forced prompt's
   PermissionRequest records and forwards but never auto-answers — the point of the ask was that a
@@ -489,9 +507,10 @@ find.
 - **Normalizers**: fixture tests from captured real hook payloads per vendor, including the
   guaranteed `other` fallback and empty-component routing.
 - **Seam adapters**: the existing hook-command pattern — stdin payload in, vendor decision JSON
-  out — covering the outcome × native table and the journal state machine: consume-once, ask-only
-  FIFO fallback (a stale entry is never consumed by a later identical call), full journaling under
-  vendor call ids, and rendered tighten-only evaluation mode.
+  out — covering the outcome × native table and the journal state machine: consume-once, the
+  ask-only FIFO fallback's restrictive-safety (a stale entry adds at most a prompt, never an
+  allow) and ambiguity-flagged provenance, full journaling under vendor call ids, pre-decision
+  ask degradation without correlation, and rendered tighten-only evaluation mode.
 - **Judge client**: WireMock contract tests — timeout → pass-through, budget split, the full cache
   key (window digest recomputation mid-turn, windowless-uncached, config-version separation),
   in-flight dedup, the truncation clamp mapping, and the lineage rule (no lineage → windowless).
@@ -520,14 +539,15 @@ is verified against the outcome × native table.
 
 ## Acceptance criteria
 
-1. Partial allow coverage never authorizes: an action with any unmatched executable component is at
-   best unmatched; an empty component set is never allow-eligible.
+1. Partial allow coverage never authorizes: an action with any uncovered coverage component is at
+   best unmatched; an empty coverage set is never allow-eligible; no action has an empty
+   restriction set (unanalyzed shell gets its raw string, name-less `other` gets the sentinel).
 2. An unanalyzed shell command never matches an allow rule; the analyzed grammar is an exhaustive
    allowlist (literal-token simple commands joined by top-level `&&`/`;`/`|`), so redirection,
    expansion, globs, here-docs, process substitution and backgrounding are all unanalyzed.
-   Deny/ask patterns are evaluated against unanalyzed commands through both the lexable-fragment
-   token matcher and the substring glob; the spec claims no evasion-proof parity beyond the
-   allow-ineligibility guarantee.
+   A fragment or substring-glob deny/ask hit on an unanalyzed command produces that outcome
+   through merge steps 1–2 — a matcher hit is a decision, not a flag. The spec claims no
+   evasion-proof parity beyond the allow-ineligibility guarantee.
 3. An allow pattern authorizes extra argv only through an explicit trailing rest token; without
    one it requires equal token counts. Deny/ask patterns match a contiguous token run at any
    position.
@@ -544,11 +564,15 @@ is verified against the outcome × native table.
    consulted, no allow is ever computed (so none exists to record or journal), and the judge never
    runs there.
 9. Requested and effective outcomes are both recorded whenever they differ.
-10. Journal entries are consume-once. With a vendor call id, all terminal decisions journal; the
-    no-id fallback journals asks only, FIFO per (session, input hash), so a stale allow/deny can
-    never be consumed by a later identical call, and duplicate identical asks neither share a
-    sticky decision nor collapse into one audit event.
-11. A local document impersonating a server scope (or carrying caps/enforcement) is rejected as
+10. Journal entries are consume-once. With a vendor call id, all terminal decisions journal with
+    exact per-call provenance. The no-id fallback journals asks only and is restrictive-safe: a
+    pending ask suppresses auto-answering for its input hash, so a stale entry can only add a
+    prompt, never an allow; its cross-seam provenance is best-effort and every fallback
+    correlation is recorded with an ambiguity flag rather than claimed exact.
+11. A pre-decision seam without a sound correlation path never emits ask: the ask degrades to
+    pass-through at that seam (requested and effective both recorded), and ask stays available at
+    the vendor's at-prompt seam.
+12. A local document impersonating a server scope (or carrying caps/enforcement) is rejected as
     malformed; unverified server-scope references disable the judge for the session.
 
 ## Deferred
