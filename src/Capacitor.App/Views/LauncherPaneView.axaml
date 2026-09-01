@@ -69,6 +69,18 @@
                 <TextBlock x:Name="StartErrorText" Text="{Binding StartError}" Foreground="{StaticResource KcapDangerBrush}"
                            TextWrapping="Wrap"
                            IsVisible="{Binding StartError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+
+                <StackPanel Orientation="Horizontal" Spacing="10"
+                            IsVisible="{Binding ConnectionNotice, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
+                    <TextBlock x:Name="ConnectionNoticeText" Text="{Binding ConnectionNotice}"
+                               Foreground="{StaticResource KcapMutedBrush}" TextWrapping="Wrap"
+                               VerticalAlignment="Center"
+                               IsVisible="{Binding ConnectionNotice, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                    <Button x:Name="HomeSignInButton" Content="Sign in" Command="{Binding SignInCommand}"
+                            Background="{StaticResource KcapAccentBrush}" Foreground="#07120E" FontWeight="SemiBold"
+                            CornerRadius="7" Padding="12,5"
+                            IsVisible="{Binding SignInVisible}" />
+                </StackPanel>
             </StackPanel>
         </Border>
     </StackPanel>

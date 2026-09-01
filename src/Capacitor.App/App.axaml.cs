@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Reactive.Subjects;
 using Avalonia;
 using Avalonia.Controls;
@@ -114,6 +115,8 @@ public partial class App : Application {
     WizardAuthService? _wizardAuth;
     ImportStepViewModel? _wizardImport;
     Window? _wizardWindow;
+    // Steady-state re-auth dialog, one at a time — a second Sign in click focuses it.
+    SignInWindow? _signInWindow;
     bool _shutdownStarted;
     bool _shutdownConfirmed;
     // 0 = normal shutdown. Set to 1 on a startup failure so the DEFERRED shutdown path (Cmd+Q /
@@ -333,7 +336,8 @@ public partial class App : Application {
                 service, _config, actions, notifier, ticker, _shutdown.Token, activity, lifecycle.StartActionAsync,
                 lifecycleStatus, launch, _navigation, _workspaceTeardown.Track, BuildWorkspace,
                 // The tenant slug the rail footer shows — profiles are named after it at sign-in.
-                tenantName: profiles?.Resolution?.ProfileName, agentsWithPending: permissions.AgentsWithPending),
+                tenantName: profiles?.Resolution?.ProfileName, agentsWithPending: permissions.AgentsWithPending,
+                requestSignIn: () => OpenSignInDialog(profiles, notifier)),
             // Both close paths release the workspace: hide-to-tray keeps the window (and its
             // attach) alive, a real close discards the window the next Show() would rebuild.
             releaseWorkspace: window => (window.DataContext as MainWindowViewModel)?.CloseWorkspace());
@@ -358,6 +362,59 @@ public partial class App : Application {
             lifecycleAttention: lifecycleAttention, shimOfferable: shimOffer.Offerable,
             installShim: shimOffer.RunManualInstallAsync, permissions: permissions);
         _tray = new TrayIconManager(this, _trayVm);
+    }
+
+    /// Home's Sign in action: the re-auth dialog over a fresh ReauthComposition graph, pinned to
+    /// the resolved server. A graph is built per open — a settled attempt's rendered state must
+    /// never leak into the next sign-in.
+    void OpenSignInDialog(ProfileContext? profiles, IAppNotifier notifier) {
+        if (_signInWindow is { } open) {
+            open.Activate();
+            return;
+        }
+
+        // Reachable in the carve-out arm (gate Incomplete after an abandoned wizard), where the
+        // rail can show disconnected with no server to re-auth against.
+        if (profiles?.Resolution.ServerUrl is not { } serverUrl || !OnboardingGate.ValidServerUrl(serverUrl)) {
+            notifier.Notify("No server is configured — run kcap setup first.");
+            return;
+        }
+
+        var graph = ReauthComposition.Build(
+            _config, profiles.Name, serverUrl,
+            WizardComposition.BuildBridges(action => Dispatcher.UIThread.Post(action)),
+            new ConsentFlipClaims(_config),
+            new AppStateStore(_config.Path("app-state.json")),
+            new ShellUrlOpener(),
+            WizardComposition.NewOperation);
+        var window = new SignInWindow { DataContext = graph.SignIn };
+
+        // A committed sign-in closes the dialog itself; Closed below is the ONE finish path, so
+        // both the auto-close and the user's own close cancel/quiesce identically.
+        void OnSignInChanged(object? _, PropertyChangedEventArgs e) {
+            if (e.PropertyName == nameof(SignInStepViewModel.Satisfied) && graph.SignIn.Satisfied) window.Close();
+        }
+
+        graph.SignIn.PropertyChanged += OnSignInChanged;
+        window.Closed += (_, _) => {
+            graph.SignIn.PropertyChanged -= OnSignInChanged;
+            _signInWindow = null;
+            _ = FinishSignInAsync(graph);
+        };
+
+        _signInWindow = window;
+        window.Show();
+    }
+
+    /// Fire-and-forget from the dialog's Closed handler — nothing may block the UI close. The
+    /// quiesce is what stops a still-running attempt from committing after the window is gone.
+    async Task FinishSignInAsync(ReauthGraph graph) {
+        try {
+            await graph.CloseAsync(CancellationToken.None);
+            if (graph.SignIn.Satisfied) _home?.NotifySignInCompleted();
+        } catch (Exception ex) {
+            Console.Error.WriteLine($"kcap: sign-in dialog teardown failed: {ex.Message}");
+        }
     }
 
     // Wizard-first mode (spec decision 2): no service, no tray, no lifecycle controller, no
@@ -649,7 +706,7 @@ public partial class App : Application {
             IObservable<string?>? lifecycleStatus = null, ILaunchClient? launch = null,
             NavigationGate? navigation = null, Action<Func<Task>>? trackWorkspaceTeardown = null,
             Func<string, WorkspaceViewModel>? workspaceFactory = null, string? tenantName = null,
-            IObservable<IReadOnlySet<string>>? agentsWithPending = null) {
+            IObservable<IReadOnlySet<string>>? agentsWithPending = null, Action? requestSignIn = null) {
         // Notifier is set on the WINDOW (spec §11 toast overlay), not the ViewModel — the toast
         // is a View-level concern (WindowNotificationManager lives on MainWindow) independent of
         // the VM's WhenActivated-scoped projections.
@@ -672,7 +729,8 @@ public partial class App : Application {
             launch ?? new ServerLaunchClient(config, null), new RepoPathStore(config).GetSortedPathsAsync, shutdownToken,
             openSession: agentId => vm?.OpenSession(agentId),
             navigationGeneration: () => vm?.NavigationGeneration ?? 0,
-            openSessionIfCurrent: (agentId, generation) => vm?.OpenSessionIfCurrent(agentId, generation));
+            openSessionIfCurrent: (agentId, generation) => vm?.OpenSessionIfCurrent(agentId, generation),
+            requestSignIn: requestSignIn);
         // Same knot as home above, over the SAME `service` instance — its own openSession
         // callback closes over `vm`, not a local, so no two-step forward-declaration is needed.
         var rail = new SessionRailViewModel(

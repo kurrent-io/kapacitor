@@ -8,7 +8,9 @@ public sealed record LaunchRequest(
     string DaemonName, string RepoPath, string Vendor, string? Prompt,
     string Model = "", string? Effort = null);
 
-public sealed record LaunchOutcome(bool Started, string? AgentId, string? Error);
+/// Unauthorized marks a server 401 — the caller routes it to sign-in instead of rendering the
+/// raw transport message.
+public sealed record LaunchOutcome(bool Started, string? AgentId, string? Error, bool Unauthorized = false);
 
 /// Starting a session goes through the SERVER, not the local socket: the local Spawn frame
 /// resolves against the daemon's PTY launchers (claude and codex only), while the server's

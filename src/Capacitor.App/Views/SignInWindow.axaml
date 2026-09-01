@@ -1,0 +1,13 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="clr-namespace:Capacitor.App.ViewModels.Onboarding"
+        xmlns:onboarding="clr-namespace:Capacitor.App.Views.Onboarding"
+        x:Class="Capacitor.App.Views.SignInWindow"
+        x:DataType="vm:SignInStepViewModel"
+        Title="Sign in"
+        Icon="avares://Kurrent Capacitor/Assets/kcap-icon.png"
+        Width="560" Height="420">
+    <!-- The steady-state re-auth dialog: the wizard's sign-in step view over a ReauthComposition
+         graph pinned to the configured server. App owns opening/closing it. -->
+    <onboarding:SignInStepView Margin="16" />
+</Window>
