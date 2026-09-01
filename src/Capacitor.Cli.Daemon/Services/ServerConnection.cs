@@ -919,11 +919,17 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     /// talking to an older server has to behave exactly as it did before this existed.</para></summary>
     public virtual async Task SendInputRejectedAsync(Guid dispatchId, string agentId, string reason) {
         try {
-            await _hub.InvokeAsync("SendInputRejected", dispatchId, agentId, reason, cancellationToken: _ct);
+            await _hub.InvokeAsync("SendInputRejected", dispatchId, agentId, reason, cancellationToken: _ct)
+                .WaitAsync(SendInputRejectedBudget, _ct);
         } catch (Exception ex) {
             _logger.LogDebug(ex, "Could not report the dropped input for agent {AgentId} ({Reason})", agentId, reason);
         }
     }
+
+    /// <summary>Bounds the report so an unresponsive server cannot pin the receive handler that is
+    /// waiting on it. The invoke has no timer of its own, and the input this reports on is already
+    /// dropped — waiting longer buys nothing anyone is still listening for.</summary>
+    static readonly TimeSpan SendInputRejectedBudget = TimeSpan.FromSeconds(10);
 
     /// <summary>
     /// The one report a shutting-down daemon can still make. Every other method here bakes in
