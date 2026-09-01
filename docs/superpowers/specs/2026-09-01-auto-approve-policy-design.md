@@ -26,7 +26,9 @@ repo, a third **ask** outcome, and every decision recorded for post-hoc audit.
    policy as a PR-reviewable file in the repo.
 4. Ask escalation that reaches the human where they are: the vendor-native prompt locally, the
    existing PermissionRequest long-poll lane for hosted sessions.
-5. Every policy decision recorded with provenance and replayable, from the first shipped phase.
+5. Every policy decision recorded with provenance from the first shipped phase: rule decisions
+   deterministically **replayable**, judge decisions **auditable** — their exact recorded input and
+   output reconstructable, though an LLM verdict itself is not re-derivable.
 
 ## Non-goals
 
@@ -41,8 +43,12 @@ repo, a third **ask** outcome, and every decision recorded for post-hoc audit.
 - An agentic reviewer (Codex-Guardian style, with shell access and a 90 s budget). The judge is a
   single-shot classifier.
 - Binding a hostile *local user*. Client-side enforcement cannot survive a user who removes or
-  bypasses kcap; mandatory governance (below) defends against drift, bootstrap gaps and accidents,
+  bypasses kcap; strict governance (below) defends against drift, bootstrap gaps and accidents,
   not against the machine's own operator.
+- Enforcing org denies the client has never received. When no valid org snapshot is available, an
+  unmatched action passes through and the vendor's native auto-mode may run it; kcap cannot apply
+  a rule it does not hold. Strict mode narrows kcap's own grants in that state (see Governance
+  modes); it does not conjure the missing ceiling.
 
 ## Canonical actions
 
@@ -78,8 +84,8 @@ of it is on this list, exhaustively:
 Everything else — including ordinary redirection (`git status > file` performs a write the argv
 does not show) and unexpanded globs (the executed argv would differ from the matched argv) — is
 **unanalyzed**: no segments, and normatively **never eligible for allow**. Unanalyzed commands
-still match deny and ask rules against their raw string, so unanalyzable syntax cannot evade a
-restriction, only forfeit auto-approval.
+still match deny and ask rules (see Matching), so unanalyzable syntax cannot evade a restriction,
+only forfeit auto-approval.
 
 ## Policy documents
 
@@ -87,7 +93,8 @@ One document shape for all five scopes: org, team, project (server-stored, autho
 requiring the corresponding admin/lead role — detailed RBAC lives in the server spec), repo
 (`.kcap/approvals.yaml`, versioned and PR-reviewable), and user (`~/.config/kcap/approvals.yaml`).
 The rules merge is order-independent; scope order matters only for judge prompt composition
-(org → team → project → repo → user).
+(org → team → project → repo → user). `caps` and `enforcement` are server-scope fields: a repo or
+user document containing them is invalid (see Failure taxonomy).
 
 ```yaml
 version: 1
@@ -95,21 +102,21 @@ rules:
   - match: { kind: shell, command: "git push --force*" }
     outcome: deny
     reason: force-push goes through the PR lane
-  - match: { kind: shell, command: ["git status*", "git diff*", "dotnet build*"] }
+  - match: { kind: shell, command: ["git status", "git diff", "dotnet build"] }
     outcome: allow
   - match: { kind: mcp_tool, server: "kcap-*" }
     outcome: allow
-  - match: { kind: shell, command: "gh pr merge*" }
+  - match: { kind: shell, command: "gh pr merge" }
     outcome: ask
 judge:
   mode: unmatched          # off | unmatched
   prompt: |
     Approve routine read-only git and build commands anywhere in the repo.
     Escalate anything touching CI config or release tags to ask.
-caps:                      # only meaningful in server-stored scopes
+caps:                      # server-stored scopes only
   narrower_widening: on    # off = repo and user scopes cannot widen: no allow rules, no judge
                            # enablement, and their judge prompts are excluded from composition
-enforcement: best_effort   # best_effort | required — org scope only; see Failure taxonomy
+enforcement: best_effort   # best_effort | strict — org scope only; see Governance modes
 ```
 
 `caps.narrower_widening` defaults to `on`; when any applicable server scope sets `off`, off wins
@@ -129,12 +136,18 @@ patterns per matcher. The server refuses to activate an invalid org/team/project
   (see Failure taxonomy).
 - A matcher field that is absent matches anything; a matcher field that is present fails against an
   action where that field is missing.
-- `shell`: matching is **token-wise against the segment's argv** (program is token 0), never
-  against a joined display string — an argument containing a space can never collide with two
-  arguments. A pattern is split into tokens; `*`/`?` match within a token; a trailing bare `*`
-  token matches zero or more remaining argv tokens; otherwise token counts must be equal. For
-  unanalyzed commands, deny/ask patterns additionally match the raw string; allow patterns never
-  match an unanalyzed command.
+- `shell`, analyzed commands: matching is **token-wise prefix matching against the segment's argv**
+  (program is token 0), never against a joined display string — an argument containing a space can
+  never collide with two arguments. The pattern is split into tokens; `*`/`?` match within a
+  token; the pattern matches when its tokens match the segment's **first N argv tokens** (N =
+  pattern token count). So `git status` allows `git status --porcelain`, and `git push --force*`
+  denies `git push --force origin main` and `git push --force-with-lease`. A matcher may set
+  `exact: true` to require equal token counts instead.
+- `shell`, unanalyzed commands: deny/ask patterns are evaluated against the **raw command string**
+  as a substring glob — implicit `*` at both ends — deliberately broader than token matching, so
+  the unanalyzed form of a dangerous command can only over-trigger a restriction, never
+  under-trigger it relative to its analyzed form. Allow patterns never match an unanalyzed
+  command.
 - `file_*`: paths are resolved absolute against the session cwd and lexically normalized (`.`/`..`
   collapsed; no filesystem access, no symlink resolution — symlink escapes are the vendor sandbox
   layer's concern, not this policy's).
@@ -155,7 +168,7 @@ Outcomes are ordered `allow < ask < deny`. All scopes evaluate independently; pe
    (it normalizes to `other`).
 4. Else the rules layer yields **nothing** (the action proceeds to the judge, or pass-through).
 
-Rule 3 is the coverage requirement: `git status && rm -rf x` with an allow on `git status*` and no
+Rule 3 is the coverage requirement: `git status && rm -rf x` with an allow on `git status` and no
 match on the second segment is *unmatched*, not allowed. Partial allow coverage never authorizes.
 
 Consequences: org deny + repo allow → deny; org allow + repo deny → deny; a wider scope cannot
@@ -175,11 +188,17 @@ per session, so a decision's provenance is exact:
 - Built at session start (at launch, for hosted sessions): fetch org/team/project documents from
   the server, read the repo and user files, validate, merge. The snapshot id is a content hash over
   every document plus the engine's canonicalization version.
-- The client **uploads the content-addressed snapshot for every session that emits policy
-  decisions** — judge enabled or not — so evals can reconstruct the full competing rule set, not
-  just the matched rule. Identical snapshots are stored once; offline sessions upload the snapshot
-  when the event queue drains. The judge composes prompts from exactly this snapshot, never from
-  newer server state.
+- **Snapshot authority is split at the client/server boundary.** Server-stored scopes travel as
+  references — (scope id, document version) — which the server verifies against its own store; the
+  client never supplies org/team/project content, caps, or enforcement mode, so a local document
+  cannot impersonate a server scope. Repo and user content is uploaded verbatim, labeled with its
+  scope role, and confined to it. A snapshot whose server references do not verify is a
+  policy-integrity failure: the judge is disabled for the session and the snapshot recorded as
+  degraded. Audit records distinguish server-verified scopes from client-asserted local content.
+- The snapshot is uploaded for **every session that emits policy decisions** — judge enabled or
+  not — so evals can reconstruct the full competing rule set, not just the matched rule. Identical
+  snapshots are stored once; offline sessions upload when the event queue drains. The judge
+  composes prompts from exactly this snapshot, never from newer server state.
 - The session runs on its snapshot until it ends. Mid-session edits — to the repo file, the user
   file, or the server documents — are inert until the next session. This is also the trust
   boundary for the repo file: what becomes live is what was on disk when the session the user
@@ -203,37 +222,51 @@ composition cannot mechanically guarantee that org guidance beats repo guidance 
 instructs that wider-scope guidance wins on conflict, best-effort. An org that needs a guarantee
 writes a rule, or removes narrower widening entirely with caps.
 
+**Standing permission vs turn authorization.** Scope prompts are *standing policy permission* —
+like deterministic allow rules, they may justify an `allow` with no transcript at all, so a
+windowless judge may allow from standing guidance alone. The transcript window informs
+*turn-specific authorization* only: `user_authorization` may rise above `unknown` solely on
+authenticated user-role content from the recording; a windowless verdict always carries
+`user_authorization: unknown`. The untrusted-evidence framing binds the evidence blocks — no
+evidence can claim user authority — not the authored scope prompts' standing permission.
+
 ### What the judge receives
 
 The CLI (or daemon) sends `session_id`, the canonical action, the snapshot id, and a **turn
-anchor** — the id of the newest user message the local watcher has recorded. The server assembles:
+anchor**. The server assembles:
 
 1. **Base prompt** — versioned, maintained in kcap-server.
-2. **Scope prompts** from the uploaded snapshot (excluding caps-excluded scopes),
+2. **Scope prompts** from the verified snapshot (excluding caps-excluded scopes),
    org → team → project → repo → user, each in a labeled, structurally delimited block.
 3. **Bounded authorization window, ≤ 2 000 tokens**, from the recorded session: the anchor user
    message, the last few user messages before it, and recent tool-call headlines (command/tool +
-   target, no outputs). The window is built **only if** the anchor is the newest user message in
-   the recorded transcript **and** the recording is fresh (latest recorded event within a freshness
-   bound of the request); otherwise the judge runs windowless — a stale anchor is not evidence of
-   authorization. Role labels come from kcap's own authenticated recording, never from the request.
+   target, no outputs). The window is built **only when action→turn lineage is established**: the
+   vendor payload carries a parent/turn id the recording confirms, or the client's watcher
+   correlation proves the anchor user message precedes this specific tool call. Freshness and
+   recency checks alone are not lineage — a lagging watcher can present the previous turn as
+   current — so when lineage cannot be established the judge runs windowless: a stale anchor is
+   not evidence of authorization. The lineage result, freshness configuration and context-builder
+   version are recorded in the decision's provenance. Role labels come from kcap's own
+   authenticated recording, never from the request.
 4. **The canonical action** and vendor justification, each field in its own delimited block.
 
 **Budgets, deterministically allocated in this priority order**: base prompt and the complete
-canonical action first (if the action alone cannot fit its 4 000-token per-string / bounded-arrays
-budget, it is truncated with a machine-visible flag); then scope prompts, dropping narrowest-first
-(user, then repo, …) so wider guidance survives; then the window, dropping oldest-first. Total
-prompt ≤ 16 000 tokens; rationale ≤ 1 000 tokens.
+canonical action first; then scope prompts, dropping narrowest-first (user, then repo, …) so wider
+guidance survives; then the window, dropping oldest-first. Total prompt ≤ 16 000 tokens; action
+strings ≤ 4 000 tokens each; rationale ≤ 1 000 tokens. If any part of the **action** is omitted for
+any reason — a per-string cap or the total budget — the action carries a machine-visible truncation
+flag.
 
-**Truncation is mechanically unsafe-capped, not prompt-disciplined**: whenever any action field
-carries the truncation flag, the server **clamps the verdict to at most ask** — a truncated action
-can never be judge-allowed, by code, regardless of what the model returns.
+**Truncation clamp (mechanical, not prompt-disciplined).** When the action's truncation flag is
+set, the server rewrites the verdict by this exact mapping, regardless of model output:
+allow → ask; ask → ask; deny → deny; uncertain → uncertain (pass-through). A truncated action can
+never be judge-allowed; restrictions are never weakened.
 
-Every data block — window content, action strings, justification, and the scope prompts themselves
-— is framed as **untrusted evidence**: only user-role content from the recording can authorize;
-assistant or tool text never self-authorizes; quoted material inside a user message does not
-inherit user authority; elided content is not presumed benign. (Codex's Guardian applies the same
-framing at 15× our window size; we stay smaller because our judge answers in seconds, not 90.)
+Every evidence block — window content, action strings, justification — is framed as **untrusted
+evidence**: only user-role content from the recording can authorize; assistant or tool text never
+self-authorizes; quoted material inside a user message does not inherit user authority; elided
+content is not presumed benign. (Codex's Guardian applies the same framing at 15× our window size;
+we stay smaller because our judge answers in seconds, not 90.)
 
 ### Verdict
 
@@ -248,11 +281,17 @@ timeout, or transport error → pass-through. Budget: 2 s on local hook paths (c
 hosted-lane paths where nothing waits on a hook timeout.
 
 **Caching.** A verdict is reusable only for its exact decision function and evidence. Cache key:
-`(session, snapshot id, classifier config — base-prompt version + model revision + output-schema
-version, canonical action digest, window digest)`. The window digest freezes the evidence: if the
-window grows mid-turn, the digest changes and the verdict is recomputed. Windowless verdicts are
-not cached. Concurrent requests for the same key coalesce (in-flight deduplication); entries die
-with the turn.
+`(session, snapshot id, classifier config, canonical action digest, window digest)`, where
+classifier config covers every decision-affecting setting — base-prompt version, provider and
+model deployment, sampling parameters, output-schema version, context-builder version. The window
+digest freezes the evidence: if the window grows mid-turn, the digest changes and the verdict is
+recomputed. Windowless verdicts are not cached. Concurrent requests for the same key coalesce
+(in-flight deduplication); entries die with the turn.
+
+**Audit artifact.** Each judge consultation persists its exact composed request as a
+content-addressed artifact — the selected window event ids, truncation metadata, block structure,
+and classifier config — referenced from the decision event, so the decision is auditable
+independent of transcript retention.
 
 The fail-open direction is deliberate and differs from Codex (whose Guardian fails closed to deny):
 our judge sits *above* the harness's own safety layer, so pass-through lands on the vendor's native
@@ -267,26 +306,31 @@ behavior, not on "run it".
 | Judge timeout, transport error, `uncertain`, malformed verdict | Pass-through; decision event recorded with the failure class |
 | Server documents unreachable at session start | Last-known-good cached documents; snapshot marked degraded; recorded + surfaced to the user |
 | No cached server documents at all | See governance modes below |
-| Malformed repo or user file | Document ignored; snapshot marked degraded; recorded + surfaced (its denies are lost, so the loss is loud, never silent) |
+| Malformed repo or user file (invalid syntax, invalid pattern, or server-scope fields like caps/enforcement) | Document ignored; snapshot marked degraded; recorded + surfaced (its denies are lost, so the loss is loud, never silent) |
 | Malformed server document | Cannot occur at session time — the server refuses activation at authoring time |
+| Snapshot server-scope references fail verification | Judge disabled for the session; snapshot degraded; recorded + surfaced |
 | Unsupported snapshot schema version | Treated as unreachable documents (last-known-good, degraded) |
 | Normalizer failure or empty component set | `kind: other` canonical action — evaluation always happens |
 | Cache corruption (snapshot cache) | Refetch; else the unreachable-documents row |
 
-**Governance modes.** The org document declares `enforcement: best_effort` (default) or
-`required`:
+### Governance modes
+
+The org document declares `enforcement: best_effort` (default) or `strict`. Neither mode can
+enforce a rule the client does not hold (see Non-goals); the difference is what kcap itself grants
+when the org snapshot is unavailable:
 
 - **best_effort**: with no server documents and no cache (first run, cleared cache), the session
-  proceeds on local scopes only, degraded, loudly. The spec states plainly: org ceilings are
-  guaranteed only from the first successful org fetch onward.
-- **required**: the client persists a required-governance marker the first time it loads such an
-  org document. From then on, any session that cannot obtain a fresh or last-known-good org
-  snapshot runs in **tighten-only mode**: deny/ask rules from available scopes still apply, but the
-  engine emits no allows and the judge is disabled — kcap grants nothing it cannot verify it is
-  allowed to grant. A malformed local document under `required` behaves the same as under
-  best_effort (loud degrade), since local scopes can only be missing tightening the org can already
-  preclude via caps. The marker defends against bootstrap gaps and accidents, not a hostile local
-  operator (see Non-goals).
+  proceeds on local scopes only, degraded, loudly. Org ceilings hold **only while a valid fresh or
+  last-known-good org snapshot exists** — not before bootstrap, not after cache loss.
+- **strict**: the client persists a strict-governance marker, keyed by (server, org id) beside the
+  LKG cache, the first time it loads such an org document. From then on, any session that cannot
+  obtain a fresh or LKG org snapshot runs in **tighten-only mode**: deny/ask rules from available
+  scopes still apply, but the engine emits no allows and the judge is disabled — kcap grants
+  nothing it cannot verify it is allowed to grant. Unmatched actions still pass through to native
+  behavior; strict mode narrows kcap's grants, it does not create the missing ceiling. The marker
+  is cleared when a fetched org document declares best_effort, and a first-ever session with no
+  marker necessarily behaves as best_effort — pre-provisioning the marker (enrollment before first
+  session) is deferred.
 
 A degraded snapshot never silently drops a deny that *was* loaded, and every degradation is a
 recorded, user-visible event.
@@ -332,27 +376,33 @@ behavior, so a degraded ask never reads as if execution actually paused.
 | Gemini | hook decision | at-prompt | seam spike |
 | others | — | — | seam spike (#738) |
 
+The seam spike also pins, per vendor, whether payloads carry a call id and a parent-turn id — the
+facts the journal fallback and the judge's lineage rule depend on.
+
 ### The per-call decision journal (normative)
 
 A local Claude call can traverse PreToolUse and then PermissionRequest; the journal makes the pair
 behave as one decision:
 
-- **Call identity**: the vendor's call id when the payload carries one; otherwise
-  `(session, turn, input hash, per-turn sequence number)` — two identical calls in one turn get
-  distinct sequence numbers, so they never share an entry or collapse into one audit event.
-- **Only emitted terminal decisions are journaled.** Entries are consume-once — the first later
-  seam that reads an entry consumes it — and expire with the turn.
+- **Call identity**: the vendor's call id when the payload carries one. Otherwise correlation is an
+  **ordered pending queue per (session, input hash)**: the earlier seam appends its entry; the next
+  later-seam event with the same input hash consumes the head, FIFO, so overlapping identical
+  calls consume in arrival order and never share an entry or collapse into one audit event.
+  Unconsumed entries expire with the turn.
+- **Only emitted terminal decisions are journaled.** Entries are consume-once.
 - **Interactive sessions**: the engine decides at the earliest seam; the entry (allow, deny, or
   ask) is terminal. A journaled **ask is sticky**: the forced prompt's PermissionRequest records
   and forwards but never auto-answers — the point of the ask was that a human decides. The judge
   runs at most once per call, at the earliest seam.
-- **Rendered sessions** (`KCAP_RENDERED_AGENT=1`): local seams may only **tighten**. PreToolUse
-  deny → terminal entry. PreToolUse ask → sticky entry; the prompt's PermissionRequest forwards to
-  the human lane as today. PreToolUse allow or no-decision → **no journal entry, nothing emitted**
-  — the call proceeds to the vendor's own flow, and if a prompt is raised, the **daemon path**
-  (below) evaluates it: policy allow/deny answer the lane, ask/no-decision park for the human.
-  A rendered local seam never emits allow, and an unemitted allow is never journaled, so it can
-  neither pre-empt the daemon evaluation nor replay at another seam.
+- **Rendered sessions** (`KCAP_RENDERED_AGENT=1`): local seams evaluate **deterministic rules
+  only — the judge never runs at a rendered local seam**; judge consultation is deferred to the
+  daemon path, so a call is judged at most once there. Local seams may only tighten: PreToolUse
+  deny → terminal entry; PreToolUse ask → sticky entry, the prompt's PermissionRequest forwards to
+  the human lane as today; PreToolUse allow or no-decision → **nothing emitted, no journal entry**
+  — the call proceeds to the vendor's own flow, and if a prompt is raised, the daemon path
+  evaluates it: policy allow/deny answer the lane, ask/no-decision park for the human. A rendered
+  local seam never emits allow, and an unemitted allow is never journaled, so it can neither
+  pre-empt the daemon evaluation nor replay at another seam.
 
 ### Hosted sessions
 
@@ -385,31 +435,35 @@ decisions.
 Every engine decision — allow, deny, ask, and every judge consultation including uncertain and
 timeout fall-throughs — emits a session event carrying: the canonical action, the snapshot id, the
 engine + canonicalization version, the seam, the requested and the effective outcome, the matched
-rule + scope (or the judge verdict, rationale, user-authorization estimate, classifier config
-versions, and window digest), the degradation flag, the failure class when one applies, and the
-journal call identity as correlation id. Because the full snapshot content is persisted for every
-decision-emitting session, the rules layer is replayable as a deterministic function of (snapshot,
-engine version, action); judge decisions are reconstructable from their recorded config and window
-digest. Pure pass-throughs (no rule, no judge) are counted, not individually recorded; judge
-fall-throughs are individually recorded because they are the events evals must find.
+rule + scope (or the judge verdict, rationale, user-authorization estimate, and a reference to the
+judge audit artifact), the degradation flag, the failure class when one applies, and the journal
+call identity as correlation id. Because the full snapshot content is persisted for every
+decision-emitting session, rule decisions replay as a deterministic function of (snapshot, engine
+version, action); judge decisions are auditable through their content-addressed request artifact
+and recorded verdict. Pure pass-throughs (no rule, no judge) are counted, not individually
+recorded; judge fall-throughs are individually recorded because they are the events evals must
+find.
 
 ## Testing
 
-- **Engine**: pure table-driven unit tests in Core.Tests.Unit — token-wise matching, the coverage
-  rule (partial allow coverage never authorizes; empty component sets never allow-eligible),
+- **Engine**: pure table-driven unit tests in Core.Tests.Unit — token-wise prefix matching (and
+  `exact: true`), the raw-string substring-glob rule for unanalyzed deny/ask, the coverage rule
+  (partial allow coverage never authorizes; empty component sets never allow-eligible),
   tighten-only merge, caps aggregation (any off wins), and the allowlist shell grammar pinned
   construct-by-construct, including that redirection, expansion and globs are unanalyzed and that
   unanalyzed commands never match allow.
 - **Snapshot**: build/degrade/last-known-good table, both governance modes including the
-  required-marker tighten-only session, and the loud-loss rule for malformed files.
+  strict-marker tighten-only session and marker lifecycle (org switch, strict → best_effort), the
+  server-scope reference verification failure, and the loud-loss rule for malformed files.
 - **Normalizers**: fixture tests from captured real hook payloads per vendor, including the
   guaranteed `other` fallback and empty-component routing.
 - **Seam adapters**: the existing hook-command pattern — stdin payload in, vendor decision JSON
   out — covering the outcome × native table, the journal state machine (interactive and rendered,
-  consume-once, duplicate-call sequencing), and that rendered seams never emit allow.
+  consume-once, FIFO queue correlation for identical overlapping calls, rendered rules-only
+  evaluation), and that rendered seams never emit allow.
 - **Judge client**: WireMock contract tests — timeout → pass-through, budget split, the full cache
   key (window digest recomputation mid-turn, windowless-uncached, config-version separation),
-  in-flight dedup, and the truncation clamp (truncated action can never yield allow).
+  in-flight dedup, the truncation clamp mapping, and the lineage rule (no lineage → windowless).
 - **Integration**: one `KcapProcess` spawn covering the Claude PermissionRequest decision path
   end-to-end.
 
@@ -421,16 +475,17 @@ is verified against the outcome × native table.
 1. **Engine + canonical actions + snapshot (local scopes, persisted) + Claude seams + provenance
    events.** Local Claude auto-mode ships, offline-capable, fully audited. Includes the
    hosted-Claude and ACP insertions — cheap once the engine exists. Gate: PreToolUse seam
-   certified; coverage rule, shell grammar and journal state machine verified end-to-end.
-2. **Judge**: kcap-server classifier endpoint, snapshot upload, prompt composition, turn-anchored
-   window, cache and truncation clamp (server work tracked in Linear); CLI/daemon calls with
-   fail-open budgets. Gate: windowless, stale-anchor and degraded modes verified; judge events
-   visible to evals.
+   certified (including call-id and parent-turn-id availability); coverage rule, shell grammar and
+   journal state machine verified end-to-end.
+2. **Judge**: kcap-server classifier endpoint, snapshot upload + reference verification, prompt
+   composition, lineage-gated window, cache, truncation clamp, audit artifact (server work tracked
+   in Linear); CLI/daemon calls with fail-open budgets. Gate: windowless, no-lineage and degraded
+   modes verified; judge events + artifacts visible to evals.
 3. **Scoped governance**: server-stored org/team/project policies, authoring UI + roles,
-   session-start fetch with last-known-good cache, caps, `enforcement: required` + marker.
+   session-start fetch with last-known-good cache, caps, `enforcement: strict` + marker lifecycle.
    Gate: degraded-snapshot UX and tighten-only-mode session verified.
 4. **Remaining vendors** per seam spikes, and the hosted Codex insertion. Gate per vendor: its
-   truth-table row verified before the capability matrix advertises it.
+   truth-table row (and call/turn-id facts) verified before the capability matrix advertises it.
 
 ## Acceptance criteria
 
@@ -438,24 +493,31 @@ is verified against the outcome × native table.
    best unmatched; an empty component set is never allow-eligible.
 2. An unanalyzed shell command never matches an allow rule; the analyzed grammar is an exhaustive
    allowlist (literal-token simple commands joined by top-level `&&`/`;`/`|`), so redirection,
-   expansion, globs, here-docs, process substitution and backgrounding are all unanalyzed.
+   expansion, globs, here-docs, process substitution and backgrounding are all unanalyzed; a
+   deny/ask pattern triggers at least as readily on the unanalyzed form of a command as on its
+   analyzed form.
 3. A wider scope's deny cannot be overridden by any narrower scope, the judge, or a preset.
 4. `caps.narrower_widening: off` removes every widening channel of repo/user scopes: allow rules,
    judge enablement, and prompt participation. Any applicable `off` wins.
 5. A judge verdict is never reused outside its (session, snapshot, classifier config, action,
-   window digest); a truncated action is never judge-allowed.
+   window digest); a truncated action is never judge-allowed (allow → ask; ask/deny/uncertain
+   unchanged); a verdict without established action→turn lineage is windowless and uncached.
 6. Every degradation is a recorded, user-visible event; no policy-integrity failure silently
-   removes a loaded deny; under `enforcement: required`, a session without a valid org snapshot
-   emits no allows and runs no judge.
-7. A rendered session's local seams can tighten but never allow, and an unemitted rendered
-   allow/no-decision leaves no journal entry.
+   removes a loaded deny; under strict governance, a session without a valid org snapshot emits no
+   allows and runs no judge.
+7. A rendered session's local seams evaluate deterministic rules only (no judge), can tighten but
+   never allow, and an unemitted rendered allow/no-decision leaves no journal entry.
 8. Requested and effective outcomes are both recorded whenever they differ.
-9. Journal entries are consume-once with per-turn sequence identity: duplicate identical calls
-   neither share a sticky decision nor collapse into one audit event.
+9. Journal entries are consume-once, correlated by vendor call id or FIFO per (session, input
+   hash): duplicate identical calls neither share a sticky decision nor collapse into one audit
+   event.
+10. A local document impersonating a server scope (or carrying caps/enforcement) is rejected as
+    malformed; unverified server-scope references disable the judge for the session.
 
 ## Deferred
 
 - Per-scope caps on judge outcomes beyond `narrower_widening` (e.g. "the judge may at most ask").
+- Pre-provisioned strict-governance markers (enrollment before the first session).
 - Remote answering of local asks (dual-surface racing needs a design of its own).
 - Folding ACP launch presets into session-scoped rules.
 - A configurable no-match default per policy (`unmatched: ask` for sensitive repos) — the schema
