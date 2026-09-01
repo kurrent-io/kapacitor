@@ -4742,6 +4742,59 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         }
     }
 
+    /// <summary>How long the whole shutdown report may take, across every agent. A shutdown that waits
+    /// on the server is a shutdown that can be killed mid-teardown, so this bounds the pass rather
+    /// than each call: agents past the ceiling go unreported, and the server is left to infer their
+    /// ending from the transport drop.</summary>
+    internal static readonly TimeSpan ShutdownReportBudget = TimeSpan.FromSeconds(5);
+
+    /// <summary>The reason stamped on a run this daemon ended by going away, distinct from the user
+    /// asking it to stop — the two look identical downstream otherwise.</summary>
+    internal const string DaemonShutdownStopReason = "daemon_shutdown";
+
+    /// <summary>Reports every live agent as ended, on its own budget and its own token: by the time
+    /// this runs <c>_shutdownCts</c> is cancelled, and passing that token would cancel every call
+    /// before it left. Best-effort throughout — teardown continues whatever this manages to say.</summary>
+    async Task ReportAgentsEndedForShutdownAsync() {
+        // Only agents this teardown still owns. One whose own finalizer already ran has reported its
+        // real ending and is waiting on cleanup; reporting it again would append a second stop event
+        // over the top of a truer one and race that finalizer's unregister.
+        var live = _agents.Values.Where(a => !a.IsPrivate && a.Status is "Starting" or "Running").ToList();
+
+        if (live.Count == 0) return;
+
+        using var budget = new CancellationTokenSource(ShutdownReportBudget);
+
+        LogShutdownReportStarted(live.Count, ShutdownReportBudget.TotalSeconds);
+
+        foreach (var agent in live) {
+            if (budget.IsCancellationRequested) {
+                LogShutdownReportBudgetExpired(agent.Id);
+
+                return;
+            }
+
+            // Not Completed: this daemon killed the child, whatever it was in the middle of, and a
+            // run reported as completed is a failure classified as success. The reason carries the
+            // distinction from a run that failed on its own.
+            SetAgentStatus(agent, "Failed");
+
+            try {
+                await _server.ReportAgentEndedForShutdownAsync(
+                    agent.Id, agent.SessionId, "Failed", DaemonShutdownStopReason, agent.Runtime.ExitCode, budget.Token)
+                    .WaitAsync(budget.Token);
+
+                LogShutdownReported(agent.Id);
+            } catch (OperationCanceledException) {
+                LogShutdownReportBudgetExpired(agent.Id);
+
+                return;
+            } catch (Exception ex) {
+                LogShutdownReportFailed(ex, agent.Id);
+            }
+        }
+    }
+
     public virtual async ValueTask DisposeAsync() {
         if (Interlocked.Exchange(ref _disposeOnce, 1) != 0) return;
 
@@ -4795,6 +4848,13 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                     /* best-effort */
                 }
             }
+
+            // Children are gone; tell the server so before the registry is torn down. Without this the
+            // daemon's whole account of a shutdown is the transport dropping, which says a daemon went
+            // away but nothing about the agents it was hosting — and a successor daemon reconnecting
+            // under the same name re-binds those retained entries onto its own connection, leaving
+            // sessions the surface still composes into and a Stop that has nothing to act on.
+            await ReportAgentsEndedForShutdownAsync();
 
             foreach (var agentId in _agents.Keys.ToList()) {
                 try {
@@ -5084,6 +5144,18 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     // The transcript scan is the only place agent.SessionId is ever assigned — the vendor's own
     // session-start hook posts to the SERVER, not here — so none of these three may describe it as a
     // fallback behind some other link.
+    [LoggerMessage(Level = LogLevel.Information, Message = "Terminating {Count} agent(s) for daemon shutdown; reporting them ended within {Seconds:F0}s")]
+    partial void LogShutdownReportStarted(int count, double seconds);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Agent {AgentId} reported ended for daemon shutdown")]
+    partial void LogShutdownReported(string agentId);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Shutdown report budget expired at agent {AgentId}; the rest of this daemon's agents end only as far as the server infers from the transport drop")]
+    partial void LogShutdownReportBudgetExpired(string agentId);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to report agent {AgentId} ended for daemon shutdown")]
+    partial void LogShutdownReportFailed(Exception ex, string agentId);
+
     [LoggerMessage(Level = LogLevel.Information, Message = "Agent {AgentId} linked to session {SessionId} by matching its transcript file")]
     partial void LogSessionIdDetected(string agentId, string sessionId);
 
