@@ -252,6 +252,26 @@ public class ServiceEnvironmentTests {
             await Assert.That(env.ContainsKey(key)).IsFalse();
     }
 
+    /// <summary>The Codex transport selection and its interactive opt-in reach a service unit on BOTH
+    /// platforms. The daemon reads these from its own environment and nowhere else — there is no profile
+    /// or config-file binding — so a supervised install that drops them leaves the daemon on PTY while the
+    /// operator believes they selected app-server, with nothing in the unit to show otherwise.</summary>
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Codex_transport_selection_survives_a_service_install(bool isWindows) {
+        var source = new Dictionary<string, string> {
+            ["PATH"]                             = "/usr/bin",
+            ["KCAP_CODEX_TRANSPORT"]             = "app-server",
+            ["KCAP_CODEX_APPSERVER_INTERACTIVE"] = "1",
+        };
+
+        var env = ServiceEnvironment.Build(profileName: null, source: source, config: Config.Root, isWindows: isWindows);
+
+        await Assert.That(env.TryGetValue("KCAP_CODEX_TRANSPORT", out var t) ? t : null).IsEqualTo("app-server");
+        await Assert.That(env.TryGetValue("KCAP_CODEX_APPSERVER_INTERACTIVE", out var i) ? i : null).IsEqualTo("1");
+    }
+
     /// <summary>
     /// EVERY reviewer's opt-out reaches a service unit, on BOTH platforms, with a DISABLING value.
     ///

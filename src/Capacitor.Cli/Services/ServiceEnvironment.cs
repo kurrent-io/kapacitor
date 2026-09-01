@@ -13,7 +13,12 @@ static class ServiceEnvironment {
     /// the unit is a file on disk.</summary>
     static readonly string[] Keys =
         ["PATH", "KCAP_PROFILE", "KCAP_URL", "KCAP_CLAUDE_PATH", "KCAP_CODEX_PATH",
-         "KCAP_CONSENT_SEED_DEFAULT", "KCAP_EXPECT_SERVER_URL"];
+         "KCAP_CONSENT_SEED_DEFAULT", "KCAP_EXPECT_SERVER_URL",
+         // The Codex transport selection and its interactive opt-in, for the same reason as the
+         // reviewer consent switches below: the daemon reads them from its own environment and
+         // nowhere else, so without capture a supervised install silently drops them and the daemon
+         // runs PTY no matter what the operator exported.
+         "KCAP_CODEX_TRANSPORT", "KCAP_CODEX_APPSERVER_INTERACTIVE"];
 
     /// <summary>
     /// The unattended reviewers' opt-OUT switches. Carried on every platform: these are booleans, not

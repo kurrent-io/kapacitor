@@ -166,6 +166,17 @@ public class DaemonConfig {
     /// Never set from config directly.</summary>
     public bool CodexAppServerActive { get; set; }
 
+    /// <summary>Per-daemon opt-in: also host INTERACTIVE Codex agents over app-server, not just
+    /// unattended reviewers. Requires <see cref="CodexAppServerActive"/> — this widens which launches
+    /// take that transport, it does not select it. Off by default so a fleet upgrading to app-server
+    /// reviewers keeps interactive on the PTY it has always used; an operator turns it on for one
+    /// daemon (KCAP_CODEX_APPSERVER_INTERACTIVE) without touching anyone else.
+    ///
+    /// <para>Scope: launches the SERVER dispatches (the web launch dialog, PR review, review flows).
+    /// `kcap agent start` spawns an attachable terminal through the local control socket, which never
+    /// reaches the runtime factory, so it stays PTY regardless.</para></summary>
+    public bool CodexAppServerInteractive { get; set; }
+
     /// <summary>Seconds an interactive hosted Codex approval (<c>*/requestApproval</c>) waits for the
     /// user before failing closed (deny). Overridable via <c>KCAP_CODEX_APPSERVER_APPROVAL_TIMEOUT_SECONDS</c>.
     /// Consumed as <c>TimeSpan.FromSeconds(Math.Max(1, …))</c>.</summary>

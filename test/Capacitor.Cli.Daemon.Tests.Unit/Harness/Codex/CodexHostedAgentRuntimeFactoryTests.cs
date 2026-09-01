@@ -72,19 +72,39 @@ public class CodexHostedAgentRuntimeFactoryTests {
         Cols: 80, Rows: 24, ServerUrl: "https://t.example", DaemonBridgeUrl: null, CapacitorPath: "/opt/kcap");
 
     CodexHostedAgentRuntimeFactory Factory(
-            RecordingPtyFactory pty, bool appServerActive, CodexAppServerSpawnFactory? spawn = null) =>
+            RecordingPtyFactory pty, bool appServerActive, CodexAppServerSpawnFactory? spawn = null,
+            bool appServerInteractive = false) =>
         new(NewLauncher(), pty,
-            new DaemonConfig { CodexAppServerActive = appServerActive, Version = "0.146.0" },
+            new DaemonConfig {
+                CodexAppServerActive      = appServerActive,
+                CodexAppServerInteractive = appServerInteractive,
+                Version                   = "0.146.0",
+            },
             NullLoggerFactory.Instance, spawn);
 
     // ── Routing decision ─────────────────────────────────────────────────────────────────────
     [Test]
     [Arguments(false, true,  false)] // not active -> pty even for a review flow
-    [Arguments(true,  false, false)] // active but interactive -> pty
+    [Arguments(true,  false, false)] // active, interactive, not opted in -> pty
     [Arguments(true,  true,  true)]  // active + review flow -> app-server
     public async Task UsesAppServer_gates_on_active_AND_review_flow(bool active, bool isReviewFlow, bool expected) {
         using var wt = new TempDir();
         var factory = Factory(new RecordingPtyFactory(), active);
+        await Assert.That(factory.UsesAppServer(Ctx(isReviewFlow, wt.Path))).IsEqualTo(expected);
+    }
+
+    /// <summary>The per-daemon opt-in widens app-server to interactive launches on THIS daemon only.
+    /// Reviewers are unaffected by it, and it cannot switch a daemon whose transport is still PTY —
+    /// which is what lets one daemon run interactive on app-server while a fleet stays on PTY.</summary>
+    [Test]
+    [Arguments(true,  false, true,  true)]  // opted in + active, interactive launch -> app-server
+    [Arguments(true,  true,  true,  true)]  // opted in + active, review flow        -> app-server
+    [Arguments(false, false, true,  false)] // NOT opted in, interactive             -> pty
+    [Arguments(true,  false, false, false)] // opted in but transport still pty      -> pty
+    public async Task UsesAppServer_admits_interactive_only_where_the_daemon_opted_in(
+            bool interactiveOptIn, bool isReviewFlow, bool active, bool expected) {
+        using var wt = new TempDir();
+        var factory = Factory(new RecordingPtyFactory(), active, appServerInteractive: interactiveOptIn);
         await Assert.That(factory.UsesAppServer(Ctx(isReviewFlow, wt.Path))).IsEqualTo(expected);
     }
 

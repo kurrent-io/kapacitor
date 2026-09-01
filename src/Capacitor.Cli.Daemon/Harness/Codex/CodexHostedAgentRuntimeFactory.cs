@@ -69,7 +69,11 @@ internal sealed class CodexHostedAgentRuntimeFactory : IHostedAgentRuntimeFactor
     /// <summary>App-server is used for a launch only when the daemon resolved it active AND the
     /// launch is unattended (review-flow). An interactive launch always takes the PTY path — even
     /// under an app-server selection — because interactive hosting is a later phase.</summary>
-    internal bool UsesAppServer(RuntimeStartContext ctx) => _config.CodexAppServerActive && ctx.IsReviewFlow;
+    /// <summary>App-server hosts unattended reviewers wherever it is selected; interactive launches
+    /// join only where the operator opted that daemon in, so one daemon can run interactive on
+    /// app-server while the rest of a fleet stays on PTY.</summary>
+    internal bool UsesAppServer(RuntimeStartContext ctx) =>
+        _config.CodexAppServerActive && (ctx.IsReviewFlow || _config.CodexAppServerInteractive);
 
     public Task<HostedRuntimeStart> StartAsync(RuntimeStartContext ctx, CancellationToken ct) {
         // §2.7 B4: resume is app-server-only (thread/resume). A resume request routed to the PTY path can't
