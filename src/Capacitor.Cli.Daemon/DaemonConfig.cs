@@ -168,9 +168,8 @@ public class DaemonConfig {
 
     /// <summary>Per-daemon opt-in: also host INTERACTIVE Codex agents over app-server, not just
     /// unattended reviewers. Requires <see cref="CodexAppServerActive"/> — this widens which launches
-    /// take that transport, it does not select it. Off by default so a fleet upgrading to app-server
-    /// reviewers keeps interactive on the PTY it has always used; an operator turns it on for one
-    /// daemon (KCAP_CODEX_APPSERVER_INTERACTIVE) without touching anyone else.
+    /// take that transport, it does not select it. Off unless an operator sets
+    /// <c>KCAP_CODEX_APPSERVER_INTERACTIVE</c> on this daemon, so turning it on moves one host.
     ///
     /// <para>Scope: INTERACTIVE launches the SERVER dispatches (the web launch dialog). PR review and
     /// review flows are untouched by this switch — review flows already take app-server wherever it is

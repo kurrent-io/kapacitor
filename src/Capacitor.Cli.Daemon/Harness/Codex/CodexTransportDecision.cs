@@ -42,12 +42,18 @@ internal static class CodexTransportDecision {
     public static bool UsesAppServer(string? transport, string? cliVersion) =>
         IsAppServerSelected(transport) && MeetsFloor(cliVersion);
 
-    /// <summary>Reads the per-daemon interactive opt-in from its environment value. Affirmative spellings
-    /// only; anything else — including "0", "false" and any typo — leaves it OFF. Off is the safe
-    /// direction: a mistyped value keeps the daemon on the transport it already had rather than moving
-    /// interactive hosting on an operator who did not ask for it.</summary>
+    /// <summary>Reads the per-daemon interactive opt-in from its environment value. Trimmed and
+    /// case-insensitive, matching the daemon's other environment booleans
+    /// (<c>DaemonRunner.ParseDebugFramesFlag</c>), over a superset of their vocabulary. Anything else —
+    /// including "0", "false" and any typo — leaves it OFF. Off is the safe direction: a mistyped value
+    /// keeps the daemon on the transport it already had rather than moving interactive hosting onto an
+    /// operator who did not ask for it.</summary>
     public static bool IsInteractiveOptIn(string? value) =>
-        value is "1" or "true" or "TRUE" or "True" or "yes" or "on";
+        value?.Trim() is { Length: > 0 } v
+     && (v == "1"
+      || string.Equals(v, "true", StringComparison.OrdinalIgnoreCase)
+      || string.Equals(v, "yes",  StringComparison.OrdinalIgnoreCase)
+      || string.Equals(v, "on",   StringComparison.OrdinalIgnoreCase));
 
     /// <summary>Resolves the daemon-wide <c>CodexAppServerActive</c> at startup. The version probe is
     /// deferred behind the selection check so a PTY daemon (the default) never pays for it — which is

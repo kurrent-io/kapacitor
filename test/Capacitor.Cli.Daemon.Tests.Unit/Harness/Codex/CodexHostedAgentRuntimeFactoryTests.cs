@@ -123,8 +123,9 @@ public class CodexHostedAgentRuntimeFactoryTests {
     }
 
     /// <summary>The env spelling is the operator's only lever, so it is pinned directly: affirmative
-    /// spellings turn it on and everything else — including "0", "false" and a typo — leaves it off.
-    /// Off is the safe direction; a value the parser does not know must never move a daemon.</summary>
+    /// spellings turn it on — trimmed and case-insensitive, so an ordinary shell export is not silently
+    /// discarded — and everything else, including "0", "false" and a typo, leaves it off. Off is the safe
+    /// direction; a value the parser does not know must never move a daemon.</summary>
     [Test]
     [Arguments("1", true)]
     [Arguments("true", true)]
@@ -132,6 +133,12 @@ public class CodexHostedAgentRuntimeFactoryTests {
     [Arguments("True", true)]
     [Arguments("yes", true)]
     [Arguments("on", true)]
+    [Arguments("TrUe", true)]
+    [Arguments("ON", true)]
+    [Arguments("Yes", true)]
+    [Arguments("  true  ", true)]
+    [Arguments("\ttrue\n", true)]
+    [Arguments("   ", false)]
     [Arguments("0", false)]
     [Arguments("false", false)]
     [Arguments("off", false)]

@@ -252,10 +252,8 @@ public class ServiceEnvironmentTests {
             await Assert.That(env.ContainsKey(key)).IsFalse();
     }
 
-    /// <summary>The Codex transport selection and its interactive opt-in reach a service unit on BOTH
-    /// platforms. The daemon reads these from its own environment and nowhere else — there is no profile
-    /// or config-file binding — so a supervised install that drops them leaves the daemon on PTY while the
-    /// operator believes they selected app-server, with nothing in the unit to show otherwise.</summary>
+    /// <summary>Both Codex transport settings reach a service unit on BOTH platforms. The daemon reads
+    /// them from its own environment and nowhere else, so a unit missing them silently runs PTY.</summary>
     [Test]
     [Arguments(false)]
     [Arguments(true)]
