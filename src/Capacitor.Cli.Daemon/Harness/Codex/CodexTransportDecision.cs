@@ -21,6 +21,22 @@ internal static class CodexTransportDecision {
     /// selection.</summary>
     public const string VersionFloor = "0.146.0";
 
+    /// <summary>Binds the two environment variables that decide this daemon's Codex transport onto
+    /// <paramref name="config"/>. Both are read from the environment and nowhere else — no profile or
+    /// config-file binding — so the variable NAMES and the present-but-empty guard are part of the
+    /// contract an operator relies on, not incidental. Takes the lookup as a delegate so that contract is
+    /// testable without a process environment.
+    ///
+    /// <para>An absent or empty value leaves the existing setting alone rather than resetting it, matching
+    /// every other env binding in the daemon's startup.</para></summary>
+    public static void BindFromEnvironment(Capacitor.Cli.Daemon.DaemonConfig config, Func<string, string?> getEnv) {
+        if (getEnv("KCAP_CODEX_TRANSPORT") is { Length: > 0 } transport)
+            config.CodexTransport = transport;
+
+        if (getEnv("KCAP_CODEX_APPSERVER_INTERACTIVE") is { Length: > 0 } interactive)
+            config.CodexAppServerInteractive = IsInteractiveOptIn(interactive);
+    }
+
     /// <summary>Resolves the effective transport: app-server only when selected AND the installed
     /// build meets <see cref="VersionFloor"/>. An unknown/unparseable version fails toward PTY.</summary>
     public static bool UsesAppServer(string? transport, string? cliVersion) =>
