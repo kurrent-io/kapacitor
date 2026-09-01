@@ -178,8 +178,10 @@ patterns per matcher. The server refuses to activate an invalid org/team/project
   hits, and coarse field-absent `{ kind: shell }` matchers all land, and an **empty coverage set**,
   so it is never allow-eligible. An `other` action whose payload carries no raw tool name gets a
   sentinel restriction component that field-present matchers never match but kind-level matchers
-  do — normalization failure always leaves a nonempty restriction-matchable identity. No action
-  has an empty restriction set.
+  do, **and an empty coverage set** — a normalization failure with no tool identity can be denied
+  or asked about but never allowed, not even by a field-absent `{ kind: other }` allow; only an
+  `other` action with a real tool name keeps its single allow-coverable component. No action has
+  an empty restriction set.
 - **Outcome-sensitive collection**: deny and ask are any-match over the restriction components —
   one hit suffices, so an unanalyzed command matching a fragment or raw deny *is* denied, not
   merely flagged. Allow is all-covered over the coverage components, which for the scalar kinds
@@ -427,15 +429,18 @@ behave as one decision:
   strand stale entries that a later *identical* call could wrongly consume — and a stale allow
   must never answer a prompt that a fresh evaluation would have asked about. The fallback
   therefore journals **only ask entries**, in an ordered pending queue per (session, input hash),
-  and its guarantee is deliberately asymmetric: **while any pending ask exists for an input hash,
-  no PermissionRequest for that input is auto-answered** — the arriving event consumes the head
-  entry and the prompt stands. A stale entry (a forced prompt the vendor never raised, a
-  cancelled call, a failed hook) can therefore only make a later identical call *more*
-  restrictive — one extra human prompt — never less; entries expire with the turn. Cross-seam
+  with a guard that never replaces evaluation: the arriving PermissionRequest is **always
+  evaluated fresh**, then the pending ask aggregates with the fresh outcome most-restrictively —
+  fresh deny → deny; fresh allow, ask, no-decision, or evaluation error → the prompt stands (the
+  pending ask suppresses auto-allow, never a deny). The head entry is consumed either way. A
+  stale entry (a forced prompt the vendor never raised, a cancelled call, a failed hook) can
+  therefore cost at most one extra human prompt and can never weaken an outcome in either
+  direction; entries expire with the turn. Cross-seam
   **provenance under the fallback is best-effort**: the consumed entry may belong to a different
-  identical call, so the decision event carries an explicit correlation-ambiguity flag instead of
-  claiming exact per-call identity. Exact provenance exists only under vendor call ids. A
-  PermissionRequest with no pending ask for its input is a fresh call and is evaluated fresh.
+  identical call, so the decision event records both the stale-ask guard and the fresh
+  evaluation's outcome under an explicit correlation-ambiguity flag instead of claiming exact
+  per-call identity. Exact provenance exists only under vendor call ids. A PermissionRequest with
+  no pending ask for its input is an ordinary fresh call.
 - **Entries are consume-once.** A journaled **ask is sticky**: the forced prompt's
   PermissionRequest records and forwards but never auto-answers — the point of the ask was that a
   human decides.
@@ -565,10 +570,12 @@ is verified against the outcome × native table.
    runs there.
 9. Requested and effective outcomes are both recorded whenever they differ.
 10. Journal entries are consume-once. With a vendor call id, all terminal decisions journal with
-    exact per-call provenance. The no-id fallback journals asks only and is restrictive-safe: a
-    pending ask suppresses auto-answering for its input hash, so a stale entry can only add a
-    prompt, never an allow; its cross-seam provenance is best-effort and every fallback
-    correlation is recorded with an ambiguity flag rather than claimed exact.
+    exact per-call provenance. The no-id fallback journals asks only and never replaces
+    evaluation: the arriving event is evaluated fresh and the pending ask aggregates
+    most-restrictively — a fresh deny still denies; every other fresh outcome leaves the prompt
+    standing — so a stale entry can cost a prompt but can never weaken an outcome in either
+    direction. Fallback provenance is best-effort, recorded with an ambiguity flag alongside both
+    the guard and the fresh outcome, never claimed exact.
 11. A pre-decision seam without a sound correlation path never emits ask: the ask degrades to
     pass-through at that seam (requested and effective both recorded), and ask stays available at
     the vendor's at-prompt seam.
