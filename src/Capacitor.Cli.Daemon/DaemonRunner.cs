@@ -167,7 +167,6 @@ public static partial class DaemonRunner {
         if (Environment.GetEnvironmentVariable("KCAP_CODEX_PATH") is { Length: > 0 } envCodexPath)
             config.CodexPath = envCodexPath;
 
-
         if (Environment.GetEnvironmentVariable("KCAP_CODEX_APPSERVER_APPROVAL_TIMEOUT_SECONDS") is { Length: > 0 } envApprovalTimeout
          && int.TryParse(envApprovalTimeout, out var approvalTimeoutSeconds) && approvalTimeoutSeconds > 0)
             config.CodexAppServerApprovalTimeoutSeconds = approvalTimeoutSeconds;
