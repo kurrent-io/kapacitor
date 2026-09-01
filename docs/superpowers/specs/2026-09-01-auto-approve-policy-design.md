@@ -444,8 +444,15 @@ behave as one decision:
 - **Entries are consume-once.** A journaled **ask is sticky**: the forced prompt's
   PermissionRequest records and forwards but never auto-answers — the point of the ask was that a
   human decides.
-- **Interactive sessions**: the engine decides at the earliest seam the call reaches; the judge
-  runs at most once per call, at that seam.
+- **Interactive sessions**: the engine decides at the earliest seam the call reaches. **Judge
+  consultation counts follow the correlation quality**: under exact call-id correlation the judge
+  runs at most once per call, at the earliest seam. Under the ambiguous FIFO fallback that
+  guarantee is unattainable — the system cannot know whether an arriving PermissionRequest is the
+  same call or a later identical one — so the fallback may consult the judge once at *each* seam,
+  aggregating most-restrictively as above; a consultation satisfied by the verdict cache (same
+  window digest) is recorded as cache reuse, while a changed window digest legitimately pays a
+  second model invocation. Latency and cost expectations, and the audit trail, follow this
+  per-seam accounting under the fallback.
 - **Rendered sessions** (`KCAP_RENDERED_AGENT=1`): local seams invoke the engine in
   **tighten-only evaluation mode** — the same mode strict governance uses: only deny/ask rules are
   consulted, no allow is ever computed, and the judge never runs at a rendered local seam. There
@@ -454,8 +461,8 @@ behave as one decision:
   the journal stay consistent by construction. PreToolUse deny → emitted, terminal; PreToolUse
   ask → emitted, sticky, the prompt's PermissionRequest forwards to the human lane as today; no
   deny/ask → nothing evaluated, nothing emitted, no entry. The daemon path then runs the one full
-  evaluation (rules, then judge — at most once per call) on any raised prompt: policy allow/deny
-  answer the lane, ask/no-decision park for the human.
+  evaluation (rules, then judge — once per raised prompt, which the lane identifies exactly):
+  policy allow/deny answer the lane, ask/no-decision park for the human.
 
 ### Hosted sessions
 
@@ -518,7 +525,8 @@ find.
   ask degradation without correlation, and rendered tighten-only evaluation mode.
 - **Judge client**: WireMock contract tests — timeout → pass-through, budget split, the full cache
   key (window digest recomputation mid-turn, windowless-uncached, config-version separation),
-  in-flight dedup, the truncation clamp mapping, and the lineage rule (no lineage → windowless).
+  in-flight dedup, the truncation clamp mapping, the lineage rule (no lineage → windowless), and
+  per-seam consultation accounting under the fallback (cache reuse vs second invocation).
 - **Integration**: one `KcapProcess` spawn covering the Claude PermissionRequest decision path
   end-to-end.
 
