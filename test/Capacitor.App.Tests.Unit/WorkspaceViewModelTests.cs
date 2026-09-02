@@ -185,23 +185,46 @@ public class WorkspaceViewModelTests {
         });
     }
 
+    /// The subtitle names the checkout under the repository. The main checkout reads as the rail
+    /// labels it; an older daemon's null worktree keeps the repository alone; a snapshot reviewer
+    /// names the checkout it borrowed, not the copy it runs in.
+    [Test]
+    public async Task The_checkout_label_names_the_worktree_under_the_repository() {
+        var owned = Agent("a1", "claude", hasTerminal: true, repoPath: "/repo/myproj",
+            worktreePath: "/repo/myproj/.capacitor/worktrees/agent-6da2", workLocation: "owned");
+
+        await Assert.That(WorkspaceViewModel.CheckoutLabelFor(owned)).IsEqualTo("myproj / agent-6da2");
+        await Assert.That(WorkspaceViewModel.CheckoutLabelFor(owned with { WorktreePath = "/repo/myproj" }))
+            .IsEqualTo("myproj / main checkout");
+        await Assert.That(WorkspaceViewModel.CheckoutLabelFor(owned with { WorktreePath = null, WorkLocation = null }))
+            .IsEqualTo("myproj");
+        await Assert.That(WorkspaceViewModel.CheckoutLabelFor(owned with {
+                WorktreePath = "/snapshots/borrowed-1", WorkLocation = "borrowed",
+                BorrowedFrom = "/repo/myproj/.capacitor/worktrees/agent-6da2" }))
+            .IsEqualTo("myproj / agent-6da2 · borrowed");
+        await Assert.That(WorkspaceViewModel.CheckoutLabelFor(null)).IsEqualTo("—");
+    }
+
     /// Pins the header for a titled session on a borrowed checkout: the title line is the
-    /// session's own title, and the repository line reads through the worktree to the repository.
+    /// session's own title, and the subtitle names the repository, the borrowed worktree and the
+    /// marker.
     [Test]
     [NotInParallel("AvaloniaSession")]
-    public async Task The_header_shows_the_session_title_over_the_repository_behind_a_borrowed_worktree() {
+    public async Task The_header_shows_the_session_title_over_the_borrowed_worktree() {
         await RunOnUiAsync(async () => {
             var daemon = new FakeDaemonClientService();
             var actions = NewActions(new ScriptedLocalControlOps(), new RecordingNotifier(), new RecordingOpener());
             var vm = Build(daemon, actions, new FakeTerminalAttachClientFactory(), new FakeTimeProvider(), agentId: "r1");
 
             daemon.Agents.AddOrUpdate(
-                Agent("r1", "codex", hasTerminal: true, repoPath: "/repo/myproj/.capacitor/worktrees/agent-6da2", kind: "review-flow")
+                Agent("r1", "codex", hasTerminal: true, repoPath: "/repo/myproj", kind: "review-flow",
+                        worktreePath: "/repo/myproj/.capacitor/worktrees/agent-6da2", workLocation: "borrowed",
+                        borrowedFrom: "/repo/myproj/.capacitor/worktrees/agent-6da2")
                     with { Title = "Review this PR" });
             await (vm.Terminal.PendingResolveWorkForTesting ?? Task.CompletedTask);
 
             await Assert.That(vm.Title).IsEqualTo("Review this PR");
-            await Assert.That(vm.RepoLabelText).IsEqualTo("myproj");
+            await Assert.That(vm.RepoLabelText).IsEqualTo("myproj / agent-6da2 · borrowed");
             await vm.TeardownAsync();
         });
     }

@@ -12,10 +12,12 @@ static class WorkspaceFixtures {
     /// own defaults (fixed repo path, hasTerminal) keep a thin local wrapper delegating here.
     public static AgentStatusDto Agent(
             string id, string vendor, bool? hasTerminal, string? repoPath = null,
-            string kind = "agent", string? model = null) => new(
+            string kind = "agent", string? model = null,
+            string? worktreePath = null, string? workLocation = null, string? borrowedFrom = null) => new(
         id, kind, vendor, repoPath, "Running",
         FlowRunId: null, FlowRole: null, Requester: null, CreatedAt: DateTime.UtcNow, Model: model,
-        RequesterDisplay: null, HasTerminal: hasTerminal);
+        RequesterDisplay: null, HasTerminal: hasTerminal,
+        WorktreePath: worktreePath, WorkLocation: workLocation, BorrowedFrom: borrowedFrom);
 
     /// An AgentActionService over the scripted/recording deps, for suites that never assert on
     /// those deps individually.

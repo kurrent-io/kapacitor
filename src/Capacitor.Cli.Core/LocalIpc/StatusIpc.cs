@@ -52,7 +52,23 @@ public sealed record AgentStatusDto(
     // rollout), link-resolved. Trailing + nullable: null is "older daemon", "not found yet",
     // "no transcript for this runtime", or "found nothing before the agent exited" alike —
     // a client waits, it never distinguishes them.
-    string? TranscriptPath = null);
+    string? TranscriptPath = null,
+    // The checkout root the agent runs in. RepoPath is the repository it belongs to, for every
+    // agent: a primary runs in an owned worktree under it, a borrowed reviewer in the worktree it
+    // borrowed. Trailing + nullable: null = older daemon, which a client renders as it did before.
+    string? WorktreePath = null,
+    // "owned" or "borrowed"; derived from BorrowedFrom so the two never disagree. Null = older daemon.
+    string? WorkLocation = null,
+    // The checkout root a borrowed reviewer reviews — for a runtime that needs its own snapshot
+    // this differs from WorktreePath, and it is the node the reviewer belongs under. Null unless
+    // borrowed.
+    string? BorrowedFrom = null);
+
+/// The <see cref="AgentStatusDto.WorkLocation"/> vocabulary.
+public static class WorkLocationText {
+    public const string Owned    = "owned";
+    public const string Borrowed = "borrowed";
+}
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower)]
 [JsonSerializable(typeof(DaemonStatusDto))]

@@ -117,8 +117,8 @@ public sealed class WorkspaceViewModel : ReactiveObject {
         _title = presence.Select(p => TitleFor(p.Dto))
             .ToProperty(this, x => x.Title, TitleFor(null))
             .DisposeWith(_disposables);
-        _repoLabelText = presence.Select(p => RepoLabel.Leaf(p.Dto?.RepoPath))
-            .ToProperty(this, x => x.RepoLabelText, RepoLabel.Leaf(null))
+        _repoLabelText = presence.Select(p => CheckoutLabelFor(p.Dto))
+            .ToProperty(this, x => x.RepoLabelText, CheckoutLabelFor(null))
             .DisposeWith(_disposables);
         _vendorChip = presence.Select(p => VendorChipFor(p.Dto))
             .ToProperty(this, x => x.VendorChip, VendorChipFor(null))
@@ -175,6 +175,20 @@ public sealed class WorkspaceViewModel : ReactiveObject {
             dto = change.Current;
         }
         return new AgentPresence(dto, ended);
+    }
+
+    /// `repo / checkout` — the checkout labeled as the rail labels its node, so the two surfaces
+    /// agree; a borrowed reviewer names the checkout it borrowed with the marker. An older daemon
+    /// sends no worktree, and the repository stands alone.
+    internal static string CheckoutLabelFor(AgentStatusDto? dto) {
+        var repo = RepoLabel.Leaf(dto?.RepoPath);
+        if (dto?.WorktreePath is null) return repo;
+
+        var checkout = dto.BorrowedFrom ?? dto.WorktreePath;
+        var isMain   = dto.RepoPath is { Length: > 0 } root && RailWorktreeViewModel.PathEquals(checkout, root);
+        var label    = $"{repo} / {RailWorktreeViewModel.LabelFor(checkout, isMain)}";
+
+        return dto.WorkLocation == WorkLocationText.Borrowed ? $"{label} · borrowed" : label;
     }
 
     static string TitleFor(AgentStatusDto? dto) => dto?.Title ?? $"{RepoLabel.Leaf(dto?.RepoPath)} · {dto?.Vendor ?? "—"}";

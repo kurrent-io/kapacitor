@@ -2,24 +2,10 @@ namespace Capacitor.App.ViewModels;
 
 public enum TrayState { Stopped, Connecting, Attention, Idle, Running }
 
-/// Last path segment of a repo path, shared by the tray entry label (spec §5) and the main-window
-/// grid's Repo cell (spec §8) — one helper, not duplicated presentation logic. When the path ends
-/// in exactly "&lt;repoDir&gt;/.claude/worktrees/&lt;leaf&gt;" (either separator flavor, case-sensitive),
-/// the generated worktree leaf is meaningless noise, so this returns just "{repoDir}" — the leaf
-/// never appears in presentation; the full path (worktree leaf included) is still the tooltip, for
-/// anyone who needs to tell worktrees of the same repo apart.
+/// Last path segment of a repo path, shared by every surface that names a repository. The status
+/// wire says which path is a worktree, so a path's shape is never read as evidence of one.
 public static class RepoLabel {
-    public static string Leaf(string? repoPath) {
-        if (repoPath is null) return "—";
-
-        var segments = repoPath.Replace('\\', '/').TrimEnd('/').Split('/');
-        // A worktree an agent runs in — Claude's own or the daemon's — sits two levels under its
-        // repository, which is the name worth showing.
-        if (segments.Length >= 4 && segments[^3] is ".claude" or ".capacitor" && segments[^2] == "worktrees" && segments[^4].Length > 0)
-            return segments[^4];
-
-        return PlatformPaths.Leaf(repoPath);
-    }
+    public static string Leaf(string? repoPath) => repoPath is null ? "—" : PlatformPaths.Leaf(repoPath);
 }
 
 /// The path primitives every surface shares, so the platform rule and the leaf expression exist
@@ -31,8 +17,7 @@ public static class PlatformPaths {
     public static readonly StringComparer Comparer =
         OperatingSystem.IsLinux() ? StringComparer.Ordinal : StringComparer.OrdinalIgnoreCase;
 
-    /// The path's own last segment, verbatim — no worktree collapsing (that is RepoLabel.Leaf's
-    /// job); the rail's worktree rows need exactly the raw leaf.
+    /// The path's own last segment, verbatim.
     public static string Leaf(string path) =>
         Path.GetFileName(Path.TrimEndingDirectorySeparator(path));
 }

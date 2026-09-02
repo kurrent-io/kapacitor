@@ -106,7 +106,9 @@ public class ConsentPromptViewModelTests {
         await Assert.That(id).IsEqualTo("github:1");
         await Assert.That(unknown).IsEqualTo("unknown");
         await Assert.That(kindLabel).IsEqualTo("Review flow");
-        await Assert.That(repoLeaf).IsEqualTo("kcap-cli"); // the worktree leaf is noise (RepoLabel)
+        // The prompt names the checkout the launch asks for, as its own leaf: the consent wire
+        // carries no repository behind it, and RepoFull holds the whole path.
+        await Assert.That(repoLeaf).IsEqualTo("tender-honking-pebble");
         await Assert.That(repoFull).IsEqualTo("/repos/kcap-cli/.claude/worktrees/tender-honking-pebble");
         await Assert.That(vendor).IsEqualTo("codex");
     }

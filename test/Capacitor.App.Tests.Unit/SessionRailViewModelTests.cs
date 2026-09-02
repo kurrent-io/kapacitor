@@ -47,6 +47,34 @@ public class SessionRailViewModelTests {
         });
     }
 
+    /// A reviewer that borrowed a checkout belongs on that checkout's node, beside the session it
+    /// reviews — a snapshot reviewer too, which runs elsewhere but names what it borrowed. The
+    /// collapse key follows the same rule, so opening the reviewer expands that node.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task A_borrowed_reviewer_files_under_the_worktree_it_reviews() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var (service, rail) = Build();
+            using (rail) {
+                const string worktree = "/dev/alpha/wt/agent-1";
+                service.Agents.AddOrUpdate(Dto("p1", "/dev/alpha") with { WorktreePath = worktree, WorkLocation = "owned" });
+                service.Agents.AddOrUpdate(Dto("r1", "/dev/alpha") with {
+                    WorktreePath = worktree, WorkLocation = "borrowed", BorrowedFrom = worktree });
+                service.Agents.AddOrUpdate(Dto("s1", "/dev/alpha") with {
+                    WorktreePath = "/snapshots/borrowed-1", WorkLocation = "borrowed", BorrowedFrom = worktree });
+
+                var node = rail.Repos.Single().Worktrees.Single();
+                await Assert.That(node.Label).IsEqualTo("agent-1");
+                await Assert.That(node.Sessions.Select(s => s.Id)).IsEquivalentTo(["p1", "r1", "s1"]);
+
+                node.ToggleCommand.Execute().Subscribe();
+                await Assert.That(node.IsExpanded).IsFalse();
+                rail.NotifySessionOpened("s1");
+                await Assert.That(node.IsExpanded).IsTrue();
+            }
+        });
+    }
+
     [Test]
     [NotInParallel("AvaloniaSession")]
     public async Task Counts_and_hosted_text_track_the_cache() {
