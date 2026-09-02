@@ -22,49 +22,60 @@
                          BorderThickness="0" MinHeight="72" TextWrapping="Wrap" FontSize="14"
                          VerticalContentAlignment="Top" AcceptsReturn="False" />
 
-                <WrapPanel ItemSpacing="8" LineSpacing="8" VerticalAlignment="Center">
-                    <Button x:Name="RepositoryChip" Click="OnRepositoryChipClick"
-                            Background="{StaticResource KcapSurfaceRaisedBrush}" BorderBrush="{StaticResource KcapBorderBrush}"
-                            Foreground="{StaticResource KcapTextBrush}" CornerRadius="999" Padding="11,5"
-                            Content="{Binding SelectedRepoPath, Converter={x:Static views:RepositoryLabelConverter.Instance}}"
-                            ToolTip.Tip="{Binding SelectedRepoPath}" />
+                <Grid ColumnDefinitions="*,Auto">
+                    <WrapPanel ItemSpacing="8" LineSpacing="8" VerticalAlignment="Center">
+                        <Button x:Name="RepositoryChip" Click="OnRepositoryChipClick"
+                                Background="{StaticResource KcapSurfaceRaisedBrush}" BorderBrush="{StaticResource KcapBorderBrush}"
+                                Foreground="{StaticResource KcapTextBrush}" CornerRadius="999" Padding="11,5"
+                                Content="{Binding SelectedRepoPath, Converter={x:Static views:RepositoryLabelConverter.Instance}}"
+                                ToolTip.Tip="{Binding SelectedRepoPath}" />
 
-                    <!-- One picker for harness AND model (T3-style): searchable, grouped by
-                         vendor, with a per-vendor default row and a typed-custom escape hatch —
-                         built per open in code-behind, like the repository picker. -->
-                    <Button x:Name="AgentChip" Click="OnAgentChipClick"
-                            Background="{StaticResource KcapSurfaceRaisedBrush}" BorderBrush="{StaticResource KcapBorderBrush}"
-                            Foreground="{StaticResource KcapTextBrush}" CornerRadius="999" Padding="11,5"
-                            ToolTip.Tip="Harness and model">
-                        <StackPanel Orientation="Horizontal" Spacing="7">
-                            <ContentControl VerticalAlignment="Center"
-                                            Content="{Binding SelectedVendor, Converter={x:Static views:VendorGlyphConverter.Instance}, ConverterParameter=13}" />
-                            <TextBlock VerticalAlignment="Center">
-                                <TextBlock.Text>
-                                    <MultiBinding Converter="{x:Static views:AgentChipTextConverter.Instance}">
-                                        <Binding Path="Harnesses" />
-                                        <Binding Path="SelectedVendor" />
-                                        <Binding Path="SelectedModel" />
-                                    </MultiBinding>
-                                </TextBlock.Text>
-                            </TextBlock>
-                        </StackPanel>
+                        <!-- One picker for harness AND model (T3-style): searchable, grouped by
+                             vendor, with a per-vendor default row and a typed-custom escape hatch —
+                             built per open in code-behind, like the repository picker. -->
+                        <Button x:Name="AgentChip" Click="OnAgentChipClick"
+                                Background="{StaticResource KcapSurfaceRaisedBrush}" BorderBrush="{StaticResource KcapBorderBrush}"
+                                Foreground="{StaticResource KcapTextBrush}" CornerRadius="999" Padding="11,5"
+                                ToolTip.Tip="Harness and model">
+                            <StackPanel Orientation="Horizontal" Spacing="7">
+                                <ContentControl VerticalAlignment="Center"
+                                                Content="{Binding SelectedVendor, Converter={x:Static views:VendorGlyphConverter.Instance}, ConverterParameter=13}" />
+                                <TextBlock VerticalAlignment="Center">
+                                    <TextBlock.Text>
+                                        <MultiBinding Converter="{x:Static views:AgentChipTextConverter.Instance}">
+                                            <Binding Path="Harnesses" />
+                                            <Binding Path="SelectedVendor" />
+                                            <Binding Path="SelectedModel" />
+                                        </MultiBinding>
+                                    </TextBlock.Text>
+                                </TextBlock>
+                            </StackPanel>
+                        </Button>
+
+                        <Button x:Name="EffortChip" Click="OnEffortChipClick"
+                                Background="{StaticResource KcapSurfaceRaisedBrush}" BorderBrush="{StaticResource KcapBorderBrush}"
+                                Foreground="{StaticResource KcapTextBrush}" CornerRadius="999" Padding="11,5"
+                                Content="{Binding SelectedEffort, Converter={x:Static views:EffortChipTextConverter.Instance}}"
+                                ToolTip.Tip="Reasoning effort — Default lets the harness decide" />
+
+                        <Button x:Name="PermissionChip" Click="OnPermissionChipClick"
+                                Background="{StaticResource KcapSurfaceRaisedBrush}" BorderBrush="{StaticResource KcapBorderBrush}"
+                                Foreground="{StaticResource KcapTextBrush}" CornerRadius="999" Padding="11,5"
+                                Content="{Binding SelectedPermissionMode, Converter={x:Static views:PermissionChipTextConverter.Instance}}"
+                                IsVisible="{Binding SelectedVendor, Converter={x:Static views:PermissionChipVisibleConverter.Instance}}"
+                                ToolTip.Tip="Permission mode — how much Claude asks before acting" />
+                    </WrapPanel>
+
+                    <Button Grid.Column="1" x:Name="StartButton" Command="{Binding StartCommand}"
+                            Background="{StaticResource KcapAccentBrush}" Width="36" Height="36" CornerRadius="18"
+                            Padding="0" Margin="12,0,0,0" VerticalAlignment="Bottom"
+                            HorizontalContentAlignment="Center" VerticalContentAlignment="Center"
+                            ToolTip.Tip="Start" AutomationProperties.Name="Start"
+                            IsEnabled="{Binding SelectedRepoPath, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
+                        <Path Data="M8,13.5 L8,3 M3.5,7.5 L8,3 L12.5,7.5" Stroke="#07120E" StrokeThickness="2"
+                              StrokeLineCap="Round" StrokeJoin="Round" Width="16" Height="16" />
                     </Button>
-
-                    <Button x:Name="EffortChip" Click="OnEffortChipClick"
-                            Background="{StaticResource KcapSurfaceRaisedBrush}" BorderBrush="{StaticResource KcapBorderBrush}"
-                            Foreground="{StaticResource KcapTextBrush}" CornerRadius="999" Padding="11,5"
-                            Content="{Binding SelectedEffort, Converter={x:Static views:EffortChipTextConverter.Instance}}"
-                            ToolTip.Tip="Reasoning effort — Default lets the harness decide" />
-
-                    <CheckBox x:Name="RememberToggle" Content="Remember" IsChecked="{Binding RememberHarness}"
-                              Foreground="{StaticResource KcapMutedBrush}" />
-
-                    <Button x:Name="StartButton" Content="Start" Command="{Binding StartCommand}"
-                            Background="{StaticResource KcapAccentBrush}" Foreground="#07120E" FontWeight="SemiBold"
-                            CornerRadius="7" Padding="16,7"
-                            IsEnabled="{Binding SelectedRepoPath, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
-                </WrapPanel>
+                </Grid>
 
                 <TextBlock x:Name="StartErrorText" Text="{Binding StartError}" Foreground="{StaticResource KcapDangerBrush}"
                            TextWrapping="Wrap"

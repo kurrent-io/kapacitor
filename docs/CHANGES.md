@@ -6,7 +6,6 @@ diff. `CLAUDE.md` holds the invariants; `docs/superpowers/specs/` holds the full
 Not release notes. Each entry is written as of the change that produced it and is not revised as the
 code moves on; where an entry disagrees with the code, the code wins.
 
-
 ## The flow can enable the daemon as a service
 
 `kcap daemon service ensure` existed with no caller in the product. Making the browser able to ask for it
@@ -125,7 +124,6 @@ call site asks. Every hook, watch, daemon and MCP path shares that helper and th
 attempt; changing it for all of them in service of one caption is not the trade. An exhausted budget
 returns the status rather than throwing — the call sites catch `HttpRequestException` only, so a throw
 would turn a 503 into a crash mid-import.
-
 
 ## Secret redaction is structural
 
@@ -517,3 +515,28 @@ the workspace subtitle alike, through one `CheckoutLabel` so the two cannot drif
 tool paths against `worktree_path`, the checkout the agent actually runs in. `work_location` is derived from `borrowed_from` at the one stamping site,
 so the two cannot disagree, and a client that only needs the marker reads the token instead of
 comparing paths.
+
+## Desktop launcher: permission mode
+
+The new-session composer gains a Claude permission-mode chip (Manual, Accept edits, Auto, Bypass
+permissions) beside the effort chip, and Start becomes a round arrow button. Manual sends nothing —
+the `permission_mode` key is omitted, not null — so an unchanged launch is byte-identical to one
+predating the chip and an older server or daemon behaves exactly as before. Any other choice rides
+one name-bound field through `RequestLaunchAgentV2`, the server's `LaunchAgentCommand` and the
+daemon's `LauncherContext` to a `--permission-mode` argument on the interactive Claude arm only. The
+tokens live once, in Core's `ClaudePermissionModes`, so the chip and the daemon guard cannot drift.
+
+**The mode is a preference, never a containment override.** A reviewer's `bypassPermissions` and a
+borrowed checkout's prompting are guarantees, so the server's `ClaudePermissionModeRequestPolicy` and
+the daemon's `ClaudePermissionModePolicy` refuse a mode on a review-flow, PR-review, borrowed or
+non-Claude launch with a coded reason — before consent and before any worktree work, mirroring the
+Codex posture and ACP preset guards rather than silently dropping or honouring it. Only the four
+offered tokens pass; `plan` and `dontAsk` are Claude's but not the product's. The daemon advertises
+`PermissionModeVendors` on connect and the server refuses a mode toward a daemon that does not list
+the vendor, so an older daemon can never quietly run Manual under a Bypass selection.
+
+**An interactive bypass launch keeps the single-Enter submit.** `DisablesApprovalPrompts` stays true
+only for owned review-flow reviewers: bypass silences permission prompts, not question cards or the
+one-time bypass consent dialog, and the multi-CR spray would answer either. The chip is withheld for
+every vendor but Claude, the mode is session-scoped like the effort, and the harness picker no
+longer offers "Remember" — a chosen harness is always persisted for the repository.

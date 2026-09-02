@@ -1,4 +1,5 @@
 using Capacitor.Cli.Core.Harness;
+using Capacitor.Cli.Core.Harness.Claude;
 
 namespace Capacitor.App.Services;
 
@@ -7,6 +8,8 @@ public sealed record HarnessOption(string Vendor, string Label, string Transport
 /// One curated model suggestion for the combined harness+model picker. Slug is what the wire
 /// carries verbatim; Label is the picker's friendly name.
 public sealed record ModelChoice(string Slug, string Label);
+
+public sealed record PermissionModeChoice(string Token, string Label);
 
 /// The picker's vendor list. Availability comes from what the daemon advertises
 /// (DaemonInfoDto.SupportedVendors), never from a version check — a vendor auto-update must not
@@ -90,6 +93,21 @@ public static class HostedHarnessCatalog {
     /// picker's Default entry (null on the wire) hands the choice back to the harness. Lives here
     /// beside the model catalog so the launch vocabularies have one authority.
     public static readonly IReadOnlyList<string> EffortLadder = ["low", "medium", "high", "xhigh"];
+
+    public static readonly IReadOnlyList<PermissionModeChoice> PermissionModes = [
+        new(ClaudePermissionModes.Manual, "Manual"),
+        new(ClaudePermissionModes.AcceptEdits, "Accept edits"),
+        new(ClaudePermissionModes.Auto, "Auto"),
+        new(ClaudePermissionModes.BypassPermissions, "Bypass permissions"),
+    ];
+
+    public static string PermissionModeLabelFor(string token) =>
+        PermissionModes.FirstOrDefault(m => string.Equals(m.Token, token, StringComparison.Ordinal))?.Label ?? token;
+
+    /// The daemon rejects a mode for any other vendor, so the chip is withheld rather than sent
+    /// and refused.
+    public static bool SupportsPermissionMode(string vendor) =>
+        string.Equals(vendor, "claude", StringComparison.OrdinalIgnoreCase);
 
     // Monogram + tint per vendor: the glyph is the fallback where the view layer has no brand
     // mark (VendorIcons); the tint colors both. Monochrome brands render in the near-white text
