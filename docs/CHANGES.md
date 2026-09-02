@@ -471,6 +471,26 @@ what bounds the outgoing resolve frame by arithmetic. An unparseable or oversize
 back to the permission card (Allow = let the TUI ask) with "Allow always" hidden for the
 question tool.
 
+## Compact tool calls in the Chat tab
+
+**AI-2418** (spec: `docs/superpowers/specs/2026-09-02-ai2418-compact-tool-calls-design.md`) folds a
+run of consecutive tool calls into one `ToolGroupItem` row: settled calls collapse to a summary line
+("Read files, ran a command"), live calls stay listed beneath it, and any prose (user turn, assistant
+text, system note) closes the run. **The fold is uniform** — a lone settled call still reads "Ran a
+command" — and **folding never hides an error**: a failed call inside a folded group puts the danger
+`✕` on the summary line. The group binds ONE inner list whose source swaps on toggle, because a
+hidden `ItemsControl` keeps its containers; expanding a group realizes every row and folding releases
+them. Expanding holds follow-tail once, so the clicked summary stays in view. Summary wording keys on
+the transcript's tool name (Codex's rollout says `shell`, its hook says `Bash`), with Codex shell
+commands classified by `CodexCommandClassifier`, ported verbatim from the server into Core so the
+server can delete its copy on the next submodule bump. A row waiting on a permission shows an accent
+`?` in the outcome slot: `PermissionPendingDto` gains an optional `tool_use_id` the daemon reads from
+the hook body (Claude's PermissionRequest hook carries it; Codex's deliberately does not), and the
+view-model recomputes the marks from pending requests and running calls on every change, diffing
+against the last marks so a call that settles while its request is still pending is cleared rather
+than masked by its `✓`. A request without an id marks the agent's sole running call and abstains
+when two or more are running.
+
 ## Launch and stop command routing
 
 The receive pump no longer awaits launch/stop EXECUTION for either command format: arrival order is
