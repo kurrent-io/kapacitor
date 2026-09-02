@@ -568,6 +568,46 @@ public class ChatTabViewSmokeTests {
         });
     }
 
+    /// An append that lands in the same dispatcher turn as the click is held with the expansion:
+    /// the reader stays put, and only a later append, after they return to the bottom, follows.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task An_append_queued_behind_the_expansion_click_does_not_steal_the_hold() {
+        await RunOnUiAsync(async () => {
+            var host = new Host();
+            var lines = new List<string>(Enumerable.Repeat(UserLine, 60));
+            for (var i = 1; i <= 30; i++) { lines.Add(CallLine(i)); lines.Add(ResultLine(i)); }
+            var path = Tmp.CreateFile("race.jsonl", lines.ToArray());
+            await host.LoadAsync(path);
+            await Assert.That(host.AtBottom()).IsTrue();
+            var before = host.Scroll.Offset.Y;
+
+            var summary = Summary(host.View);
+            var origin = summary.TranslatePoint(new Point(2, 2), host.Window)!.Value;
+            host.Window.MouseDown(origin, MouseButton.Left);
+            host.Window.MouseUp(origin, MouseButton.Left);
+            File.AppendAllLines(path, Enumerable.Repeat(UserLine, 5));
+            host.Time.Advance(ChatTabViewModel.PollInterval);
+            await (host.Chat.PendingReadForTesting ?? Task.CompletedTask);
+            host.Settle();
+            host.Window.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+
+            await Assert.That(((ToolGroupItem)host.Chat.Items[^6]).IsExpanded).IsTrue();
+            await Assert.That(host.Chat.Items).Count().IsEqualTo(66);
+            await Assert.That(host.Scroll.Offset.Y).IsEqualTo(before);
+
+            host.Scroll.ScrollToEnd();
+            host.Window.UpdateLayout();
+            await host.AppendAndTickAsync(path, 5);
+            Dispatcher.UIThread.RunJobs();
+            host.Window.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+            await Assert.That(host.AtBottom()).IsTrue();
+            await host.CloseAsync();
+        });
+    }
+
     /// Expansion realizes every row; folding releases them again.
     [Test]
     [NotInParallel("AvaloniaSession")]
