@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Threading.Channels;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Acp;
+using Capacitor.Cli.Core.Policy;
 using Capacitor.Cli.Daemon.Acp;
 using Capacitor.Cli.Daemon.Harness.Kiro;
 using Microsoft.Extensions.Logging;
@@ -619,7 +620,9 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
             bool                                                                            isReviewFlow = false,
             IReadOnlySet<string>?                                                           admittedToolIds = null,
             AcpLaunchPermissionPreset?                                                      acpPermissionPreset = null,
-            Action<AcpAutoApprovalNotice>?                                                  notifyAutoApproval = null
+            Action<AcpAutoApprovalNotice>?                                                  notifyAutoApproval = null,
+            PolicySnapshot?                                                                 policySnapshot = null,
+            Action<PolicyDecisionEventV1>?                                                  notifyPolicyDecision = null
         ) {
         _admittedToolIds = admittedToolIds;
         _firstOutputDeadline = firstOutputDeadline;
@@ -661,7 +664,12 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
                 HandleUnexpectedUnattendedInteraction,
                 admittedToolIds,
                 acpPermissionPreset,
-                notifyAutoApproval);
+                notifyAutoApproval,
+                policySnapshot,
+                // The vendor this runtime already speaks for — the policy vocabulary's vendor field
+                // and the launch's vendor are the same fact, so they cannot be given two answers.
+                vendor,
+                notifyPolicyDecision);
         }
 
         // The original launch's incarnation. Every later candidate goes through the same wiring

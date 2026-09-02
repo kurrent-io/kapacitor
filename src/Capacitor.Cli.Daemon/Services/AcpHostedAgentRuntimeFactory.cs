@@ -252,7 +252,11 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
                                   && AcpPermissionPresets.TryResolve(ctx.AcpPermissionPreset, out var resolvedPreset)
                     ? resolvedPreset
                     : null,
-                notifyAutoApproval: notice => _ = connection.NotifyAcpAutoApprovalAsync(notice)
+                notifyAutoApproval: notice => _ = connection.NotifyAcpAutoApprovalAsync(notice),
+                // The launch's own policy, evaluated at the permission seam ahead of the preset. Null
+                // for an ungoverned launch, which leaves the bridge's arms exactly as they were.
+                policySnapshot: ctx.PolicySnapshot,
+                notifyPolicyDecision: evt => _ = connection.AppendAgentRunEventAsync(ctx.AgentId, evt)
             );
 
             // MUST precede StartAsync below: the handshake's SetLaunchStage stamps are no-ops against
