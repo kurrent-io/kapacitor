@@ -1126,6 +1126,8 @@ public sealed record CurationApplyResponse {
 [JsonSerializable(typeof(Capacitor.Cli.Core.Commands.FeedbackSubmitRequest))]
 [JsonSerializable(typeof(Capacitor.Cli.Core.Commands.FeedbackSubmitContext))]
 [JsonSerializable(typeof(Capacitor.Cli.Core.Commands.FeedbackSubmitResponse))]
+[JsonSerializable(typeof(Capacitor.Cli.Core.Policy.PolicyDecisionEventV1))]
+[JsonSerializable(typeof(Capacitor.Cli.Core.Policy.PolicySnapshotUploadV1))]
 [JsonSourceGenerationOptions(
     PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower,
     UseStringEnumConverter = true
