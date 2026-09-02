@@ -117,7 +117,7 @@ public class ChatTabViewModelTests {
             var path = Tmp.CreateFile("t.jsonl", [readLine]);
             await h.PushAsync(Dto(path) with { WorktreePath = worktree, WorkLocation = "owned" });
 
-            await Assert.That(((ToolCallItem)h.Chat.Items.Single()).Detail).IsEqualTo("src/Foo.cs");
+            await Assert.That(Group(h.Chat, 0).Calls.Single().Detail).IsEqualTo("src/Foo.cs");
             await WaitUntilAsync(() => ((PermissionCardViewModel)h.Chat.PendingCards[0]).Detail == "src/Bar.cs", what: "relative to the worktree once the root lands");
             await h.TeardownAsync();
         });
