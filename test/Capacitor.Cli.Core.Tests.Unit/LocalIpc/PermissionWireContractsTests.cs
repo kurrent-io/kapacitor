@@ -67,11 +67,27 @@ public class PermissionWireContractsTests {
     }
 
     [Test]
+    public async Task Pending_dto_carries_an_optional_tool_use_id_and_decodes_without_it() {
+        var dto = new PermissionPendingDto("r1", "a1", "s1", "claude", "Bash", null, null, false, false, "t", "toolu_01ABC");
+        var json = JsonSerializer.Serialize(dto, PermissionIpcJsonContext.Default.PermissionPendingDto);
+        await Assert.That(json).Contains("\"tool_use_id\":\"toolu_01ABC\"");
+        var back = JsonSerializer.Deserialize(json, PermissionIpcJsonContext.Default.PermissionPendingDto)!;
+        await Assert.That(back.ToolUseId).IsEqualTo("toolu_01ABC");
+
+        var older = JsonSerializer.Deserialize(
+            """{"request_id":"r1","agent_id":"a1","session_id":"s1","vendor":"claude","tool_name":"Bash","requested_at":"t"}""",
+            PermissionIpcJsonContext.Default.PermissionPendingDto)!;
+        await Assert.That(older.ToolUseId).IsNull();
+        await Assert.That(PermissionWire.IsPendingStructurallyValid(older)).IsTrue();
+    }
+
+    [Test]
     public async Task Worst_case_pending_frame_writes_and_reads_under_the_codec_cap() {
         var name = new string('"', PermissionWire.MaxToolNameBytes);               // every byte escapes to \"
         var key  = new string('\\', PermissionWire.MaxAgentIdBytes);               // every byte escapes to \\
         var big  = "\"" + new string('x', PermissionWire.MaxElementBytes - 2) + "\"";
-        var dto  = new PermissionPendingDto("r1", key, "s1", "claude", name, El(big), El(big), false, false, "t");
+        var id   = new string('"', PermissionWire.MaxToolUseIdBytes);               // every byte escapes to \"
+        var dto  = new PermissionPendingDto("r1", key, "s1", "claude", name, El(big), El(big), false, false, "t", id);
         var json = JsonSerializer.Serialize(dto, PermissionIpcJsonContext.Default.PermissionPendingDto);
         await Assert.That(Encoding.UTF8.GetByteCount(json) < FrameCodec.MaxPayload).IsTrue();
 
