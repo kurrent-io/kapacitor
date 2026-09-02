@@ -84,16 +84,22 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
         // unreachable server (or an auth probe over budget) silently disable every deny, since that
         // path returns before HandleCore is ever reached.
         if (command == "pre-tool-use") {
-            if (sessionId is null) return 0;
-            // Same two gates the rest of this method honours: a disabled session, and a repo/path
-            // the profile excludes — an excluded session is ungoverned because its decisions could
-            // not be recorded, and the audit contract is that every engine decision is.
-            if (await ShouldSuppressCaptureAsync(sessionId, body, command, profiles.Effective, budget)) return 0;
+            // Every other decision lane already degrades an unforeseen throw to exit 0. Without the
+            // same boundary here a crash exits non-zero, which Claude renders as its opaque
+            // hook-error banner — and for a natively auto-allowed tool the deny that never got
+            // written lets the call run.
+            try {
+                if (sessionId is null) return 0;
+                // Same two gates the rest of this method honours: a disabled session, and a repo/path
+                // the profile excludes — an excluded session is ungoverned because its decisions could
+                // not be recorded, and the audit contract is that every engine decision is.
+                if (await ShouldSuppressCaptureAsync(sessionId, body, command, profiles.Effective, budget)) return 0;
 
-            var rendered = Environment.GetEnvironmentVariable("KCAP_RENDERED_AGENT") is "1";
+                var rendered = Environment.GetEnvironmentVariable("KCAP_RENDERED_AGENT") is "1";
 
-            return await new Cli.Harness.Claude.ClaudePolicySeam(config)
-                .HandlePreToolUseAsync(body, sessionId, rendered, stdout ?? Console.Out);
+                return await new Cli.Harness.Claude.ClaudePolicySeam(config)
+                    .HandlePreToolUseAsync(body, sessionId, rendered, stdout ?? Console.Out);
+            } catch { return 0; }
         }
 
         // Skip client construction entirely for an unusable URL: the factory funnels into

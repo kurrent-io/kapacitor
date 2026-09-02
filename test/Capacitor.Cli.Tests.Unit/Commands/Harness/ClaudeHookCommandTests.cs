@@ -76,6 +76,28 @@ public class ClaudeHookCommandTests {
         await Assert.That(fx.RouteOrder).IsEmpty();
     }
 
+    /// <summary>The seam decides ahead of every other fail-open boundary in this method, so an
+    /// unforeseen throw inside its branch must still exit 0. A non-zero exit is Claude's opaque
+    /// hook-error banner, and for a natively auto-allowed tool the deny that never got written
+    /// lets the call run.</summary>
+    [Test]
+    public async Task pre_tool_use_fails_open_when_the_branch_throws() {
+        using var fx = new Fixture(Config.Root);
+        File.WriteAllText(Config.Root.Path("approvals.yaml"),
+            "version: 1\nrules:\n  - match: { kind: shell, command: \"git push --force*\" }\n    outcome: deny\n");
+        var stdout = new ClosedPipeWriter();
+
+        var exit = await new ClaudeHookCommand(Config.Root, fx.Profiles, new HookClock(TimeProvider.System), Home)
+            .HandleWithDeps(fx.Spool, new StringReader(
+                $$"""{"hook_event_name":"PreToolUse","session_id":"{{Sid}}","tool_name":"Bash","tool_input":{"command":"git push --force"},"cwd":"/tmp"}"""),
+                () => throw new InvalidOperationException("the seam must decide before a client exists"),
+                stdout);
+
+        await Assert.That(exit).IsEqualTo(0);
+        // Non-vacuous: the exit came out of the catch, not from a branch that never reached the write.
+        await Assert.That(stdout.Attempted).IsTrue();
+    }
+
     // ── Approval-policy lifecycle: build at session-start, expire per turn, evict at session-end ──
 
     /// <summary>A degradation the user never sees is the failure mode the spec forbids: the
@@ -996,6 +1018,20 @@ public class ClaudeHookCommandTests {
 
         await Assert.That(exit).IsEqualTo(1);
         await Assert.That(stdout.ToString()).IsEmpty();
+    }
+
+    /// <summary>A hook stdout that has gone away mid-write — the decision is computed, and writing
+    /// it out is what throws.</summary>
+    sealed class ClosedPipeWriter : TextWriter {
+        public bool Attempted { get; private set; }
+        public override System.Text.Encoding Encoding => System.Text.Encoding.UTF8;
+        public override void Write(char value) => Fail();
+        public override void Write(string? value) => Fail();
+
+        void Fail() {
+            Attempted = true;
+            throw new IOException("Broken pipe");
+        }
     }
 
     sealed class Fixture : IDisposable {
