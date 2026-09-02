@@ -7,13 +7,14 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.LocalIpc;
+using Capacitor.Cli.Core.Policy;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
 namespace Capacitor.Cli.Daemon.Services;
 
 internal readonly record struct PermissionAttribution(string? AgentId, string SessionId, string? Cwd);
-internal readonly record struct AttributedAgent(string AgentId);
+internal readonly record struct AttributedAgent(string AgentId, PolicySnapshot? PolicySnapshot = null);
 
 /// <summary>
 /// Localhost-only HTTP bridge that fronts the server's permission flow for spawned
