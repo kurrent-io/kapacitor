@@ -100,6 +100,30 @@ public class ClaudeHookCommandTests {
         await Assert.That(new PolicySnapshotStore(Config.Root).TryLoad(Sid)).IsNotNull();
     }
 
+    /// <summary>A degraded snapshot and a server-rejected credential both want the session-start
+    /// stdout. Claude reads that stdout as a single value, so the two notices share one object or
+    /// one of them is lost — and a second object would cost the reader both.</summary>
+    [Test, NotInParallel]
+    public async Task session_start_merges_a_policy_degradation_into_the_401_notice() {
+        File.WriteAllText(Config.Root.Path("approvals.yaml"), "version: 1\nenforcement: strict\n");
+        using var fx = new Fixture(Config.Root, HttpStatusCode.Unauthorized);
+        var stdout = new StringWriter { NewLine = "\n" };
+
+        var exit = await new ClaudeHookCommand(Config.Root, Resolutions.At("http://localhost", Config.Root), new HookClock(TimeProvider.System), Home).HandleCore(
+            fx.Client, AuthStatus.Ok, fx.Spool, new StringReader(
+                $$"""{"hook_event_name":"SessionStart","session_id":"{{Sid}}","cwd":"/tmp"}"""),
+            stdout: stdout);
+
+        await Assert.That(exit).IsEqualTo(0);
+        var lines = stdout.ToString().Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        await Assert.That(lines.Length).IsEqualTo(1);
+        var written = JsonNode.Parse(lines[0]) as JsonObject;
+        await Assert.That(written).IsNotNull();
+        var message = written!["systemMessage"]!.GetValue<string>();
+        await Assert.That(message).Contains(AuthRejectionNotice.RecordingNotice(StoredCredentialState.LooksValid));
+        await Assert.That(message).Contains("approval policy degraded");
+    }
+
     [Test]
     public async Task stop_clears_the_turn_journal() {
         var journal = new PolicyDecisionJournal(Config.Root);
