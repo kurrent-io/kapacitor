@@ -54,8 +54,8 @@ public sealed class RailWorktreeViewModel : ReactiveObject, IDisposable {
             IObservable<string?> selectedAgentId, IObservable<IReadOnlySet<string>> agentsWithPending,
             Action<string> open) {
         Path = path;
-        IsMainCheckout = PathEquals(path, repoRoot);
-        Label = LabelFor(path, IsMainCheckout);
+        IsMainCheckout = CheckoutLabel.IsMain(path, repoRoot);
+        Label = CheckoutLabel.Format(path, repoRoot);
         ShowHeader = showHeader;
 
         // Both IsExpanded and SessionsVisible are projected off this SAME stream, rather than
@@ -102,13 +102,6 @@ public sealed class RailWorktreeViewModel : ReactiveObject, IDisposable {
             .Subscribe()
             .DisposeWith(_disposables);
     }
-
-    internal static string LabelFor(string path, bool isMainCheckout) =>
-        isMainCheckout ? "main checkout" : PlatformPaths.Leaf(path);
-
-    internal static bool PathEquals(string a, string b) =>
-        PlatformPaths.Comparer.Equals(
-            System.IO.Path.TrimEndingDirectorySeparator(a), System.IO.Path.TrimEndingDirectorySeparator(b));
 
     public void Dispose() => _disposables.Dispose();
 }

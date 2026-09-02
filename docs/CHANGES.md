@@ -490,3 +490,30 @@ identity-guarded (a launch commit clears all of its id's pending-stop keys; a sa
 after a faulted stop always commits fresh), and the queued-stop count backs an edge-triggered,
 hysteresis-gated alarm exposed via `QueuedStopDepth`/`QueuedStopHighWater` accessors — additive, with
 no production consumer yet (AI-1649's supervision IPC is the natural one).
+
+## Desktop shell: the checkout on the status wire
+
+**AI-2320** adds three trailing members to `AgentStatusDto` — `worktree_path`, `work_location`,
+`borrowed_from` — and makes `repo_path` the repository for every agent. Before, one field carried two
+conventions: a primary reported the repository it was launched for while running in its owned
+worktree, and a borrowed reviewer reported the worktree it borrowed. The rail filed the two one group
+apart, and nothing on the wire said they shared a checkout.
+
+**The daemon resolves the repository; the app never reads a path's shape.** `RepoLabel` recognised
+`.claude/worktrees` and `.capacitor/worktrees` tails — a guess that a reviewer borrowing a subdirectory,
+or any other layout, defeated. The daemon holds the `WorktreeInfo` and can read the `.git` entries, so
+`AgentCheckout` resolves once per agent: the source checkout's root (a borrowed cwd may sit below it),
+the main repository behind that root (a linked worktree's `.git` file names it), and the snapshot root
+for a runtime that runs in its own copy. The rail keeps `ResolveMainRepoRoot` only so an older
+daemon's checkout-shaped `repo_path` still groups; against such a daemon a reviewer's tray and card
+labels show the worktree leaf, the price of dropping the guess. The consent prompt and the activity
+log pay it too: they label a launch request's path, a wire that carries no repository behind it, so
+they name the checkout the request is for.
+
+**Both a marker and a path go on the wire, and the path is the grouping key.** A Cursor or Copilot
+reviewer runs in a private snapshot, so `worktree_path` alone would file it under a node nobody else
+shares; `borrowed_from` names the checkout it reviews, which is where it belongs — in the rail and in
+the workspace subtitle alike, through one `CheckoutLabel` so the two cannot drift. The chat relativizes
+tool paths against `worktree_path`, the checkout the agent actually runs in. `work_location` is derived from `borrowed_from` at the one stamping site,
+so the two cannot disagree, and a client that only needs the marker reads the token instead of
+comparing paths.

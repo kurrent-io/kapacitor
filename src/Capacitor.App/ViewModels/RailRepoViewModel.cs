@@ -51,7 +51,7 @@ public sealed class RailRepoViewModel : ReactiveObject, IDisposable {
 
         Worktrees = new ReadOnlyObservableCollection<RailWorktreeViewModel>(_worktreesSource);
         group.Cache.Connect()
-            .Group(dto => dto.RepoPath ?? "")
+            .Group(SessionRailViewModel.WorktreeKeyFor)
             .Transform(wt => new RailWorktreeViewModel(
                 wt.Key, RootPath, showHeader: !IsNoRepository, wt.Cache, collapse, selectedAgentId,
                 agentsWithPending, open))

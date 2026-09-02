@@ -4,8 +4,10 @@ using Capacitor.Cli.Core;
 namespace Capacitor.App.ViewModels;
 
 /// The one-line detail a tool row shows beside its name, read from the call's input object. A
-/// path under the session's root reads relative to it, the way the web UI shows it: the root is
-/// the repository, or the daemon's per-agent worktree beneath it when the path is in one.
+/// path under the session's root reads relative to it, the way the web UI shows it. The root is
+/// the checkout the agent runs in. An older daemon sends no worktree, only its RepoPath — the
+/// repository for a primary, the borrowed checkout for a reviewer — so a daemon worktree beneath
+/// a repository root is stripped as well.
 public static class ToolDetail {
     const int MaxLength = 80;
     const string WorktreesSegment = "/.capacitor/worktrees/";

@@ -21,6 +21,26 @@ using Microsoft.Extensions.Logging;
 
 namespace Capacitor.Cli.Daemon.Services;
 
+/// <summary>
+/// <paramref name="Repository"/> is the main repository behind the checkout the worktree was
+/// made from — a linked worktree's own .git file names it, so a borrowed reviewer and the
+/// primary whose worktree it borrowed resolve to the same repository. <paramref name="Worktree"/>
+/// is the checkout root the agent runs in; <paramref name="BorrowedFrom"/> the checkout root a
+/// reviewer borrowed, null unless borrowed. A snapshot reviewer runs in its own copy, so its
+/// Worktree and BorrowedFrom differ.
+/// </summary>
+internal sealed record AgentCheckout(string Repository, string Worktree, string? BorrowedFrom) {
+    public static AgentCheckout Resolve(WorktreeInfo worktree, WorkLocation work, string? borrowedSnapshotSource) {
+        var borrowed   = work == WorkLocation.BorrowedCwd || borrowedSnapshotSource is not null;
+        // The source is a cwd for a borrow, which may sit below its checkout root.
+        var sourceRoot = GitRepository.FindRoot(worktree.SourceRepo) ?? worktree.SourceRepo;
+        var repository = GitRepository.ResolveMainRepoRoot(sourceRoot);
+        var runsIn     = work == WorkLocation.BorrowedCwd ? sourceRoot : worktree.SnapshotRoot ?? worktree.Path;
+
+        return new AgentCheckout(repository, runsIn, borrowed ? sourceRoot : null);
+    }
+}
+
 internal record AgentInstance(
         string                  Id,
         string?                 Prompt,
@@ -224,6 +244,11 @@ internal record AgentInstance(
     /// <summary>Authorized live checkout mirrored into this owned worktree for a runtime that
     /// cannot safely execute in-place. Refreshed before each later review round.</summary>
     public string? BorrowedSnapshotSource { get; init; }
+
+    AgentCheckout? _checkout;
+    /// <summary>Where the work lives, as the status wire reports it. Resolved once: it reads
+    /// .git entries, and neither the worktree nor the work location changes after launch.</summary>
+    public AgentCheckout Checkout => _checkout ??= AgentCheckout.Resolve(Worktree, Work, BorrowedSnapshotSource);
 
     /// <summary>The per-agent critical section. Named for its original duty (serializing the borrowed-
     /// checkout refresh against a concurrent send) but it has always wrapped the ENTIRE
@@ -1609,23 +1634,25 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             IPtyProcess? pty = null, string? startIdentity = null, string? requester = null,
             string? requesterDisplay = null, string? model = "default", int? inactivityBoundSeconds = null,
             string? prompt = null,
-            // Task 12 (unified reviewer reaping): a test that needs to control the agent's monotonic
-            // age/idle (rather than the wall-clock CreatedAt/LastOutputAt above, which the new
-            // FindReviewersToReap no longer reads) constructs its own AgentActivityClock over a
-            // FakeTimeProvider and passes it here — the SAME wiring CreateActivityClock() gives a
-            // real launch, just with a controllable time source.
-            AgentActivityClock? activityClock = null) {
+            // A test that needs to control the agent's monotonic age/idle constructs its own
+            // AgentActivityClock over a FakeTimeProvider and passes it here — the same wiring
+            // CreateActivityClock() gives a real launch, with a controllable time source.
+            AgentActivityClock? activityClock = null,
+            WorktreeInfo? worktree = null, WorkLocation work = WorkLocation.OwnedWorktree,
+            string? borrowedSnapshotSource = null) {
         var agent = new AgentInstance(
             id, prompt, model, null, "/repo", "codex",
             new PtyHostedAgentRuntime("codex", pty ?? NoopPtyProcess.Instance),
-            new WorktreeInfo("/repo", "b", "/repo"),
+            worktree ?? new WorktreeInfo("/repo", "b", "/repo"),
             new CancellationTokenSource()) {
             Kind = kind, FlowRunId = flowRunId, FlowRole = flowRole, IsPrivate = isPrivate,
             CreatedAt = createdAt ?? DateTime.UtcNow, StartIdentity = startIdentity,
             RequesterUserId = requester,
             RequesterDisplay = requesterDisplay,
             InactivityBoundSeconds = inactivityBoundSeconds,
-            ActivityClock = activityClock ?? CreateActivityClock()
+            ActivityClock = activityClock ?? CreateActivityClock(),
+            Work = work,
+            BorrowedSnapshotSource = borrowedSnapshotSource
         };
         agent.Status = status;
         if (lastOutputAt is { } lo) agent.LastOutputAt = lo;

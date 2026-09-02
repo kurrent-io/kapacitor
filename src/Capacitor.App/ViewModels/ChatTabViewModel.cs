@@ -241,8 +241,12 @@ public sealed class ChatTabViewModel : ReactiveObject {
         ReadOnlyNotice = notice;
         IsReadOnlyParticipant = notice.Length > 0;
         _vendor = dto.Vendor;
-        _root = dto.RepoPath;
-        _rootSubject.OnNext(dto.RepoPath);
+        // Tool paths are relative to the checkout the agent runs in. An older daemon sends only
+        // RepoPath: the repository for a primary, whose worktree beneath it ToolDetail strips, or
+        // the borrowed checkout for a reviewer.
+        var root = dto.WorktreePath ?? dto.RepoPath;
+        _root = root;
+        _rootSubject.OnNext(root);
         VendorLabel = HostedHarnessCatalog.LabelFor(_options, dto.Vendor);
         ModelLabel = HostedHarnessCatalog.ModelLabelFor(dto.Vendor, dto.Model ?? "");
         StatusText = dto.Status;

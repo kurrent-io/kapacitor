@@ -1,29 +1,32 @@
+using Capacitor.Cli.Core.LocalIpc;
+
 namespace Capacitor.App.ViewModels;
 
 public enum TrayState { Stopped, Connecting, Attention, Idle, Running }
 
-/// Last path segment of a repo path, shared by the tray entry label (spec §5) and the main-window
-/// grid's Repo cell (spec §8) — one helper, not duplicated presentation logic. When the path ends
-/// in exactly "&lt;repoDir&gt;/.claude/worktrees/&lt;leaf&gt;" (either separator flavor, case-sensitive),
-/// the generated worktree leaf is meaningless noise, so this returns just "{repoDir}" — the leaf
-/// never appears in presentation; the full path (worktree leaf included) is still the tooltip, for
-/// anyone who needs to tell worktrees of the same repo apart.
+/// Last path segment of a repo path, shared by every surface that names a repository. The status
+/// wire says which path is a worktree, so a path's shape is never read as evidence of one.
 public static class RepoLabel {
-    public static string Leaf(string? repoPath) {
-        if (repoPath is null) return "—";
-
-        var segments = repoPath.Replace('\\', '/').TrimEnd('/').Split('/');
-        // A worktree an agent runs in — Claude's own or the daemon's — sits two levels under its
-        // repository, which is the name worth showing.
-        if (segments.Length >= 4 && segments[^3] is ".claude" or ".capacitor" && segments[^2] == "worktrees" && segments[^4].Length > 0)
-            return segments[^4];
-
-        return PlatformPaths.Leaf(repoPath);
-    }
+    public static string Leaf(string? repoPath) => repoPath is null ? "—" : PlatformPaths.Leaf(repoPath);
 }
 
-/// The path primitives every surface shares, so the platform rule and the leaf expression exist
-/// once (they were drifting into per-VM copies).
+/// The checkout a session is presented under, shared by the rail's grouping and the workspace
+/// subtitle so the two cannot disagree: the checkout a reviewer borrowed comes first, so a
+/// snapshot reviewer sits beside the session it reviews rather than under its private copy.
+public static class CheckoutLabel {
+    /// Null from an older daemon, whose RepoPath is the checkout.
+    public static string? CheckoutPathFor(AgentStatusDto dto) => dto.BorrowedFrom ?? dto.WorktreePath;
+
+    public static bool IsMain(string checkout, string repoRoot) =>
+        PlatformPaths.Comparer.Equals(
+            Path.TrimEndingDirectorySeparator(checkout), Path.TrimEndingDirectorySeparator(repoRoot));
+
+    public static string Format(string checkout, string repoRoot) =>
+        IsMain(checkout, repoRoot) ? "main checkout" : PlatformPaths.Leaf(checkout);
+}
+
+/// The path primitives every surface shares: one platform comparison rule and one leaf
+/// expression, never a per-view copy.
 public static class PlatformPaths {
     /// Repo paths compare the way the filesystem underneath them does: case-insensitively on
     /// Windows and macOS, case-sensitively on Linux where two checkouts differing only in case
@@ -31,8 +34,7 @@ public static class PlatformPaths {
     public static readonly StringComparer Comparer =
         OperatingSystem.IsLinux() ? StringComparer.Ordinal : StringComparer.OrdinalIgnoreCase;
 
-    /// The path's own last segment, verbatim — no worktree collapsing (that is RepoLabel.Leaf's
-    /// job); the rail's worktree rows need exactly the raw leaf.
+    /// The path's own last segment, verbatim.
     public static string Leaf(string path) =>
         Path.GetFileName(Path.TrimEndingDirectorySeparator(path));
 }
