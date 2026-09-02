@@ -622,7 +622,8 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
             AcpLaunchPermissionPreset?                                                      acpPermissionPreset = null,
             Action<AcpAutoApprovalNotice>?                                                  notifyAutoApproval = null,
             PolicySnapshot?                                                                 policySnapshot = null,
-            Action<PolicyDecisionEventV1>?                                                  notifyPolicyDecision = null
+            Action<PolicyDecisionEventV1>?                                                  notifyPolicyDecision = null,
+            string?                                                                         policyCwd = null
         ) {
         _admittedToolIds = admittedToolIds;
         _firstOutputDeadline = firstOutputDeadline;
@@ -669,7 +670,8 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
                 // The vendor this runtime already speaks for — the policy vocabulary's vendor field
                 // and the launch's vendor are the same fact, so they cannot be given two answers.
                 vendor,
-                notifyPolicyDecision);
+                notifyPolicyDecision,
+                policyCwd);
         }
 
         // The original launch's incarnation. Every later candidate goes through the same wiring

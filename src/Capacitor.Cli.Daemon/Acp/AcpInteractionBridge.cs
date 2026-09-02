@@ -52,7 +52,11 @@ internal sealed partial class AcpInteractionBridge(
         PolicySnapshot?                                                               policySnapshot = null,
         string?                                                                       policyVendor = null,
         // Fire-and-forget audit sink for one policy decision (through a non-throwing boundary).
-        Action<PolicyDecisionEventV1>?                                                notifyPolicyDecision = null
+        Action<PolicyDecisionEventV1>?                                                notifyPolicyDecision = null,
+        // The launch's working directory, which a relative tool-call path is resolved against. Without
+        // it such a frame normalizes to Other and no path rule can match it, while the preset arm —
+        // which reads the raw frame kind — would still auto-approve.
+        string?                                                                       policyCwd = null
     ) {
     static readonly IReadOnlySet<string> EmptyAdmitted = new HashSet<string>(StringComparer.Ordinal);
 
@@ -237,7 +241,7 @@ internal sealed partial class AcpInteractionBridge(
             PolicyEvaluation? evaluation = null;
 
             try {
-                action     = AcpActionNormalizer.Normalize(parsed.ToolCall, policyVendor ?? "unknown", cwd: null);
+                action     = AcpActionNormalizer.Normalize(parsed.ToolCall, policyVendor ?? "unknown", policyCwd);
                 evaluation = PolicyEngine.Evaluate(snapshot, action, EvaluationMode.Full);
             } catch (Exception ex) {
                 LogPolicyEvaluationFailed(ex, agentId);

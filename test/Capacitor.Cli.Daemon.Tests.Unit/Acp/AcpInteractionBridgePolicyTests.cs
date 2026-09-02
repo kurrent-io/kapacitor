@@ -26,6 +26,8 @@ public class AcpInteractionBridgePolicyTests {
             outcome: allow
           - match: { kind: file_edit, path: "/wt/secrets*" }
             outcome: ask
+          - match: { kind: file_edit, path: "/wt/src/*" }
+            outcome: deny
         """;
 
     // Evaluation reads the bound document, never the Content string, so the full rules text has to
@@ -70,7 +72,8 @@ public class AcpInteractionBridgePolicyTests {
 
     static Harness Build(
             PolicySnapshot? snapshot, string? presetToken = null, string vendor = "cursor",
-            AcpUnattendedInteractionPolicy policy = AcpUnattendedInteractionPolicy.Disabled) {
+            AcpUnattendedInteractionPolicy policy = AcpUnattendedInteractionPolicy.Disabled,
+            string? cwd = null) {
         AcpLaunchPermissionPreset? preset = null;
         if (presetToken is not null) AcpPermissionPresets.TryResolve(presetToken, out preset);
 
@@ -89,7 +92,8 @@ public class AcpInteractionBridgePolicyTests {
                 notifyAutoApproval: n => harness.Notices.Add(n),
                 policySnapshot: snapshot,
                 policyVendor: vendor,
-                notifyPolicyDecision: e => harness.Decisions.Add(e))
+                notifyPolicyDecision: e => harness.Decisions.Add(e),
+                policyCwd: cwd)
         };
 
         return harness;
@@ -176,6 +180,38 @@ public class AcpInteractionBridgePolicyTests {
         await Assert.That(evt.RequestedOutcome).IsEqualTo("ask");
         await Assert.That(evt.EffectiveOutcome).IsEqualTo("parked");
         await Assert.That(evt.Action.Kind).IsEqualTo("file_edit");
+    }
+
+    [Test]
+    public async Task Deny_beats_a_preset_that_covers_the_kind() {
+        var h = Build(Governed, AcpPermissionPresets.Edit);
+
+        var outcome = await h.HandleAsync(PathFrame("edit", "/wt/src/main.cs", Standard));
+
+        await Assert.That(Harness.Outcome(outcome)).IsEqualTo("selected");
+        await Assert.That(Harness.OptionId(outcome)).IsEqualTo("reject-once");
+        await Assert.That(h.Notices).IsEmpty().Because("the preset can never widen a policy deny");
+        await Assert.That(h.Forwarded).IsFalse();
+        await Assert.That(h.Decisions.Single().EffectiveOutcome).IsEqualTo("deny");
+    }
+
+    [Test]
+    public async Task A_relative_path_is_resolved_against_the_launch_worktree() {
+        // Without a rooted cwd this frame normalizes to Other("edit"), which no file_edit rule can
+        // match — and the preset arm, which reads the RAW frame kind, would auto-approve it.
+        var h = Build(Governed, AcpPermissionPresets.Edit, cwd: "/wt");
+
+        var outcome = await h.HandleAsync(PathFrame("edit", "src/main.cs", Standard));
+
+        await Assert.That(Harness.Outcome(outcome)).IsEqualTo("selected");
+        await Assert.That(Harness.OptionId(outcome)).IsEqualTo("reject-once");
+        await Assert.That(h.Notices).IsEmpty();
+        await Assert.That(h.Forwarded).IsFalse();
+
+        var evt = h.Decisions.Single();
+        await Assert.That(evt.EffectiveOutcome).IsEqualTo("deny");
+        await Assert.That(evt.Action.Kind).IsEqualTo("file_edit");
+        await Assert.That(evt.Action.Paths).IsEquivalentTo(new[] { "/wt/src/main.cs" });
     }
 
     [Test]
