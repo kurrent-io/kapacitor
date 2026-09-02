@@ -50,7 +50,7 @@ public static class PolicyWire {
 
     public static PolicySnapshotUploadV1 ToUpload(string sessionId, PolicySnapshot snapshot) => new(
         sessionId, snapshot.Id, PolicyEngine.Version, snapshot.Degraded, [.. snapshot.Degradations],
-        [.. snapshot.Documents.Select(d => new PolicySnapshotDocV1(d.Scope.ToString(), d.SourcePath, d.Content))]);
+        [.. snapshot.Documents.Select(d => new PolicySnapshotDocV1(d.Scope.ToString().ToLowerInvariant(), d.SourcePath, d.Content))]);
 
     // Matches the policy YAML's own kind spellings (PolicyDocumentBinder.BindMatcher), not
     // ActionKind's PascalCase member names — the wire is snake_case throughout.

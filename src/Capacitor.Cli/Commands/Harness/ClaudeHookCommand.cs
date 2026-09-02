@@ -344,6 +344,22 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
             return await new PermissionRequestCommand(config, profiles).Handle(body, selfHeal, stdout);
         }
 
+        // Approval-policy evaluation, behind the same disabled-session gate. An excluded session is
+        // not governed either: its decisions could not be recorded, and the audit contract is that
+        // every engine decision is.
+        if (command == "pre-tool-use") {
+            if (await IsSessionExcludedAsync(profiles.Effective, body, budget)) return 0;
+
+            string? policySessionId = null;
+            try { policySessionId = JsonNode.Parse(body)?["session_id"]?.GetValue<string>(); } catch { }
+            if (policySessionId is null) return 0;
+
+            var rendered = Environment.GetEnvironmentVariable("KCAP_RENDERED_AGENT") is "1";
+
+            return await new Cli.Harness.Claude.ClaudePolicySeam(config, profiles)
+                .HandlePreToolUseAsync(body, policySessionId, rendered, writer);
+        }
+
         // On session-start, clear the last-emitted repo cache so this session always gets a
         // RepositoryDetected event (the dedup cache is per-cwd, but each session needs its own link).
         if (command == "session-start") {

@@ -50,6 +50,26 @@ public class ClaudeHookCommandTests {
         await Assert.That(fx.RouteOrder).Contains("session-start");
     }
 
+    /// <summary>Pins the seam's wire: <c>PreToolUse</c> is answered on stdout by the policy seam and
+    /// never falls through to the generic <c>/hooks/{command}</c> POST, which would invent a
+    /// per-tool-call recording event.</summary>
+    [Test]
+    public async Task pre_tool_use_is_decided_by_the_policy_seam_not_posted_as_a_hook_event() {
+        using var fx = new Fixture(Config.Root);
+        File.WriteAllText(Config.Root.Path("approvals.yaml"),
+            "version: 1\nrules:\n  - match: { kind: shell, command: \"git push --force*\" }\n    outcome: deny\n");
+        var stdout = new StringWriter();
+
+        var exit = await new ClaudeHookCommand(Config.Root, fx.Profiles, new HookClock(TimeProvider.System), Home)
+            .HandleCore(fx.Client, AuthStatus.Ok, fx.Spool, new StringReader(
+                $$"""{"hook_event_name":"PreToolUse","session_id":"{{Sid}}","tool_name":"Bash","tool_input":{"command":"git push --force"},"cwd":"/tmp"}"""),
+                stdout: stdout);
+
+        await Assert.That(exit).IsEqualTo(0);
+        await Assert.That(stdout.ToString()).Contains("\"permissionDecision\":\"deny\"");
+        await Assert.That(fx.RouteOrder).DoesNotContain("pre-tool-use");
+    }
+
     [Test]
     public async Task memory_store_initialization_failure_does_not_suppress_session_start_capture() {
         using var fx = new Fixture(Config.Root);

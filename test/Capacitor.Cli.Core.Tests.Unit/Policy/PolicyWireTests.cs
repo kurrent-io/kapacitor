@@ -65,4 +65,15 @@ public class PolicyWireTests {
         await Assert.That(json).Contains("\"kind\":\"file_edit\"");
         await Assert.That(json).Contains("\"scope\":\"user\"");
     }
+
+    [Test]
+    public async Task Snapshot_upload_scope_is_lowercase_like_every_other_wire_scope() {
+        var snapshot = new PolicySnapshot("snap", [
+            new PolicyScopeDocument(PolicyScope.User, "/u/approvals.yaml", "version: 1\n",
+                PolicyDocumentBinder.Bind("version: 1\n", PolicyScope.User))], false, []);
+        var upload = PolicyWire.ToUpload("sid", snapshot);
+        await Assert.That(upload.Documents[0].Scope).IsEqualTo("user");
+        var json = System.Text.Json.JsonSerializer.Serialize(upload, CapacitorJsonContext.Default.PolicySnapshotUploadV1);
+        await Assert.That(json).Contains("\"scope\":\"user\"");
+    }
 }
