@@ -62,7 +62,11 @@ public static class PolicyDocumentBinder {
                 _ => throw new PolicyDocumentException($"unknown outcome '{o.Value}'"),
             }
             : throw new PolicyDocumentException("rule is missing 'outcome'");
-        var reason = rule["reason"] is YamlScalar r ? r.Value : null;
+        var reason = rule["reason"] switch {
+            null => null,
+            YamlScalar s => s.Value,
+            _ => throw new PolicyDocumentException("'reason' must be a string"),
+        };
         return new PolicyRule(BindMatcher(match), outcome, reason);
     }
 
@@ -136,7 +140,12 @@ public static class PolicyDocumentBinder {
                 ? m.Value
                 : throw new PolicyDocumentException($"unknown judge mode '{m.Value}'")
             : throw new PolicyDocumentException("'judge' is missing 'mode'");
-        return new JudgeConfig(mode, judge["prompt"] is YamlScalar p ? p.Value : null);
+        var prompt = judge["prompt"] switch {
+            null => null,
+            YamlScalar p => p.Value,
+            _ => throw new PolicyDocumentException("'prompt' must be a string"),
+        };
+        return new JudgeConfig(mode, prompt);
     }
 
     static string ScopeName(PolicyScope scope) => scope.ToString().ToLowerInvariant();
