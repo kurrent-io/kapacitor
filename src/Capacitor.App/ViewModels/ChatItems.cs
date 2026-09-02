@@ -23,7 +23,7 @@ public sealed class SystemNoteItem(string text) : ChatItemViewModel {
 
 public enum ToolOutcome { Running, Done, Error }
 
-public sealed class ToolCallItem(string name, string detail, ToolCategory category = ToolCategory.Other) : ChatItemViewModel {
+public sealed class ToolCallItem(string name, string detail, ToolCategory category) : ChatItemViewModel {
     public string Name { get; } = name;
     public string Detail { get; } = detail;
     public ToolCategory Category { get; } = category;

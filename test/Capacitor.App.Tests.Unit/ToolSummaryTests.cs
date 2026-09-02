@@ -4,7 +4,7 @@ namespace Capacitor.App.Tests.Unit;
 
 /// Pure: no dispatcher, so no session constraint.
 public class ToolSummaryTests {
-    /// The spec's table, held here so the test pins the map in both directions.
+    /// The declared name map, held here so the test pins it in both directions.
     static readonly (ToolCategory Category, string[] Names)[] Rows = [
         (ToolCategory.Read,      ["Read", "NotebookRead", "read_file", "view_image"]),
         (ToolCategory.Edit,      ["Edit", "MultiEdit", "Write", "NotebookEdit", "apply_patch", "write_file"]),

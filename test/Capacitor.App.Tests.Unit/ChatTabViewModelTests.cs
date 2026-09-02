@@ -24,6 +24,7 @@ public class ChatTabViewModelTests {
     const string ToolErrorLine = """{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"boom","is_error":true}]}}""";
     const string ReadCallLine = """{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t2","name":"Read","input":{"file_path":"/repo/x/src/a.cs"}}]}}""";
     const string NoteLine = """{"type":"user","origin":{"kind":"task-notification"},"message":{"content":"<task-notification>\n<summary>Agent finished</summary>\n<result>\nAll good.\n</result>\n</task-notification>"}}""";
+    const string ThinkingLine = """{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"weighing it"}]}}""";
 
     static AgentStatusDto Dto(string? transcriptPath, string vendor = "claude") =>
         Agent("a1", vendor, hasTerminal: true, repoPath: "/repo/x") with { TranscriptPath = transcriptPath };
@@ -202,7 +203,7 @@ public class ChatTabViewModelTests {
             await h.PushAsync(Dto(path));
             await Assert.That(h.Chat.Items).Count().IsEqualTo(1);
 
-            File.AppendAllText(path, ReadCallLine + "\n");
+            File.AppendAllText(path, ThinkingLine + "\n" + ReadCallLine + "\n");
             await h.TickAsync();
             await Assert.That(h.Chat.Items).Count().IsEqualTo(1);
             await Assert.That(Group(h.Chat, 0).Calls.Select(c => c.Name)).IsEquivalentTo(new[] { "Bash", "Read" }, CollectionOrdering.Matching);
