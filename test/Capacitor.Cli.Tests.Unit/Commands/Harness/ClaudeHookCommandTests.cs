@@ -50,24 +50,29 @@ public class ClaudeHookCommandTests {
         await Assert.That(fx.RouteOrder).Contains("session-start");
     }
 
-    /// <summary>Pins the seam's wire: <c>PreToolUse</c> is answered on stdout by the policy seam and
-    /// never falls through to the generic <c>/hooks/{command}</c> POST, which would invent a
-    /// per-tool-call recording event.</summary>
+    /// <summary>Pins the seam's position: <c>PreToolUse</c> is decided before a client is ever built,
+    /// so an unreachable server or a slow auth probe — both of which return early from
+    /// <c>HandleWithDeps</c> — cannot silently disable a deny. The injected factory throws, so any
+    /// client construction ahead of the branch fails the test rather than passing quietly.</summary>
     [Test]
-    public async Task pre_tool_use_is_decided_by_the_policy_seam_not_posted_as_a_hook_event() {
+    public async Task pre_tool_use_is_decided_before_any_client_is_created() {
         using var fx = new Fixture(Config.Root);
         File.WriteAllText(Config.Root.Path("approvals.yaml"),
             "version: 1\nrules:\n  - match: { kind: shell, command: \"git push --force*\" }\n    outcome: deny\n");
         var stdout = new StringWriter();
 
         var exit = await new ClaudeHookCommand(Config.Root, fx.Profiles, new HookClock(TimeProvider.System), Home)
-            .HandleCore(fx.Client, AuthStatus.Ok, fx.Spool, new StringReader(
+            .HandleWithDeps(fx.Spool, new StringReader(
                 $$"""{"hook_event_name":"PreToolUse","session_id":"{{Sid}}","tool_name":"Bash","tool_input":{"command":"git push --force"},"cwd":"/tmp"}"""),
-                stdout: stdout);
+                () => throw new InvalidOperationException("the seam must decide before a client exists"),
+                stdout);
 
         await Assert.That(exit).IsEqualTo(0);
         await Assert.That(stdout.ToString()).Contains("\"permissionDecision\":\"deny\"");
-        await Assert.That(fx.RouteOrder).DoesNotContain("pre-tool-use");
+        // Spool-first: the decision is a local line, and nothing reached the network.
+        await Assert.That(new HookSpool(Config.Root).HasBacklog(Sid)).IsTrue();
+        await Assert.That(fx.ServerRequestCount).IsEqualTo(0);
+        await Assert.That(fx.RouteOrder).IsEmpty();
     }
 
     [Test]
@@ -919,6 +924,9 @@ public class ClaudeHookCommandTests {
         public string         MemoryIndexBody   { get; set; } = "[]";
         public HttpStatusCode MemoryIndexStatus { get; set; } = HttpStatusCode.OK;
         public TimeSpan       MemoryIndexDelay  { get; set; } = TimeSpan.Zero;
+
+        /// <summary>Every request the stub server saw, for a test asserting that none arrived.</summary>
+        public int ServerRequestCount => _memoryServer.LogEntries.Count;
 
         public bool MemoryIndexRequested    => MemoryIndexRequestCount > 0;
         public int  MemoryIndexRequestCount => _memoryServer.LogEntries

@@ -1,22 +1,17 @@
 namespace Capacitor.Cli.Tests.Unit.Harness.Claude;
 
 using System.Text.Json.Nodes;
-using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.Policy;
 using Capacitor.Cli.Harness.Claude;
-using WireMock.RequestBuilders;
-using WireMock.ResponseBuilders;
-using WireMock.Server;
+using Capacitor.Cli.Tests.Unit.Policy;
 
-public class ClaudePolicySeamTests : IDisposable {
+public class ClaudePolicySeamTests {
     [TempDir] public required TempDir Tmp { get; init; }
     [TempConfigRoot] public required TempConfigRoot Config { get; init; }
-    readonly WireMockServer _server = WireMockServer.Start();
-    public void Dispose() => _server.Stop();
 
     const string Sid = "9dc2775376454e4691ecc2d69973c152";
 
-    ClaudePolicySeam Seam => new(Config.Root, Resolutions.Of(new Profile(), serverUrl: _server.Url!));
+    ClaudePolicySeam Seam => new(Config.Root);
 
     string Body(string toolName, string toolInputJson, string? callId = null) {
         var repo = Tmp.PathTo("repo");
@@ -31,9 +26,10 @@ public class ClaudePolicySeamTests : IDisposable {
 
     void WriteUserPolicy(string yaml) => File.WriteAllText(Config.Root.Path("approvals.yaml"), yaml);
 
-    [Before(Test)]
-    public void Ok200() =>
-        _server.Given(Request.Create().UsingPost()).RespondWith(Response.Create().WithStatusCode(200));
+    List<JsonNode> Decisions() => SpooledPolicyEvents.Decisions(Config.Root, Sid);
+
+    static string HashOf(string toolInputJson) => PolicyInputHash.Compute("Bash",
+        System.Text.Json.JsonDocument.Parse(toolInputJson).RootElement.Clone());
 
     [Test]
     public async Task Deny_rule_answers_deny_with_the_reason() {
@@ -47,12 +43,27 @@ public class ClaudePolicySeamTests : IDisposable {
         await Assert.That(hso["hookEventName"]!.GetValue<string>()).IsEqualTo("PreToolUse");
         await Assert.That(hso["permissionDecision"]!.GetValue<string>()).IsEqualTo("deny");
         await Assert.That(hso["permissionDecisionReason"]!.GetValue<string>()).IsEqualTo("use the PR lane");
-        var events = _server.FindLogEntries(Request.Create().WithPath("/hooks/policy-decision").UsingPost());
+
+        var events = Decisions();
         await Assert.That(events.Count).IsEqualTo(1);
-        var evt = JsonNode.Parse(events[0].RequestMessage.Body!)!;
-        await Assert.That(evt["requested_outcome"]!.GetValue<string>()).IsEqualTo("deny");
-        await Assert.That(evt["effective_outcome"]!.GetValue<string>()).IsEqualTo("deny");
-        await Assert.That(evt["seam"]!.GetValue<string>()).IsEqualTo("claude_pre_tool_use");
+        await Assert.That(events[0]["requested_outcome"]!.GetValue<string>()).IsEqualTo("deny");
+        await Assert.That(events[0]["effective_outcome"]!.GetValue<string>()).IsEqualTo("deny");
+        await Assert.That(events[0]["seam"]!.GetValue<string>()).IsEqualTo("claude_pre_tool_use");
+        // The snapshot the decision names must reach the server too, or the id is unresolvable.
+        await Assert.That(SpooledPolicyEvents.Snapshots(Config.Root, Sid).Count).IsEqualTo(1);
+    }
+
+    /// <summary>Without a vendor call id no terminal may be journaled: an entry parked under the
+    /// ask-only fallback would be unreachable to every later <c>Consume</c>.</summary>
+    [Test]
+    public async Task Deny_without_a_call_id_journals_no_terminal() {
+        WriteUserPolicy("version: 1\nrules:\n  - match: { kind: shell, command: \"git push --force*\" }\n    outcome: deny\n");
+        await Seam.HandlePreToolUseAsync(
+            Body("Bash", """{"command":"git push --force"}"""), Sid, false, new StringWriter());
+        var consumed = new PolicyDecisionJournal(Config.Root)
+            .Consume(Sid, null, HashOf("""{"command":"git push --force"}"""));
+        await Assert.That(consumed.ExactOutcome).IsNull();
+        await Assert.That(consumed.PendingAsk).IsFalse();
     }
 
     [Test]
@@ -62,6 +73,12 @@ public class ClaudePolicySeamTests : IDisposable {
         await Seam.HandlePreToolUseAsync(Body("Bash", """{"command":"git status"}"""), Sid, false, stdout);
         var hso = JsonNode.Parse(stdout.ToString())!["hookSpecificOutput"]!;
         await Assert.That(hso["permissionDecision"]!.GetValue<string>()).IsEqualTo("allow");
+
+        var events = Decisions();
+        await Assert.That(events.Count).IsEqualTo(1);
+        await Assert.That(events[0]["requested_outcome"]!.GetValue<string>()).IsEqualTo("allow");
+        await Assert.That(events[0]["effective_outcome"]!.GetValue<string>()).IsEqualTo("allow");
+        await Assert.That(events[0]["evaluation_mode"]!.GetValue<string>()).IsEqualTo("full");
     }
 
     [Test]
@@ -79,10 +96,22 @@ public class ClaudePolicySeamTests : IDisposable {
         await Seam.HandlePreToolUseAsync(Body("Bash", """{"command":"gh pr merge"}"""), Sid, false, stdout);
         var hso = JsonNode.Parse(stdout.ToString())!["hookSpecificOutput"]!;
         await Assert.That(hso["permissionDecision"]!.GetValue<string>()).IsEqualTo("ask");
-        var hash = PolicyInputHash.Compute("Bash",
-            System.Text.Json.JsonDocument.Parse("""{"command":"gh pr merge"}""").RootElement.Clone());
-        var consumed = new PolicyDecisionJournal(Config.Root).Consume(Sid, null, hash);
+        var consumed = new PolicyDecisionJournal(Config.Root)
+            .Consume(Sid, null, HashOf("""{"command":"gh pr merge"}"""));
         await Assert.That(consumed.PendingAsk).IsTrue();
+    }
+
+    /// <summary>With a call id the ask goes to the exact lane instead of the FIFO one, so the later
+    /// seam correlates it without the ambiguity a hash-only match carries.</summary>
+    [Test]
+    public async Task Ask_with_a_call_id_journals_the_exact_lane() {
+        WriteUserPolicy("version: 1\nrules:\n  - match: { kind: shell, command: \"gh pr merge\" }\n    outcome: ask\n");
+        await Seam.HandlePreToolUseAsync(
+            Body("Bash", """{"command":"gh pr merge"}""", callId: "toolu_02Y"), Sid, false, new StringWriter());
+        var consumed = new PolicyDecisionJournal(Config.Root)
+            .Consume(Sid, "toolu_02Y", HashOf("""{"command":"gh pr merge"}"""));
+        await Assert.That(consumed.PendingAsk).IsTrue();
+        await Assert.That(consumed.Ambiguous).IsFalse();
     }
 
     [Test]
@@ -98,9 +127,15 @@ public class ClaudePolicySeamTests : IDisposable {
         var allowed = new StringWriter();
         await Seam.HandlePreToolUseAsync(Body("Bash", """{"command":"git status"}"""), Sid, renderedAgent: true, allowed);
         await Assert.That(allowed.ToString()).IsEmpty();                      // no allow is ever computed
+        // Nothing was decided, so nothing is recorded: the daemon owns the rendered session's full
+        // evaluation, and a pass-through counted here would double-count it.
+        await Assert.That(Decisions()).IsEmpty();
+        await Assert.That(new PolicyDecisionJournal(Config.Root).TakePassThroughCount(Sid)).IsEqualTo(0);
+
         var denied = new StringWriter();
         await Seam.HandlePreToolUseAsync(Body("Bash", """{"command":"git push --force"}"""), Sid, renderedAgent: true, denied);
         await Assert.That(denied.ToString()).Contains("\"deny\"");            // deny still bites
+        await Assert.That(Decisions().Count).IsEqualTo(1);
     }
 
     [Test]
@@ -108,8 +143,8 @@ public class ClaudePolicySeamTests : IDisposable {
         var stdout = new StringWriter();
         await Seam.HandlePreToolUseAsync(Body("Bash", """{"command":"anything"}"""), Sid, false, stdout);
         await Assert.That(stdout.ToString()).IsEmpty();
-        var events = _server.FindLogEntries(Request.Create().WithPath("/hooks/policy-decision").UsingPost());
-        await Assert.That(events.Count).IsEqualTo(0);
+        await Assert.That(Decisions()).IsEmpty();
+        await Assert.That(SpooledPolicyEvents.Snapshots(Config.Root, Sid)).IsEmpty();
     }
 
     [Test]
@@ -118,6 +153,7 @@ public class ClaudePolicySeamTests : IDisposable {
         var stdout = new StringWriter();
         await Seam.HandlePreToolUseAsync(Body("Bash", """{"command":"cargo build"}"""), Sid, false, stdout);
         await Assert.That(stdout.ToString()).IsEmpty();
+        await Assert.That(Decisions()).IsEmpty();
         await Assert.That(new PolicyDecisionJournal(Config.Root).TakePassThroughCount(Sid)).IsEqualTo(1);
     }
 
@@ -126,9 +162,8 @@ public class ClaudePolicySeamTests : IDisposable {
         WriteUserPolicy("version: 1\nrules:\n  - match: { kind: shell, command: \"git push --force*\" }\n    outcome: deny\n");
         await Seam.HandlePreToolUseAsync(
             Body("Bash", """{"command":"git push --force"}""", callId: "toolu_01X"), Sid, false, new StringWriter());
-        var hash = PolicyInputHash.Compute("Bash",
-            System.Text.Json.JsonDocument.Parse("""{"command":"git push --force"}""").RootElement.Clone());
-        var consumed = new PolicyDecisionJournal(Config.Root).Consume(Sid, "toolu_01X", hash);
+        var consumed = new PolicyDecisionJournal(Config.Root)
+            .Consume(Sid, "toolu_01X", HashOf("""{"command":"git push --force"}"""));
         await Assert.That(consumed.ExactOutcome).IsEqualTo("deny");
         await Assert.That(consumed.Ambiguous).IsFalse();
     }

@@ -3,7 +3,6 @@ namespace Capacitor.Cli.Harness.Claude;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Core;
-using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.Harness.Claude;
 using Capacitor.Cli.Core.Policy;
 using Capacitor.Cli.Policy;
@@ -13,7 +12,7 @@ using Capacitor.Cli.Policy;
 /// hook. Fail-open throughout: an unparseable payload, an unusable field or an ungoverned session
 /// exits 0 with no output, because any non-zero exit renders Claude's opaque hook-error banner.
 /// </summary>
-internal sealed class ClaudePolicySeam(ConfigRoot config, ProfileContext profiles) {
+internal sealed class ClaudePolicySeam(ConfigRoot config) {
     /// <summary>False degrades a policy ask to pass-through: nothing is written to Claude, and the
     /// decision event records requested=ask against effective=pass_through so the gap stays
     /// visible rather than silent.</summary>
@@ -22,15 +21,17 @@ internal sealed class ClaudePolicySeam(ConfigRoot config, ProfileContext profile
     const string DefaultReason = "kcap approval policy";
 
     public async Task<int> HandlePreToolUseAsync(string body, string sessionId, bool renderedAgent, TextWriter stdout) {
-        JsonNode? node;
-        string? toolName, callId, cwd;
+        string? toolName, callId, cwd, agentId;
         JsonElement? toolInput;
         try {
-            node = JsonNode.Parse(body);
+            var node = JsonNode.Parse(body);
             if (node is null) return 0;
             toolName = node["tool_name"]?.GetValue<string>();
             callId = node["tool_use_id"]?.GetValue<string>();
             cwd = node["cwd"]?.GetValue<string>();
+            // The seam runs ahead of the hook command's own id normalization, so it strips the
+            // dashes itself — every kcap event carries the dashless form.
+            agentId = node["agent_id"]?.GetValue<string>()?.Replace("-", "");
             toolInput = node["tool_input"] is { } ti
                 ? JsonDocument.Parse(ti.ToJsonString()).RootElement.Clone()
                 : null;
@@ -49,13 +50,13 @@ internal sealed class ClaudePolicySeam(ConfigRoot config, ProfileContext profile
         var inputHash = PolicyInputHash.Compute(toolName, toolInput);
         var reason = (eval.MatchedRules.Count > 0 ? eval.MatchedRules[0].Reason : null) ?? DefaultReason;
 
-        // stdout before the emit: Claude reads it once the process exits, while the emit is bounded
-        // only by the poster's spool fallback.
+        // stdout is the only thing Claude acts on; the event below is a local spool append that a
+        // later drain delivers, so no path here waits on the network.
         switch (eval.Outcome) {
             case PolicyOutcome.Deny:
                 stdout.Write(BuildPreToolUseDecision("deny", reason));
                 if (callId is { Length: > 0 }) journal.RecordTerminal(sessionId, callId, "deny", inputHash);
-                await Emit(eval, "deny", "deny");
+                await Emit("deny", "deny");
                 break;
             case PolicyOutcome.Ask: {
                 // Read into a local rather than branching on the constant directly: `case Ask when
@@ -66,13 +67,13 @@ internal sealed class ClaudePolicySeam(ConfigRoot config, ProfileContext profile
                     stdout.Write(BuildPreToolUseDecision("ask", reason));
                     journal.RecordAsk(sessionId, callId, inputHash);
                 }
-                await Emit(eval, "ask", askEnabled ? "ask" : "pass_through");
+                await Emit("ask", askEnabled ? "ask" : "pass_through");
                 break;
             }
             case PolicyOutcome.Allow:
                 stdout.Write(BuildPreToolUseDecision("allow", reason));
                 if (callId is { Length: > 0 }) journal.RecordTerminal(sessionId, callId, "allow", inputHash);
-                await Emit(eval, "allow", "allow");
+                await Emit("allow", "allow");
                 break;
             // None under TightenOnly records nothing at all: the daemon owns the rendered session's
             // full evaluation, so nothing was decided here.
@@ -83,12 +84,12 @@ internal sealed class ClaudePolicySeam(ConfigRoot config, ProfileContext profile
 
         return 0;
 
-        Task Emit(PolicyEvaluation e, string requested, string effective) =>
-            new PolicyDecisionEmitter(config, profiles).EmitAsync(new PolicyDecisionEventV1(
-                sessionId, node["agent_id"]?.GetValue<string>(), "claude", PolicySeams.ClaudePreToolUse,
+        Task Emit(string requested, string effective) =>
+            new PolicyDecisionEmitter(config).EmitAsync(new PolicyDecisionEventV1(
+                sessionId, agentId, "claude", PolicySeams.ClaudePreToolUse,
                 snapshot.Id, PolicyEngine.Version,
                 mode == EvaluationMode.Full ? "full" : "tighten_only", requested, effective,
-                PolicyWire.ToWire(action), PolicyWire.ToWire(e.MatchedRules),
+                PolicyWire.ToWire(action), PolicyWire.ToWire(eval.MatchedRules),
                 snapshot.Degraded, null, callId, CorrelationAmbiguous: callId is null,
                 DateTimeOffset.UtcNow.ToString("O")), snapshot);
     }

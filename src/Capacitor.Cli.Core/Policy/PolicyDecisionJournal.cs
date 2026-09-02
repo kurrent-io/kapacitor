@@ -73,7 +73,10 @@ public sealed class PolicyDecisionJournal(ConfigRoot config) {
         try {
             var path = PathFor(sessionKey);
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-            using var _ = ConfigFileLock.Acquire(path, TimeSpan.FromSeconds(5));
+            // Well under a hook's 5s ceiling: parallel hooks contend for this file, and a wait that
+            // could eat the whole budget would cost the decision rather than just the journal entry.
+            // A timeout lands in the catch below and fails open.
+            using var _ = ConfigFileLock.Acquire(path, TimeSpan.FromSeconds(2));
             var current = Read(path);
             var next = transform(current);
             if (ReferenceEquals(next, current)) return;

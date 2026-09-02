@@ -78,6 +78,23 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
         var budget    = clock.Budget(Ceiling(command));
         var clientCap = budget.Remaining;
 
+        // Approval policy is decided before any client exists. The seam only appends its events to
+        // the spool, so it needs no server — and routing it through HandleCore would let an
+        // unreachable server (or an auth probe over budget) silently disable every deny, since that
+        // path returns before HandleCore is ever reached.
+        if (command == "pre-tool-use") {
+            if (sessionId is null) return 0;
+            // Same two gates the rest of this method honours: a disabled session, and a repo/path
+            // the profile excludes — an excluded session is ungoverned because its decisions could
+            // not be recorded, and the audit contract is that every engine decision is.
+            if (await ShouldSuppressCaptureAsync(sessionId, body, command, profiles.Effective, budget)) return 0;
+
+            var rendered = Environment.GetEnvironmentVariable("KCAP_RENDERED_AGENT") is "1";
+
+            return await new Cli.Harness.Claude.ClaudePolicySeam(config)
+                .HandlePreToolUseAsync(body, sessionId, rendered, stdout ?? Console.Out);
+        }
+
         // Skip client construction entirely for an unusable URL: the factory funnels into
         // EnsureAbsolute, and this runs before ANY dispatch, so every Claude event would die here.
         // Falling into the same degraded arm a client-creation timeout already uses keeps capture
@@ -342,22 +359,6 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
             var selfHeal    = !await IsSessionExcludedAsync(permProfile, body, budget);
 
             return await new PermissionRequestCommand(config, profiles).Handle(body, selfHeal, stdout);
-        }
-
-        // Approval-policy evaluation, behind the same disabled-session gate. An excluded session is
-        // not governed either: its decisions could not be recorded, and the audit contract is that
-        // every engine decision is.
-        if (command == "pre-tool-use") {
-            if (await IsSessionExcludedAsync(profiles.Effective, body, budget)) return 0;
-
-            string? policySessionId = null;
-            try { policySessionId = JsonNode.Parse(body)?["session_id"]?.GetValue<string>(); } catch { }
-            if (policySessionId is null) return 0;
-
-            var rendered = Environment.GetEnvironmentVariable("KCAP_RENDERED_AGENT") is "1";
-
-            return await new Cli.Harness.Claude.ClaudePolicySeam(config, profiles)
-                .HandlePreToolUseAsync(body, policySessionId, rendered, writer);
         }
 
         // On session-start, clear the last-emitted repo cache so this session always gets a
