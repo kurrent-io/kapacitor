@@ -22,7 +22,7 @@ public class PolicyHookDecisionTests : IDisposable {
     [TempConfigRoot] public required TempConfigRoot Config { get; init; }
     readonly WireMockServer _server = WireMockServer.Start();
     readonly List<Process> _spawned = [];
-    public void Dispose() { _server.Stop(); foreach (var p in _spawned) { try { p.Kill(); } catch { } } }
+    public void Dispose() { _server.Stop(); foreach (var p in _spawned) { try { p.Kill(); } catch { } p.Dispose(); } }
 
     const string Sid = "3f8a2b1c4d5e46f7a8b9c0d1e2f3a4b5";
 
@@ -77,6 +77,22 @@ public class PolicyHookDecisionTests : IDisposable {
         await Assert.That(events.Count).IsEqualTo(1);
         var snapshots = _server.FindLogEntries(Request.Create().WithPath("/hooks/policy-snapshot").UsingPost());
         await Assert.That(snapshots.Count).IsEqualTo(1);
+
+        // Route + count alone would pass for a wrong seam, a mangled session_id, or a swapped
+        // body — assert the delivered content, not just that something arrived.
+        var decisionEvent = JsonNode.Parse(events[0].RequestMessage.Body!)!;
+        await Assert.That(decisionEvent["session_id"]!.GetValue<string>()).IsEqualTo(Sid);
+        await Assert.That(decisionEvent["seam"]!.GetValue<string>()).IsEqualTo("claude_permission_request");
+        await Assert.That(decisionEvent["effective_outcome"]!.GetValue<string>()).IsEqualTo("deny");
+
+        var snapshotUpload = JsonNode.Parse(snapshots[0].RequestMessage.Body!)!;
+        await Assert.That(snapshotUpload["session_id"]!.GetValue<string>()).IsEqualTo(Sid);
+        var snapshotId = snapshotUpload["snapshot_id"]!.GetValue<string>();
+        await Assert.That(snapshotId).IsNotEmpty();
+
+        // The decision must name the snapshot that was actually uploaded, not a stale or
+        // mismatched one.
+        await Assert.That(decisionEvent["snapshot_id"]!.GetValue<string>()).IsEqualTo(snapshotId);
     }
 
     [Test]
