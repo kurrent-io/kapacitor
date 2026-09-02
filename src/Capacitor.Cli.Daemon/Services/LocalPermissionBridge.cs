@@ -622,7 +622,7 @@ internal sealed partial class LocalPermissionBridge(
                     node["agent_id"]?.GetValue<string>(), canonicalSessionId, node["cwd"]?.GetValue<string>()));
                 var pending = attributed is { } a
                     ? BuildPending(Guid.NewGuid().ToString("N"), a.AgentId, canonicalSessionId!, vendor, toolName, toolInput, suggestions,
-                        DateTimeOffset.UtcNow.ToString("O"))
+                        DateTimeOffset.UtcNow.ToString("O"), ToolUseIdOf(node))
                     : null;
 
                 if (pending is null) {
@@ -693,13 +693,15 @@ internal sealed partial class LocalPermissionBridge(
 
     internal static PermissionPendingDto? BuildPending(
             string requestId, string agentId, string sessionId, string vendor, string? toolName,
-            JsonElement? toolInput, JsonElement? suggestions, string requestedAt) {
+            JsonElement? toolInput, JsonElement? suggestions, string requestedAt, string? toolUseId = null) {
         var name = toolName ?? "";
         if (Encoding.UTF8.GetByteCount(name) > PermissionWire.MaxToolNameBytes) return null;
         if (Encoding.UTF8.GetByteCount(agentId) > PermissionWire.MaxAgentIdBytes) return null;
         var (input, inputOmitted)   = Bound(toolInput);
         var (sugg,  suggOmitted)    = Bound(suggestions);
-        return new PermissionPendingDto(requestId, agentId, sessionId, vendor, name, input, sugg, inputOmitted, suggOmitted, requestedAt);
+        // Over-cap is dropped, not refused: the id only decorates a chat row.
+        var id = toolUseId is { Length: > 0 } t && Encoding.UTF8.GetByteCount(t) <= PermissionWire.MaxToolUseIdBytes ? t : null;
+        return new PermissionPendingDto(requestId, agentId, sessionId, vendor, name, input, sugg, inputOmitted, suggOmitted, requestedAt, id);
 
         static (JsonElement?, bool) Bound(JsonElement? el) =>
             el is { } e && Encoding.UTF8.GetByteCount(e.GetRawText()) > PermissionWire.MaxElementBytes ? (null, true) : (el, false);
@@ -779,6 +781,9 @@ internal sealed partial class LocalPermissionBridge(
 
         return doc.RootElement.Clone();
     }
+
+    static string? ToolUseIdOf(JsonNode node) =>
+        node["tool_use_id"] is JsonValue v && v.TryGetValue<string>(out var id) ? id : null;
 
     /// <summary>
     /// True when the permission request names one of the reserved result channel's unattended-safe
