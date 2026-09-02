@@ -82,4 +82,94 @@ public class ApprovalsYamlTests {
         var root = ApprovalsYaml.Parse("a: \"x # y\"\n");
         await Assert.That(((YamlScalar)root["a"]!).Value).IsEqualTo("x # y");
     }
+
+    [Test]
+    public async Task Literal_block_stops_before_an_under_indented_comment() {
+        var text = "judge:\n  prompt: |\n    line one\n   # TODO\n    line two\n";
+        var ex = Assert.Throws<ApprovalsYamlException>(() => ApprovalsYaml.Parse(text));
+        await Assert.That(ex.Line).IsEqualTo(4);
+    }
+
+    [Test]
+    public async Task Literal_block_stops_before_an_under_indented_sibling() {
+        var text = "judge:\n  prompt: |\n    body text\n   mode: unmatched\n";
+        var ex = Assert.Throws<ApprovalsYamlException>(() => ApprovalsYaml.Parse(text));
+        await Assert.That(ex.Line).IsGreaterThan(0);
+    }
+
+    [Test]
+    public async Task Literal_block_preserves_comment_like_lines_verbatim() {
+        var root = ApprovalsYaml.Parse("prompt: |\n  first\n  # heading\n  more # not a comment\n");
+        var value = ((YamlScalar)root["prompt"]!).Value;
+        await Assert.That(value).Contains("# heading");
+        await Assert.That(value).Contains("more # not a comment");
+    }
+
+    [Test]
+    public async Task Literal_block_preserves_a_document_marker_line() {
+        var root = ApprovalsYaml.Parse("prompt: |\n  first\n  ---\n  second\n");
+        var value = ((YamlScalar)root["prompt"]!).Value;
+        await Assert.That(value).Contains("---");
+    }
+
+    [Test]
+    public async Task Apostrophe_mid_word_is_plain_text() {
+        var root = ApprovalsYaml.Parse("reason: don't force-push\n");
+        await Assert.That(((YamlScalar)root["reason"]!).Value).IsEqualTo("don't force-push");
+    }
+
+    [Test]
+    public async Task Comma_in_block_context_is_plain_text() {
+        var root = ApprovalsYaml.Parse("a: allow git, gh and dotnet\n");
+        await Assert.That(((YamlScalar)root["a"]!).Value).IsEqualTo("allow git, gh and dotnet");
+    }
+
+    [Test]
+    public async Task Mid_scalar_colon_stays_legal() {
+        var root = ApprovalsYaml.Parse("reason: use x: y\n");
+        await Assert.That(((YamlScalar)root["reason"]!).Value).IsEqualTo("use x: y");
+    }
+
+    [Test]
+    public async Task Flow_mapping_still_splits_on_comma() {
+        var root = ApprovalsYaml.Parse("m: { a: x, b: y }\n");
+        var m = (YamlMapping)root["m"]!;
+        await Assert.That(((YamlScalar)m["a"]!).Value).IsEqualTo("x");
+        await Assert.That(((YamlScalar)m["b"]!).Value).IsEqualTo("y");
+    }
+
+    [Test]
+    [Arguments("list:\n  - - a\n")]
+    [Arguments("a: : x\n")]
+    public async Task Ambiguous_leading_dash_or_colon_throws(string text) {
+        var ex = Assert.Throws<ApprovalsYamlException>(() => ApprovalsYaml.Parse(text));
+        await Assert.That(ex.Line).IsGreaterThan(0);
+    }
+
+    [Test]
+    public async Task Flow_nesting_beyond_depth_cap_throws() {
+        var nested = new string('[', 40) + new string(']', 40);
+        var ex = Assert.Throws<ApprovalsYamlException>(() => ApprovalsYaml.Parse($"a: {nested}\n"));
+        await Assert.That(ex.Line).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task Chomped_literal_block_has_no_trailing_newline() {
+        var root = ApprovalsYaml.Parse("a: |-\n  line one\n  line two\n");
+        await Assert.That(((YamlScalar)root["a"]!).Value).IsEqualTo("line one\nline two");
+    }
+
+    [Test]
+    public async Task Quoted_flag_reflects_quoting() {
+        var root = ApprovalsYaml.Parse("a: 1\nb: \"1\"\n");
+        await Assert.That(((YamlScalar)root["a"]!).Quoted).IsFalse();
+        await Assert.That(((YamlScalar)root["b"]!).Quoted).IsTrue();
+    }
+
+    [Test]
+    public async Task Alias_failure_reports_its_line() {
+        var ex = Assert.Throws<ApprovalsYamlException>(
+            () => ApprovalsYaml.Parse("version: 1\nrules: *anchor\n"));
+        await Assert.That(ex.Line).IsEqualTo(2);
+    }
 }

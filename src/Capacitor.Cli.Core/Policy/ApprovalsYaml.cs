@@ -26,101 +26,169 @@ public sealed class ApprovalsYamlException(int line, string message)
 /// be half-applied.
 /// </summary>
 public static class ApprovalsYaml {
+    const int MaxFlowDepth = 32;
+
+    enum ScalarContext { Block, Flow }
+
     readonly record struct Line(int LineNo, int Indent, string Content, int RawIndex);
+
+    // Comment-stripping, quote checking and the ---/... rejection only apply to a line once it
+    // is read as *structural* (a key or a dash item): a literal block's raw lines never go
+    // through them, so a "# ..." or "---" inside a block is content, not syntax.
+    sealed class Cursor {
+        readonly string[] text;
+        readonly int[] indent;
+        int rawPos;
+        Line? pendingOverride;
+
+        public Cursor(string[] rawLines) {
+            text = new string[rawLines.Length];
+            indent = new int[rawLines.Length];
+            for (var r = 0; r < rawLines.Length; r++) {
+                var full = rawLines[r].TrimEnd('\r');
+                text[r] = full;
+                var ind = 0;
+                while (ind < full.Length && full[ind] == ' ') ind++;
+                if (ind < full.Length && full[ind] == '\t')
+                    throw new ApprovalsYamlException(r + 1, "tab in indentation");
+                indent[r] = ind;
+            }
+        }
+
+        public Line? Peek() {
+            if (pendingOverride is { } o) return o;
+            while (rawPos < text.Length) {
+                var content = StripComment(text[rawPos][indent[rawPos]..], rawPos + 1);
+                if (content.Length == 0) { rawPos++; continue; }
+                if (content is "---" or "...")
+                    throw new ApprovalsYamlException(rawPos + 1, "multi-document YAML is not supported");
+                return new Line(rawPos + 1, indent[rawPos], content, rawPos);
+            }
+            return null;
+        }
+
+        public Line Next() {
+            var line = Peek() ?? throw new InvalidOperationException("Next() called at end of input");
+            pendingOverride = null;
+            rawPos = line.RawIndex + 1;
+            return line;
+        }
+
+        // ParseSequence uses this to turn "- match: {…}" into the first key line of a mapping
+        // at indent+2, without a real raw line to back it.
+        public void PushOverride(Line line) => pendingOverride = line;
+
+        public void Resume(int newRawPos) { pendingOverride = null; rawPos = newRawPos; }
+
+        public bool IsBlankRaw(int r) => text[r].Length <= indent[r];
+        public int RawIndent(int r) => indent[r];
+        public string RawText(int r) => text[r];
+        public int EofLine => Math.Max(1, text.Length);
+
+        public (int Start, int End) LiteralBlockRange(int keyRawIndex, int keyIndent) {
+            var start = keyRawIndex + 1;
+            var end = start;
+            while (end < text.Length) {
+                if (!IsBlankRaw(end) && indent[end] <= keyIndent) break;
+                end++;
+            }
+            return (start, end);
+        }
+    }
 
     public static YamlMapping Parse(string text) {
         var raw = text.Split('\n');
-        var lines = new List<Line>();
-        for (var r = 0; r < raw.Length; r++) {
-            var full = raw[r].TrimEnd('\r');
-            var indent = 0;
-            while (indent < full.Length && full[indent] == ' ') indent++;
-            if (indent < full.Length && full[indent] == '\t')
-                throw new ApprovalsYamlException(r + 1, "tab in indentation");
-            var content = StripComment(full[indent..], r + 1);
-            if (content.Length == 0) continue;
-            if (content is "---" or "...")
-                throw new ApprovalsYamlException(r + 1, "multi-document YAML is not supported");
-            lines.Add(new Line(r + 1, indent, content, r));
-        }
-        if (lines.Count == 0) return new YamlMapping([]);
-        var i = 0;
-        var map = ParseMapping(raw, lines, ref i, lines[0].Indent);
-        if (i != lines.Count)
-            throw new ApprovalsYamlException(lines[i].LineNo, "content outside the root mapping");
+        var cursor = new Cursor(raw);
+        if (cursor.Peek() is not { } first) return new YamlMapping([]);
+        var map = ParseMapping(cursor, first.Indent);
+        if (cursor.Peek() is { } trailing)
+            throw new ApprovalsYamlException(trailing.LineNo, "content outside the root mapping");
         return map;
     }
 
-    static YamlMapping ParseMapping(string[] raw, List<Line> lines, ref int i, int indent) {
+    static YamlMapping ParseMapping(Cursor cursor, int indent) {
         var entries = new List<KeyValuePair<string, YamlNode>>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
-        while (i < lines.Count && lines[i].Indent == indent && !lines[i].Content.StartsWith("- ", StringComparison.Ordinal) && lines[i].Content != "-") {
-            var line = lines[i];
+        while (cursor.Peek() is { } line && line.Indent == indent && !IsDashLine(line.Content)) {
+            cursor.Next();
             var (key, rest) = SplitKey(line);
             if (!seen.Add(key)) throw new ApprovalsYamlException(line.LineNo, $"duplicate key '{key}'");
-            i++;
-            entries.Add(new(key, ParseValue(raw, lines, ref i, line, rest, indent)));
+            entries.Add(new(key, ParseValue(cursor, line, rest, indent)));
         }
         if (entries.Count == 0)
-            throw new ApprovalsYamlException(lines[Math.Min(i, lines.Count - 1)].LineNo, "expected a mapping");
+            throw new ApprovalsYamlException(cursor.Peek()?.LineNo ?? cursor.EofLine, "expected a mapping");
         return new YamlMapping(entries);
     }
 
-    static YamlNode ParseValue(string[] raw, List<Line> lines, ref int i, Line keyLine, string rest, int indent) {
-        if (rest is "|" or "|-") return ParseLiteralBlock(raw, lines, ref i, keyLine, chompFinal: rest == "|-");
+    static YamlNode ParseValue(Cursor cursor, Line keyLine, string rest, int indent) {
+        if (rest is "|" or "|-") return ParseLiteralBlock(cursor, keyLine, chompFinal: rest == "|-");
         if (rest.Length > 0) {
             var pos = 0;
-            var node = ParseFlow(rest, ref pos, keyLine.LineNo);
+            var node = ParseFlow(rest, ref pos, keyLine.LineNo, ScalarContext.Block, depth: 0);
             if (pos != rest.Length)
                 throw new ApprovalsYamlException(keyLine.LineNo, "trailing content after value");
             return node;
         }
-        if (i >= lines.Count || lines[i].Indent <= indent)
+        if (cursor.Peek() is not { } next || next.Indent <= indent)
             throw new ApprovalsYamlException(keyLine.LineNo, "missing value");
-        var childIndent = lines[i].Indent;
-        return lines[i].Content.StartsWith("- ", StringComparison.Ordinal) || lines[i].Content == "-"
-            ? ParseSequence(raw, lines, ref i, childIndent)
-            : ParseMapping(raw, lines, ref i, childIndent);
+        return IsDashLine(next.Content)
+            ? ParseSequence(cursor, next.Indent)
+            : ParseMapping(cursor, next.Indent);
     }
 
-    static YamlSequence ParseSequence(string[] raw, List<Line> lines, ref int i, int indent) {
+    static YamlSequence ParseSequence(Cursor cursor, int indent) {
         var items = new List<YamlNode>();
-        while (i < lines.Count && lines[i].Indent == indent
-               && (lines[i].Content.StartsWith("- ", StringComparison.Ordinal) || lines[i].Content == "-")) {
-            var line = lines[i];
+        while (cursor.Peek() is { } line && line.Indent == indent && IsDashLine(line.Content)) {
+            cursor.Next();
             var body = line.Content == "-" ? "" : line.Content[2..].TrimStart();
             if (body.Length == 0) throw new ApprovalsYamlException(line.LineNo, "empty sequence item");
             // An item whose body is "key: …" is a block mapping starting on the dash line:
             // rewrite the dash line as its first key line at indent+2 and re-enter ParseMapping.
             if (TrySplitKey(body, out _, out _)) {
-                lines[i] = line with { Indent = indent + 2, Content = body };
-                items.Add(ParseMapping(raw, lines, ref i, indent + 2));
+                cursor.PushOverride(line with { Indent = indent + 2, Content = body });
+                items.Add(ParseMapping(cursor, indent + 2));
             }
             else {
                 var pos = 0;
-                var node = ParseFlow(body, ref pos, line.LineNo);
+                var node = ParseFlow(body, ref pos, line.LineNo, ScalarContext.Block, depth: 0);
                 if (pos != body.Length)
                     throw new ApprovalsYamlException(line.LineNo, "trailing content after sequence item");
                 items.Add(node);
-                i++;
             }
         }
         return new YamlSequence(items);
     }
 
-    static YamlScalar ParseLiteralBlock(string[] raw, List<Line> lines, ref int i, Line keyLine, bool chompFinal) {
-        var collected = new List<string>();
-        var last = keyLine.RawIndex;
-        while (i < lines.Count && lines[i].Indent > keyLine.Indent) { last = lines[i].RawIndex; i++; }
-        for (var r = keyLine.RawIndex + 1; r <= last; r++) collected.Add(raw[r].TrimEnd('\r'));
-        while (collected.Count > 0 && collected[^1].Trim().Length == 0) collected.RemoveAt(collected.Count - 1);
-        if (collected.Count == 0) throw new ApprovalsYamlException(keyLine.LineNo, "empty literal block");
-        var dedent = collected.Where(l => l.Trim().Length > 0).Min(l => l.TakeWhile(c => c == ' ').Count());
-        var body = string.Join('\n', collected.Select(l => l.Length >= dedent ? l[dedent..] : ""));
+    static YamlScalar ParseLiteralBlock(Cursor cursor, Line keyLine, bool chompFinal) {
+        var (start, end) = cursor.LiteralBlockRange(keyLine.RawIndex, keyLine.Indent);
+        var contentEnd = end;
+        while (contentEnd > start && cursor.IsBlankRaw(contentEnd - 1)) contentEnd--;
+
+        var firstNonBlank = -1;
+        for (var r = start; r < contentEnd; r++)
+            if (!cursor.IsBlankRaw(r)) { firstNonBlank = r; break; }
+        if (firstNonBlank < 0) throw new ApprovalsYamlException(keyLine.LineNo, "empty literal block");
+
+        // The block's own indent is fixed by its first content line; a shallower non-blank line
+        // is a mis-indented sibling that leaked into the block range, not more block content.
+        var blockIndent = cursor.RawIndent(firstNonBlank);
+        for (var r = start; r < contentEnd; r++)
+            if (!cursor.IsBlankRaw(r) && cursor.RawIndent(r) < blockIndent)
+                throw new ApprovalsYamlException(r + 1, "line is less indented than the literal block");
+
+        var lines = new string[contentEnd - start];
+        for (var r = start; r < contentEnd; r++) {
+            var t = cursor.RawText(r);
+            lines[r - start] = t.Length >= blockIndent ? t[blockIndent..] : "";
+        }
+        cursor.Resume(end);
+        var body = string.Join('\n', lines);
         return new YamlScalar(chompFinal ? body : body + "\n", Quoted: false);
     }
 
-    static YamlNode ParseFlow(string s, ref int pos, int lineNo) {
+    static YamlNode ParseFlow(string s, ref int pos, int lineNo, ScalarContext ctx, int depth) {
+        if (depth > MaxFlowDepth)
+            throw new ApprovalsYamlException(lineNo, "flow nesting exceeds the supported depth");
         SkipSpaces(s, ref pos);
         if (pos >= s.Length) throw new ApprovalsYamlException(lineNo, "missing value");
         switch (s[pos]) {
@@ -130,7 +198,7 @@ public static class ApprovalsYaml {
                 SkipSpaces(s, ref pos);
                 if (pos < s.Length && s[pos] == ']') { pos++; return new YamlSequence(items); }
                 while (true) {
-                    items.Add(ParseFlow(s, ref pos, lineNo));
+                    items.Add(ParseFlow(s, ref pos, lineNo, ScalarContext.Flow, depth + 1));
                     SkipSpaces(s, ref pos);
                     if (pos < s.Length && s[pos] == ',') { pos++; continue; }
                     if (pos < s.Length && s[pos] == ']') { pos++; return new YamlSequence(items); }
@@ -152,7 +220,7 @@ public static class ApprovalsYaml {
                         throw new ApprovalsYamlException(lineNo, "expected 'key:' in flow mapping");
                     if (!seen.Add(key)) throw new ApprovalsYamlException(lineNo, $"duplicate key '{key}'");
                     pos++;
-                    entries.Add(new(key, ParseFlow(s, ref pos, lineNo)));
+                    entries.Add(new(key, ParseFlow(s, ref pos, lineNo, ScalarContext.Flow, depth + 1)));
                     SkipSpaces(s, ref pos);
                     if (pos < s.Length && s[pos] == ',') { pos++; continue; }
                     if (pos < s.Length && s[pos] == '}') { pos++; return new YamlMapping(entries); }
@@ -161,7 +229,7 @@ public static class ApprovalsYaml {
             }
             case '\'': return ParseSingleQuoted(s, ref pos, lineNo);
             case '"': return ParseDoubleQuoted(s, ref pos, lineNo);
-            default: return ParsePlain(s, ref pos, lineNo);
+            default: return ParsePlain(s, ref pos, lineNo, ctx);
         }
     }
 
@@ -200,17 +268,28 @@ public static class ApprovalsYaml {
         throw new ApprovalsYamlException(lineNo, "unterminated double-quoted scalar");
     }
 
-    static YamlScalar ParsePlain(string s, ref int pos, int lineNo) {
+    static YamlScalar ParsePlain(string s, ref int pos, int lineNo, ScalarContext ctx) {
         var start = pos;
-        while (pos < s.Length && s[pos] is not (',' or ']' or '}')) pos++;
+        if (ctx == ScalarContext.Flow) {
+            while (pos < s.Length && s[pos] is not (',' or ']' or '}')) pos++;
+        }
+        else {
+            pos = s.Length;
+        }
         var value = s[start..pos].Trim();
         if (value.Length == 0) throw new ApprovalsYamlException(lineNo, "missing value");
+        if (value == "-" || (value.Length > 1 && value[0] == '-' && value[1] == ' '))
+            throw new ApprovalsYamlException(lineNo, "ambiguous '-' at the start of a plain scalar");
+        if (value[0] == ':')
+            throw new ApprovalsYamlException(lineNo, "ambiguous ':' at the start of a plain scalar");
         if (value[0] is '&' or '*' or '!' or '?' or '>' or '|' or '%' or '@' or '`')
             throw new ApprovalsYamlException(lineNo, $"unsupported YAML construct at '{value[0]}'");
         return new YamlScalar(value, Quoted: false);
     }
 
     static void SkipSpaces(string s, ref int pos) { while (pos < s.Length && s[pos] == ' ') pos++; }
+
+    static bool IsDashLine(string content) => content.StartsWith("- ", StringComparison.Ordinal) || content == "-";
 
     static (string Key, string Tail) SplitKey(Line line) =>
         TrySplitKey(line.Content, out var key, out var rest)
@@ -234,12 +313,28 @@ public static class ApprovalsYaml {
         var inDouble = false;
         for (var i = 0; i < content.Length; i++) {
             var c = content[i];
-            if (c == '\'' && !inDouble) inSingle = !inSingle;
-            else if (c == '"' && !inSingle && (i == 0 || content[i - 1] != '\\')) inDouble = !inDouble;
-            else if (c == '#' && !inSingle && !inDouble && (i == 0 || content[i - 1] is ' ' or '\t'))
-                return content[..i].TrimEnd();
+            if (inSingle) {
+                if (c == '\'') {
+                    if (i + 1 < content.Length && content[i + 1] == '\'') i++;
+                    else inSingle = false;
+                }
+                continue;
+            }
+            if (inDouble) {
+                if (c == '\\' && i + 1 < content.Length) i++;
+                else if (c == '"') inDouble = false;
+                continue;
+            }
+            // A quote only opens after a boundary character, so a mid-word apostrophe
+            // ("don't") stays plain text instead of starting a quoted region.
+            if (c == '\'' && CanOpenQuote(content, i)) { inSingle = true; continue; }
+            if (c == '"' && CanOpenQuote(content, i)) { inDouble = true; continue; }
+            if (c == '#' && (i == 0 || content[i - 1] is ' ' or '\t')) return content[..i].TrimEnd();
         }
         if (inSingle || inDouble) throw new ApprovalsYamlException(lineNo, "unterminated quoted scalar");
         return content.TrimEnd();
     }
+
+    static bool CanOpenQuote(string content, int i) =>
+        i == 0 || content[i - 1] is ' ' or '\t' or ':' or ',' or '[' or '{';
 }
