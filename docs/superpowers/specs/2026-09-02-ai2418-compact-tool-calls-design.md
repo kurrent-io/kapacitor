@@ -381,7 +381,8 @@ Rendered, `ChatTabViewSmokeTests`:
   a later poll, and a call folding away, each keep the reader at the bottom
   when they were there and leave the offset alone when they were scrolled up.
 - Expanding the trailing group while at the bottom leaves the offset where it
-  was; the next transcript append follows the tail again.
+  was; the hold is one-shot, so once the reader scrolls back to the bottom the
+  next transcript append follows the tail again.
 - A thousand-call group expands: every row is realized and laid out in the
   headless host, and the view stays a single virtualized outer item. Folding
   it again leaves only the live rows' containers realized.
