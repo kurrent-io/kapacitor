@@ -247,6 +247,40 @@ public class ClaudePolicySeamTests {
         await Assert.That(answer).IsEqualTo(SeamAnswer.Answered);
         await Assert.That(stdout.ToString()).Contains("\"deny\"");
         await Assert.That(Decisions()[0]["effective_outcome"]!.GetValue<string>()).IsEqualTo("deny");
+        // The deny subsumed the ask rather than stepping around it: leaving the entry behind would
+        // let it stand against the next prompt for the same input.
+        await Assert.That(new PolicyDecisionJournal(Config.Root)
+            .Consume(Sid, null, HashOf("""{"command":"rm -rf /"}""")).PendingAsk).IsFalse();
+    }
+
+    /// <summary>An ask journaled for an action no rule matches still stands: the journal tightens a
+    /// fresh outcome it cannot produce itself, and a governed prompt is never a pass-through.</summary>
+    [Test]
+    public async Task Pending_ask_stands_over_an_unmatched_action_without_counting_a_pass_through() {
+        WriteUserPolicy("version: 1\nrules:\n  - match: { kind: shell, command: \"git push --force*\" }\n    outcome: deny\n");
+        new PolicyDecisionJournal(Config.Root).RecordAsk(Sid, null, HashOf("""{"command":"cargo build"}"""));
+        var stdout = new StringWriter();
+        var answer = await Seam.HandlePermissionRequestAsync(
+            PermissionNode("Bash", """{"command":"cargo build"}"""), Sid, stdout);
+        await Assert.That(answer).IsEqualTo(SeamAnswer.NotAnswered);
+        await Assert.That(stdout.ToString()).IsEmpty();
+        await Assert.That(Decisions()[0]["effective_outcome"]!.GetValue<string>()).IsEqualTo("prompt_stands");
+        await Assert.That(new PolicyDecisionJournal(Config.Root).TakePassThroughCount(Sid)).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Pending_ask_on_the_exact_lane_stands_over_an_unmatched_action() {
+        WriteUserPolicy("version: 1\nrules:\n  - match: { kind: shell, command: \"git push --force*\" }\n    outcome: deny\n");
+        new PolicyDecisionJournal(Config.Root).RecordAsk(Sid, "toolu_04A", HashOf("""{"command":"cargo build"}"""));
+        var stdout = new StringWriter();
+        var answer = await Seam.HandlePermissionRequestAsync(
+            PermissionNode("Bash", """{"command":"cargo build"}""", callId: "toolu_04A"), Sid, stdout);
+        await Assert.That(answer).IsEqualTo(SeamAnswer.NotAnswered);
+        await Assert.That(stdout.ToString()).IsEmpty();
+        var events = Decisions();
+        await Assert.That(events[0]["effective_outcome"]!.GetValue<string>()).IsEqualTo("prompt_stands");
+        await Assert.That(events[0]["correlation_ambiguous"]!.GetValue<bool>()).IsFalse();
+        await Assert.That(new PolicyDecisionJournal(Config.Root).TakePassThroughCount(Sid)).IsEqualTo(0);
     }
 
     [Test]

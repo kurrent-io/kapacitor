@@ -15,9 +15,12 @@ class PermissionRequestCommand(ConfigRoot config, ProfileContext profiles) {
 
     public Task<int> Handle() => Handle(body: null);
 
-    // selfHealWatcher is false when the caller determined the session is excluded
-    // (excluded_repos/excluded_paths): we still handle the permission decision, but must NOT
-    // spawn a transcript-uploading watcher for a project the user opted out of recording.
+    /// <param name="selfHealWatcher">False when the caller determined the session is excluded
+    /// (excluded_repos/excluded_paths). It gates two things: the transcript-uploading watcher, which
+    /// must not start for a project the user opted out of recording, and the approval policy —
+    /// an excluded session's decisions cannot be recorded, and the audit contract is that every
+    /// engine decision is, so it is ungoverned at this seam exactly as it is at PreToolUse. The
+    /// permission record/long-poll itself still runs: hosted agents need the decision regardless.</param>
     public async Task<int> Handle(string? body, bool selfHealWatcher = true, TextWriter? stdout = null) {
         body ??= await Console.In.ReadToEndAsync();
 
@@ -55,8 +58,9 @@ class PermissionRequestCommand(ConfigRoot config, ProfileContext profiles) {
 
         // A rendered session's prompt is the daemon bridge's to decide — one full evaluation per
         // raised prompt, off the same files — so evaluating it here too would decide it twice with
-        // no journal shared across the two processes.
-        if (!isRenderedAgent
+        // no journal shared across the two processes. An excluded session is ungoverned entirely
+        // (see selfHealWatcher).
+        if (selfHealWatcher && !isRenderedAgent
             && await new ClaudePolicySeam(config).HandlePermissionRequestAsync(node, sessionId, stdout ?? Console.Out)
                 == SeamAnswer.Answered) {
             return 0;

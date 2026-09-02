@@ -111,8 +111,12 @@ internal sealed class ClaudePolicySeam(ConfigRoot config) {
             case PolicyOutcome.Ask:
                 await Emit(ctx, "ask", "prompt_stands");
                 return SeamAnswer.NotAnswered;
-            default:
+            case PolicyOutcome.None:
                 journal.IncrementPassThrough(sessionId);
+                return SeamAnswer.NotAnswered;
+            // Deny returned above; a later-added outcome must not fall into the counter, which
+            // would report a decision as an ungoverned call.
+            default:
                 return SeamAnswer.NotAnswered;
         }
     }
