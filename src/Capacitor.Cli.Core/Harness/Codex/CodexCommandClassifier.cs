@@ -584,6 +584,15 @@ internal static class ShellTokenizer {
                     continue;
             }
 
+            // An unquoted line break ends a command the way `;` does: folding it into whitespace
+            // would read `rg foo src⏎rm -rf tmp` as one search and hide the mutation.
+            if (c is '\n' or '\r') {
+                Flush();
+                result.Add(";");
+
+                continue;
+            }
+
             if (char.IsWhiteSpace(c)) {
                 Flush();
 

@@ -222,4 +222,27 @@ public class CodexCommandClassifierTests {
         var hint = CodexCommandClassifier.Classify(cmd);
         await Assert.That(hint).IsNull();
     }
+
+    /// An unquoted line break separates commands the way `;` does: a script whose first line
+    /// searches and whose second line mutates must not read as a search.
+    [Test]
+    [Arguments("rg foo src\nrm -rf tmp")]
+    [Arguments("rg foo src\r\nrm -rf tmp")]
+    [Arguments("cat a.md\n\nmake")]
+    [Arguments("bash -lc \"rg foo src\nrm -rf tmp\"")]
+    public async Task Unquoted_newlines_separate_commands_so_a_later_mutation_collapses_the_script(string cmd) {
+        await Assert.That(CodexCommandClassifier.Classify(cmd)).IsNull();
+    }
+
+    [Test]
+    public async Task Newline_separated_reads_classify_like_semicolon_separated_reads_and_a_quoted_newline_is_literal() {
+        await Assert.That(CodexCommandClassifier.Classify("cat a.md\ncat b.md")!.Type).IsEqualTo("read");
+        await Assert.That(CodexCommandClassifier.Classify("cat a.md; cat b.md")!.Type).IsEqualTo("read");
+        await Assert.That(CodexCommandClassifier.Classify("rg foo src\n")!.Type).IsEqualTo("search");
+
+        var quoted = CodexCommandClassifier.Classify("rg 'foo\nbar' src");
+        await Assert.That(quoted).IsNotNull();
+        await Assert.That(quoted!.Type).IsEqualTo("search");
+        await Assert.That(quoted.Query).IsEqualTo("foo\nbar");
+    }
 }

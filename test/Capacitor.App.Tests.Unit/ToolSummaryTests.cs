@@ -56,6 +56,7 @@ public class ToolSummaryTests {
     [Arguments("exec_command", """{"cmd":"rg foo src"}""", ToolCategory.Search)]
     [Arguments("exec_command", """{"cmd":"ls src"}""", ToolCategory.Search)]
     [Arguments("exec_command", """{"cmd":"cat a && make"}""", ToolCategory.Command)]
+    [Arguments("exec_command", """{"cmd":"rg foo src\nrm -rf tmp"}""", ToolCategory.Command)]
     [Arguments("exec_command", """{"cmd":"cat skills/review/SKILL.md"}""", ToolCategory.Skill)]
     [Arguments("shell", """{"command":["rg","foo","src"]}""", ToolCategory.Search)]
     [Arguments("shell", """{"command":["bash","-lc","cat a.md"]}""", ToolCategory.Read)]
