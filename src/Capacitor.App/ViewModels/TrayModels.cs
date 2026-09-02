@@ -1,3 +1,5 @@
+using Capacitor.Cli.Core.LocalIpc;
+
 namespace Capacitor.App.ViewModels;
 
 public enum TrayState { Stopped, Connecting, Attention, Idle, Running }
@@ -8,8 +10,23 @@ public static class RepoLabel {
     public static string Leaf(string? repoPath) => repoPath is null ? "—" : PlatformPaths.Leaf(repoPath);
 }
 
-/// The path primitives every surface shares, so the platform rule and the leaf expression exist
-/// once (they were drifting into per-VM copies).
+/// The checkout a session is presented under, shared by the rail's grouping and the workspace
+/// subtitle so the two cannot disagree: the checkout a reviewer borrowed comes first, so a
+/// snapshot reviewer sits beside the session it reviews rather than under its private copy.
+public static class CheckoutLabel {
+    /// Null from an older daemon, whose RepoPath is the checkout.
+    public static string? CheckoutPathFor(AgentStatusDto dto) => dto.BorrowedFrom ?? dto.WorktreePath;
+
+    public static bool IsMain(string checkout, string repoRoot) =>
+        PlatformPaths.Comparer.Equals(
+            Path.TrimEndingDirectorySeparator(checkout), Path.TrimEndingDirectorySeparator(repoRoot));
+
+    public static string Format(string checkout, string repoRoot) =>
+        IsMain(checkout, repoRoot) ? "main checkout" : PlatformPaths.Leaf(checkout);
+}
+
+/// The path primitives every surface shares: one platform comparison rule and one leaf
+/// expression, never a per-view copy.
 public static class PlatformPaths {
     /// Repo paths compare the way the filesystem underneath them does: case-insensitively on
     /// Windows and macOS, case-sensitively on Linux where two checkouts differing only in case

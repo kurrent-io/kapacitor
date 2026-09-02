@@ -105,11 +105,8 @@ public sealed class SessionRailViewModel : ReactiveObject, IDisposable {
         _collapse.Set(path, collapsed: false);
     }
 
-    /// The worktree node a session belongs under: the checkout a reviewer borrowed comes first, so
-    /// a snapshot reviewer sits beside the session it reviews rather than under its private copy.
-    /// An older daemon sends neither, and its RepoPath is the checkout.
     internal static string WorktreeKeyFor(AgentStatusDto dto) =>
-        dto.BorrowedFrom ?? dto.WorktreePath ?? dto.RepoPath ?? "";
+        CheckoutLabel.CheckoutPathFor(dto) ?? dto.RepoPath ?? "";
 
     // Memoized: ResolveMainRepoRoot reads .git files — cheap once, not per-changeset cheap; a
     // path's resolution never changes within a daemon's lifetime. A current daemon already sends

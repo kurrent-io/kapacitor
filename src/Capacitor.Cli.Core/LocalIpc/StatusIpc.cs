@@ -64,7 +64,8 @@ public sealed record AgentStatusDto(
     // borrowed.
     string? BorrowedFrom = null);
 
-/// The <see cref="AgentStatusDto.WorkLocation"/> vocabulary.
+/// Wire tokens for <see cref="AgentStatusDto.WorkLocation"/>, compared literally by every
+/// client, so they never change.
 public static class WorkLocationText {
     public const string Owned    = "owned";
     public const string Borrowed = "borrowed";

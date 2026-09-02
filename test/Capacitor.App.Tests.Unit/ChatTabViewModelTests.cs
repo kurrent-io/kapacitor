@@ -95,6 +95,28 @@ public class ChatTabViewModelTests {
         });
     }
 
+    /// Tool paths read relative to the checkout the agent runs in, which the wire names as
+    /// worktree_path; the repository alone would leave a checkout outside its own directory, or
+    /// one under `.claude/worktrees`, rendering absolute paths.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Tool_paths_relativize_against_the_worktree_the_agent_runs_in() {
+        await RunOnUiAsync(async () => {
+            var h = Claude();
+            const string worktree = "/repo/x/.claude/worktrees/slug";
+            const string readLine = """{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t2","name":"Read","input":{"file_path":"/repo/x/.claude/worktrees/slug/src/Foo.cs"}}]}}""";
+            h.Permissions.Add(PermissionEntries.Entry("r1", "a1", toolName: "Read", toolInputJson: """{"file_path":"/repo/x/.claude/worktrees/slug/src/Bar.cs"}"""));
+            await WaitUntilAsync(() => h.Chat.PendingCards.Count == 1, what: "the card");
+
+            var path = Tmp.CreateFile("t.jsonl", [readLine]);
+            await h.PushAsync(Dto(path) with { WorktreePath = worktree, WorkLocation = "owned" });
+
+            await Assert.That(((ToolCallItem)h.Chat.Items.Single()).Detail).IsEqualTo("src/Foo.cs");
+            await WaitUntilAsync(() => ((PermissionCardViewModel)h.Chat.PendingCards[0]).Detail == "src/Bar.cs", what: "relative to the worktree once the root lands");
+            await h.TeardownAsync();
+        });
+    }
+
     [Test]
     [NotInParallel("AvaloniaSession")]
     public async Task Appended_lines_render_after_a_tick_and_a_partial_line_waits_for_its_newline() {

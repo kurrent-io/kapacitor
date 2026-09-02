@@ -513,6 +513,7 @@ they name the checkout the request is for.
 **Both a marker and a path go on the wire, and the path is the grouping key.** A Cursor or Copilot
 reviewer runs in a private snapshot, so `worktree_path` alone would file it under a node nobody else
 shares; `borrowed_from` names the checkout it reviews, which is where it belongs — in the rail and in
-the workspace subtitle alike. `work_location` is derived from `borrowed_from` at the one stamping site,
+the workspace subtitle alike, through one `CheckoutLabel` so the two cannot drift. The chat relativizes
+tool paths against `worktree_path`, the checkout the agent actually runs in. `work_location` is derived from `borrowed_from` at the one stamping site,
 so the two cannot disagree, and a client that only needs the marker reads the token instead of
 comparing paths.
