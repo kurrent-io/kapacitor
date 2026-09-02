@@ -16,4 +16,5 @@ sealed record PolicySnapshotFileDocV1(
 
 [JsonSourceGenerationOptions(GenerationMode = JsonSourceGenerationMode.Metadata)]
 [JsonSerializable(typeof(PolicySnapshotFileV1))]
+[JsonSerializable(typeof(PolicyJournalFileV1))]
 partial class PolicyJsonContext : JsonSerializerContext;
