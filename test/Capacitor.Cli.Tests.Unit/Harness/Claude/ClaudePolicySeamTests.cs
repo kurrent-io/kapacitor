@@ -167,4 +167,122 @@ public class ClaudePolicySeamTests {
         await Assert.That(consumed.ExactOutcome).IsEqualTo("deny");
         await Assert.That(consumed.Ambiguous).IsFalse();
     }
+
+    JsonNode PermissionNode(string toolName, string toolInputJson, string? callId = null) {
+        var node = new JsonObject {
+            ["hook_event_name"] = "PermissionRequest", ["session_id"] = Sid,
+            ["tool_name"] = toolName, ["tool_input"] = JsonNode.Parse(toolInputJson),
+            ["cwd"] = Tmp.PathTo("repo"),
+        };
+        if (callId is not null) node["tool_use_id"] = callId;
+        return node;
+    }
+
+    [Test]
+    public async Task Permission_request_deny_rule_answers_the_prompt_deny() {
+        WriteUserPolicy("version: 1\nrules:\n  - match: { kind: shell, command: \"git push --force*\" }\n    outcome: deny\n");
+        var stdout = new StringWriter();
+        var answer = await Seam.HandlePermissionRequestAsync(
+            PermissionNode("Bash", """{"command":"git push --force"}"""), Sid, stdout);
+        await Assert.That(answer).IsEqualTo(SeamAnswer.Answered);
+        var hso = JsonNode.Parse(stdout.ToString())!["hookSpecificOutput"]!;
+        await Assert.That(hso["hookEventName"]!.GetValue<string>()).IsEqualTo("PermissionRequest");
+        await Assert.That(hso["decision"]!["behavior"]!.GetValue<string>()).IsEqualTo("deny");
+
+        var events = Decisions();
+        await Assert.That(events.Count).IsEqualTo(1);
+        await Assert.That(events[0]["seam"]!.GetValue<string>()).IsEqualTo("claude_permission_request");
+        await Assert.That(events[0]["requested_outcome"]!.GetValue<string>()).IsEqualTo("deny");
+        await Assert.That(events[0]["effective_outcome"]!.GetValue<string>()).IsEqualTo("deny");
+    }
+
+    [Test]
+    public async Task Permission_request_allow_rule_answers_allow() {
+        WriteUserPolicy("version: 1\nrules:\n  - match: { kind: shell, command: \"git status *\" }\n    outcome: allow\n");
+        var stdout = new StringWriter();
+        var answer = await Seam.HandlePermissionRequestAsync(
+            PermissionNode("Bash", """{"command":"git status"}"""), Sid, stdout);
+        await Assert.That(answer).IsEqualTo(SeamAnswer.Answered);
+        await Assert.That(JsonNode.Parse(stdout.ToString())!["hookSpecificOutput"]!["decision"]!["behavior"]!
+            .GetValue<string>()).IsEqualTo("allow");
+        await Assert.That(Decisions()[0]["effective_outcome"]!.GetValue<string>()).IsEqualTo("allow");
+    }
+
+    /// <summary>A prompt the policy's own ask forced belongs to the human it was raised for, so the
+    /// allow the same files would grant may not answer it.</summary>
+    [Test]
+    public async Task Pending_ask_suppresses_a_fresh_allow() {
+        WriteUserPolicy("version: 1\nrules:\n  - match: { kind: shell, command: \"git status *\" }\n    outcome: allow\n");
+        new PolicyDecisionJournal(Config.Root).RecordAsk(Sid, null, HashOf("""{"command":"git status"}"""));
+        var stdout = new StringWriter();
+        var answer = await Seam.HandlePermissionRequestAsync(
+            PermissionNode("Bash", """{"command":"git status"}"""), Sid, stdout);
+        await Assert.That(answer).IsEqualTo(SeamAnswer.NotAnswered);
+        await Assert.That(stdout.ToString()).IsEmpty();
+
+        var events = Decisions();
+        await Assert.That(events.Count).IsEqualTo(1);
+        await Assert.That(events[0]["requested_outcome"]!.GetValue<string>()).IsEqualTo("ask");
+        await Assert.That(events[0]["effective_outcome"]!.GetValue<string>()).IsEqualTo("prompt_stands");
+        await Assert.That(events[0]["correlation_ambiguous"]!.GetValue<bool>()).IsTrue();
+    }
+
+    [Test]
+    public async Task Pending_ask_on_the_exact_lane_is_not_ambiguous() {
+        WriteUserPolicy("version: 1\nrules:\n  - match: { kind: shell, command: \"git status *\" }\n    outcome: allow\n");
+        new PolicyDecisionJournal(Config.Root).RecordAsk(Sid, "toolu_03Z", HashOf("""{"command":"git status"}"""));
+        var answer = await Seam.HandlePermissionRequestAsync(
+            PermissionNode("Bash", """{"command":"git status"}""", callId: "toolu_03Z"), Sid, new StringWriter());
+        await Assert.That(answer).IsEqualTo(SeamAnswer.NotAnswered);
+        await Assert.That(Decisions()[0]["correlation_ambiguous"]!.GetValue<bool>()).IsFalse();
+    }
+
+    [Test]
+    public async Task Fresh_deny_wins_even_with_a_pending_ask() {
+        WriteUserPolicy("version: 1\nrules:\n  - match: { kind: shell, command: \"rm -rf*\" }\n    outcome: deny\n");
+        new PolicyDecisionJournal(Config.Root).RecordAsk(Sid, null, HashOf("""{"command":"rm -rf /"}"""));
+        var stdout = new StringWriter();
+        var answer = await Seam.HandlePermissionRequestAsync(
+            PermissionNode("Bash", """{"command":"rm -rf /"}"""), Sid, stdout);
+        await Assert.That(answer).IsEqualTo(SeamAnswer.Answered);
+        await Assert.That(stdout.ToString()).Contains("\"deny\"");
+        await Assert.That(Decisions()[0]["effective_outcome"]!.GetValue<string>()).IsEqualTo("deny");
+    }
+
+    [Test]
+    public async Task Fresh_ask_leaves_the_prompt_standing() {
+        WriteUserPolicy("version: 1\nrules:\n  - match: { kind: shell, command: \"gh pr merge\" }\n    outcome: ask\n");
+        var stdout = new StringWriter();
+        var answer = await Seam.HandlePermissionRequestAsync(
+            PermissionNode("Bash", """{"command":"gh pr merge"}"""), Sid, stdout);
+        await Assert.That(answer).IsEqualTo(SeamAnswer.NotAnswered);
+        await Assert.That(stdout.ToString()).IsEmpty();
+        var events = Decisions();
+        await Assert.That(events.Count).IsEqualTo(1);
+        await Assert.That(events[0]["requested_outcome"]!.GetValue<string>()).IsEqualTo("ask");
+        await Assert.That(events[0]["effective_outcome"]!.GetValue<string>()).IsEqualTo("prompt_stands");
+    }
+
+    [Test]
+    public async Task Permission_request_without_a_policy_defers_to_record_only() {
+        var stdout = new StringWriter();
+        var answer = await Seam.HandlePermissionRequestAsync(
+            PermissionNode("Bash", """{"command":"ls"}"""), Sid, stdout);
+        await Assert.That(answer).IsEqualTo(SeamAnswer.NotAnswered);
+        await Assert.That(stdout.ToString()).IsEmpty();
+        await Assert.That(Decisions()).IsEmpty();
+        await Assert.That(new PolicyDecisionJournal(Config.Root).TakePassThroughCount(Sid)).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Permission_request_unmatched_action_counts_a_pass_through() {
+        WriteUserPolicy("version: 1\nrules:\n  - match: { kind: shell, command: \"git push --force*\" }\n    outcome: deny\n");
+        var stdout = new StringWriter();
+        var answer = await Seam.HandlePermissionRequestAsync(
+            PermissionNode("Bash", """{"command":"cargo build"}"""), Sid, stdout);
+        await Assert.That(answer).IsEqualTo(SeamAnswer.NotAnswered);
+        await Assert.That(stdout.ToString()).IsEmpty();
+        await Assert.That(Decisions()).IsEmpty();
+        await Assert.That(new PolicyDecisionJournal(Config.Root).TakePassThroughCount(Sid)).IsEqualTo(1);
+    }
 }

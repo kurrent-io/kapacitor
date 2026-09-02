@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Config;
+using Capacitor.Cli.Harness.Claude;
 
 // ReSharper disable MethodHasAsyncOverload
 
@@ -51,6 +52,15 @@ class PermissionRequestCommand(ConfigRoot config, ProfileContext profiles) {
         }
 
         var isRenderedAgent = Environment.GetEnvironmentVariable("KCAP_RENDERED_AGENT") is "1";
+
+        // A rendered session's prompt is the daemon bridge's to decide — one full evaluation per
+        // raised prompt, off the same files — so evaluating it here too would decide it twice with
+        // no journal shared across the two processes.
+        if (!isRenderedAgent
+            && await new ClaudePolicySeam(config).HandlePermissionRequestAsync(node, sessionId, stdout ?? Console.Out)
+                == SeamAnswer.Answered) {
+            return 0;
+        }
 
         if (isRenderedAgent) {
             return await HandleRenderedAgent(node, sessionId, stdout);
