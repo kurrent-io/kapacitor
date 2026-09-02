@@ -4,6 +4,7 @@ using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.Harness.Claude;
+using Capacitor.Cli.Core.Policy;
 using Capacitor.Cli.SessionStartMemory;
 using Capacitor.Cli.Core.Harness;
 
@@ -560,16 +561,35 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
             // attributed even when cwd is a subdirectory. Fail-open: GitRepository.FindRoot swallows
             // I/O errors and returns null when no repo is found, in which case the field is simply
             // omitted (older servers ignore unknown fields regardless).
-            if (sessionCwd is not null && GitRepository.FindRoot(sessionCwd) is { } workspaceRoot) {
+            var repoRoot = sessionCwd is null ? null : GitRepository.FindRoot(sessionCwd);
+
+            if (repoRoot is not null) {
                 try {
                     var node = JsonNode.Parse(body);
 
                     if (node is not null) {
-                        node["workspace_root"] = workspaceRoot;
+                        node["workspace_root"] = repoRoot;
                         body                    = node.ToJsonString();
                     }
                 } catch {
                     // Best effort
+                }
+            }
+
+            // Freeze the approval policy here rather than at the first tool call, so an edit made
+            // mid-session cannot change what governs a session already under way. A degradation
+            // must reach the user, so it rides whatever this arm writes to stdout below.
+            string? policyNotice = null;
+
+            if (sessionId is not null) {
+                try {
+                    var snapshot = new PolicySnapshotStore(config).LoadOrBuild(sessionId, repoRoot);
+
+                    if (snapshot.Degraded && snapshot.Degradations.Count > 0) {
+                        policyNotice = $"[kcap] approval policy degraded: {snapshot.Degradations[0]}";
+                    }
+                } catch {
+                    // Best effort — a policy hiccup never fails the hook.
                 }
             }
 
@@ -617,6 +637,7 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
                     spool.Append(sessionId, "session-start", body);
                     await Console.Error.WriteLineAsync($"[kcap] session-start spooled (ordering guard); will retry on the next kcap hook ({sessionId})");
                 }
+                WriteSessionStart(writer, null, policyNotice);
                 return 0;
             }
 
@@ -679,9 +700,10 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
 
                 // The envelope below is built only from a 2xx body, so this is the arm's only
                 // stdout write — without it the start event is dropped in silence.
-                if (code == 401) {
-                    writer.WriteLine(new JsonObject { ["systemMessage"] = AuthRejectionNotice.RecordingNotice(StoredCredentialState.LooksValid) }.ToJsonString());
-                }
+                var rejection = code == 401
+                    ? new JsonObject { ["systemMessage"] = AuthRejectionNotice.RecordingNotice(StoredCredentialState.LooksValid) }.ToJsonString()
+                    : null;
+                WriteSessionStart(writer, rejection, policyNotice);
 
                 return 0;
             }
@@ -713,6 +735,8 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
             }
 
             // Context-envelope emission (lessons/version-nudge).
+            string? envelope = null;
+
             if (responseNode is not null) {
                 try {
                     // The EFFECTIVE profile (the `activeProfile` resolved above), not
@@ -746,18 +770,16 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
                         HarnessId.Claude, sessionId, activeProfile?.DisableWorkItemsNudge is true, home);
                     var harnessNudge = HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true, config, home);
 
-                    var envelope = SessionStartAdditionalContext.BuildEnvelope(
+                    envelope = SessionStartAdditionalContext.BuildEnvelope(
                         lessonsFragment, nudgeFragment, memoryFragment, coordinationFragment, workItemsNudge, harnessNudge);
-
-                    if (envelope is not null) {
-                        writer.WriteLine(envelope);
-                    }
                 } catch {
                     // Best effort — never break session capture for hook output emission.
                 }
             }
 
             resp.Dispose();
+
+            WriteSessionStart(writer, envelope, policyNotice);
 
             return 0;
         }
@@ -772,10 +794,16 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
                 var node = JsonNode.Parse(body);
                 sessionId = node?["session_id"]?.GetValue<string>();
                 if (node is not null) {
+                    // Stamped before the body is frozen so a spooled replay carries the count too.
+                    if (sessionId is not null) StampPassThroughCount(node, sessionId);
                     node["ended_at"] = DateTimeOffset.UtcNow.ToString("O");
                     body             = node.ToJsonString();
                 }
             } catch { }
+
+            // The session is over and the server holds the uploaded snapshot, so nothing here is
+            // read again — and session-end is the only thing that evicts these directories.
+            if (sessionId is not null) EvictPolicyState(sessionId);
 
             // Ordering guard: if this session's backlog couldn't fully drain, spool the fresh
             // session-end so a stranded session-start always reaches the server before it.
@@ -863,6 +891,15 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
             }
         }
 
+        // The turn is over, so its pending asks expire with it: a decision journalled for one turn
+        // must never answer an identical call in the next.
+        if (command == "stop") {
+            try {
+                var stopSessionId = JsonNode.Parse(body)?["session_id"]?.GetValue<string>();
+                if (stopSessionId is not null) new PolicyDecisionJournal(config).ClearTurn(stopSessionId);
+            } catch { }
+        }
+
         using var sharedContent = new StringContent(body, Encoding.UTF8, "application/json");
 
         HttpResponseMessage response;
@@ -925,6 +962,68 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
         }
 
         return 0;
+    }
+
+    /// <summary>
+    /// Writes the session-start arm's single stdout object, folding a policy-degradation notice
+    /// into whatever the flow produced. One object, never two: Claude parses the hook's stdout as
+    /// one value, so a notice written beside an envelope would cost the reader both.
+    /// </summary>
+    static void WriteSessionStart(TextWriter writer, string? json, string? policyNotice) {
+        if (policyNotice is null) {
+            if (json is not null) writer.WriteLine(json);
+
+            return;
+        }
+
+        JsonObject? merged;
+        try { merged = json is null ? new JsonObject() : JsonNode.Parse(json) as JsonObject; }
+        catch { merged = null; }
+
+        if (merged is null) {
+            writer.WriteLine(json);
+
+            return;
+        }
+
+        merged["systemMessage"] = merged["systemMessage"] is JsonValue existing && existing.TryGetValue<string>(out var text)
+            ? $"{text}\n{policyNotice}"
+            : policyNotice;
+
+        writer.WriteLine(merged.ToJsonString());
+    }
+
+    /// <summary>Records how many tool calls ran past the policy engine unmatched, and resets the
+    /// counter so a resumed session never re-reports them.</summary>
+    void StampPassThroughCount(JsonNode node, string sessionId) {
+        try {
+            var count = new PolicyDecisionJournal(config).TakePassThroughCount(sessionId);
+            if (count > 0) node["policy_pass_through_count"] = count;
+        } catch { }
+    }
+
+    /// <summary>Drops the session's snapshot, journal and snapshot-upload markers. Best effort
+    /// throughout: a file that will not delete costs disk, never the hook.</summary>
+    void EvictPolicyState(string sessionId) {
+        var key = PolicySnapshotStore.Sanitize(sessionId);
+        TryDelete(config.Path("policy", "sessions", $"{key}.json"));
+        TryDelete(config.Path("policy", "journal", $"{key}.json"));
+
+        try {
+            var uploaded = config.Path("policy", "uploaded");
+
+            if (Directory.Exists(uploaded)) {
+                // Matched by prefix rather than a glob: the marker name carries the raw session id,
+                // and a session id is not guaranteed to be free of pattern characters.
+                foreach (var marker in Directory.EnumerateFiles(uploaded)) {
+                    if (Path.GetFileName(marker).StartsWith($"{sessionId}-", StringComparison.Ordinal)) TryDelete(marker);
+                }
+            }
+        } catch { }
+
+        static void TryDelete(string path) {
+            try { File.Delete(path); } catch { }
+        }
     }
 
     /// <summary>

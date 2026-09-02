@@ -7,6 +7,7 @@ using Capacitor.Cli.Tests.Unit.SessionStartMemory;
 using Capacitor.Cli.Core.Setup;
 using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.Config;
+using Capacitor.Cli.Core.Policy;
 using Microsoft.Extensions.Time.Testing;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
@@ -73,6 +74,81 @@ public class ClaudeHookCommandTests {
         await Assert.That(new HookSpool(Config.Root).HasBacklog(Sid)).IsTrue();
         await Assert.That(fx.ServerRequestCount).IsEqualTo(0);
         await Assert.That(fx.RouteOrder).IsEmpty();
+    }
+
+    // ── Approval-policy lifecycle: build at session-start, expire per turn, evict at session-end ──
+
+    /// <summary>A degradation the user never sees is the failure mode the spec forbids: the
+    /// snapshot is built eagerly at session-start and a loss surfaces on the hook's own stdout.</summary>
+    [Test]
+    public async Task session_start_surfaces_a_degraded_policy_snapshot() {
+        // A server-scope field in a user document — parsed, then refused, so the file is dropped
+        // with a degradation rather than silently ignored.
+        File.WriteAllText(Config.Root.Path("approvals.yaml"), "version: 1\nenforcement: strict\n");
+        using var fx = new Fixture(Config.Root);
+        var stdout = new StringWriter { NewLine = "\n" };
+
+        var exit = await new ClaudeHookCommand(Config.Root, Resolutions.At("http://localhost", Config.Root), new HookClock(TimeProvider.System), Home).HandleCore(
+            fx.Client, AuthStatus.Ok, fx.Spool, new StringReader(
+                $$"""{"hook_event_name":"SessionStart","session_id":"{{Sid}}","cwd":"/tmp"}"""),
+            stdout: stdout);
+
+        await Assert.That(exit).IsEqualTo(0);
+        var notice = JsonNode.Parse(stdout.ToString().Trim());
+        await Assert.That(notice!["systemMessage"]!.GetValue<string>()).Contains("approval policy degraded");
+        // Built eagerly, not on the first tool call: the snapshot that governs the session is frozen here.
+        await Assert.That(new PolicySnapshotStore(Config.Root).TryLoad(Sid)).IsNotNull();
+    }
+
+    [Test]
+    public async Task stop_clears_the_turn_journal() {
+        var journal = new PolicyDecisionJournal(Config.Root);
+        journal.RecordAsk(Sid, null, "h1");
+        await Assert.That(File.Exists(Config.Root.Path("policy", "journal", $"{Sid}.json"))).IsTrue();
+        using var fx = new Fixture(Config.Root);
+
+        var exit = await new ClaudeHookCommand(Config.Root, Resolutions.At("http://localhost", Config.Root), new HookClock(TimeProvider.System), Home).HandleCore(
+            fx.Client, AuthStatus.Ok, fx.Spool, new StringReader(
+                $$"""{"hook_event_name":"Stop","session_id":"{{Sid}}","cwd":"/tmp"}"""));
+
+        await Assert.That(exit).IsEqualTo(0);
+        await Assert.That(journal.Consume(Sid, null, "h1").PendingAsk).IsFalse();
+    }
+
+    [Test]
+    public async Task session_end_stamps_the_policy_pass_through_count() {
+        new PolicyDecisionJournal(Config.Root).IncrementPassThrough(Sid);
+        using var fx = new Fixture(Config.Root);
+
+        var exit = await fx.HandleAsync($$"""{"hook_event_name":"SessionEnd","session_id":"{{Sid}}","cwd":"/tmp"}""");
+
+        await Assert.That(exit).IsEqualTo(0);
+        var posted = fx.Sent.Single(s => s.StartsWith("/hooks/session-end|", StringComparison.Ordinal));
+        var body   = JsonNode.Parse(posted[(posted.IndexOf('|') + 1)..]);
+        await Assert.That(body!["policy_pass_through_count"]!.GetValue<long>()).IsEqualTo(1L);
+    }
+
+    /// <summary>Session-end is the only eviction the policy directories get, so what it leaves
+    /// behind accumulates for the life of the config dir.</summary>
+    [Test]
+    public async Task session_end_evicts_the_sessions_policy_files() {
+        var store = new PolicySnapshotStore(Config.Root);
+        store.LoadOrBuild(Sid, null);
+        var journal = new PolicyDecisionJournal(Config.Root);
+        journal.RecordAsk(Sid, "call-1", "h1");
+        var marker = Config.Root.Path("policy", "uploaded", $"{Sid}-0123456789abcdef");
+        Directory.CreateDirectory(Path.GetDirectoryName(marker)!);
+        File.WriteAllText(marker, "");
+        await Assert.That(store.TryLoad(Sid)).IsNotNull();
+        await Assert.That(File.Exists(Config.Root.Path("policy", "journal", $"{Sid}.json"))).IsTrue();
+
+        using var fx = new Fixture(Config.Root);
+        var exit = await fx.HandleAsync($$"""{"hook_event_name":"SessionEnd","session_id":"{{Sid}}","cwd":"/tmp"}""");
+
+        await Assert.That(exit).IsEqualTo(0);
+        await Assert.That(store.TryLoad(Sid)).IsNull();
+        await Assert.That(journal.Consume(Sid, "call-1", "h1").ExactOutcome).IsNull();
+        await Assert.That(File.Exists(marker)).IsFalse();
     }
 
     [Test]
