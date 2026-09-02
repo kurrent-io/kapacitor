@@ -30,7 +30,7 @@
                 <RadioButton x:Name="PasteChoice" GroupName="Connect" Content="I have a workspace name or URL"
                              IsChecked="{Binding PasteSelected, Mode=TwoWay}" />
                 <StackPanel Margin="26,0,0,0" Spacing="4" IsEnabled="{Binding PasteSelected}">
-                    <TextBox x:Name="ServerInputBox" Watermark="acme  ·  https://acme.kcap.ai"
+                    <TextBox x:Name="ServerInputBox" PlaceholderText="acme  ·  https://acme.kcap.ai"
                              Text="{Binding ServerInputText, Mode=TwoWay}" />
                     <TextBlock x:Name="ConnectErrorText" Text="{Binding InputError}" TextWrapping="Wrap"
                                Foreground="#E53935"
@@ -138,11 +138,11 @@
                                  IsChecked="{Binding EverythingSelected, Mode=TwoWay}" />
                     <RadioButton x:Name="OrgChoice" GroupName="ImportScope" Content="All repos in one org"
                                  IsChecked="{Binding OrgSelected, Mode=TwoWay}" />
-                    <TextBox x:Name="OrgTextBox" Margin="26,0,0,0" Watermark="acme" Width="220" HorizontalAlignment="Left"
+                    <TextBox x:Name="OrgTextBox" Margin="26,0,0,0" PlaceholderText="acme" Width="220" HorizontalAlignment="Left"
                              Text="{Binding OrgText, Mode=TwoWay}" IsEnabled="{Binding OrgSelected}" />
                     <RadioButton x:Name="RepoChoice" GroupName="ImportScope" Content="Specific repository"
                                  IsChecked="{Binding RepoSelected, Mode=TwoWay}" />
-                    <TextBox x:Name="RepoTextBox" Margin="26,0,0,0" Watermark="owner/name" Width="220" HorizontalAlignment="Left"
+                    <TextBox x:Name="RepoTextBox" Margin="26,0,0,0" PlaceholderText="owner/name" Width="220" HorizontalAlignment="Left"
                              Text="{Binding RepoText, Mode=TwoWay}" IsEnabled="{Binding RepoSelected}" />
                 </StackPanel>
 
