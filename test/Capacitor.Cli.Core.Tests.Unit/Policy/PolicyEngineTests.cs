@@ -48,11 +48,24 @@ public class PolicyEngineTests {
     }
 
     [Test]
-    public async Task Full_coverage_across_different_allow_rules_authorizes() {
+    public async Task Full_coverage_by_one_rule_dedupes_matched_refs() {
         var eval = PolicyEngine.Evaluate(Snap((PolicyScope.User, UserDoc)),
             Bash("git status && git diff --stat"), EvaluationMode.Full);
         await Assert.That(eval.Outcome).IsEqualTo(PolicyOutcome.Allow);
         await Assert.That(eval.MatchedRules.Count).IsEqualTo(1);       // both segments hit rule index 2
+    }
+
+    [Test]
+    public async Task Full_coverage_across_different_rules_and_scopes_authorizes() {
+        var repoStatusAllow = "version: 1\nrules:\n  - match: { kind: shell, command: \"git status *\" }\n    outcome: allow\n";
+        var userDiffAllow = "version: 1\nrules:\n  - match: { kind: shell, command: \"git diff *\" }\n    outcome: allow\n";
+        var eval = PolicyEngine.Evaluate(
+            Snap((PolicyScope.Repo, repoStatusAllow), (PolicyScope.User, userDiffAllow)),
+            Bash("git status --porcelain && git diff --stat"), EvaluationMode.Full);
+        await Assert.That(eval.Outcome).IsEqualTo(PolicyOutcome.Allow);
+        await Assert.That(eval.MatchedRules.Count).IsEqualTo(2);
+        await Assert.That(eval.MatchedRules[0].Scope).IsEqualTo(PolicyScope.Repo);
+        await Assert.That(eval.MatchedRules[1].Scope).IsEqualTo(PolicyScope.User);
     }
 
     [Test]
@@ -82,6 +95,13 @@ public class PolicyEngineTests {
             Bash("npm publish --tag next"), EvaluationMode.Full);
         await Assert.That(eval.Outcome).IsEqualTo(PolicyOutcome.Deny);
         await Assert.That(eval.MatchedRules[0].Scope).IsEqualTo(PolicyScope.User);
+
+        var repoDeny = "version: 1\nrules:\n  - match: { kind: shell, command: \"npm publish\" }\n    outcome: deny\n";
+        var userAllow = "version: 1\nrules:\n  - match: { kind: shell, command: \"npm publish *\" }\n    outcome: allow\n";
+        var reversed = PolicyEngine.Evaluate(Snap((PolicyScope.Repo, repoDeny), (PolicyScope.User, userAllow)),
+            Bash("npm publish --tag next"), EvaluationMode.Full);
+        await Assert.That(reversed.Outcome).IsEqualTo(PolicyOutcome.Deny);
+        await Assert.That(reversed.MatchedRules[0].Scope).IsEqualTo(PolicyScope.Repo);
     }
 
     [Test]
@@ -138,7 +158,7 @@ public class PolicyEngineTests {
     }
 
     [Test]
-    public async Task Path_deny_matches_glob_against_the_absolute_path() {
+    public async Task Path_ask_matches_glob_against_the_absolute_path() {
         var doc = "version: 1\nrules:\n  - match: { kind: file_edit, path: \"/repo/.github/*\" }\n    outcome: ask\n";
         var a = new CanonicalAction { Kind = ActionKind.FileEdit, Vendor = "v", Paths = ["/repo/.github/workflows/ci.yml"] };
         var eval = PolicyEngine.Evaluate(Snap((PolicyScope.User, doc)), a, EvaluationMode.Full);
