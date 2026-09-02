@@ -45,8 +45,18 @@ public class ChatTabViewSmokeTests {
     static Button Summary(ChatTabView view) => view.GetVisualDescendants().OfType<Button>().Single(b => b.Classes.Contains("toolSummary"));
     static ToolGroupItem OnlyGroup(Host host) => (ToolGroupItem)host.Chat.Items.Single();
 
+    /// A synthetic pointer event hit-tests the compositor's last committed scene, which layout alone
+    /// does not refresh: a control shown since the last frame is invisible to the click until the
+    /// render timer ticks once more.
+    static Point PresentAndLocate(Host host, Control target) {
+        host.Settle();
+        AvaloniaHeadlessPlatform.ForceRenderTimerTick();
+        Dispatcher.UIThread.RunJobs();
+        return target.TranslatePoint(new Point(2, 2), host.Window)!.Value;
+    }
+
     static void Click(Host host, Control target) {
-        var origin = target.TranslatePoint(new Point(2, 2), host.Window)!.Value;
+        var origin = PresentAndLocate(host, target);
         host.Window.MouseDown(origin, MouseButton.Left);
         host.Window.MouseUp(origin, MouseButton.Left);
         host.Settle();
@@ -582,8 +592,7 @@ public class ChatTabViewSmokeTests {
             await Assert.That(host.AtBottom()).IsTrue();
             var before = host.Scroll.Offset.Y;
 
-            var summary = Summary(host.View);
-            var origin = summary.TranslatePoint(new Point(2, 2), host.Window)!.Value;
+            var origin = PresentAndLocate(host, Summary(host.View));
             host.Window.MouseDown(origin, MouseButton.Left);
             host.Window.MouseUp(origin, MouseButton.Left);
             File.AppendAllLines(path, Enumerable.Repeat(UserLine, 5));
