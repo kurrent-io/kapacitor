@@ -1019,10 +1019,11 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
             var uploaded = config.Path("policy", "uploaded");
 
             if (Directory.Exists(uploaded)) {
-                // Matched by prefix rather than a glob: the marker name carries the raw session id,
-                // and a session id is not guaranteed to be free of pattern characters.
+                // The same sanitized key the emitter names the marker with — the raw id can carry a
+                // separator that would put the file somewhere this prefix never sees. Matched by
+                // prefix rather than a glob because the key is followed by a snapshot-id suffix.
                 foreach (var marker in Directory.EnumerateFiles(uploaded)) {
-                    if (Path.GetFileName(marker).StartsWith($"{sessionId}-", StringComparison.Ordinal)) TryDelete(marker);
+                    if (Path.GetFileName(marker).StartsWith($"{key}-", StringComparison.Ordinal)) TryDelete(marker);
                 }
             }
         } catch { }

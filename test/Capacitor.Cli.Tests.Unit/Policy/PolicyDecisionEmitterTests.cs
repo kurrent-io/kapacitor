@@ -43,8 +43,24 @@ public class PolicyDecisionEmitterTests : IDisposable {
         await Assert.That(decisions.Count).IsEqualTo(2);
         await Assert.That(decisions[0]["session_id"]!.GetValue<string>()).IsEqualTo("s1");
         await Assert.That(decisions[0]["seam"]!.GetValue<string>()).IsEqualTo("claude_pre_tool_use");
-        // The upload marker is what makes the second emit skip the snapshot.
+        // The upload marker is what makes the second emit skip the snapshot, and its name is the
+        // sanitized session key the session-end eviction matches by prefix.
         await Assert.That(SpooledPolicyEvents.Snapshots(Config.Root, "s1").Count).IsEqualTo(1);
+        await Assert.That(Directory.EnumerateFiles(Config.Root.Path("policy", "uploaded"))
+            .Select(f => Path.GetFileName(f)!)).IsEquivalentTo(new[] { $"s1-{Snapshot.Id}" });
+    }
+
+    /// <summary>The marker is named by the same sanitized key the snapshot and journal files carry,
+    /// so a session id holding a path separator can never nest it below the one directory level the
+    /// session-end eviction enumerates.</summary>
+    [Test]
+    public async Task A_session_id_with_a_separator_never_nests_the_upload_marker() {
+        await Emitter.EmitAsync(Event("a/b"), Snapshot);
+
+        await Assert.That(Directory.Exists(Config.Root.Path("policy", "uploaded", "a"))).IsFalse();
+        var uploaded = Config.Root.Path("policy", "uploaded");
+        var nested   = Directory.Exists(uploaded) ? Directory.EnumerateDirectories(uploaded).ToList() : [];
+        await Assert.That(nested).IsEmpty();
     }
 
     /// <summary>Nothing is posted inline. A decision seam runs under the vendor's hook ceiling and
