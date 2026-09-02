@@ -53,6 +53,14 @@ public class PolicyDecisionJournalTests {
         await Assert.That(Journal.TakePassThroughCount(Sid)).IsEqualTo(0);
     }
 
+    /// <summary>`stop` fires every turn of every session, so a clear with nothing to expire must not
+    /// mint a journal for a session that never journaled anything.</summary>
+    [Test]
+    public async Task Clear_turn_writes_nothing_for_a_session_with_no_journal() {
+        Journal.ClearTurn(Sid);
+        await Assert.That(Directory.Exists(Config.Root.Path("policy", "journal"))).IsFalse();
+    }
+
     [Test]
     public async Task Sessions_are_isolated() {
         Journal.RecordAsk("s1", null, "h1");

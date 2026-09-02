@@ -66,20 +66,27 @@ public sealed class PolicyDecisionJournal(ConfigRoot config) {
         return count;
     }
 
+    // Returning the same reference when there is nothing to expire keeps the write out: `stop` fires
+    // every turn of every session, and a fresh record would mint an empty journal file for sessions
+    // that never journaled anything.
     public void ClearTurn(string sessionKey) =>
-        Mutate(sessionKey, f => f with { PendingAsks = [], ByCallId = [] });
+        Mutate(sessionKey, f => f.PendingAsks.Count == 0 && f.ByCallId.Count == 0
+            ? f
+            : f with { PendingAsks = [], ByCallId = [] });
 
     void Mutate(string sessionKey, Func<PolicyJournalFileV1, PolicyJournalFileV1> transform) {
         try {
             var path = PathFor(sessionKey);
-            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             // Well under a hook's 5s ceiling: parallel hooks contend for this file, and a wait that
             // could eat the whole budget would cost the decision rather than just the journal entry.
             // A timeout lands in the catch below and fails open.
             using var _ = ConfigFileLock.Acquire(path, TimeSpan.FromSeconds(2));
             var current = Read(path);
             var next = transform(current);
+            // A no-op transform leaves the directory uncreated too, so a session that never
+            // journaled leaves nothing behind at all.
             if (ReferenceEquals(next, current)) return;
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             var tmp = path + ".tmp";
             File.WriteAllText(tmp, JsonSerializer.Serialize(next, PolicyJsonContext.Default.PolicyJournalFileV1));
             File.Move(tmp, path, overwrite: true);
