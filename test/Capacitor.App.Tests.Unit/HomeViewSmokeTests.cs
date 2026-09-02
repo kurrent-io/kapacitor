@@ -1,6 +1,7 @@
 using System.Collections;
 using System.Collections.Specialized;
 using System.Reactive.Linq;
+using Avalonia.Automation;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
 using Avalonia.Threading;
@@ -60,8 +61,8 @@ public class HomeViewSmokeTests {
             Dispatcher.UIThread.RunJobs();
 
             var names = new[] {
-                "GoalInput", "RepositoryChip", "AgentChip", "StartButton", "StartErrorText",
-                "ConnectionNoticeText", "HomeSignInButton",
+                "GoalInput", "RepositoryChip", "AgentChip", "EffortChip", "PermissionChip", "StartButton",
+                "StartErrorText", "ConnectionNoticeText", "HomeSignInButton",
             };
             var resolved = names.ToDictionary(name => name, name => Find<Control>(window, name) is not null);
 
@@ -74,6 +75,8 @@ public class HomeViewSmokeTests {
         await Assert.That(found["GoalInput"]).IsTrue();
         await Assert.That(found["RepositoryChip"]).IsTrue();
         await Assert.That(found["AgentChip"]).IsTrue();
+        await Assert.That(found["EffortChip"]).IsTrue();
+        await Assert.That(found["PermissionChip"]).IsTrue();
         await Assert.That(found["StartButton"]).IsTrue();
         await Assert.That(found["StartErrorText"]).IsTrue();
         await Assert.That(found["ConnectionNoticeText"]).IsTrue();
@@ -109,6 +112,56 @@ public class HomeViewSmokeTests {
         await Assert.That(noticeAfter).IsTrue();
         await Assert.That(noticeText).IsEqualTo(HomeViewModel.ServerLostNotice);
         await Assert.That(signInAfter).IsTrue();
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task PermissionChip_shows_for_claude_and_hides_for_other_vendors() {
+        var (forClaude, forCodex) = await AvaloniaSession.DispatchAsync(async () => {
+            var (_, vm, _, _, tmp) = Build();
+            using var _tmp = tmp;
+            var window = new Window { Content = new LauncherPaneView { DataContext = vm } };
+            window.Show();
+            Dispatcher.UIThread.RunJobs();
+
+            var chip = Find<Button>(window, "PermissionChip");
+            var claude = chip?.IsVisible ?? false;
+
+            await vm.ChooseHarnessAsync("codex");
+            Dispatcher.UIThread.RunJobs();
+            var codex = chip?.IsVisible ?? true;
+
+            window.Close();
+            Dispatcher.UIThread.RunJobs();
+            vm.Dispose();
+            return (claude, codex);
+        });
+
+        await Assert.That(forClaude).IsTrue();
+        await Assert.That(forCodex).IsFalse();
+    }
+
+    /// The button carries a glyph, not text, so assistive technology reads the automation name.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task StartButton_carries_an_accessible_name() {
+        var name = await AvaloniaSession.DispatchAsync(() => {
+            var (_, vm, _, _, tmp) = Build();
+            using var _tmp = tmp;
+            var window = new Window { Content = new LauncherPaneView { DataContext = vm } };
+            window.Show();
+            Dispatcher.UIThread.RunJobs();
+
+            var startButton = Find<Button>(window, "StartButton")!;
+            var automationName = AutomationProperties.GetName(startButton);
+
+            window.Close();
+            Dispatcher.UIThread.RunJobs();
+            vm.Dispose();
+            return automationName;
+        });
+
+        await Assert.That(name).IsEqualTo("Start");
     }
 
     [Test]

@@ -1,5 +1,6 @@
 using Capacitor.App.Services;
 using Capacitor.Cli.Core.Harness;
+using TUnit.Assertions.Enums;
 
 namespace Capacitor.App.Tests.Unit;
 
@@ -121,5 +122,32 @@ public class HostedHarnessCatalogTests {
         await Assert.That(HostedHarnessCatalog.ModelLabelFor("claude", "some-future-id")).IsEqualTo("some-future-id");
         await Assert.That(HostedHarnessCatalog.ModelLabelFor("claude", "")).IsEqualTo("default");
         await Assert.That(HostedHarnessCatalog.ModelLabelFor("gemini", "  ")).IsEqualTo("default");
+    }
+
+    /// The tokens are the Claude CLI's own `--permission-mode` choices, listed from most to least
+    /// prompting; the daemon forwards them verbatim, so a spelling here is a spelling on argv.
+    [Test]
+    public async Task Permission_modes_are_the_claude_cli_tokens_in_escalation_order() {
+        string[] expected = ["manual", "acceptEdits", "auto", "bypassPermissions"];
+
+        await Assert.That(HostedHarnessCatalog.PermissionModes.Select(m => m.Token))
+            .IsEquivalentTo(expected, CollectionOrdering.Matching);
+    }
+
+    [Test]
+    public async Task Permission_mode_labels_are_friendly_and_unknown_tokens_pass_through() {
+        await Assert.That(HostedHarnessCatalog.PermissionModeLabelFor("manual")).IsEqualTo("Manual");
+        await Assert.That(HostedHarnessCatalog.PermissionModeLabelFor("acceptEdits")).IsEqualTo("Accept edits");
+        await Assert.That(HostedHarnessCatalog.PermissionModeLabelFor("auto")).IsEqualTo("Auto");
+        await Assert.That(HostedHarnessCatalog.PermissionModeLabelFor("bypassPermissions")).IsEqualTo("Bypass permissions");
+        await Assert.That(HostedHarnessCatalog.PermissionModeLabelFor("weird")).IsEqualTo("weird");
+    }
+
+    [Test]
+    public async Task Only_claude_takes_a_launch_time_permission_mode() {
+        await Assert.That(HostedHarnessCatalog.SupportsPermissionMode("claude")).IsTrue();
+        await Assert.That(HostedHarnessCatalog.SupportsPermissionMode("Claude")).IsTrue();
+        await Assert.That(HostedHarnessCatalog.SupportsPermissionMode("codex")).IsFalse();
+        await Assert.That(HostedHarnessCatalog.SupportsPermissionMode("cursor")).IsFalse();
     }
 }

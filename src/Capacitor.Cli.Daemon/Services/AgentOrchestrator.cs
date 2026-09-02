@@ -1789,6 +1789,13 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             return new CommandOutcome(CommandOutcomeKind.LaunchRejected, agentId, RejectReason: CommandRejectedReason.Semantic);
         }
 
+        // Before consent for the same reason as the preset guard above.
+        if (ClaudePermissionModePolicy.RejectionReason(cmd) is { } modeRejection) {
+            await _server.LaunchFailedAsync(cmd.AgentId, modeRejection);
+
+            return new CommandOutcome(CommandOutcomeKind.LaunchRejected, agentId, RejectReason: CommandRejectedReason.Semantic);
+        }
+
         // Owner consent gate. Server-driven launches only — the local 0600 socket path
         // (HandleLocalSpawnAsync) is the owner's by construction and never consults this.
         // NOTE: in prompt mode this can hold the sequenced slot up to PromptTimeoutSeconds (≤300s,
@@ -2167,7 +2174,8 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 AcpPermissionPreset: cmd.AcpPermissionPreset,
                 // Carried verbatim; the Codex app-server factory branches thread/start -> thread/resume
                 // on it for a parked reviewer relaunch. Ignored by every other runtime.
-                ResumeSessionId: cmd.ResumeSessionId
+                ResumeSessionId: cmd.ResumeSessionId,
+                PermissionMode: cmd.PermissionMode
             );
 
             HostedRuntimeStart start;

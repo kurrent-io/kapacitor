@@ -6,6 +6,7 @@ using System.Reactive.Linq;
 using System.Reactive.Subjects;
 using Capacitor.App.Services;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Harness.Claude;
 using DynamicData;
 using DynamicData.Binding;
 using ReactiveUI;
@@ -33,6 +34,8 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
     /// A repository with no remembered choice falls back to this — never to whatever vendor was
     /// selected for a DIFFERENT repository, which would leak a preference across repositories.
     public const string DefaultVendor = "claude";
+
+    public const string DefaultPermissionMode = ClaudePermissionModes.Manual;
 
     /// Reserved key for the not-yet-in-a-repository target. It is a normal AppState.HarnessByRepo
     /// key, so it round-trips and keeps its own remembered harness like any real repo path —
@@ -74,12 +77,6 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
         private set => this.RaiseAndSetIfChanged(ref _selectedVendor, value);
     }
 
-    bool _rememberHarness = true;
-    public bool RememberHarness {
-        get => _rememberHarness;
-        set => this.RaiseAndSetIfChanged(ref _rememberHarness, value);
-    }
-
     string _selectedModel = "";
     /// "" = vendor default (the wire convention). Session-scoped, not persisted; reset whenever
     /// the vendor changes — model ids are vendor-specific, so a stale one would misfire.
@@ -94,6 +91,14 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
     public string? SelectedEffort {
         get => _selectedEffort;
         set => this.RaiseAndSetIfChanged(ref _selectedEffort, value);
+    }
+
+    string _selectedPermissionMode = DefaultPermissionMode;
+    /// A ClaudePermissionModes token. Session-scoped like the effort and kept across vendor
+    /// changes; PermissionModeFor decides whether it rides a given launch.
+    public string SelectedPermissionMode {
+        get => _selectedPermissionMode;
+        set => this.RaiseAndSetIfChanged(ref _selectedPermissionMode, value);
     }
 
     string _goal = "";
@@ -255,11 +260,9 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
     // the Agents subscription above run for this object's whole lifetime, not a window's.
     public void Dispose() => _disposables.Dispose();
 
-    /// Sets the selection and, when RememberHarness, persists it for SelectedRepoPath.
-    /// RememberHarness = false skips the write only — it must never erase an existing choice.
+    /// Sets the selection and persists it for SelectedRepoPath.
     public async Task ChooseHarnessAsync(string vendor) {
         SetVendor(vendor);
-        if (!RememberHarness) return;
 
         var repoPath = SelectedRepoPath;
         await _state.UpdateAsync(s => s with { HarnessByRepo = WithEntry(s.HarnessByRepo, repoPath, vendor) });
@@ -327,7 +330,8 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
 
     async Task StartAsync() {
         var request = new LaunchRequest(
-            _daemon.DaemonName, SelectedRepoPath, SelectedVendor, Goal, SelectedModel, SelectedEffort);
+            _daemon.DaemonName, SelectedRepoPath, SelectedVendor, Goal, SelectedModel, SelectedEffort,
+            PermissionModeFor(SelectedVendor, SelectedPermissionMode));
         // Captured BEFORE the call, never after (spec §3): the whole point is to notice a navigation
         // that happened WHILE the launch was in flight.
         var generation = _navigationGeneration?.Invoke() ?? 0;
@@ -351,6 +355,13 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
 
         _openSessionIfCurrent?.Invoke(agentId, generation);
     }
+
+    /// Null for Manual (the harness's own default) and for any vendor that takes no mode.
+    internal static string? PermissionModeFor(string vendor, string mode) =>
+        HostedHarnessCatalog.SupportsPermissionMode(vendor)
+     && !string.Equals(mode, ClaudePermissionModes.Manual, StringComparison.Ordinal)
+            ? mode
+            : null;
 
     /// Id shapes differ across the stack and across daemon versions: the server hub has returned
     /// DASHED Guids while a production daemon keys its status cache on SHORT (8-hex) ids — so a

@@ -117,24 +117,6 @@ public class HomeViewModelTests {
 
     [Test]
     [NotInParallel("AvaloniaSession")]
-    public async Task Not_remembering_leaves_the_stored_choice_untouched() {
-        await AvaloniaSession.WithImmediateRxScheduler(async () => {
-            using var tmp = TempDir.WithPathTo("app-state.json", out var path);
-            var vm = Build(out _, out var store, path);
-
-            await vm.SelectRepositoryAsync("/repo/a");
-            await vm.ChooseHarnessAsync("codex");
-            vm.RememberHarness = false;
-            await vm.ChooseHarnessAsync("pi");
-
-            await Assert.That(vm.SelectedVendor).IsEqualTo("pi");
-            var saved = await store.LoadAsync();
-            await Assert.That(saved.HarnessByRepo!["/repo/a"]).IsEqualTo("codex");
-        });
-    }
-
-    [Test]
-    [NotInParallel("AvaloniaSession")]
     public async Task Start_sends_the_selected_repository_and_harness() {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             using var tmp = TempDir.WithPathTo("app-state.json", out var path);
@@ -173,6 +155,45 @@ public class HomeViewModelTests {
 
             await vm.StartCommand.Execute();
             await Assert.That(launch.Last!.Model).IsEqualTo("");
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Permission_mode_defaults_to_manual_which_sends_nothing() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            using var tmp = TempDir.WithPathTo("app-state.json", out var path);
+            var vm = Build(out var launch, out _, path);
+
+            await vm.SelectRepositoryAsync("/repo/a");
+            await Assert.That(vm.SelectedPermissionMode).IsEqualTo(HomeViewModel.DefaultPermissionMode);
+
+            await vm.StartCommand.Execute();
+            await Assert.That(launch.Last!.PermissionMode).IsNull();
+        });
+    }
+
+    /// The mode vocabulary is Claude's, so a choice made under Claude never rides a launch of
+    /// another vendor — but it is kept, not reset, so switching back restores it.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task A_chosen_permission_mode_is_sent_for_claude_only() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            using var tmp = TempDir.WithPathTo("app-state.json", out var path);
+            var vm = Build(out var launch, out _, path);
+
+            await vm.SelectRepositoryAsync("/repo/a");
+            vm.SelectedPermissionMode = "bypassPermissions";
+            await vm.StartCommand.Execute();
+            await Assert.That(launch.Last!.PermissionMode).IsEqualTo("bypassPermissions");
+
+            await vm.ChooseHarnessAsync("codex");
+            await vm.StartCommand.Execute();
+            await Assert.That(launch.Last!.PermissionMode).IsNull();
+
+            await vm.ChooseHarnessAsync("claude");
+            await vm.StartCommand.Execute();
+            await Assert.That(launch.Last!.PermissionMode).IsEqualTo("bypassPermissions");
         });
     }
 
@@ -315,7 +336,6 @@ public class HomeViewModelTests {
             var daemon = new FakeDaemonClientService();
             using var vm = new HomeViewModel(daemon, new AppStateStore(path), new RecordingLaunchClient(), Known());
 
-            vm.RememberHarness = false;
             await vm.SelectRepositoryAsync("/repo/fresh");
 
             var repos = await vm.ListRepositoriesAsync();

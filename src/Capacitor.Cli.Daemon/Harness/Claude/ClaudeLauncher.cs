@@ -19,10 +19,11 @@ internal sealed partial class ClaudeLauncher(
     public string CliPath => config.ClaudePath;
     public bool   SupportsUnattended => true;
 
-    // --permission-mode bypassPermissions is set only for an OWNED review-flow worktree (see
-    // BuildArgs); a borrowed review-flow keeps default permission mode (and is fail-closed-rejected
-    // upstream anyway), and interactive launches always prompt. So approval prompts are off only for
-    // owned review-flow launches.
+    // True only for an OWNED review-flow worktree, where BuildArgs forces bypassPermissions. A
+    // borrowed review-flow keeps the default mode (and is rejected upstream anyway). An interactive
+    // launch stays false even under a caller-selected bypassPermissions: bypass silences permission
+    // prompts, not question cards or the one-time bypass consent dialog, so a sprayed Enter could
+    // still answer something.
     public bool DisablesApprovalPrompts(LauncherContext ctx) =>
         ctx.IsReviewFlow && ctx.Work == WorkLocation.OwnedWorktree;
     /// <summary>Claude owns its own reviewer-model policy (aliases + dated concrete ids → family-level
@@ -159,6 +160,9 @@ internal sealed partial class ClaudeLauncher(
                 args.Add(ctx.Work == WorkLocation.BorrowedCwd
                     ? "Agent,Edit,MultiEdit,Write,NotebookEdit,Bash"
                     : "Agent");
+            } else if (ctx.PermissionMode is { Length: > 0 } permissionMode) {
+                args.Add("--permission-mode");
+                args.Add(permissionMode);
             }
 
             if (!string.IsNullOrEmpty(ctx.Effort)) {
