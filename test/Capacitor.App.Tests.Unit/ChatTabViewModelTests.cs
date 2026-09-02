@@ -22,9 +22,13 @@ public class ChatTabViewModelTests {
     const string ToolCallLine = """{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls -la"}}]}}""";
     const string ToolResultLine = """{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}""";
     const string ToolErrorLine = """{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"boom","is_error":true}]}}""";
+    const string ReadCallLine = """{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t2","name":"Read","input":{"file_path":"/repo/x/src/a.cs"}}]}}""";
+    const string NoteLine = """{"type":"user","origin":{"kind":"task-notification"},"message":{"content":"<task-notification>\n<summary>Agent finished</summary>\n<result>\nAll good.\n</result>\n</task-notification>"}}""";
 
     static AgentStatusDto Dto(string? transcriptPath, string vendor = "claude") =>
         Agent("a1", vendor, hasTerminal: true, repoPath: "/repo/x") with { TranscriptPath = transcriptPath };
+
+    static ToolGroupItem Group(ChatTabViewModel chat, int index) => (ToolGroupItem)chat.Items[index];
 
     sealed class Harness {
         public FakeDaemonClientService Daemon { get; } = new();
@@ -87,10 +91,11 @@ public class ChatTabViewModelTests {
 
             await Assert.That(h.Chat.Phase).IsEqualTo(ChatTabPhase.Reading);
             await Assert.That(h.Chat.Items.Select(i => i.GetType().Name)).IsEquivalentTo(
-                new[] { nameof(UserTurnItem), nameof(AssistantTextItem), nameof(ToolCallItem) }, CollectionOrdering.Matching);
+                new[] { nameof(UserTurnItem), nameof(AssistantTextItem), nameof(ToolGroupItem) }, CollectionOrdering.Matching);
             await Assert.That(((UserTurnItem)h.Chat.Items[0]).Text).IsEqualTo("hello");
-            await Assert.That(((ToolCallItem)h.Chat.Items[2]).Detail).IsEqualTo("ls -la");
-            await Assert.That(((ToolCallItem)h.Chat.Items[2]).Outcome).IsEqualTo(ToolOutcome.Running);
+            await Assert.That(Group(h.Chat, 2).Calls[0].Detail).IsEqualTo("ls -la");
+            await Assert.That(Group(h.Chat, 2).Calls[0].Outcome).IsEqualTo(ToolOutcome.Running);
+            await Assert.That(Group(h.Chat, 2).Calls[0].Category).IsEqualTo(ToolCategory.Search);
             await h.TeardownAsync();
         });
     }
@@ -144,15 +149,16 @@ public class ChatTabViewModelTests {
             var h = Claude();
             var path = Tmp.CreateFile("t.jsonl", [ToolCallLine, ToolResultLine]);
             await h.PushAsync(Dto(path));
-            var call = (ToolCallItem)h.Chat.Items.Single();
+            var call = Group(h.Chat, 0).Calls.Single();
             await Assert.That(call.Outcome).IsEqualTo(ToolOutcome.Done);
             await Assert.That(call.OutcomeGlyph).IsEqualTo("✓");
 
             File.AppendAllText(path, ToolCallLine + "\n" + ToolErrorLine + "\n" + ToolErrorLine.Replace("t1", "unknown") + "\n");
             await h.TickAsync();
-            await Assert.That(h.Chat.Items).Count().IsEqualTo(2);
-            await Assert.That(((ToolCallItem)h.Chat.Items[1]).Outcome).IsEqualTo(ToolOutcome.Error);
-            await Assert.That(((ToolCallItem)h.Chat.Items[1]).IsError).IsTrue();
+            await Assert.That(h.Chat.Items).Count().IsEqualTo(1);
+            await Assert.That(Group(h.Chat, 0).Calls).Count().IsEqualTo(2);
+            await Assert.That(Group(h.Chat, 0).Calls[1].Outcome).IsEqualTo(ToolOutcome.Error);
+            await Assert.That(Group(h.Chat, 0).Calls[1].IsError).IsTrue();
             await h.TeardownAsync();
         });
     }
@@ -175,7 +181,7 @@ public class ChatTabViewModelTests {
             File.WriteAllLines(path, [ToolCallLine]);
             await h.TickAsync();
             await Assert.That(h.Chat.Items).Count().IsEqualTo(1);
-            await Assert.That(h.Chat.Items[0]).IsTypeOf<ToolCallItem>();
+            await Assert.That(h.Chat.Items[0]).IsTypeOf<ToolGroupItem>();
 
             File.Delete(path);
             Directory.CreateDirectory(path);
@@ -183,6 +189,95 @@ public class ChatTabViewModelTests {
             await Assert.That(h.Chat.Phase).IsEqualTo(ChatTabPhase.Reading);
             await Assert.That(h.Chat.Items).Count().IsEqualTo(1);
             Directory.Delete(path);
+            await h.TeardownAsync();
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Consecutive_calls_across_reads_share_a_group_and_any_prose_closes_it() {
+        await RunOnUiAsync(async () => {
+            var h = Claude();
+            var path = Tmp.CreateFile("t.jsonl", [ToolCallLine]);
+            await h.PushAsync(Dto(path));
+            await Assert.That(h.Chat.Items).Count().IsEqualTo(1);
+
+            File.AppendAllText(path, ReadCallLine + "\n");
+            await h.TickAsync();
+            await Assert.That(h.Chat.Items).Count().IsEqualTo(1);
+            await Assert.That(Group(h.Chat, 0).Calls.Select(c => c.Name)).IsEquivalentTo(new[] { "Bash", "Read" }, CollectionOrdering.Matching);
+
+            File.AppendAllText(path, AssistantLine + "\n" + ToolCallLine.Replace("t1", "t3") + "\n");
+            await h.TickAsync();
+            await Assert.That(h.Chat.Items.Select(i => i.GetType().Name)).IsEquivalentTo(
+                new[] { nameof(ToolGroupItem), nameof(AssistantTextItem), nameof(ToolGroupItem) }, CollectionOrdering.Matching);
+            await Assert.That(Group(h.Chat, 2).Calls).Count().IsEqualTo(1);
+
+            File.AppendAllText(path, NoteLine + "\n" + ToolCallLine.Replace("t1", "t4") + "\n" + UserLine + "\n" + ToolCallLine.Replace("t1", "t5") + "\n");
+            await h.TickAsync();
+            await Assert.That(h.Chat.Items.Select(i => i.GetType().Name)).IsEquivalentTo(new[] {
+                nameof(ToolGroupItem), nameof(AssistantTextItem), nameof(ToolGroupItem),
+                nameof(SystemNoteItem), nameof(ToolGroupItem), nameof(UserTurnItem), nameof(ToolGroupItem),
+            }, CollectionOrdering.Matching);
+            await h.TeardownAsync();
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task A_result_folds_its_call_and_the_summary_follows_the_settled_calls() {
+        await RunOnUiAsync(async () => {
+            var h = Claude();
+            var path = Tmp.CreateFile("t.jsonl", [ToolCallLine, ReadCallLine]);
+            await h.PushAsync(Dto(path));
+            var group = Group(h.Chat, 0);
+            await Assert.That(group.HasSummary).IsFalse();
+            await Assert.That(group.LiveCalls).Count().IsEqualTo(2);
+
+            File.AppendAllText(path, ToolResultLine + "\n");
+            await h.TickAsync();
+            await Assert.That(group.LiveCalls.Select(c => c.Name)).IsEquivalentTo(new[] { "Read" });
+            await Assert.That(group.Summary).IsEqualTo("Searched files");
+            await Assert.That(group.HasSummary).IsTrue();
+            await Assert.That(group.HasFailure).IsFalse();
+
+            File.AppendAllText(path, ToolErrorLine.Replace("t1", "unknown") + "\n");
+            await h.TickAsync();
+            await Assert.That(group.LiveCalls).Count().IsEqualTo(1);
+
+            File.AppendAllText(path, ToolErrorLine.Replace("t1", "t2") + "\n");
+            await h.TickAsync();
+            await Assert.That(group.LiveCalls).IsEmpty();
+            await Assert.That(group.Summary).IsEqualTo("Searched files, read a file");
+            await Assert.That(group.HasFailure).IsTrue();
+            await h.TeardownAsync();
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task A_reset_and_a_path_switch_start_a_fresh_group_for_later_calls() {
+        await RunOnUiAsync(async () => {
+            var h = Claude();
+            var path = Tmp.CreateFile("t.jsonl", [UserLine, ToolCallLine]);
+            await h.PushAsync(Dto(path));
+            await Assert.That(h.Chat.Items).Count().IsEqualTo(2);
+
+            File.WriteAllLines(path, [ToolCallLine]);
+            await h.TickAsync();
+            await Assert.That(h.Chat.Items).Count().IsEqualTo(1);
+            File.AppendAllText(path, ReadCallLine + "\n");
+            await h.TickAsync();
+            await Assert.That(h.Chat.Items).Count().IsEqualTo(1);
+            await Assert.That(Group(h.Chat, 0).Calls).Count().IsEqualTo(2);
+
+            var other = Tmp.CreateFile("o.jsonl", [ToolCallLine]);
+            await h.PushAsync(Dto(other));
+            await Assert.That(h.Chat.Items).Count().IsEqualTo(1);
+            await Assert.That(Group(h.Chat, 0).Calls).Count().IsEqualTo(1);
+            File.AppendAllText(other, ReadCallLine + "\n");
+            await h.TickAsync();
+            await Assert.That(Group(h.Chat, 0).Calls).Count().IsEqualTo(2);
             await h.TeardownAsync();
         });
     }

@@ -37,6 +37,7 @@ public sealed class ChatTabViewModel : ReactiveObject {
     readonly AvaloniaList<ChatItemViewModel> _items = new();
     readonly Dictionary<string, ToolCallItem> _pendingTools = new(StringComparer.Ordinal);
     readonly ConcurrentDictionary<string, byte> _loggedFailures = new(StringComparer.Ordinal);
+    ToolGroupItem? _openGroup;
 
     /// The tail and the generation it belongs to, taken as one reference: reading the two
     /// separately lets a switch land between them and tag a read of the old file with the new
@@ -257,6 +258,7 @@ public sealed class ChatTabViewModel : ReactiveObject {
     void SwitchPath(string path) {
         _items.Clear();
         _pendingTools.Clear();
+        _openGroup = null;
         _path = path;
         _lease = new TailLease(new JsonlTail(path), Interlocked.Increment(ref _generation));
         var wasWaiting = _phase == ChatTabPhase.Waiting;
@@ -306,6 +308,7 @@ public sealed class ChatTabViewModel : ReactiveObject {
             case TailStatus.Reset:
                 _items.Clear();
                 _pendingTools.Clear();
+                _openGroup = null;
                 break;
         }
 
@@ -316,18 +319,26 @@ public sealed class ChatTabViewModel : ReactiveObject {
         foreach (var e in envelopes) {
             switch (e.Kind) {
                 case AcpEventKind.UserMessage:
+                    _openGroup = null;
                     fresh.Add(new UserTurnItem(e.Text ?? ""));
                     break;
                 case AcpEventKind.AssistantText:
+                    _openGroup = null;
                     fresh.Add(new AssistantTextItem(e.Text ?? ""));
                     break;
                 case AcpEventKind.SystemNote:
+                    _openGroup = null;
                     fresh.Add(new SystemNoteItem(e.Text ?? ""));
                     break;
                 case AcpEventKind.ToolCall: {
-                    var item = new ToolCallItem(e.ToolName ?? "tool", ToolDetail.From(e.ToolInputJson, _root));
+                    var name = e.ToolName ?? "tool";
+                    var item = new ToolCallItem(name, ToolDetail.From(e.ToolInputJson, _root), ToolSummary.Categorize(name, e.ToolInputJson));
                     if (e.ToolCallId is { } id) _pendingTools[id] = item;
-                    fresh.Add(item);
+                    if (_openGroup is null) {
+                        _openGroup = new ToolGroupItem();
+                        fresh.Add(_openGroup);
+                    }
+                    _openGroup.Add(item);
                     break;
                 }
                 case AcpEventKind.ToolResult:
