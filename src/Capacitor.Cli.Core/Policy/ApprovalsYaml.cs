@@ -27,6 +27,7 @@ public sealed class ApprovalsYamlException(int line, string message)
 /// </summary>
 public static class ApprovalsYaml {
     const int MaxFlowDepth = 32;
+    const int MaxBlockDepth = 64;
 
     enum ScalarContext { Block, Flow }
 
@@ -100,27 +101,29 @@ public static class ApprovalsYaml {
         var raw = text.Split('\n');
         var cursor = new Cursor(raw);
         if (cursor.Peek() is not { } first) return new YamlMapping([]);
-        var map = ParseMapping(cursor, first.Indent);
+        var map = ParseMapping(cursor, first.Indent, depth: 0);
         if (cursor.Peek() is { } trailing)
             throw new ApprovalsYamlException(trailing.LineNo, "content outside the root mapping");
         return map;
     }
 
-    static YamlMapping ParseMapping(Cursor cursor, int indent) {
+    static YamlMapping ParseMapping(Cursor cursor, int indent, int depth) {
+        if (depth > MaxBlockDepth)
+            throw new ApprovalsYamlException(cursor.Peek()?.LineNo ?? cursor.EofLine, "block nesting exceeds the supported depth");
         var entries = new List<KeyValuePair<string, YamlNode>>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
         while (cursor.Peek() is { } line && line.Indent == indent && !IsDashLine(line.Content)) {
             cursor.Next();
             var (key, rest) = SplitKey(line);
             if (!seen.Add(key)) throw new ApprovalsYamlException(line.LineNo, $"duplicate key '{key}'");
-            entries.Add(new(key, ParseValue(cursor, line, rest, indent)));
+            entries.Add(new(key, ParseValue(cursor, line, rest, indent, depth)));
         }
         if (entries.Count == 0)
             throw new ApprovalsYamlException(cursor.Peek()?.LineNo ?? cursor.EofLine, "expected a mapping");
         return new YamlMapping(entries);
     }
 
-    static YamlNode ParseValue(Cursor cursor, Line keyLine, string rest, int indent) {
+    static YamlNode ParseValue(Cursor cursor, Line keyLine, string rest, int indent, int depth) {
         if (rest is "|" or "|-") return ParseLiteralBlock(cursor, keyLine, chompFinal: rest == "|-");
         if (rest.Length > 0) {
             var pos = 0;
@@ -132,11 +135,13 @@ public static class ApprovalsYaml {
         if (cursor.Peek() is not { } next || next.Indent <= indent)
             throw new ApprovalsYamlException(keyLine.LineNo, "missing value");
         return IsDashLine(next.Content)
-            ? ParseSequence(cursor, next.Indent)
-            : ParseMapping(cursor, next.Indent);
+            ? ParseSequence(cursor, next.Indent, depth + 1)
+            : ParseMapping(cursor, next.Indent, depth + 1);
     }
 
-    static YamlSequence ParseSequence(Cursor cursor, int indent) {
+    static YamlSequence ParseSequence(Cursor cursor, int indent, int depth) {
+        if (depth > MaxBlockDepth)
+            throw new ApprovalsYamlException(cursor.Peek()?.LineNo ?? cursor.EofLine, "block nesting exceeds the supported depth");
         var items = new List<YamlNode>();
         while (cursor.Peek() is { } line && line.Indent == indent && IsDashLine(line.Content)) {
             cursor.Next();
@@ -146,7 +151,7 @@ public static class ApprovalsYaml {
             // rewrite the dash line as its first key line at indent+2 and re-enter ParseMapping.
             if (TrySplitKey(body, out _, out _)) {
                 cursor.PushOverride(line with { Indent = indent + 2, Content = body });
-                items.Add(ParseMapping(cursor, indent + 2));
+                items.Add(ParseMapping(cursor, indent + 2, depth + 1));
             }
             else {
                 var pos = 0;

@@ -35,11 +35,46 @@ public class PolicySnapshotStoreTests {
     }
 
     [Test]
-    public async Task Corrupt_persisted_snapshot_falls_back_to_rebuild() {
+    public async Task Corrupt_persisted_snapshot_rebuilds_with_a_degradation() {
         var store = new PolicySnapshotStore(Config.Root);
+        var path = Config.Root.Path("policy", "sessions", "bad.json");
         Directory.CreateDirectory(Config.Root.Path("policy", "sessions"));
-        File.WriteAllText(Config.Root.Path("policy", "sessions", "bad.json"), "{not json");
+        File.WriteAllText(path, "{not json");
         var snap = store.LoadOrBuild("bad", repoRoot: null);
+        await Assert.That(snap.Documents.Count).IsEqualTo(0);
+        await Assert.That(snap.Degraded).IsTrue();
+        await Assert.That(snap.Degradations.Any(d => d.Contains(path))).IsTrue();
+        await Assert.That(snap.Degradations.Any(d => d.Contains("unloadable"))).IsTrue();
+    }
+
+    [Test]
+    public async Task Absent_persisted_snapshot_rebuilds_without_a_degradation() {
+        var store = new PolicySnapshotStore(Config.Root);
+        var snap = store.LoadOrBuild("nope", repoRoot: null);
         await Assert.That(snap.IsEmpty).IsTrue();
+        await Assert.That(snap.Degraded).IsFalse();
+    }
+
+    [Test]
+    [Arguments("a/b")]
+    [Arguments("..")]
+    [Arguments("")]
+    public async Task Sanitize_rewrites_keys_outside_the_safe_charset(string sessionKey) {
+        var sanitized = PolicySnapshotStore.Sanitize(sessionKey);
+        await Assert.That(sanitized.Length).IsEqualTo(32);
+        await Assert.That(sanitized.All(char.IsAsciiHexDigitLower)).IsTrue();
+    }
+
+    [Test]
+    public async Task Sanitize_rewrites_an_overlong_key() {
+        var sanitized = PolicySnapshotStore.Sanitize(new string('a', 65));
+        await Assert.That(sanitized.Length).IsEqualTo(32);
+        await Assert.That(sanitized.All(char.IsAsciiHexDigitLower)).IsTrue();
+    }
+
+    [Test]
+    public async Task Sanitize_passes_through_a_plain_hex_key() {
+        var key = new string('a', 32);
+        await Assert.That(PolicySnapshotStore.Sanitize(key)).IsEqualTo(key);
     }
 }

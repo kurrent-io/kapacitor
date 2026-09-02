@@ -4,6 +4,7 @@ using System.Text.Json.Serialization;
 
 sealed record PolicySnapshotFileV1(
     [property: JsonPropertyName("id")] string Id,
+    [property: JsonPropertyName("engine_version")] string EngineVersion,
     [property: JsonPropertyName("degraded")] bool Degraded,
     [property: JsonPropertyName("degradations")] string[] Degradations,
     [property: JsonPropertyName("documents")] PolicySnapshotFileDocV1[] Documents);

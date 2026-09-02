@@ -154,6 +154,14 @@ public class ApprovalsYamlTests {
     }
 
     [Test]
+    public async Task Block_nesting_beyond_depth_cap_throws() {
+        var nested = string.Concat(Enumerable.Range(0, 100).Select(i => new string(' ', 2 * i) + "a:\n"))
+            + new string(' ', 200) + "b: 1\n";
+        Assert.Throws<ApprovalsYamlException>(() => ApprovalsYaml.Parse(nested));
+        await Task.CompletedTask;
+    }
+
+    [Test]
     public async Task Chomped_literal_block_has_no_trailing_newline() {
         var root = ApprovalsYaml.Parse("a: |-\n  line one\n  line two\n");
         await Assert.That(((YamlScalar)root["a"]!).Value).IsEqualTo("line one\nline two");

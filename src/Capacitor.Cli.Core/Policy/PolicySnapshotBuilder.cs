@@ -10,6 +10,7 @@ using System.Text;
 public static class PolicySnapshotBuilder {
     public const string RepoRelativeDir = ".kcap";
     public const string FileName = "approvals.yaml";
+    const long MaxFileSizeBytes = 1024 * 1024;
 
     public static PolicySnapshot Build(string? repoRoot, ConfigRoot config) {
         var documents = new List<PolicyScopeDocument>();
@@ -24,7 +25,12 @@ public static class PolicySnapshotBuilder {
     static void TryLoad(string path, PolicyScope scope, List<PolicyScopeDocument> documents, List<string> degradations) {
         string content;
         try {
-            if (!File.Exists(path)) return;
+            var info = new FileInfo(path);
+            if (!info.Exists) return;
+            if (info.Length > MaxFileSizeBytes) {
+                degradations.Add($"{scope.ToString().ToLowerInvariant()} policy at {path} ignored: file exceeds 1 MB");
+                return;
+            }
             content = File.ReadAllText(path);
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
