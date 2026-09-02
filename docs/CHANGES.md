@@ -490,3 +490,47 @@ identity-guarded (a launch commit clears all of its id's pending-stop keys; a sa
 after a faulted stop always commits fresh), and the queued-stop count backs an edge-triggered,
 hysteresis-gated alarm exposed via `QueuedStopDepth`/`QueuedStopHighWater` accessors — additive, with
 no production consumer yet (AI-1649's supervision IPC is the natural one).
+
+## Approval policy rules never widen silently
+
+`.kcap/approvals.yaml` (repo) and `~/.config/kcap/approvals.yaml` (user) let a rule allow, deny, or
+force-ask a tool call with identical semantics at every seam that already existed — Claude's
+`PreToolUse`/`PermissionRequest` hooks, the hosted-Claude permission lane, and the ACP
+`request_permission` bridge ahead of kcap's own launch presets. Each invariant below exists because
+the alternative is a policy that reads tighter than it behaves.
+
+**An unanalyzed shell command can never be allowed** — not through a coarse `{ kind: shell }`
+matcher, not through a substring hit. `ShellCommandAnalyzer`'s allowlist grammar (literal tokens,
+only `&&`/`;`/`|` joins) decides "analyzed"; anything with redirection, expansion, a glob, or a
+nested shell keeps its raw string as a restriction-only component with an empty coverage set, so
+deny/ask can still fire on it but allow has nothing to cover. Widening that grammar without
+re-deriving the coverage-set argument would quietly make obfuscated commands allow-eligible.
+
+**Allow requires full coverage at an exact token count.** `git status` allows only `git status`; the
+trailing bare `*` in `git status *` is the one thing that opts a rule into arbitrary extra argv, and
+a multi-segment command line needs every segment covered or the action is unmatched, not allowed.
+Deny/ask stay loose — `git push --force*` matches a contiguous token run anywhere — because
+over-triggering there only tightens, never widens.
+
+**`caps` and `enforcement` are server-scope fields**, and `PolicyDocumentBinder` rejects a repo or
+user document that sets either: those two keys are how a wider scope puts a ceiling on repo/user
+policy, so a local file that could declare them could grant itself the wider scope's own authority.
+
+**No match means silence, not a default.** An action nothing here decides passes straight through to
+the vendor's native behavior — turning this feature on is never itself a source of new prompts.
+
+**A rendered session's local seams are tighten-only**: deny/ask apply, allow is never computed
+there, because the daemon still runs one full evaluation for that same call. A local allow would let
+a rendered session auto-approve something the daemon's pass was meant to be the sole judge of.
+
+**A document outside the supported YAML subset, or one that otherwise fails to bind, is dropped
+whole and reported — never half-applied.** `PolicySnapshotBuilder` records the failure as a
+degradation and it reaches the user as a `[kcap] approval policy degraded: …` `systemMessage` at
+session start; losing one rule silently (a stray tab, an unsupported construct) would be worse than
+losing the whole file loudly.
+
+**Policy-decision events never go out as an inline HTTP call from a hook.** They append to the same
+spool every other lifecycle event drains through, snapshot first so the server can resolve the
+snapshot id a decision names before the decision itself arrives — a hook runs on a few seconds'
+budget and the vendor only acts on stdout once the process exits, so a round trip in-line could
+outlive the hook and lose a `deny` that had already been decided.
