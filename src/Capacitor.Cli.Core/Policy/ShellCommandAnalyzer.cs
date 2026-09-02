@@ -15,7 +15,8 @@ public sealed record ShellAnalysis(bool Analyzed, IReadOnlyList<ShellSegment> Se
 public static class ShellCommandAnalyzer {
     static readonly SearchValues<char> UnquotedForbidden = SearchValues.Create("$`<>(){}[]*?\\");
     static readonly HashSet<string> ForbiddenPrograms = new(StringComparer.OrdinalIgnoreCase)
-        { "eval", "exec", "sh", "bash", "zsh", "dash", "ksh", "csh", "tcsh", "fish" };
+        { "eval", "exec", "sh", "bash", "zsh", "dash", "ksh", "csh", "tcsh", "fish",
+          "pwsh", "powershell", "cmd" };
 
     public static ShellAnalysis Analyze(string command) {
         var segments = new List<ShellSegment>();
@@ -39,7 +40,7 @@ public static class ShellCommandAnalyzer {
 
         bool EndSegment() {
             if (!FlushToken() || argv.Count == 0) return false;
-            if (LooksLikeAssignment(argv[0]) || ForbiddenPrograms.Contains(Basename(argv[0]))) return false;
+            if (LooksLikeAssignment(argv[0]) || IsForbiddenProgram(argv[0])) return false;
             segments.Add(new ShellSegment([.. argv]));
             argv.Clear();
             return true;
@@ -114,8 +115,20 @@ public static class ShellCommandAnalyzer {
         return true;
     }
 
+    // A path-qualified or extension-carrying spelling names the same program: `C:\bash.exe` and
+    // `/bin/bash` are both bash. Over-matching here only withholds allow-eligibility, which is the
+    // safe direction; under-matching would let a nested shell through.
+    static bool IsForbiddenProgram(string word) {
+        var name = Basename(word);
+        if (ForbiddenPrograms.Contains(name)) return true;
+        var dot = name.LastIndexOf('.');
+        return dot > 0 && ForbiddenPrograms.Contains(name[..dot]);
+    }
+
+    // Both separators regardless of host OS: a quoted Windows path reaches this analyzer as a
+    // literal token on every platform.
     static string Basename(string word) {
-        var slash = word.LastIndexOf('/');
-        return slash < 0 ? word : word[(slash + 1)..];
+        var sep = word.LastIndexOfAny(['/', '\\']);
+        return sep < 0 ? word : word[(sep + 1)..];
     }
 }

@@ -63,6 +63,11 @@ public class ShellCommandAnalyzerTests {
     [Arguments("a+=1 git push --force")]         // += leading assignment
     [Arguments("PATH+=/tmp git status")]         // += leading assignment
     [Arguments("git push '' --force")]           // empty argv token
+    [Arguments("powershell -Command x")]         // non-POSIX nested shell
+    [Arguments("pwsh -c x")]                     // non-POSIX nested shell
+    [Arguments("cmd /c x")]                      // non-POSIX nested shell
+    [Arguments("C:\\bash.exe -c x")]             // backslash path to a nested shell
+    [Arguments("'C:\\bash.exe' -c x")]           // quoting hides neither the separator nor the .exe
     public async Task Banned_constructs_are_unanalyzed(string command) {
         var r = ShellCommandAnalyzer.Analyze(command);
         await Assert.That(r.Analyzed).IsFalse();
