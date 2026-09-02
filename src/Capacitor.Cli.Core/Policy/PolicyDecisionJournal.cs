@@ -25,11 +25,20 @@ public sealed class PolicyDecisionJournal(ConfigRoot config) {
 
     public void RecordAsk(string sessionKey, string? callId, string inputHash) => Mutate(sessionKey, f =>
         callId is { Length: > 0 }
-            ? f with { ByCallId = [.. f.ByCallId, new(callId, "ask", inputHash)] }
+            ? f with { ByCallId = Upsert(f.ByCallId, callId, "ask", inputHash) }
             : f with { PendingAsks = [.. f.PendingAsks, new(inputHash)] });
 
-    public void RecordTerminal(string sessionKey, string callId, string outcome, string inputHash) =>
-        Mutate(sessionKey, f => f with { ByCallId = [.. f.ByCallId, new(callId, outcome, inputHash)] });
+    public void RecordTerminal(string sessionKey, string callId, string outcome, string inputHash) {
+        // Empty call id means no correlation is possible — never journal a terminal under the
+        // ask-only fallback, or it would sit in ByCallId unreachable by any Consume(callId: null).
+        if (callId is not { Length: > 0 }) return;
+        Mutate(sessionKey, f => f with { ByCallId = Upsert(f.ByCallId, callId, outcome, inputHash) });
+    }
+
+    // A later call for the same id replaces the earlier one rather than shadowing it: an ask
+    // recorded before its own terminal decision must never outrank that decision on Consume.
+    static List<PolicyJournalCallV1> Upsert(List<PolicyJournalCallV1> list, string callId, string outcome, string inputHash) =>
+        [.. list.Where(e => e.CallId != callId), new(callId, outcome, inputHash)];
 
     public PolicyJournalConsume Consume(string sessionKey, string? callId, string inputHash) {
         PolicyJournalConsume result = default;
@@ -72,14 +81,18 @@ public sealed class PolicyDecisionJournal(ConfigRoot config) {
             File.WriteAllText(tmp, JsonSerializer.Serialize(next, PolicyJsonContext.Default.PolicyJournalFileV1));
             File.Move(tmp, path, overwrite: true);
         }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException or TimeoutException) { }
+        // Bare: also absorbs a foreign-owned mutex on Windows and any other lock/IO surprise —
+        // a journal failure must never break a hook.
+        catch { }
     }
 
     static PolicyJournalFileV1 Read(string path) {
         try {
             if (File.Exists(path)
                 && JsonSerializer.Deserialize(File.ReadAllText(path), PolicyJsonContext.Default.PolicyJournalFileV1) is { } f)
-                return f;
+                // A parsable-but-incomplete file (e.g. missing pending_asks) deserializes its
+                // record properties to null; normalize before any caller enumerates them.
+                return f with { PendingAsks = f.PendingAsks ?? [], ByCallId = f.ByCallId ?? [] };
         }
         catch (JsonException) { }
         return new([], [], 0);

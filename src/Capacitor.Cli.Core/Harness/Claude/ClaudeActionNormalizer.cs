@@ -12,7 +12,12 @@ public static class ClaudeActionNormalizer {
 
     public static CanonicalAction Normalize(string? toolName, JsonElement? toolInput, string? cwd) {
         try { return NormalizeCore(toolName, toolInput, cwd); }
-        catch { return Other(toolName, toolInput, cwd); }
+        catch {
+            // Other() itself reads toolInput (GetRawText) — a payload that made NormalizeCore
+            // throw (e.g. a disposed backing document) can make this fallback throw too.
+            try { return Other(toolName, toolInput, cwd); }
+            catch { return new() { Kind = ActionKind.Other, Vendor = Vendor, Cwd = cwd }; }
+        }
     }
 
     static CanonicalAction NormalizeCore(string? toolName, JsonElement? toolInput, string? cwd) {

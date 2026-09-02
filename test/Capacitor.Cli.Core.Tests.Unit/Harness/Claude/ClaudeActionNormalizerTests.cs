@@ -66,4 +66,15 @@ public class ClaudeActionNormalizerTests {
         await Assert.That(nameless.Kind).IsEqualTo(ActionKind.Other);
         await Assert.That(PolicyComponents.RestrictionOf(nameless)).IsNotEmpty();
     }
+
+    [Test]
+    public async Task An_input_element_that_cannot_even_be_read_still_falls_back_without_throwing() {
+        // The default JsonElement (no parent document) throws InvalidOperationException from
+        // GetRawText — both the primary path and the catch handler's own Other() call hit it.
+        JsonElement? unreadable = default(JsonElement);
+        var a = ClaudeActionNormalizer.Normalize("Bash", unreadable, "/repo");
+        await Assert.That(a.Kind).IsEqualTo(ActionKind.Other);
+        await Assert.That(a.Vendor).IsEqualTo("claude");
+        await Assert.That(PolicyComponents.RestrictionOf(a)).IsNotEmpty();
+    }
 }
