@@ -19,7 +19,11 @@ public static class FirstRunImportOutcomeReasons {
     /// polling again.</summary>
     public const string DecisionUnreadable = "decision_unreadable";
 
-    public static readonly IReadOnlyList<string> All = [NoReadableAgents, DecisionUnreadable];
+    /// <summary>A pass was lost, so the run's counts are unaccounted. Three zeroes rather than a partial
+    /// tally: the passes that did survive would otherwise read as a clean import.</summary>
+    public const string RunFailed = "run_failed";
+
+    public static readonly IReadOnlyList<string> All = [NoReadableAgents, DecisionUnreadable, RunFailed];
 
     public static bool IsKnown(string? reason) =>
         reason is not null && All.Contains(reason, StringComparer.Ordinal);

@@ -483,13 +483,14 @@ public sealed class BrowserFirstRunFlow(
             progress.ImportEnded();
         }
 
-        // Nothing is sent for a run that lost a pass. Its sessions are unaccounted, and three counts
-        // cannot say so — the surviving pass's figures alone would report a clean import.
-        if (moved is { } totals) {
-            state.Outcome = Outcome(answer.DecidedAt, totals, null);
+        // A run that lost a pass reports the token, not its counts: its sessions are unaccounted, and the
+        // surviving pass's figures alone would state a clean import. Silence is not available either — it
+        // reads exactly like a machine that died, and the browser waits that out before saying anything.
+        state.Outcome = moved is { } totals
+            ? Outcome(answer.DecidedAt, totals, null)
+            : Refusal(answer.DecidedAt, FirstRunImportOutcomeReasons.RunFailed);
 
-            await DeliverOutcomeAsync(serverUrl, flowId, state, ct);
-        }
+        await DeliverOutcomeAsync(serverUrl, flowId, state, ct);
 
         return _clock.GetUtcNow() - began;
     }

@@ -274,8 +274,8 @@ public class BrowserFirstRunFlowTests {
 
         public List<DateOnly> Dates { get; } = [];
 
-        /// <summary>What the run reports. Null models a run that lost a pass, which must be reported as
-        /// nothing rather than as a clean zero.</summary>
+        /// <summary>What the run reports. Null models a run that lost a pass, whose counts are
+        /// unaccounted rather than zero.</summary>
         public FirstRunImportTotals? Moved { get; set; } = new(3, 1, 0);
 
         public Task<FirstRunImportTotals?> ImportAsync(
@@ -1570,10 +1570,13 @@ public class BrowserFirstRunFlowTests {
         await Assert.That(sent.Reason).IsNull().Because("nothing was refused; nothing was asked for");
     }
 
+    /// <summary>
+    /// A lost pass reports the token, not the figures: its sessions are unaccounted, three counts cannot
+    /// say so, and the surviving pass's numbers alone would state a clean import. What it must not do is
+    /// stay silent — that reads exactly like a machine that died, which the browser waits out.
+    /// </summary>
     [Test]
-    public async Task Reports_nothing_for_a_run_that_lost_a_pass() {
-        // Its sessions are unaccounted and three counts cannot say so. Reporting the surviving figures
-        // would state a clean import over a run that dropped one.
+    public async Task Reports_a_token_and_no_figures_for_a_run_that_lost_a_pass() {
         var h = Build(importing: true);
         h.Importing!.Moved = null;
         h.Channel.Polls.Enqueue(new(200, ImportAnswered()));
@@ -1582,7 +1585,12 @@ public class BrowserFirstRunFlowTests {
         await Run(h);
 
         await Assert.That(h.Importing.Imports).HasSingleItem().Because("the run still happened");
-        await Assert.That(h.Channel.OutcomeReports).IsEmpty();
+
+        var sent = h.Channel.OutcomeReports.Single();
+
+        await Assert.That(sent.Reason).IsEqualTo(FirstRunImportOutcomeReasons.RunFailed);
+        await Assert.That((sent.Imported, sent.Skipped, sent.Failed)).IsEqualTo((0, 0, 0))
+                    .Because("a partial tally would put a measured-looking zero where nobody measured");
     }
 
     [Test]
@@ -1735,6 +1743,10 @@ public class BrowserFirstRunFlowTests {
 
         await Assert.That(result).IsTypeOf<FirstRunFlowResult.Finished>();
         await Assert.That(h.Progress.ImportEnds).IsEqualTo(1).Because("the wait has to reopen either way");
+
+        // A throw is as unaccounted as a lost pass, and just as unavailable to report as silence.
+        await Assert.That(h.Channel.OutcomeReports.Single().Reason)
+                    .IsEqualTo(FirstRunImportOutcomeReasons.RunFailed);
     }
 
     [Test]
