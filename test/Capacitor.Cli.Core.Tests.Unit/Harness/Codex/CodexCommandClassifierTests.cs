@@ -2,8 +2,8 @@ using Capacitor.Cli.Core.Harness.Codex;
 
 namespace Capacitor.Cli.Core.Tests.Unit.Harness.Codex;
 
-/// Parity pin against the server's copy of the classifier: these cases must pass identically
-/// on both until the server deletes its own.
+/// The classifier's verdicts, pinned so the same command labels the same way wherever it is
+/// classified: the dashboard and the desktop chat must never disagree about one shell line.
 public class CodexCommandClassifierTests {
     [Test]
     [Arguments("sed -n '1,220p' docs/SKILL.md", "read", "docs/SKILL.md", "SKILL.md")]
