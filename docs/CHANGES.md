@@ -534,3 +534,10 @@ spool every other lifecycle event drains through, snapshot first so the server c
 snapshot id a decision names before the decision itself arrives — a hook runs on a few seconds'
 budget and the vendor only acts on stdout once the process exits, so a round trip in-line could
 outlive the hook and lose a `deny` that had already been decided.
+
+**Only `PreToolUse` is decided in the Claude hook's degraded (no-client) arm.** It is answered before
+any client is built, so an unreachable server cannot disable a deny; `PermissionRequest` is answered
+inside `HandleCore`, which that arm never reaches, so a prompt already raised simply stands. The
+asymmetry is deliberate — a standing prompt is the safe outcome for the seam whose job is to answer a
+question a human is already looking at, and moving it earlier would auto-answer prompts during the
+very outage that made the evaluation least trustworthy.
