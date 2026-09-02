@@ -35,20 +35,40 @@ public static class PolicyWire {
         var raw = a.RawPayloadJson;
         var truncated = false;
         if (raw is not null && Encoding.UTF8.GetByteCount(raw) > MaxRawPayloadBytes) {
-            raw = raw[..Math.Min(raw.Length, MaxRawPayloadBytes)];
+            raw = TruncateToUtf8Bytes(raw, MaxRawPayloadBytes);
             truncated = true;
         }
         return new(
-            a.Kind.ToString(), a.Vendor, a.Command, a.Analyzed,
+            KindName(a.Kind), a.Vendor, a.Command, a.Analyzed,
             a.Kind is ActionKind.Shell && a.Analyzed ? [.. a.Segments.Select(s => s.Argv.ToArray())] : null,
             a.Paths.Count > 0 ? [.. a.Paths] : null,
             a.Host, a.Port, a.Url, a.Server, a.Tool, a.RawToolName, raw, truncated, a.Justification);
     }
 
     public static PolicyMatchedRuleV1[] ToWire(IReadOnlyList<MatchedRuleRef> rules) =>
-        [.. rules.Select(r => new PolicyMatchedRuleV1(r.Scope.ToString(), r.RuleIndex, r.Outcome.ToString().ToLowerInvariant(), r.Reason))];
+        [.. rules.Select(r => new PolicyMatchedRuleV1(r.Scope.ToString().ToLowerInvariant(), r.RuleIndex, r.Outcome.ToString().ToLowerInvariant(), r.Reason))];
 
     public static PolicySnapshotUploadV1 ToUpload(string sessionId, PolicySnapshot snapshot) => new(
         sessionId, snapshot.Id, PolicyEngine.Version, snapshot.Degraded, [.. snapshot.Degradations],
         [.. snapshot.Documents.Select(d => new PolicySnapshotDocV1(d.Scope.ToString(), d.SourcePath, d.Content))]);
+
+    // Matches the policy YAML's own kind spellings (PolicyDocumentBinder.BindMatcher), not
+    // ActionKind's PascalCase member names — the wire is snake_case throughout.
+    static string KindName(ActionKind kind) => kind switch {
+        ActionKind.Shell => "shell",
+        ActionKind.FileEdit => "file_edit",
+        ActionKind.FileRead => "file_read",
+        ActionKind.Network => "network",
+        ActionKind.McpTool => "mcp_tool",
+        ActionKind.Other => "other",
+        _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, null),
+    };
+
+    // Encoder.Convert consumes whole UTF-16 characters (surrogate pairs included) per call, so a
+    // pair that wouldn't fully fit the byte budget is left unconsumed rather than split.
+    static string TruncateToUtf8Bytes(string s, int maxBytes) {
+        var buffer = new byte[maxBytes];
+        Encoding.UTF8.GetEncoder().Convert(s, buffer, flush: false, out var charsUsed, out _, out _);
+        return s[..charsUsed];
+    }
 }
