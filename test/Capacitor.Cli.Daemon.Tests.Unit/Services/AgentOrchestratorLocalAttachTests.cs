@@ -6,6 +6,7 @@ using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.LocalIpc;
 using Capacitor.Cli.Daemon.Harness.Claude;
 using Capacitor.Cli.Daemon.Harness.Codex;
+using Capacitor.Cli.Core.Policy;
 using Capacitor.Cli.Daemon.Pty;
 using Capacitor.Cli.Daemon.Services;
 using Capacitor.Cli.Daemon.Tests.Unit.Pty;
@@ -234,6 +235,41 @@ public class AgentOrchestratorLocalAttachTests {
             new PtyHostedAgentRuntime("claude", new StubPtyProcess()), new WorktreeInfo("/r", "", "/r"), new CancellationTokenSource()) { IsPrivate = true };
         await privOrch.RegisterAgentForTestAsync(priv);
         await Assert.That(privServer.Calls.Count).IsEqualTo(0);
+    }
+
+    /// Registration uploads the launch-bound policy documents alongside AgentRunStarted, so a later
+    /// decision event can be read against them — but only when there is something to say. Both
+    /// appends complete synchronously inside RegisterAgentAsync (the fake returns a completed task
+    /// without awaiting), so unlike the repo-path Task.Run above these assertions are not racy.
+    [Test]
+    public async Task RegisterAgentAsync_uploads_a_non_empty_policy_snapshot_and_nothing_for_an_empty_one() {
+        var snap = new PolicySnapshot("snap-1", [], true, ["repo policy unreadable"]);
+
+        var server = new TripwireServerConnection();
+        await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+        await orch.RegisterAgentForTestAsync(Agent("pub-1", snap));
+
+        var upload = server.RunEvents.OfType<PolicySnapshotUploadV1>().Single();
+        await Assert.That(upload.SnapshotId).IsEqualTo("snap-1");
+        await Assert.That(upload.Degraded).IsTrue();
+        // No session id has been discovered this early, so the run is keyed by the agent id.
+        await Assert.That(upload.SessionId).IsEqualTo("pub-1");
+
+        // An agent that carries no snapshot, and one whose snapshot says nothing at all, both leave
+        // the server with only the AgentRunStarted append.
+        foreach (var (id, empty) in new (string, PolicySnapshot?)[] { ("none-1", null), ("empty-1", PolicySnapshot.Empty) }) {
+            var quiet = new TripwireServerConnection();
+            await using var quietOrch = AgentOrchestratorHarness.BuildOrchestrator(quiet, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+            await quietOrch.RegisterAgentForTestAsync(Agent(id, empty));
+
+            await Assert.That(quiet.RunEvents.OfType<PolicySnapshotUploadV1>()).IsEmpty();
+            await Assert.That(quiet.RunEvents.OfType<AgentRunStarted>().Count()).IsEqualTo(1);
+        }
+
+        static AgentInstance Agent(string id, PolicySnapshot? policy) =>
+            new(id, null, "", null, "/r", "claude",
+                new PtyHostedAgentRuntime("claude", new StubPtyProcess()),
+                new WorktreeInfo("/r", "", "/r"), new CancellationTokenSource()) { PolicySnapshot = policy };
     }
 
     [Test]
@@ -973,6 +1009,9 @@ public class AgentOrchestratorLocalAttachTests {
         NullLogger<ServerConnection>.Instance
     ) {
         public ConcurrentBag<string> Calls { get; } = [];
+        /// The run-event payloads themselves, for a test asserting WHICH events an agent produced
+        /// rather than only that the method ran.
+        public ConcurrentBag<object> RunEvents { get; } = [];
         public (int Cols, int Rows)? LastDims { get; private set; }
 
         public override Task SendTerminalDimensionsAsync(string agentId, int cols, int rows) { LastDims = (cols, rows); Calls.Add(nameof(SendTerminalDimensionsAsync)); return Task.CompletedTask; }
@@ -982,7 +1021,7 @@ public class AgentOrchestratorLocalAttachTests {
         public override Task AgentUnregisteredAsync(string agentId) { Calls.Add(nameof(AgentUnregisteredAsync)); return Task.CompletedTask; }
         public override Task UpdateRepoPathsAsync() { Calls.Add(nameof(UpdateRepoPathsAsync)); return Task.CompletedTask; }
         public override Task SendTerminalOutputAsync(string agentId, string base64Data, CancellationToken ct = default) { Calls.Add(nameof(SendTerminalOutputAsync)); return Task.CompletedTask; }
-        public override Task AppendAgentRunEventAsync(string agentId, object evt) { Calls.Add(nameof(AppendAgentRunEventAsync)); return Task.CompletedTask; }
+        public override Task AppendAgentRunEventAsync(string agentId, object evt) { Calls.Add(nameof(AppendAgentRunEventAsync)); RunEvents.Add(evt); return Task.CompletedTask; }
         public override Task<EndAgentSessionResult> EndAgentSessionAsync(string agentId, string reason) { Calls.Add(nameof(EndAgentSessionAsync)); return Task.FromResult(new EndAgentSessionResult()); }
 
         public override Task<PermissionDecision> RequestPermissionAsync(
