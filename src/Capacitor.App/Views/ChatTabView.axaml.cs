@@ -17,12 +17,16 @@ public partial class ChatTabView : UserControl {
     const double BottomTolerance = 2;
 
     ScrollViewer? _scroll;
+    /// Armed by a click on a group's summary line, consumed by the extent change that click causes:
+    /// expanding a group must not scroll the clicked line out of view.
+    bool _holdTail;
 
     public ChatTabView() {
         InitializeComponent();
         // Tunnel, not bubble: TextBox's own class handler runs first on the bubbling route, where
         // it inserts the newline and marks Enter handled before any instance handler sees it.
         ComposerInput.AddHandler(KeyDownEvent, OnComposerKeyDown, RoutingStrategies.Tunnel);
+        ChatItems.AddHandler(Button.ClickEvent, OnItemButtonClick);
         // The ScrollViewer is the list template's; it exists only once the list is first measured,
         // which for a surface built before its first layout is later than the first rows.
         ChatItems.TemplateApplied += (_, _) => {
@@ -32,8 +36,13 @@ public partial class ChatTabView : UserControl {
         };
     }
 
-    static void OnScrollChanged(object? sender, ScrollChangedEventArgs e) {
+    void OnItemButtonClick(object? sender, RoutedEventArgs e) {
+        if (e.Source is Button button && button.Classes.Contains("toolSummary")) _holdTail = true;
+    }
+
+    void OnScrollChanged(object? sender, ScrollChangedEventArgs e) {
         if (sender is not ScrollViewer scroll || (e.ExtentDelta.Y == 0 && e.ViewportDelta.Y == 0)) return;
+        if (_holdTail && e.ExtentDelta.Y != 0) { _holdTail = false; return; }
         var offsetBefore   = scroll.Offset.Y - e.OffsetDelta.Y;
         var viewportBefore = scroll.Viewport.Height - e.ViewportDelta.Y;
         var extentBefore   = scroll.Extent.Height - e.ExtentDelta.Y;

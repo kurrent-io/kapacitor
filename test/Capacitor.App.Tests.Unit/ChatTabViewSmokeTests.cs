@@ -34,6 +34,23 @@ public class ChatTabViewSmokeTests {
     const string ToolResultLine = """{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}""";
     const string ToolErrorLine = """{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"boom","is_error":true}]}}""";
     static readonly TimeSpan CrDelay = TimeSpan.FromMilliseconds(150);
+    const string ReadCallLine = """{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t2","name":"Read","input":{"file_path":"/repo/x/src/a.cs"}}]}}""";
+    const string ReadResultLine = """{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t2","content":"ok"}]}}""";
+
+    static string CallLine(int n) => ToolCallLine.Replace("\"t1\"", $"\"t{n}\"");
+    static string ResultLine(int n) => ToolResultLine.Replace("\"t1\"", $"\"t{n}\"");
+
+    static List<StackPanel> ToolRows(ChatTabView view) => view.GetVisualDescendants().OfType<StackPanel>()
+        .Where(p => p.Orientation == Orientation.Horizontal && p.DataContext is ToolCallItem).ToList();
+    static Button Summary(ChatTabView view) => view.GetVisualDescendants().OfType<Button>().Single(b => b.Classes.Contains("toolSummary"));
+    static ToolGroupItem OnlyGroup(Host host) => (ToolGroupItem)host.Chat.Items.Single();
+
+    static void Click(Host host, Control target) {
+        var origin = target.TranslatePoint(new Point(2, 2), host.Window)!.Value;
+        host.Window.MouseDown(origin, MouseButton.Left);
+        host.Window.MouseUp(origin, MouseButton.Left);
+        host.Settle();
+    }
 
     sealed class Host {
         bool _shown;
@@ -110,6 +127,15 @@ public class ChatTabViewSmokeTests {
             File.AppendAllLines(path, Enumerable.Repeat(UserLine, lines));
             Time.Advance(ChatTabViewModel.PollInterval);
             await (Chat.PendingReadForTesting ?? Task.CompletedTask);
+        }
+
+        public async Task AppendLinesAndTickAsync(string path, params string[] lines) {
+            File.AppendAllLines(path, lines);
+            Time.Advance(ChatTabViewModel.PollInterval);
+            await (Chat.PendingReadForTesting ?? Task.CompletedTask);
+            Dispatcher.UIThread.RunJobs();
+            Window.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
         }
 
         public bool AtBottom() => Scroll.Offset.Y + Scroll.Viewport.Height >= Scroll.Extent.Height - 1;
@@ -279,11 +305,13 @@ public class ChatTabViewSmokeTests {
             var host = new Host();
             await host.LoadAsync(Tmp.CreateFile("tools.jsonl",
                 [ToolCallLine, ToolResultLine, ToolCallLine.Replace("t1", "t2"), ToolErrorLine.Replace("t1", "t2")]));
+            OnlyGroup(host).Toggle();
+            host.Settle();
 
-            await Assert.That(host.Chat.Items.Cast<ToolCallItem>().Select(i => i.Outcome))
+            await Assert.That(OnlyGroup(host).Calls.Select(i => i.Outcome))
                 .IsEquivalentTo([ToolOutcome.Done, ToolOutcome.Error], CollectionOrdering.Matching);
             var glyphs = host.View.GetVisualDescendants().OfType<TextBlock>()
-                .Where(t => t.Text is "✓" or "✕").ToList();
+                .Where(t => t.DataContext is ToolCallItem && t.Text is "✓" or "✕").ToList();
 
             await Assert.That(glyphs.Select(g => g.Text!)).IsEquivalentTo(["✓", "✕"], CollectionOrdering.Matching);
             await Assert.That(glyphs[0].Foreground).IsSameReferenceAs(Brush(isError: false));
@@ -400,9 +428,9 @@ public class ChatTabViewSmokeTests {
             var host = new Host();
             await host.LoadAsync(Tmp.CreateFile("rows.jsonl",
                 [ToolCallLine, ToolResultLine, ToolCallLine.Replace("t1", "t2"), ToolResultLine.Replace("t1", "t2"), AssistantLinkLine]));
-
-            var rows = host.View.GetVisualDescendants().OfType<StackPanel>()
-                .Where(p => p.Orientation == Orientation.Horizontal && p.DataContext is ToolCallItem).ToList();
+            ((ToolGroupItem)host.Chat.Items[0]).Toggle();
+            host.Settle();
+            var rows = ToolRows(host.View);
             var text = host.View.GetVisualDescendants().OfType<MarkdownView>().Single();
             double Top(Control c) => c.TranslatePoint(new Point(0, 0), host.View)!.Value.Y;
             double Bottom(Control c) => Top(c) + c.Bounds.Height;
@@ -410,6 +438,160 @@ public class ChatTabViewSmokeTests {
             await Assert.That(rows).Count().IsEqualTo(2);
             await Assert.That(Top(rows[1]) - Bottom(rows[0])).IsLessThan(10);
             await Assert.That(Top(text) - Bottom(rows[1])).IsGreaterThanOrEqualTo(12);
+            await host.CloseAsync();
+        });
+    }
+
+    /// Pins the fold: settled calls become one summary line, live calls stay as rows, and a click
+    /// on the summary reveals every call and hides them again.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task A_group_folds_settled_calls_into_a_summary_and_expands_on_click() {
+        await RunOnUiAsync(async () => {
+            var host = new Host();
+            await host.LoadAsync(Tmp.CreateFile("fold.jsonl", [ToolCallLine, ToolResultLine, ReadCallLine, ReadResultLine, CallLine(3)]));
+
+            await Assert.That(host.Chat.Items).Count().IsEqualTo(1);
+            var summary = Summary(host.View);
+            await Assert.That(summary.IsVisible).IsTrue();
+            await Assert.That(summary.GetVisualDescendants().OfType<TextBlock>().Select(t => t.Text)).Contains("Searched files, read a file");
+            await Assert.That(ToolRows(host.View)).Count().IsEqualTo(1);
+            await Assert.That(((ToolCallItem)ToolRows(host.View)[0].DataContext!).Outcome).IsEqualTo(ToolOutcome.Running);
+
+            Click(host, summary);
+            await Assert.That(OnlyGroup(host).IsExpanded).IsTrue();
+            await Assert.That(ToolRows(host.View)).Count().IsEqualTo(3);
+
+            Click(host, summary);
+            await Assert.That(OnlyGroup(host).IsExpanded).IsFalse();
+            await Assert.That(ToolRows(host.View)).Count().IsEqualTo(1);
+            await host.CloseAsync();
+        });
+    }
+
+    /// A group with nothing settled has no summary line at all.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task A_group_of_only_live_calls_shows_rows_and_no_summary() {
+        await RunOnUiAsync(async () => {
+            var host = new Host();
+            await host.LoadAsync(Tmp.CreateFile("live.jsonl", [ToolCallLine, ReadCallLine]));
+            await Assert.That(Summary(host.View).IsVisible).IsFalse();
+            await Assert.That(ToolRows(host.View)).Count().IsEqualTo(2);
+            await host.CloseAsync();
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task A_failed_call_inside_a_folded_group_shows_the_danger_cross_on_the_summary() {
+        await RunOnUiAsync(async () => {
+            var host = new Host();
+            await host.LoadAsync(Tmp.CreateFile("fail.jsonl", [ToolCallLine, ToolErrorLine]));
+            var cross = Summary(host.View).GetVisualDescendants().OfType<TextBlock>().Single(t => t.Text == "✕");
+            await Assert.That(cross.IsVisible).IsTrue();
+            await Assert.That(cross.Foreground).IsSameReferenceAs(Avalonia.Application.Current!.FindResource("KcapDangerBrush"));
+            await host.CloseAsync();
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task An_awaiting_row_paints_the_question_glyph_with_the_accent_brush() {
+        await RunOnUiAsync(async () => {
+            var host = new Host();
+            await host.LoadAsync(Tmp.CreateFile("ask.jsonl", [ToolCallLine]));
+            host.Permissions.Add(PermissionEntries.Entry("r1", "a1", toolUseId: "t1"));
+            await WaitUntilAsync(() => OnlyGroup(host).Calls[0].IsAwaitingPermission, what: "the mark");
+            host.Settle();
+            var glyph = host.View.GetVisualDescendants().OfType<TextBlock>().Single(t => t.DataContext is ToolCallItem && t.Text == "?");
+            await Assert.That(glyph.Foreground).IsSameReferenceAs(Brush(isError: false));
+            await host.CloseAsync();
+        });
+    }
+
+    /// The inner lists mutate without an outer collection notification; follow-tail still reads
+    /// the extent change.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Follow_tail_tracks_inner_group_growth_and_folding_and_leaves_a_scrolled_up_reader_alone() {
+        await RunOnUiAsync(async () => {
+            var host = new Host();
+            var path = Tmp.CreateFile("inner.jsonl", [.. Enumerable.Repeat(UserLine, 60), CallLine(1)]);
+            await host.LoadAsync(path);
+            await Assert.That(host.AtBottom()).IsTrue();
+
+            await host.AppendLinesAndTickAsync(path, CallLine(2), CallLine(3));
+            await Assert.That(host.Chat.Items).Count().IsEqualTo(61);
+            await Assert.That(host.AtBottom()).IsTrue();
+
+            await host.AppendLinesAndTickAsync(path, ResultLine(1));
+            await Assert.That(host.AtBottom()).IsTrue();
+
+            host.Scroll.Offset = new Vector(0, 0);
+            host.Window.UpdateLayout();
+            await host.AppendLinesAndTickAsync(path, CallLine(4), ResultLine(2));
+            await Assert.That(host.Scroll.Offset.Y).IsEqualTo(0);
+            await host.CloseAsync();
+        });
+    }
+
+    /// Expanding keeps the viewport: the hold is one-shot, so a reader who returns to the bottom is
+    /// followed again on the next append.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Expanding_the_trailing_group_keeps_the_offset_and_the_hold_is_one_shot() {
+        await RunOnUiAsync(async () => {
+            var host = new Host();
+            var lines = new List<string>(Enumerable.Repeat(UserLine, 60));
+            for (var i = 1; i <= 30; i++) { lines.Add(CallLine(i)); lines.Add(ResultLine(i)); }
+            var path = Tmp.CreateFile("expand.jsonl", lines.ToArray());
+            await host.LoadAsync(path);
+            await Assert.That(host.AtBottom()).IsTrue();
+            var before = host.Scroll.Offset.Y;
+
+            Click(host, Summary(host.View));
+            host.Window.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+            await Assert.That(((ToolGroupItem)host.Chat.Items[^1]).IsExpanded).IsTrue();
+            await Assert.That(host.Scroll.Offset.Y).IsEqualTo(before);
+            await Assert.That(host.AtBottom()).IsFalse();
+
+            host.Scroll.ScrollToEnd();
+            host.Window.UpdateLayout();
+            await host.AppendAndTickAsync(path, 5);
+            Dispatcher.UIThread.RunJobs();
+            host.Window.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+            await Assert.That(host.AtBottom()).IsTrue();
+            await host.CloseAsync();
+        });
+    }
+
+    /// Expansion realizes every row; folding releases them again.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task A_thousand_call_group_realizes_on_expansion_and_releases_on_fold() {
+        await RunOnUiAsync(async () => {
+            var host = new Host();
+            var lines = new List<string>();
+            for (var i = 1; i <= 1000; i++) { lines.Add(CallLine(i)); lines.Add(ResultLine(i)); }
+            lines.Add(CallLine(1001));
+            await host.LoadAsync(Tmp.CreateFile("thousand.jsonl", lines.ToArray()));
+            var items = host.View.FindControl<ItemsControl>("ChatItems")!;
+
+            await Assert.That(host.Chat.Items).Count().IsEqualTo(1);
+            await Assert.That(items.GetRealizedContainers().Count()).IsEqualTo(1);
+            await Assert.That(ToolRows(host.View)).Count().IsEqualTo(1);
+
+            OnlyGroup(host).Toggle();
+            host.Settle();
+            await Assert.That(ToolRows(host.View)).Count().IsEqualTo(1001);
+            await Assert.That(items.GetRealizedContainers().Count()).IsEqualTo(1);
+
+            OnlyGroup(host).Toggle();
+            host.Settle();
+            await Assert.That(ToolRows(host.View)).Count().IsEqualTo(1);
             await host.CloseAsync();
         });
     }
