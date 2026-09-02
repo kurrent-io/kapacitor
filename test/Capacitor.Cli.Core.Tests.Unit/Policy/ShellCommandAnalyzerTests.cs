@@ -1,0 +1,75 @@
+namespace Capacitor.Cli.Core.Tests.Unit.Policy;
+
+using Capacitor.Cli.Core.Policy;
+
+public class ShellCommandAnalyzerTests {
+    [Test]
+    public async Task Simple_command_is_analyzed_into_one_segment() {
+        var r = ShellCommandAnalyzer.Analyze("git status --porcelain");
+        await Assert.That(r.Analyzed).IsTrue();
+        await Assert.That(r.Segments).IsEquivalentTo(
+            new[] { new ShellSegment(["git", "status", "--porcelain"]) });
+    }
+
+    [Test]
+    public async Task Top_level_operators_split_segments() {
+        var r = ShellCommandAnalyzer.Analyze("git add -A && git commit -m done; git log | head");
+        await Assert.That(r.Analyzed).IsTrue();
+        await Assert.That(r.Segments.Count).IsEqualTo(4);
+        await Assert.That(r.Segments[1].Argv).IsEquivalentTo(new[] { "git", "commit", "-m", "done" });
+    }
+
+    [Test]
+    public async Task Quoted_literals_are_resolved_into_single_tokens() {
+        var r = ShellCommandAnalyzer.Analyze("git commit -m 'two words' --author \"A B\"");
+        await Assert.That(r.Analyzed).IsTrue();
+        await Assert.That(r.Segments[0].Argv).IsEquivalentTo(
+            new[] { "git", "commit", "-m", "two words", "--author", "A B" });
+    }
+
+    // The exhaustive unanalyzed table: each row is one banned construct.
+    [Test]
+    [Arguments("git status > out.txt")]          // redirection
+    [Arguments("cat < in.txt")]                  // redirection
+    [Arguments("cat <<EOF")]                     // here-doc
+    [Arguments("echo $HOME")]                    // parameter expansion
+    [Arguments("echo \"$HOME\"")]                // expansion inside double quotes
+    [Arguments("echo `date`")]                   // command substitution
+    [Arguments("diff <(sort a) <(sort b)")]      // process substitution
+    [Arguments("ls *.md")]                       // glob
+    [Arguments("ls ?.md")]                       // glob
+    [Arguments("ls [ab].md")]                    // glob class
+    [Arguments("ls ~/notes")]                    // tilde expansion at word start
+    [Arguments("sleep 5 &")]                     // backgrounding
+    [Arguments("a || b")]                        // || is not on the operator allowlist
+    [Arguments("(cd /tmp)")]                     // subshell
+    [Arguments("{ ls; }")]                       // group
+    [Arguments("echo a{b,c}")]                   // brace expansion
+    [Arguments("eval git status")]               // eval
+    [Arguments("exec git status")]               // exec
+    [Arguments("bash -c 'rm -rf x'")]            // nested shell
+    [Arguments("sh script.sh")]                  // nested shell
+    [Arguments("FOO=1 git push")]                // leading assignment hides the real program
+    [Arguments("echo a\\ b")]                    // backslash escape
+    [Arguments("git log # comment")]             // comment
+    [Arguments("git status\ngit log")]           // newline separator
+    [Arguments("echo 'unterminated")]            // unterminated quote
+    [Arguments("git add . &&")]                  // trailing operator = empty segment
+    [Arguments("&& git add .")]                  // leading operator = empty segment
+    [Arguments("! git diff --quiet")]            // pipeline negation
+    [Arguments("")]                              // empty command
+    public async Task Banned_constructs_are_unanalyzed(string command) {
+        var r = ShellCommandAnalyzer.Analyze(command);
+        await Assert.That(r.Analyzed).IsFalse();
+        await Assert.That(r.Segments).IsEmpty();
+    }
+
+    [Test]
+    [Arguments("git log HEAD~3")]                // ~ mid-token is literal
+    [Arguments("grep -n issue#5 notes.txt")]     // # mid-token is literal
+    [Arguments("git log --format=%H")]           // = and % in arguments are literal
+    [Arguments("env FOO=1 git push --force")]    // assignment as env's argument, not leading
+    [Arguments("grep 'a*b' file.txt")]           // glob chars inside quotes are literal
+    public async Task Literal_lookalikes_stay_analyzed(string command) =>
+        await Assert.That(ShellCommandAnalyzer.Analyze(command).Analyzed).IsTrue();
+}
