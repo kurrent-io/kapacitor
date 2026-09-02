@@ -180,7 +180,7 @@ sealed class SpectreFirstRunFlowProgress(IKeyWatcher? keys = null) : IFirstRunFl
             ? Unreachable
             : step switch {
                 FirstRunFlowStep.SignIn => "Waiting for you to sign in",
-                FirstRunFlowStep.Agents => "Choose your coding harnesses in the browser",
+                FirstRunFlowStep.Agents => "Choose your harnesses in the browser",
                 FirstRunFlowStep.Import => "Choose what to import in the browser",
                 FirstRunFlowStep.Done   => "Finishing up in the browser",
                 _                       => "Waiting on the browser"
@@ -596,9 +596,9 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
 
         await Console.Out.WriteLineAsync();
 
-        // Step 4: Coding harnesses
-        AnsiConsole.Write(new Rule("[yellow]Step 4/6 — Coding harnesses[/]").LeftJustified());
-        await Console.Out.WriteLineAsync("  Capacitor records sessions by installing hooks into your coding harnesses.");
+        // Step 4: Harnesses
+        AnsiConsole.Write(new Rule("[yellow]Step 4/6 — Harnesses[/]").LeftJustified());
+        await Console.Out.WriteLineAsync("  Capacitor records sessions by installing hooks into your harnesses.");
         await Console.Out.WriteLineAsync();
 
         var pluginPath = ResolvePluginPath();
@@ -623,7 +623,7 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
         var detectedSummary = SetupDecisions.DetectedAgentsSummary(detected);
 
         if (detectedSummary is not null)
-            await Console.Out.WriteLineAsync($"  Detected coding harnesses: {detectedSummary}");
+            await Console.Out.WriteLineAsync($"  Detected harnesses: {detectedSummary}");
 
         bool installAgents;
 
@@ -1471,7 +1471,7 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
                 // Said out loud because it is the one part of this leg that takes noticeable time: the
                 // login-shell probe spawns a shell, and a slow profile would otherwise be dead air
                 // ahead of the only line that explains what is happening.
-                AnsiConsole.MarkupLine("  [dim]Checking this machine for coding harnesses…[/]");
+                AnsiConsole.MarkupLine("  [dim]Checking this machine for harnesses…[/]");
 
                 var report = FirstRunMachineReport.EvaluateCurrent(
                     config, HarnessRegistry.FromEnvironment(home),

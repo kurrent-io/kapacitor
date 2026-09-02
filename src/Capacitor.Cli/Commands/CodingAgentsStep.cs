@@ -7,7 +7,7 @@ using Spectre.Console;
 namespace Capacitor.Cli.Commands;
 
 /// <summary>
-/// Pure logic for the "coding harnesses" step of <c>kcap setup</c>. All I/O
+/// Pure logic for the "harnesses" step of <c>kcap setup</c>. All I/O
 /// (filesystem, console, prompts) flows through injected delegates so tests
 /// can drive every branch without touching ~/.claude, ~/.codex, or AnsiConsole.
 /// </summary>

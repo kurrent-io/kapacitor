@@ -78,7 +78,7 @@ public sealed record FirstRunMachineReport(
     /// <para><b>And reports nothing at all when it fails</b> — not an empty harness map, which the
     /// server cannot tell from a machine that was probed and found bare. The login-shell answer goes
     /// with it, because it is what keeps the server's <c>ReadFacts</c> from recording the block: a
-    /// crash rendered on the consent screen as "no coding harnesses were found" is a failure reported as
+    /// crash rendered on the consent screen as "no harnesses were found" is a failure reported as
     /// a result.</para>
     /// </summary>
     public static FirstRunMachineReport EvaluateCurrent(
