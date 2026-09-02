@@ -58,6 +58,11 @@ public class ShellCommandAnalyzerTests {
     [Arguments("&& git add .")]                  // leading operator = empty segment
     [Arguments("! git diff --quiet")]            // pipeline negation
     [Arguments("")]                              // empty command
+    [Arguments("/bin/sh -c 'x'")]                // path-qualified nested shell
+    [Arguments("BASH -c 'x'")]                   // case-variant nested shell
+    [Arguments("a+=1 git push --force")]         // += leading assignment
+    [Arguments("PATH+=/tmp git status")]         // += leading assignment
+    [Arguments("git push '' --force")]           // empty argv token
     public async Task Banned_constructs_are_unanalyzed(string command) {
         var r = ShellCommandAnalyzer.Analyze(command);
         await Assert.That(r.Analyzed).IsFalse();

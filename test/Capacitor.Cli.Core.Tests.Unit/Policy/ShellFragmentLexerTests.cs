@@ -31,4 +31,10 @@ public class ShellFragmentLexerTests {
         var frags = ShellFragmentLexer.Lex("git add .\ngit commit");
         await Assert.That(frags).IsEquivalentTo(new[] { "git", "add", ".", "git", "commit" });
     }
+
+    [Test]
+    public async Task Empty_quoted_fragment_is_dropped() {
+        var frags = ShellFragmentLexer.Lex("git push '' --force");
+        await Assert.That(frags).IsEquivalentTo(new[] { "git", "push", "--force" });
+    }
 }

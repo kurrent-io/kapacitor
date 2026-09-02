@@ -36,11 +36,15 @@ public static class ShellFragmentLexer {
                 i = j;
             }
             else if (char.IsWhiteSpace(c)) {
-                if (inFrag) { frags.Add(cur.ToString()); cur.Clear(); inFrag = false; }
+                if (inFrag) {
+                    if (cur.Length > 0) frags.Add(cur.ToString());
+                    cur.Clear();
+                    inFrag = false;
+                }
             }
             else { cur.Append(c); inFrag = true; }
         }
-        if (inFrag) frags.Add(cur.ToString());
+        if (inFrag && cur.Length > 0) frags.Add(cur.ToString());
         return frags;
     }
 }

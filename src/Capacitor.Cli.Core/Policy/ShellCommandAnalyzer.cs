@@ -14,7 +14,7 @@ public sealed record ShellAnalysis(bool Analyzed, IReadOnlyList<ShellSegment> Se
 /// </summary>
 public static class ShellCommandAnalyzer {
     static readonly SearchValues<char> UnquotedForbidden = SearchValues.Create("$`<>(){}[]*?\\");
-    static readonly HashSet<string> ForbiddenPrograms = new(StringComparer.Ordinal)
+    static readonly HashSet<string> ForbiddenPrograms = new(StringComparer.OrdinalIgnoreCase)
         { "eval", "exec", "sh", "bash", "zsh", "dash", "ksh", "csh", "tcsh", "fish" };
 
     public static ShellAnalysis Analyze(string command) {
@@ -29,6 +29,7 @@ public static class ShellCommandAnalyzer {
             var t = token.ToString();
             token.Clear();
             inToken = false;
+            if (t.Length == 0) return false;
             if (t == "!" && argv.Count == 0) return false;
             if (!tokenStartsQuoted && t.StartsWith('~')) return false;
             tokenStartsQuoted = false;
@@ -38,7 +39,7 @@ public static class ShellCommandAnalyzer {
 
         bool EndSegment() {
             if (!FlushToken() || argv.Count == 0) return false;
-            if (LooksLikeAssignment(argv[0]) || ForbiddenPrograms.Contains(argv[0])) return false;
+            if (LooksLikeAssignment(argv[0]) || ForbiddenPrograms.Contains(Basename(argv[0]))) return false;
             segments.Add(new ShellSegment([.. argv]));
             argv.Clear();
             return true;
@@ -102,9 +103,19 @@ public static class ShellCommandAnalyzer {
     static bool LooksLikeAssignment(string word) {
         var eq = word.IndexOf('=');
         if (eq <= 0) return false;
+        var nameEnd = eq;
+        if (word[eq - 1] == '+') {
+            nameEnd = eq - 1;
+            if (nameEnd <= 0) return false;
+        }
         if (!(char.IsAsciiLetter(word[0]) || word[0] == '_')) return false;
-        for (var i = 1; i < eq; i++)
+        for (var i = 1; i < nameEnd; i++)
             if (!(char.IsAsciiLetterOrDigit(word[i]) || word[i] == '_')) return false;
         return true;
+    }
+
+    static string Basename(string word) {
+        var slash = word.LastIndexOf('/');
+        return slash < 0 ? word : word[(slash + 1)..];
     }
 }
