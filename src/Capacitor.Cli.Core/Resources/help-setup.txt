@@ -116,7 +116,7 @@ sessions are captured.
 
 Once you are signed in, on a server that offers browser setup kcap creates a
 setup link, opens your browser on it, and waits while you work through the
-screens there. It reports the coding agents it found on this machine — which
+screens there. It reports the harnesses it found on this machine — which
 ones are on your PATH, which have config on disk, which kcap is already wired
 into, and whether your login shell can find kcap — since only the machine can
 know that, and on a device-code sign-in the browser is a different box. The
