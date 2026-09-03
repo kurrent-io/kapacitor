@@ -38,9 +38,9 @@ internal sealed class ClaudePolicySeam(ConfigRoot config) {
         string? ToolName, string? CallId, string? Cwd, string? AgentId, JsonElement? ToolInput, string InputHash);
 
     /// <summary>Test-only: throws from inside the evaluation region, so the arm that must still
-    /// spend an already-consumed ask is driven by a real exception. Every production step in that
-    /// region is fail-open by construction today, which is exactly why nothing else can raise it.
-    /// Null in production.</summary>
+    /// spend an already-consumed ask is driven by a real exception. That region's own dependencies
+    /// totalize their failures, which leaves this hook as the only way to exercise the arm. Null in
+    /// production.</summary>
     internal Action? BeforeSnapshotLoadForTest;
 
     public async Task<int> HandlePreToolUseAsync(string body, string sessionId, bool renderedAgent, TextWriter stdout) {
@@ -110,7 +110,12 @@ internal sealed class ClaudePolicySeam(ConfigRoot config) {
         try {
             BeforeSnapshotLoadForTest?.Invoke();
             snapshot = LoadSnapshot(sessionId, fields.Cwd);
-            if (snapshot.IsEmpty) return SeamAnswer.NotAnswered;
+            // An ungoverned session pays nothing for the seam — unless this invocation already spent
+            // a guard an earlier policy journaled, which the record owes an account of. Evaluated
+            // rather than short-circuited, so the empty policy reaches the arms below as the fresh
+            // `none` it is and the consumed ask is reported exactly as it is over any other unmatched
+            // action.
+            if (snapshot.IsEmpty && !consumed.PendingAsk) return SeamAnswer.NotAnswered;
             ctx = Build(fields, sessionId, PolicySeams.ClaudePermissionRequest, snapshot, EvaluationMode.Full);
         } catch {
             // The prompt stands, and a consumed ask is the only thing the record would otherwise
@@ -182,8 +187,8 @@ internal sealed class ClaudePolicySeam(ConfigRoot config) {
     }
 
     /// <summary>An empty snapshot means the session is ungoverned, not "pass-through": no output,
-    /// no counter, no event, no network. The no-policy world pays nothing for the seam being
-    /// installed.</summary>
+    /// no counter, and — unless a consumed guard has to be accounted for — no event either. The
+    /// no-policy world pays nothing for the seam being installed.</summary>
     PolicySnapshot LoadSnapshot(string sessionId, string? cwd) => new PolicySnapshotStore(config)
         .LoadOrBuild(sessionId, cwd is null ? null : GitRepository.FindRoot(cwd));
 

@@ -341,6 +341,8 @@ public class ClaudePolicySeamTests {
         await Assert.That(events[0]["effective_outcome"]!.GetValue<string>()).IsEqualTo("prompt_stands");
     }
 
+    /// <summary>With no guard consumed an ungoverned session costs the seam nothing at all — the
+    /// counterpart to the empty snapshot that DID spend one, which records instead.</summary>
     [Test]
     public async Task Permission_request_without_a_policy_defers_to_record_only() {
         var stdout = new StringWriter();
@@ -403,17 +405,33 @@ public class ClaudePolicySeamTests {
     }
 
     /// <summary>Consume runs ahead of the snapshot, so a session whose policy files are gone still
-    /// spends the entry an earlier policy journaled — consume-once holds even where there is
-    /// nothing left to evaluate against.</summary>
+    /// spends the entry an earlier policy journaled — and an entry spent is an entry the record has
+    /// to account for. An empty policy is a fresh <c>none</c>, which cannot outrank the ask, so the
+    /// prompt stands exactly as it does over any other unmatched action.</summary>
     [Test]
-    public async Task An_empty_snapshot_still_consumes_the_pending_ask() {
+    public async Task An_empty_snapshot_records_the_consumed_ask_it_spent() {
         new PolicyDecisionJournal(Config.Root).RecordAsk(Sid, null, HashOf("""{"command":"git status"}"""));
 
+        var stdout = new StringWriter();
         var answer = await Seam.HandlePermissionRequestAsync(
-            PermissionNode("Bash", """{"command":"git status"}"""), Sid, new StringWriter());
+            PermissionNode("Bash", """{"command":"git status"}"""), Sid, stdout);
 
         await Assert.That(answer).IsEqualTo(SeamAnswer.NotAnswered);
-        await Assert.That(Decisions()).IsEmpty();
+        await Assert.That(stdout.ToString()).IsEmpty();
+
+        var events = Decisions();
+        await Assert.That(events.Count).IsEqualTo(1);
+        await Assert.That(events[0]["requested_outcome"]!.GetValue<string>()).IsEqualTo("ask");
+        await Assert.That(events[0]["effective_outcome"]!.GetValue<string>()).IsEqualTo("prompt_stands");
+        await Assert.That(events[0]["pending_ask_consumed"]!.GetValue<bool>()).IsTrue();
+        await Assert.That(events[0]["fresh_outcome"]!.GetValue<string>()).IsEqualTo("none");
+        await Assert.That(events[0]["correlation_ambiguous"]!.GetValue<bool>()).IsTrue();
+        // The empty snapshot's own id, not the evaluation-error placeholder: nothing failed here.
+        await Assert.That(events[0]["snapshot_id"]!.GetValue<string>())
+            .IsEqualTo(new PolicySnapshotStore(Config.Root).TryLoad(Sid)!.Id);
+        // A governed prompt is never a pass-through, empty policy or not.
+        await Assert.That(new PolicyDecisionJournal(Config.Root).TakePassThroughCount(Sid)).IsEqualTo(0);
+
         await Assert.That(new PolicyDecisionJournal(Config.Root)
             .Consume(Sid, null, HashOf("""{"command":"git status"}""")).PendingAsk).IsFalse();
     }
