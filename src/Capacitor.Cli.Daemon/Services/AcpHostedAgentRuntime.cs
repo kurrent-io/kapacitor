@@ -935,6 +935,13 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
 
         var connection = _installed.Connection;
 
+        // Ahead of the read loop, which is what admits inbound session/request_permission: a
+        // degradation the user only learns about after a peer has already acted under the weakened
+        // policy is a disclosure that arrived too late to be one. Same ordered envelope lane as
+        // every other note, so it also precedes the opening turn.
+        if (_policySnapshot is { Degraded: true, Degradations.Count: > 0 } degraded)
+            EmitPolicyDegradedNote(degraded.Degradations[0]);
+
         _installed.LoopTask = RunIncarnationLoopAsync(_installed);
         _turnWorkerTask     = RunTurnWorkerAsync(_cts.Token);
 
@@ -1059,12 +1066,6 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
         // the selector. Emitted before the initial turn is enqueued, so it precedes that turn's output.
         if (modelOwedAnExplanation is { Length: > 0 } owed && _resolvedModel is null)
             EmitModelFallbackNote(owed);
-
-        // Same lane as every other envelope, and emitted before the opening turn: a degradation the
-        // user only learns about after the agent has acted on the weakened policy is a disclosure
-        // that arrived too late to be one.
-        if (_policySnapshot is { Degraded: true, Degradations.Count: > 0 } degraded)
-            EmitPolicyDegradedNote(degraded.Degradations[0]);
 
         // The session is established (initialize + session/new both completed) — the caller
         // (orchestrator) can now treat this agent as live. Enqueue the initial turn without
