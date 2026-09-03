@@ -283,6 +283,7 @@ At a glance — each links to its section below:
 | [`kcap setup`](#initial-setup) | Interactive wizard — server, auth, agent hooks, daemon |
 | [`kcap import`](#loading-historical-sessions) | Backfill past sessions from every detected agent |
 | [`kcap recap`](#session-recap) | AI summary + per-turn outline of a session |
+| [`kcap sessions`](#listing-sessions-on-a-repository) | List a repo's sessions you can see, running first |
 | [`kcap validate-plan`](#plan-validation) | Check that every planned item was completed |
 | [`kcap hide`](#hide-session) | Mark a session owner-only |
 | [`kcap disable`](#disable-recording) | Stop recording and delete server-side data |
@@ -374,6 +375,18 @@ If the kcap plugin is installed, you can also use the `/kcap:recap` skill inside
 Recap session c4de7fbe-cff5-4e2c-bf80-9858d02f58be and propose what should be done next.
 ```
 
+### Listing sessions on a repository
+
+```bash
+kcap sessions                       # running sessions on the current repo, everyone you can see
+kcap sessions --all --mine          # your own, running and ended
+kcap sessions --repo acme/widgets   # another repository, by owner/name or 16-hex hash
+kcap sessions --touching src/Foo    # sessions with an Edit/Write attempt on a matching path
+kcap sessions --json                # the raw server response
+```
+
+Answers "which session is doing this, and is it still running?" for a checkout. Rows are visibility-filtered, so a teammate's private session simply does not appear. Each row shows status (`active`, `stale` after an hour of silence, or `ended`), your access level on it, owner, vendor, branch, last activity and title; below full access the branch is blank and `--touching` cannot match the row. Path evidence comes from Edit/Write tool inputs at invocation time, so edits applied through a shell script leave nothing to match. Drill in with `kcap recap --full <session-id>` (full access only).
+
 ### Plan validation
 
 Verify that all items in a session's plan were completed.
@@ -462,12 +475,14 @@ kcap mcp sessions
 
 Stdio MCP server that exposes past Capacitor sessions to coding agents (Claude Code, Codex, Cursor, Copilot, Gemini, Antigravity) so they can search and recall prior work without leaving the chat. **Claude Code:** auto-registered via the plugin's `.mcp.json`. **Codex CLI:** `kcap setup` / `kcap plugin install --codex` register it (alongside `kcap-review`) directly in `~/.codex/config.toml` under `[mcp_servers]`, so there's nothing extra to do — launch Codex from your repo directory so the server resolves the right repo. Enabling the kcap plugin through Codex's native plugin manager (`codex plugin add`) also provides them via the plugin's `.codex-mcp.json` descriptor. **Cursor:** `kcap setup` / `kcap plugin install --cursor` register it (alongside the other three kcap servers) in `~/.cursor/mcp.json`; opt out with `--skip-cursor-mcp`. **GitHub Copilot CLI:** `kcap setup` / `kcap plugin install --copilot` register it (alongside the other three kcap servers) in `~/.copilot/mcp-config.json`; opt out with `--skip-copilot-mcp`. **Gemini CLI:** `kcap setup` / `kcap plugin install --gemini` register it (alongside the other three kcap servers) in the shared `~/.gemini/settings.json`; opt out with `--skip-gemini-mcp`. **Google Antigravity:** `kcap setup` / `kcap plugin install --antigravity` register it (alongside the other three kcap servers) in `~/.gemini/config/mcp_config.json` — Antigravity's own MCP file, not the Gemini CLI's `settings.json`; opt out with `--skip-antigravity-mcp`.
 
-It provides four tools:
+It provides six tools:
 
 - **`search_sessions`** — free-text search over past sessions (and subagent transcripts), searching the current repo first and automatically widening to every visible repo when results come back thin (the response then carries `widened_to_all_repos: true`, and each hit includes its own repo). Pass `repo: "all"` to search across every repo you can see up front, or `repo: "owner/name"` for a different one — an explicit `repo` (including `"all"`) never auto-widens. Filter by `author` / `author_github_id`. Returns ranked hits with `session_id`, snippet, and (for transcript hits) `hit_event_index` + `agent_id` for drilling in.
+- **`list_repo_sessions`** — the sessions on a repository you are allowed to see, running first, ordered by last activity, with `access_level`, `stale`, branch, cwd, last prompt and Edit/Write attempt paths (blank below full access). `repo` defaults to the current repo and accepts `owner/name` or a 16-hex hash; `state` is `active` (default), `ended` or `all`; `owner` is `me` or a canonical id; `touching_path` matches attempt paths on full-access rows only.
 - **`get_session_summary`** — concise `summary_text` + `plan` for a session. Use this to orient before reading the transcript.
 - **`get_session_transcript`** — speaker-tagged events from a session. Pair `around_event` (and `agent_id` if the hit was in a subagent) with the values returned by `search_sessions` to fetch the exact decision context.
 - **`get_turn`** — the full event transcript for one turn (user prompt, tool calls + results, assistant text) by `session_id` + `turn_index`. A turn is one user message and the assistant's full response up to the next user message.
+- **`list_turns`** — every turn of a session with its prose summary, prompt, tools, files and token counts; works on running sessions at `activity` access and above.
 
 The server is repo-aware — it resolves the current working directory to a repo hash at startup, and `search_sessions` defaults its `repo` filter to that hash, auto-widening to all repos only when that pinned search comes back thin. **If the current repo can't be resolved** (run outside a git checkout, or a missing/unparseable `origin` remote), `search_sessions` returns an error asking you to pass `repo: "owner/name"` or `repo: "all"` — it will not silently search across all repos.
 
