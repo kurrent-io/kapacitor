@@ -92,13 +92,15 @@ public class McpMemoryServerTests {
     }
 
     [Test]
-    public async Task Save_body_carries_project_and_drops_repo_hash() {
+    public async Task Save_body_carries_project_and_keeps_repo_hash_as_fallback() {
+        // A server that does not know project homes ignores the field and reads a null repo hash as
+        // org-wide, so the hash rides along: there the memory lands at the repo, narrower than asked.
         var body = McpMemoryServer.BuildSaveBody(
             Args("""{"audience":"org","slug":"s","description":"d","content":"c","kind":"project","project":"capacitor"}"""),
             "abc123", "mach-1");
 
         await Assert.That(body["project"]!.GetValue<string>()).IsEqualTo("capacitor");
-        await Assert.That(body["repo_hash"]).IsNull();
+        await Assert.That(body["repo_hash"]!.GetValue<string>()).IsEqualTo("abc123");
     }
 
     [Test]

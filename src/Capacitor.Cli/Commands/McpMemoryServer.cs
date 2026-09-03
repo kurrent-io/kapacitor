@@ -307,9 +307,11 @@ sealed class McpMemoryServer(ConfigRoot config, ProfileContext profiles) {
             ["team"]              = args?["team"]?.GetValue<string>(),
             // audience 'project' target — the people axis, distinct from the place-axis 'project' below.
             ["audience_project"]  = args?["audience_project"]?.GetValue<string>(),
-            // The place axis: a project home wins over the repo, so the record carries no repo hash.
+            // The place axis: a project home wins over the repo. The repo hash still rides along because a
+            // server that does not know project homes ignores the field and reads a null hash as org-wide;
+            // with the hash it lands the memory at the repo, narrower than asked rather than wider.
             ["project"]           = project,
-            ["repo_hash"]         = global || project is not null ? null : cwdRepoHash,
+            ["repo_hash"]         = global ? null : cwdRepoHash,
             ["machine_tag"]       = machineSpecific ? machineId : null,
             ["machine_context"]   = machineId,
             ["source_session_id"] = null,
