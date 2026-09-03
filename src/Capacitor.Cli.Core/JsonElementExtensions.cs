@@ -15,6 +15,7 @@ public static class JsonElementExtensions {
         // property of it — the accessors below only ever answer about a property BY NAME.
         public bool IsString => el.ValueKind == JsonValueKind.String;
         public bool IsArray  => el.ValueKind == JsonValueKind.Array;
+        public bool IsNumber => el.ValueKind == JsonValueKind.Number;
         public bool IsNull   => el.ValueKind == JsonValueKind.Null;
 
         public string? Str(string property) => el.IsObject && el.TryGetProperty(property, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;

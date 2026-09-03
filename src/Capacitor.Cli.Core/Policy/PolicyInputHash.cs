@@ -33,40 +33,34 @@ public static class PolicyInputHash {
     }
 
     static void Append(StringBuilder sb, JsonElement el) {
-        switch (el.ValueKind) {
-            case JsonValueKind.Object:
-                sb.Append('{');
-                var first = true;
-                foreach (var p in el.EnumerateObject().OrderBy(p => p.Name, StringComparer.Ordinal)) {
-                    if (!first) sb.Append(',');
-                    first = false;
-                    AppendQuoted(sb, p.Name);
-                    sb.Append(':');
-                    Append(sb, p.Value);
-                }
-                sb.Append('}');
-                break;
-            case JsonValueKind.Array:
-                sb.Append('[');
-                var firstItem = true;
-                foreach (var item in el.EnumerateArray()) {
-                    if (!firstItem) sb.Append(',');
-                    firstItem = false;
-                    Append(sb, item);
-                }
-                sb.Append(']');
-                break;
-            case JsonValueKind.String:
-                AppendQuoted(sb, el.GetString() ?? "");
-                break;
-            case JsonValueKind.Number:
-                // A JSON number's raw text isn't canonical ("1" vs "1.0"): compare by value
-                // instead, falling back to the raw text only when it's outside decimal's range.
-                sb.Append(el.TryGetDecimal(out var d) ? CanonicalNumber(d) : el.GetRawText());
-                break;
-            default: // True, False, Null
-                sb.Append(el.GetRawText());
-                break;
+        if (el.IsObject) {
+            sb.Append('{');
+            var first = true;
+            foreach (var p in el.EnumerateObject().OrderBy(p => p.Name, StringComparer.Ordinal)) {
+                if (!first) sb.Append(',');
+                first = false;
+                AppendQuoted(sb, p.Name);
+                sb.Append(':');
+                Append(sb, p.Value);
+            }
+            sb.Append('}');
+        } else if (el.IsArray) {
+            sb.Append('[');
+            var firstItem = true;
+            foreach (var item in el.EnumerateArray()) {
+                if (!firstItem) sb.Append(',');
+                firstItem = false;
+                Append(sb, item);
+            }
+            sb.Append(']');
+        } else if (el.IsString) {
+            AppendQuoted(sb, el.GetString() ?? "");
+        } else if (el.IsNumber) {
+            // A JSON number's raw text isn't canonical ("1" vs "1.0"): compare by value
+            // instead, falling back to the raw text only when it's outside decimal's range.
+            sb.Append(el.TryGetDecimal(out var d) ? CanonicalNumber(d) : el.GetRawText());
+        } else { // True, False, Null
+            sb.Append(el.GetRawText());
         }
     }
 
