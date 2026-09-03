@@ -560,3 +560,20 @@ only for owned review-flow reviewers: bypass silences permission prompts, not qu
 one-time bypass consent dialog, and the multi-CR spray would answer either. The chip is withheld for
 every vendor but Claude, the mode is session-scoped like the effort, and the harness picker no
 longer offers "Remember" — a chosen harness is always persisted for the repository.
+
+## Repo-aware MCP servers: the working directory's repository
+
+Every kcap MCP server is spawned at session start by each harness that registers it, so its startup
+path runs once per server per session whether or not a tool is ever called. The sessions, memory,
+analytics and flows servers resolved the working directory's repository there with pull-request
+detection on — a live `gh pr view` / `glab` round-trip that is roughly the whole startup on a GitHub
+checkout (about 0.8 s per server) for a value none of them reads: they scope requests by owner and
+name only. `CwdRepository` resolves on the first tool call that asks, once per process, with PR
+detection off. **A null answer is cached too**: outside a checkout the answer does not change for
+the life of the process, and re-probing on every call would spawn git for nothing.
+
+**The integration pin is indirect by design.** Detection is the only startup-time writer under the
+config root's cache directory, so an absent directory after the initialize/tools-list handshake
+proves it never ran; the tool call that follows then proves on-demand resolution by carrying the
+repo hash. Asserting on the cache file itself would key on the child's own view of its cwd, which
+macOS reports through the resolved `/private` path rather than the one the test handed it.
