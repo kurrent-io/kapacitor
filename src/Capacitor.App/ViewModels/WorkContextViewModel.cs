@@ -165,6 +165,7 @@ public sealed partial class WorkContextViewModel : ReactiveObject {
     }
 
     void SwitchSession(string id) {
+        _current?.Cts.Cancel();
         _current = new ReadLease(id);
         HasSession = true;
         SessionIdText = id;
