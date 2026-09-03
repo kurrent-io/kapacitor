@@ -57,7 +57,9 @@ internal partial class AgentOrchestrator {
                 HasTerminal: a.Runtime.EmitsTerminalOutput, Title: a.Title, TranscriptPath: a.TranscriptPath,
                 WorktreePath: a.Checkout.Worktree,
                 WorkLocation: a.Checkout.BorrowedFrom is null ? WorkLocationText.Owned : WorkLocationText.Borrowed,
-                BorrowedFrom: a.Checkout.BorrowedFrom))];
+                BorrowedFrom: a.Checkout.BorrowedFrom,
+                SessionId: a.SessionId ?? (a.Runtime as IAcpTranscriptSource)?.AcpSessionId,
+                Branch: string.IsNullOrWhiteSpace(a.Worktree.Branch) ? null : a.Worktree.Branch))];
 
     /// <summary>
     /// Serves the legacy <c>Stop</c> frame from older clients that predate --force. That frame

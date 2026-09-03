@@ -361,4 +361,42 @@ public class AgentStatusSnapshotTests {
             await fixture.CleanupAsync();
         }
     }
+
+    /// The wire's session id is whatever the daemon reports to the server: the discovered id for
+    /// a PTY agent, the handshake id for an ACP one, and the discovered id when both exist.
+    [Test]
+    public async Task Status_payload_carries_session_id_from_discovery_or_the_acp_handshake() {
+        var fx = Build();
+        try {
+            var pty = fx.Orchestrator.SeedAgentForTest("pty-1");
+            var acp = AgentOrchestratorHarness.SeedAcpAgent(fx.Orchestrator, "acp-1", new FakeAcpRuntime());
+            var both = AgentOrchestratorHarness.SeedAcpAgent(fx.Orchestrator, "acp-2", new FakeAcpRuntime { AcpSessionId = "handshake" });
+            both.SessionId = "discovered";
+
+            string Json(string id) => JsonSerializer.Serialize(
+                fx.Orchestrator.SnapshotAgentsForStatus().Single(a => a.Id == id), StatusIpcJsonContext.Default.AgentStatusDto);
+
+            await Assert.That(Json("pty-1")).Contains("\"session_id\":null");
+            pty.SessionId = "0123456789abcdef0123456789abcdef";
+            await Assert.That(Json("pty-1")).Contains("\"session_id\":\"0123456789abcdef0123456789abcdef\"");
+            await Assert.That(Json("acp-1")).Contains("\"session_id\":\"acp-sess-1\"");
+            await Assert.That(Json("acp-2")).Contains("\"session_id\":\"discovered\"");
+        } finally { await fx.CleanupAsync(); }
+    }
+
+    [Test]
+    public async Task Status_payload_normalizes_a_blank_branch_and_passes_a_real_one() {
+        var fx = Build();
+        try {
+            fx.Orchestrator.SeedAgentForTest("blank-branch", worktree: new WorktreeInfo("/repo/w", "", "/repo"));
+            fx.Orchestrator.SeedAgentForTest("real-branch", worktree: new WorktreeInfo("/repo/w2", "feature/sidebar", "/repo"));
+
+            var byId = fx.Orchestrator.SnapshotAgentsForStatus().ToDictionary(a => a.Id);
+
+            await Assert.That(byId["blank-branch"].Branch).IsNull();
+            await Assert.That(byId["real-branch"].Branch).IsEqualTo("feature/sidebar");
+            var json = JsonSerializer.Serialize(byId["real-branch"], StatusIpcJsonContext.Default.AgentStatusDto);
+            await Assert.That(json).Contains("\"branch\":\"feature/sidebar\"");
+        } finally { await fx.CleanupAsync(); }
+    }
 }
