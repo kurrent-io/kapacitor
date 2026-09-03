@@ -31,12 +31,7 @@ class McpFlowsServer(ConfigRoot config, ProfileContext profiles) {
         var driverVendor = DriverVendor.Infer(driverArg);
         var tools        = BuildToolsList();
 
-        RepositoryPayload? repoInfo = null;
-        try {
-            repoInfo = await RepositoryDetection.DetectRepositoryAsync(config, cwd);
-        } catch {
-            // best-effort; proceed with null
-        }
+        var repository = new CwdRepository(config, cwd);
 
         // MCP servers are long-lived and denylisted under the top-level "mcp" command
         // (CommandEvents.Denylisted) — re-initialise under the reportable pseudo-command
@@ -80,7 +75,7 @@ class McpFlowsServer(ConfigRoot config, ProfileContext profiles) {
                 }
 
                 return await HandleToolCallAsync(
-                    callId, callRequest, client, baseUrl, cwd, repoRoot, repoInfo,
+                    callId, callRequest, client, baseUrl, cwd, repoRoot, await repository.GetAsync(),
                     requestingSessionId: requester.SessionId, driverVendor: driverVendor,
                     reviewerVendorPreference: () => LoadReviewerVendorPreferenceAsync());
             } catch (Exception ex) {

@@ -96,6 +96,36 @@ public class McpSessionsServerTests : IDisposable {
         }
     }
 
+    /// <summary>
+    /// The server is spawned for every agent session, so the working directory's repository is
+    /// resolved by the first tool call, not at startup. Detection is the only startup-time writer
+    /// under the config root's cache directory, so its absence after the handshake proves detection
+    /// never ran; the search that follows then carries the repo hash resolved on demand.
+    /// </summary>
+    [Test]
+    public async Task Repository_is_resolved_by_the_first_tool_call_not_at_startup() {
+        using var repo = CwdRepo("acme", "widget");
+
+        _server.Given(Request.Create().WithPath("/api/sessions/search").UsingGet())
+            .RespondWith(Response.Create().WithStatusCode(200).WithHeader("Content-Type", "application/json").WithBody("""{"hits":[]}"""));
+
+        using var proc = SpawnMcpServer(workingDirectory: repo.Path);
+        try {
+            await SendRequest(proc, InitializeRequest(1));
+            await SendRequest(proc, ToolsListRequest(2));
+            await Assert.That(Directory.Exists(Config.Root.Path("cache"))).IsFalse();
+
+            await SendRequest(proc, ToolsCallRequest(3, "search_sessions", new JsonObject { ["query"] = "anything" }));
+
+            var hits = _server.FindLogEntries(Request.Create().WithPath("/api/sessions/search").UsingGet());
+            await Assert.That(hits.Count).IsGreaterThanOrEqualTo(1);
+            await Assert.That(hits[0].RequestMessage.RawQuery ?? "")
+                .Contains($"repo={RepoHashHelper.ComputeRepoHash("acme", "widget")}");
+        } finally {
+            await ShutdownAsync(proc);
+        }
+    }
+
     static async Task<JsonObject> SendRequest(Process proc, JsonObject request, TimeSpan? timeout = null) {
         await proc.StandardInput.WriteLineAsync(request.ToJsonString());
         await proc.StandardInput.FlushAsync();

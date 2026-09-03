@@ -157,6 +157,49 @@ public class McpFlowsServerTests : IDisposable {
         }
     };
 
+    /// <summary>
+    /// The server is spawned for every agent session, so the working directory's repository is
+    /// resolved by the first tool call that needs it, not at startup. Detection is the only
+    /// startup-time writer under the config root's cache directory, so its absence after the
+    /// handshake proves detection never ran; the start that follows then names the repo resolved
+    /// on demand.
+    /// </summary>
+    [Test]
+    public async Task Repository_is_resolved_by_the_first_tool_call_not_at_startup() {
+        _server.Given(Request.Create().WithPath("/api/flows/review/start/v2").UsingPost())
+            .RespondWith(
+                Response.Create()
+                    .WithStatusCode(200)
+                    .WithHeader("Content-Type", "application/json")
+                    .WithBody("""{"flow_run_id":"flow-1","round_id":"round-1","round_number":1,"status":"completed","result_kind":"FINDINGS","result_text":"ok","reviewer_agent_id":null,"reviewer_session_id":null}""")
+            );
+
+        using var proc = SpawnMcpServer();
+        try {
+            await SendRequest(proc, InitializeRequest(1));
+            await SendRequest(proc, ToolsListRequest(2));
+            await Assert.That(Directory.Exists(Config.Root.Path("cache"))).IsFalse();
+
+            var args = new JsonObject {
+                ["kind"]         = "spec-review",
+                ["target_kind"]  = "spec",
+                ["target_ref"]   = "docs/feature.md",
+                ["target_title"] = "Feature spec",
+                ["context"]      = "Review."
+            };
+            await SendRequest(proc, ToolsCallRequest(3, "start_review_flow", args));
+
+            var hits = _server.FindLogEntries(Request.Create().WithPath("/api/flows/review/start/v2").UsingPost());
+            await Assert.That(hits.Count).IsEqualTo(1);
+
+            var body = JsonNode.Parse(hits[0].RequestMessage.Body ?? "{}")!.AsObject();
+            await Assert.That(body["repo_owner"]?.GetValue<string>()).IsEqualTo("test-owner");
+            await Assert.That(body["repo_name"]?.GetValue<string>()).IsEqualTo("test-repo");
+        } finally {
+            await ShutdownAsync(proc);
+        }
+    }
+
     [Test]
     public async Task Initialize_returns_kcap_flows_server_info() {
         using var proc = SpawnMcpServer();

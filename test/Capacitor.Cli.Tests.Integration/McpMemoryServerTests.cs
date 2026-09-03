@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json.Nodes;
+using Capacitor.Cli.Core;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
 using WireMock.Server;
@@ -34,12 +35,12 @@ public class McpMemoryServerTests : IDisposable {
         _server.Stop();
     }
 
-    Process SpawnMcpServer(string provider = "None") {
+    Process SpawnMcpServer(string provider = "None", string? workingDirectory = null) {
         _server.Given(Request.Create().WithPath("/auth/config").UsingGet())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody($$"""{"provider":"{{provider}}"}"""));
 
         var psi = KcapProcess.StartInfo(Daemons.Store, Config.Root, "mcp", "memory");
-        psi.WorkingDirectory = Tmp.Path;
+        psi.WorkingDirectory = workingDirectory ?? Tmp.Path;
         psi.Environment["KCAP_URL"] = _server.Url!;
 
         var process = Process.Start(psi) ?? throw new InvalidOperationException("Failed to start kcap process");
@@ -83,6 +84,47 @@ public class McpMemoryServerTests : IDisposable {
         }
     }
 
+    /// <summary>
+    /// A repository whose <c>origin</c> points at GitHub, handed to the server as its working
+    /// directory so the cwd-repo pin resolves. No commit is needed: <c>git branch --show-current</c>
+    /// reads the symbolic HEAD ref at zero commits.
+    /// </summary>
+    static GitRepo CwdRepo(string owner, string repoName) {
+        var repo = GitRepo.Create();
+        repo.AddRemote($"https://github.com/{owner}/{repoName}.git");
+        return repo;
+    }
+
+    /// <summary>
+    /// The server is spawned for every agent session, so the working directory's repository is
+    /// resolved by the first tool call, not at startup. Detection is the only startup-time writer
+    /// under the config root's cache directory, so its absence after the handshake proves detection
+    /// never ran; the search that follows then carries the repo hash resolved on demand.
+    /// </summary>
+    [Test]
+    public async Task Repository_is_resolved_by_the_first_tool_call_not_at_startup() {
+        using var repo = CwdRepo("acme", "widget");
+
+        _server.Given(Request.Create().WithPath("/api/memories/search").UsingGet())
+            .RespondWith(Response.Create().WithStatusCode(200).WithHeader("Content-Type", "application/json").WithBody("[]"));
+
+        using var proc = SpawnMcpServer(workingDirectory: repo.Path);
+        try {
+            await SendRequest(proc, InitializeRequest(1));
+            await SendRequest(proc, ToolsListRequest(2));
+            await Assert.That(Directory.Exists(Config.Root.Path("cache"))).IsFalse();
+
+            await SendRequest(proc, ToolsCallRequest(3, "search_memories", new JsonObject { ["query"] = "anything" }));
+
+            var hits = _server.FindLogEntries(Request.Create().WithPath("/api/memories/search").UsingGet());
+            await Assert.That(hits.Count).IsEqualTo(1);
+            await Assert.That(hits[0].RequestMessage.RawQuery ?? "")
+                .Contains($"repo={RepoHashHelper.ComputeRepoHash("acme", "widget")}");
+        } finally {
+            await ShutdownAsync(proc);
+        }
+    }
+
     static async Task<JsonObject> SendRequest(Process proc, JsonObject request, TimeSpan? timeout = null) {
         await proc.StandardInput.WriteLineAsync(request.ToJsonString());
         await proc.StandardInput.FlushAsync();
@@ -121,5 +163,12 @@ public class McpMemoryServerTests : IDisposable {
         ["id"]      = id,
         ["method"]  = "tools/list",
         ["params"]  = new JsonObject()
+    };
+
+    static JsonObject ToolsCallRequest(int id, string name, JsonObject arguments) => new() {
+        ["jsonrpc"] = "2.0",
+        ["id"]      = id,
+        ["method"]  = "tools/call",
+        ["params"]  = new JsonObject { ["name"] = name, ["arguments"] = arguments }
     };
 }

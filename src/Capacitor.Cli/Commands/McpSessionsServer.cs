@@ -18,8 +18,8 @@ sealed class McpSessionsServer(ConfigRoot config, ProfileContext profiles) {
     public async Task<int> RunAsync() {
         var baseUrl = profiles.Resolution.ServerUrl!;
 
-        var cwdRepoHash = await ResolveCwdRepoHashAsync();
-        var tools       = BuildToolsList();
+        var repository = new CwdRepository(config, Directory.GetCurrentDirectory());
+        var tools      = BuildToolsList();
 
         // MCP servers are long-lived and denylisted under the top-level "mcp" command
         // (CommandEvents.Denylisted) — re-initialise under the reportable pseudo-command
@@ -33,13 +33,14 @@ sealed class McpSessionsServer(ConfigRoot config, ProfileContext profiles) {
         // or stderr). Used to fail gracefully instead of hard-exiting mid-request (below).
         var urlOk = HttpClientExtensions.IsAcceptableUrl(baseUrl);
 
-        // The authenticated client is created on the first tools/call, not at startup:
-        // kcap-sessions auto-registers, so Claude Code spawns `kcap mcp sessions` for every
-        // session — deferring keeps startup local-only (no GET /auth/config, token load, or
-        // stderr) for sessions that never invoke a tool. Created on demand into a nullable field
-        // (rather than a Lazy<Task>) so a transient creation failure leaves it null and the next
-        // call retries, instead of a faulted task sticking for the rest of the session. Safe
-        // without locking: the stdio loop handles one request at a time.
+        // The authenticated client and the cwd repository are resolved on the first tools/call,
+        // not at startup: kcap-sessions auto-registers, so Claude Code spawns `kcap mcp sessions`
+        // for every session — deferring keeps startup local-only (no GET /auth/config, token load,
+        // repo detection, or stderr) for sessions that never invoke a tool. The client is created
+        // on demand into a nullable field (rather than a Lazy<Task>) so a transient creation
+        // failure leaves it null and the next call retries, instead of a faulted task sticking for
+        // the rest of the session. Safe without locking: the stdio loop handles one request at a
+        // time.
         HttpClient? client = null;
 
         // Guarded tool dispatch: never let the stdio JSON-RPC loop die on one bad request. An
@@ -53,7 +54,7 @@ sealed class McpSessionsServer(ConfigRoot config, ProfileContext profiles) {
 
             try {
                 client ??= await HttpClientExtensions.CreateAuthenticatedClientAsync(config, profiles, baseUrl, autoRetryUnauthorized: false);
-                return await HandleToolCallAsync(callId, callRequest, client, baseUrl, cwdRepoHash);
+                return await HandleToolCallAsync(callId, callRequest, client, baseUrl, await repository.GetHashAsync());
             } catch (Exception ex) {
                 // Unexpected: log the detail to stderr (not to the client, which could leak local
                 // paths from IO errors) and return a generic tool error, keeping the loop alive.
@@ -123,19 +124,6 @@ sealed class McpSessionsServer(ConfigRoot config, ProfileContext profiles) {
         }
 
         return 0;
-    }
-
-    async Task<string?> ResolveCwdRepoHashAsync() {
-        try {
-            var cwd      = Directory.GetCurrentDirectory();
-            var repoInfo = await RepositoryDetection.DetectRepositoryAsync(config, cwd);
-
-            if (repoInfo?.Owner is null || repoInfo.RepoName is null) return null;
-
-            return RepoHashHelper.ComputeRepoHash(repoInfo.Owner, repoInfo.RepoName);
-        } catch {
-            return null;
-        }
     }
 
     // Server-level usage preamble (MCP `instructions`) — steers clients toward these tools for
