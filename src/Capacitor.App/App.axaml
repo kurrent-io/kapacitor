@@ -19,6 +19,7 @@
             <SolidColorBrush x:Key="KcapWarningBrush" Color="#F4B860" />
             <SolidColorBrush x:Key="KcapWarningDimBrush" Color="#45351E" />
             <SolidColorBrush x:Key="KcapPurpleBrush" Color="#A994FF" />
+            <SolidColorBrush x:Key="KcapPurpleDimBrush" Color="#29233E" />
             <SolidColorBrush x:Key="KcapDangerBrush" Color="#FF7272" />
         </ResourceDictionary>
     </Application.Resources>

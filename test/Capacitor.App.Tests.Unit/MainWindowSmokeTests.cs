@@ -516,4 +516,16 @@ public class MainWindowSmokeTests {
             await Assert.That(ok).IsTrue();
         });
     }
+
+    /// 310 of rail plus 400 of pane must never squeeze the center column to nothing.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task MainWindow_pins_its_minimum_width_to_the_default_width() {
+        await AvaloniaSession.RunOnUiAsync(async () => {
+            var window = new MainWindow { DataContext = new MainWindowViewModel(new FakeDaemonClientService(), CancellationToken.None, TestActivity.New()) };
+
+            await Assert.That(window.MinWidth).IsEqualTo(1200);
+            await Assert.That(window.Width).IsEqualTo(1200);
+        });
+    }
 }
