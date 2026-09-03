@@ -976,7 +976,7 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
         }
 
         if (finalTokens is not null) {
-            grid.AddRow("[bold]Auth[/]", Markup.Escape($"{finalTokens.GitHubUsername} ({finalTokens.Provider})"));
+            grid.AddRow("[bold]Auth[/]", Markup.Escape(finalTokens.GitHubUsername ?? "?"));
         }
 
         grid.AddRow("[bold]Config[/]", Markup.Escape(AppConfig.GetConfigPath(config)));
@@ -1294,7 +1294,7 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
 
         try {
             var provider = await HttpClientExtensions.DiscoverProviderAsync(serverUrl, config, profiles);
-            AnsiConsole.MarkupLine($"  [green]✓[/] Reachable · auth provider: [cyan]{Markup.Escape(provider)}[/]");
+            AnsiConsole.MarkupLine("  [green]✓[/] Reachable");
 
             return (serverUrl, provider);
         } catch (Exception ex) {
