@@ -1570,11 +1570,8 @@ public class BrowserFirstRunFlowTests {
         await Assert.That(sent.Reason).IsNull().Because("nothing was refused; nothing was asked for");
     }
 
-    /// <summary>
-    /// A lost pass reports the token, not the figures: its sessions are unaccounted, three counts cannot
-    /// say so, and the surviving pass's numbers alone would state a clean import. What it must not do is
-    /// stay silent — that reads exactly like a machine that died, which the browser waits out.
-    /// </summary>
+    /// <summary>Pins the wire literal, not the constant: a mistyped token would keep a constant-to-constant
+    /// compare green while the server rejected every report.</summary>
     [Test]
     public async Task Reports_a_token_and_no_figures_for_a_run_that_lost_a_pass() {
         var h = Build(importing: true);
@@ -1588,7 +1585,7 @@ public class BrowserFirstRunFlowTests {
 
         var sent = h.Channel.OutcomeReports.Single();
 
-        await Assert.That(sent.Reason).IsEqualTo(FirstRunImportOutcomeReasons.RunFailed);
+        await Assert.That(sent.Reason).IsEqualTo("run_failed");
         await Assert.That((sent.Imported, sent.Skipped, sent.Failed)).IsEqualTo((0, 0, 0))
                     .Because("a partial tally would put a measured-looking zero where nobody measured");
     }
