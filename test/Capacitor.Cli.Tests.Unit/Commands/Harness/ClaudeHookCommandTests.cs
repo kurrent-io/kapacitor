@@ -146,6 +146,31 @@ public class ClaudeHookCommandTests {
         await Assert.That(message).Contains("approval policy degraded");
     }
 
+    /// <summary>The degraded arm never reaches HandleCore, so without its own freeze the first
+    /// PreToolUse would build the snapshot against files edited since the session began — the
+    /// per-session freeze silently lost exactly when the server is unreachable.</summary>
+    [Test]
+    public async Task session_start_freezes_the_policy_snapshot_on_the_degraded_arm() {
+        File.WriteAllText(Config.Root.Path("approvals.yaml"), "version: 1\nenforcement: strict\n");
+        using var fx = new Fixture(Config.Root);
+        var stdout = new StringWriter { NewLine = "\n" };
+
+        // Unusable URL: no client is ever built, so HandleWithDeps returns from the degraded arm.
+        var exit = await new ClaudeHookCommand(Config.Root, Resolutions.At("not-a-url", Config.Root), new HookClock(TimeProvider.System), Home)
+            .HandleWithDeps(fx.Spool, new StringReader(
+                $$"""{"hook_event_name":"SessionStart","session_id":"{{Sid}}","cwd":"/tmp"}"""),
+                () => throw new InvalidOperationException("no client is buildable for an unusable URL"),
+                stdout);
+
+        await Assert.That(exit).IsEqualTo(0);
+        await Assert.That(new PolicySnapshotStore(Config.Root).TryLoad(Sid)).IsNotNull();
+        // The degradation still reaches the user, as one object — this arm writes no other.
+        var lines = stdout.ToString().Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        await Assert.That(lines.Length).IsEqualTo(1);
+        await Assert.That(JsonNode.Parse(lines[0])!["systemMessage"]!.GetValue<string>())
+            .Contains("approval policy degraded");
+    }
+
     [Test]
     public async Task stop_clears_the_turn_journal() {
         var journal = new PolicyDecisionJournal(Config.Root);

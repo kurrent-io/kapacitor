@@ -127,6 +127,14 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
                         agentId: null, cwd: cwd, skipTitle: isResumeOrCompact);
                 } catch { }
             }
+
+            // The freeze is a local file write that needs no client, so it belongs on this arm too:
+            // without it the first PreToolUse builds the snapshot against files edited since the
+            // session began, and the session is governed by a policy it never started under.
+            string? degradedPolicyNotice = command == "session-start" && sessionId is not null
+                ? FreezePolicySnapshot(sessionId, cwd is null ? null : GitRepository.FindRoot(cwd))
+                : null;
+
             // Report what the append ACTUALLY did, and only for events that are spoolable at all —
             // announcing "spooled" ahead of the attempt would claim a replay that may never happen.
             var unusableUrl = !HookHttp.IsPostable(Url);
@@ -144,6 +152,9 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
                 await Console.Error.WriteLineAsync(
                     UnusableUrlDiagnostic.Build(profiles.Resolution.Source, Url, $"{command ?? "hook"} dropped (not a spoolable event)"));
             }
+
+            // Nothing else on this arm writes stdout, so the notice is the arm's only object.
+            WriteSessionStart(stdout ?? Console.Out, null, degradedPolicyNotice);
 
             return 0;
         }
@@ -582,22 +593,8 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
                 }
             }
 
-            // Freeze the approval policy here rather than at the first tool call, so an edit made
-            // mid-session cannot change what governs a session already under way. A degradation
-            // must reach the user, so it rides whatever this arm writes to stdout below.
-            string? policyNotice = null;
-
-            if (sessionId is not null) {
-                try {
-                    var snapshot = new PolicySnapshotStore(config).LoadOrBuild(sessionId, repoRoot);
-
-                    if (snapshot.Degraded && snapshot.Degradations.Count > 0) {
-                        policyNotice = $"[kcap] approval policy degraded: {snapshot.Degradations[0]}";
-                    }
-                } catch {
-                    // Best effort — a policy hiccup never fails the hook.
-                }
-            }
+            // A degradation must reach the user, so it rides whatever this arm writes to stdout below.
+            var policyNotice = sessionId is null ? null : FreezePolicySnapshot(sessionId, repoRoot);
 
             // Inject default_visibility from the active V2 profile. The legacy top-level
             // LegacyV1Config.DefaultVisibility shape is not populated by v2 configs (the field
@@ -968,6 +965,24 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
         }
 
         return 0;
+    }
+
+    /// <summary>
+    /// Freezes the session's approval policy at session start rather than at the first tool call, so
+    /// an edit landing mid-session cannot change what governs a session already under way. Returns
+    /// the degradation notice the user must see, or null when there is nothing to say.
+    /// </summary>
+    string? FreezePolicySnapshot(string sessionId, string? repoRoot) {
+        try {
+            var snapshot = new PolicySnapshotStore(config).LoadOrBuild(sessionId, repoRoot);
+
+            return snapshot.Degraded && snapshot.Degradations.Count > 0
+                ? $"[kcap] approval policy degraded: {snapshot.Degradations[0]}"
+                : null;
+        } catch {
+            // Best effort — a policy hiccup never fails the hook.
+            return null;
+        }
     }
 
     /// <summary>
