@@ -6,9 +6,9 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Core;
-using Capacitor.Cli.Core.Harness.Claude;
 using Capacitor.Cli.Core.LocalIpc;
 using Capacitor.Cli.Core.Policy;
+using Capacitor.Cli.Daemon.Harness.Claude;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
@@ -631,25 +631,24 @@ internal sealed partial class LocalPermissionBridge(
                 // is deliberate: a hosted Codex request parks unevaluated. Anything the evaluation
                 // throws leaves the request on the human lane rather than dropping it.
                 if (vendor is "claude" && attributed is { PolicySnapshot: { IsEmpty: false } snapshot } governed) {
-                    CanonicalAction?  action = null;
-                    PolicyEvaluation? evaluation = null;
+                    ClaudeHostedPolicyResult? policy = null;
                     try {
-                        action     = ClaudeActionNormalizer.Normalize(toolName, toolInput, node["cwd"]?.GetValue<string>());
-                        evaluation = PolicyEngine.Evaluate(snapshot, action, EvaluationMode.Full);
+                        policy = ClaudeHostedPolicySeam.Evaluate(
+                            canonicalSessionId!, governed.AgentId, snapshot, toolName, toolInput,
+                            node["cwd"]?.GetValue<string>());
                     } catch (Exception ex) {
                         LogPolicyEvaluationFailed(logger, ex, governed.AgentId);
                     }
 
-                    if (action is { } act && evaluation is { } eval) {
-                        if (eval.Outcome is PolicyOutcome.Allow or PolicyOutcome.Deny) {
-                            var behavior = eval.Outcome == PolicyOutcome.Allow
+                    if (policy is { } decided) {
+                        if (decided.Outcome is PolicyOutcome.Allow or PolicyOutcome.Deny) {
+                            var behavior = decided.Outcome == PolicyOutcome.Allow
                                 ? PermissionSettlements.Allow
                                 : PermissionSettlements.Deny;
                             _decisionLog?.Record(new PermissionDecisionRecord(
                                 DateTimeOffset.UtcNow.ToString("O"), governed.AgentId, canonicalSessionId!, vendor,
                                 toolName ?? "", behavior, PermissionSettlements.SourcePolicy));
-                            _ = server.AppendAgentRunEventAsync(governed.AgentId, PolicyDecisionEvent(
-                                canonicalSessionId!, governed.AgentId, snapshot, act, eval, behavior, behavior));
+                            _ = server.AppendAgentRunEventAsync(governed.AgentId, decided.Event);
                             // No Register: a call the policy answered raises no card, and the
                             // decision log plus the run event are its audit trail.
                             await WriteResponseAsync(context, BuildHookResponseJson(new PermissionDecision(behavior, null, null), vendor));
@@ -657,9 +656,7 @@ internal sealed partial class LocalPermissionBridge(
                             return;
                         }
 
-                        if (eval.Outcome == PolicyOutcome.Ask)
-                            _ = server.AppendAgentRunEventAsync(governed.AgentId, PolicyDecisionEvent(
-                                canonicalSessionId!, governed.AgentId, snapshot, act, eval, "ask", "parked"));
+                        _ = server.AppendAgentRunEventAsync(governed.AgentId, decided.Event);
                     }
                 }
 
@@ -709,15 +706,6 @@ internal sealed partial class LocalPermissionBridge(
             }
         }
     }
-
-    /// One evaluation per raised prompt, so there is nothing to correlate a decision against and
-    /// nothing ambiguous about which call it answers.
-    static PolicyDecisionEventV1 PolicyDecisionEvent(
-            string sessionId, string agentId, PolicySnapshot snapshot, CanonicalAction action,
-            PolicyEvaluation evaluation, string requested, string effective) =>
-        new(sessionId, agentId, "claude", PolicySeams.HostedClaudePermission, snapshot.Id, PolicyEngine.Version,
-            "full", requested, effective, PolicyWire.ToWire(action), PolicyWire.ToWire(evaluation.MatchedRules),
-            snapshot.Degraded, null, null, false, DateTimeOffset.UtcNow.ToString("O"));
 
     /// Written under a bounded token of its own, never the bridge token: shutdown cancels that
     /// token before the drain, and a claimed answer must still reach the hook. A failed write
