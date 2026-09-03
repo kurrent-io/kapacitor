@@ -16,11 +16,16 @@ public sealed record PolicyActionV1(
 
 public sealed record PolicyMatchedRuleV1(string Scope, int RuleIndex, string Outcome, string? Reason);
 
+/// <param name="PendingAskConsumed">Whether the journal held an ask for this call, and
+/// <paramref name="FreshOutcome"/> what the evaluation made of it independently. Both are needed to
+/// tell a prompt the stale-ask guard kept standing from one the policy itself asked for; a seam that
+/// consults no journal leaves them null.</param>
 public sealed record PolicyDecisionEventV1(
     string SessionId, string? AgentId, string Vendor, string Seam, string SnapshotId, string EngineVersion,
     string EvaluationMode, string RequestedOutcome, string EffectiveOutcome, PolicyActionV1 Action,
     PolicyMatchedRuleV1[] MatchedRules, bool Degraded, string? FailureClass,
-    string? CorrelationId, bool CorrelationAmbiguous, string DecidedAt);
+    string? CorrelationId, bool CorrelationAmbiguous, string DecidedAt,
+    bool? PendingAskConsumed = null, string? FreshOutcome = null);
 
 public sealed record PolicySnapshotUploadV1(
     string SessionId, string SnapshotId, string EngineVersion, bool Degraded, string[] Degradations,

@@ -86,30 +86,33 @@ internal sealed class ClaudePolicySeam(ConfigRoot config) {
 
         var journal = new PolicyDecisionJournal(config);
         var consumed = journal.Consume(sessionId, ctx.CallId, ctx.InputHash);
+        // Both halves ride every event this seam emits: requested=ask alone cannot say whether the
+        // guard held a stale ask over a fresh allow, or the policy asked for itself.
+        var fresh = ctx.Eval.Outcome.ToString().ToLowerInvariant();
 
         // A deny subsumes any ask that consume just cleared — it is the most restrictive answer
         // either source can produce, so nothing below could tighten it further.
         if (ctx.Eval.Outcome == PolicyOutcome.Deny) {
             stdout.Write(BuildPermissionRequestDecision("deny"));
-            await Emit(ctx, "deny", "deny");
+            await Emit(ctx, "deny", "deny", pendingAskConsumed: consumed.PendingAsk, freshOutcome: fresh);
             return SeamAnswer.Answered;
         }
 
         // A prompt the policy's own ask forced belongs to the human it was raised for: outranking
         // it with a fresh allow would auto-answer the very question the ask exists to pose.
         if (consumed.PendingAsk) {
-            await Emit(ctx, "ask", "prompt_stands", consumed.Ambiguous);
+            await Emit(ctx, "ask", "prompt_stands", consumed.Ambiguous, consumed.PendingAsk, fresh);
             return SeamAnswer.NotAnswered;
         }
 
         switch (ctx.Eval.Outcome) {
             case PolicyOutcome.Allow:
                 stdout.Write(BuildPermissionRequestDecision("allow"));
-                await Emit(ctx, "allow", "allow");
+                await Emit(ctx, "allow", "allow", pendingAskConsumed: consumed.PendingAsk, freshOutcome: fresh);
                 return SeamAnswer.Answered;
             // At an already-raised prompt, leaving it standing *is* the ask.
             case PolicyOutcome.Ask:
-                await Emit(ctx, "ask", "prompt_stands");
+                await Emit(ctx, "ask", "prompt_stands", pendingAskConsumed: consumed.PendingAsk, freshOutcome: fresh);
                 return SeamAnswer.NotAnswered;
             case PolicyOutcome.None:
                 journal.IncrementPassThrough(sessionId);
@@ -126,19 +129,23 @@ internal sealed class ClaudePolicySeam(ConfigRoot config) {
     /// output, no counter, no event, no network. The no-policy world pays nothing for the seam
     /// being installed.</summary>
     SeamContext? Prepare(JsonNode node, string sessionId, string seam, EvaluationMode mode) {
-        string? toolName, callId, cwd, agentId;
+        if (node is not JsonObject body) return null;
+
+        // Field by field: one wrong-typed optional must not cost the evaluation, or a payload the
+        // vendor still acts on would slip past a deny that matches it. An unusable tool_input
+        // normalizes to an Other-kind action, which rules can still match — never to no policy.
+        var toolName = Str(body, "tool_name");
+        var callId   = Str(body, "tool_use_id");
+        var cwd      = Str(body, "cwd");
+        // The seam runs ahead of the hook command's own id normalization, so it strips the
+        // dashes itself — every kcap event carries the dashless form.
+        var agentId  = Str(body, "agent_id")?.Replace("-", "");
         JsonElement? toolInput;
         try {
-            toolName = node["tool_name"]?.GetValue<string>();
-            callId = node["tool_use_id"]?.GetValue<string>();
-            cwd = node["cwd"]?.GetValue<string>();
-            // The seam runs ahead of the hook command's own id normalization, so it strips the
-            // dashes itself — every kcap event carries the dashless form.
-            agentId = node["agent_id"]?.GetValue<string>()?.Replace("-", "");
-            toolInput = node["tool_input"] is { } ti
+            toolInput = body["tool_input"] is { } ti
                 ? JsonDocument.Parse(ti.ToJsonString()).RootElement.Clone()
                 : null;
-        } catch { return null; }
+        } catch { toolInput = null; }
 
         var snapshot = new PolicySnapshotStore(config)
             .LoadOrBuild(sessionId, cwd is null ? null : GitRepository.FindRoot(cwd));
@@ -151,13 +158,19 @@ internal sealed class ClaudePolicySeam(ConfigRoot config) {
             PolicyInputHash.Compute(toolName, toolInput), reason);
     }
 
-    Task Emit(SeamContext ctx, string requested, string effective, bool? ambiguous = null) =>
+    /// <summary><see cref="JsonNode.GetValue{T}"/> throws on a value of another type, which would
+    /// take the whole evaluation down with one wrong-typed optional field.</summary>
+    static string? Str(JsonObject body, string property) =>
+        body[property] is JsonValue v && v.TryGetValue<string>(out var s) ? s : null;
+
+    Task Emit(SeamContext ctx, string requested, string effective, bool? ambiguous = null,
+              bool? pendingAskConsumed = null, string? freshOutcome = null) =>
         new PolicyDecisionEmitter(config).EmitAsync(new PolicyDecisionEventV1(
             ctx.SessionId, ctx.AgentId, "claude", ctx.Seam, ctx.Snapshot.Id, PolicyEngine.Version,
             ctx.Mode == EvaluationMode.Full ? "full" : "tighten_only", requested, effective,
             PolicyWire.ToWire(ctx.Action), PolicyWire.ToWire(ctx.Eval.MatchedRules),
             ctx.Snapshot.Degraded, null, ctx.CallId, ambiguous ?? (ctx.CallId is null),
-            DateTimeOffset.UtcNow.ToString("O")), ctx.Snapshot);
+            DateTimeOffset.UtcNow.ToString("O"), pendingAskConsumed, freshOutcome), ctx.Snapshot);
 
     // camelCase keys are Claude's own PreToolUse hook contract, outside kcap's snake_case
     // convention — the same exemption LocalPermissionBridge.BuildClaudeResponse takes.

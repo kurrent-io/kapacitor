@@ -168,6 +168,44 @@ public class ClaudePolicySeamTests {
         await Assert.That(consumed.Ambiguous).IsFalse();
     }
 
+    /// <summary>A wrong-typed optional degrades to null on its own. Read as one unit, a bad agent_id
+    /// skipped the evaluation entirely and took a matching deny with it.</summary>
+    [Test]
+    public async Task A_wrong_typed_agent_id_still_answers_the_deny() {
+        WriteUserPolicy("version: 1\nrules:\n  - match: { kind: shell, command: \"git push --force*\" }\n    outcome: deny\n");
+        var node = new JsonObject {
+            ["hook_event_name"] = "PreToolUse", ["session_id"] = Sid, ["agent_id"] = 42,
+            ["tool_name"] = "Bash", ["tool_input"] = JsonNode.Parse("""{"command":"git push --force"}"""),
+            ["cwd"] = Tmp.PathTo("repo"),
+        };
+
+        var stdout = new StringWriter();
+        await Seam.HandlePreToolUseAsync(node.ToJsonString(), Sid, false, stdout);
+
+        await Assert.That(JsonNode.Parse(stdout.ToString())!["hookSpecificOutput"]!["permissionDecision"]!
+            .GetValue<string>()).IsEqualTo("deny");
+        await Assert.That(Decisions().Count).IsEqualTo(1);
+    }
+
+    /// <summary>An unusable tool_input still normalizes — to an Other-kind action rules can match —
+    /// rather than reading as a call no policy governs.</summary>
+    [Test]
+    public async Task A_non_object_tool_input_is_denied_as_other() {
+        WriteUserPolicy("version: 1\nrules:\n  - match: { kind: other }\n    outcome: deny\n");
+        var node = new JsonObject {
+            ["hook_event_name"] = "PreToolUse", ["session_id"] = Sid,
+            ["tool_name"] = "Bash", ["tool_input"] = "not an object",
+            ["cwd"] = Tmp.PathTo("repo"),
+        };
+
+        var stdout = new StringWriter();
+        await Seam.HandlePreToolUseAsync(node.ToJsonString(), Sid, false, stdout);
+
+        await Assert.That(JsonNode.Parse(stdout.ToString())!["hookSpecificOutput"]!["permissionDecision"]!
+            .GetValue<string>()).IsEqualTo("deny");
+        await Assert.That(Decisions()[0]["action"]!["kind"]!.GetValue<string>()).IsEqualTo("other");
+    }
+
     JsonNode PermissionNode(string toolName, string toolInputJson, string? callId = null) {
         var node = new JsonObject {
             ["hook_event_name"] = "PermissionRequest", ["session_id"] = Sid,
@@ -225,6 +263,9 @@ public class ClaudePolicySeamTests {
         await Assert.That(events[0]["requested_outcome"]!.GetValue<string>()).IsEqualTo("ask");
         await Assert.That(events[0]["effective_outcome"]!.GetValue<string>()).IsEqualTo("prompt_stands");
         await Assert.That(events[0]["correlation_ambiguous"]!.GetValue<bool>()).IsTrue();
+        // Both halves, or the record cannot tell this apart from an ask the policy itself produced.
+        await Assert.That(events[0]["pending_ask_consumed"]!.GetValue<bool>()).IsTrue();
+        await Assert.That(events[0]["fresh_outcome"]!.GetValue<string>()).IsEqualTo("allow");
     }
 
     [Test]
@@ -246,7 +287,10 @@ public class ClaudePolicySeamTests {
             PermissionNode("Bash", """{"command":"rm -rf /"}"""), Sid, stdout);
         await Assert.That(answer).IsEqualTo(SeamAnswer.Answered);
         await Assert.That(stdout.ToString()).Contains("\"deny\"");
-        await Assert.That(Decisions()[0]["effective_outcome"]!.GetValue<string>()).IsEqualTo("deny");
+        var denied = Decisions()[0];
+        await Assert.That(denied["effective_outcome"]!.GetValue<string>()).IsEqualTo("deny");
+        await Assert.That(denied["fresh_outcome"]!.GetValue<string>()).IsEqualTo("deny");
+        await Assert.That(denied["pending_ask_consumed"]!.GetValue<bool>()).IsTrue();
         // The deny subsumed the ask rather than stepping around it: leaving the entry behind would
         // let it stand against the next prompt for the same input.
         await Assert.That(new PolicyDecisionJournal(Config.Root)
