@@ -211,6 +211,10 @@ public class ImportDisplayGridTests {
             Out         = new AnsiConsoleOutput(buffer),
         });
 
+        // Pinned, because a rule fills the width and a heading wraps against it: a runner's console
+        // reports its own, so an unpinned layout asserts whatever the host happens to be.
+        AnsiConsole.Profile.Width = 120;
+
         try {
             new ImportCommand.ImportDisplay { Tty = true }.WritePlanGrid(
                 new(New: 5, Partial: 0, AlreadyLoaded: 0, TooShort: 0, Excluded: 0, ProbeError: 0),
@@ -260,6 +264,10 @@ public class ImportDisplayGridTests {
             ColorSystem = ColorSystemSupport.NoColors,
             Out         = new AnsiConsoleOutput(buffer),
         });
+
+        // Pinned, because a rule fills the width and a heading wraps against it: a runner's console
+        // reports its own, so an unpinned layout asserts whatever the host happens to be.
+        AnsiConsole.Profile.Width = 120;
 
         try {
             new ImportCommand.ImportDisplay { Tty = true, Nested = nested }.BeginPhase("Discovering");

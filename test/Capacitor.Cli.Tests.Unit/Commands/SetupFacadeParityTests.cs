@@ -303,6 +303,10 @@ public class SetupFacadeParityTests {
             Out         = new AnsiConsoleOutput(buffer),
         });
 
+        // Pinned: a runner's console reports its own width, and an unpinned layout wraps the line these
+        // assertions read.
+        AnsiConsole.Profile.Width = 120;
+
         int exitCode;
 
         try {
@@ -411,6 +415,10 @@ public class SetupFacadeParityTests {
             ColorSystem = ColorSystemSupport.NoColors,
             Out         = new AnsiConsoleOutput(buffer),
         });
+
+        // Pinned: a runner's console reports its own width, and an unpinned layout wraps the line these
+        // assertions read.
+        AnsiConsole.Profile.Width = 120;
 
         int exitCode;
 
