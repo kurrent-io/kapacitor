@@ -119,7 +119,7 @@ public sealed partial class WorkContextViewModel : ReactiveObject {
         SignInCommand = ReactiveCommand.Create(() => { requestSignIn?.Invoke(); });
         _disposables.Add(SignInCommand);
 
-        presence.Subscribe(OnDto).DisposeWith(_disposables);
+        presence.ObserveOn(RxSchedulers.MainThreadScheduler).Subscribe(OnDto).DisposeWith(_disposables);
         signInCompleted?
             .ObserveOn(RxSchedulers.MainThreadScheduler)
             .Subscribe(_ => OnSignInCompleted())
@@ -165,8 +165,9 @@ public sealed partial class WorkContextViewModel : ReactiveObject {
     }
 
     void SwitchSession(string id) {
-        _current?.Cts.Cancel();
+        var old = _current;
         _current = new ReadLease(id);
+        old?.Cts.Cancel();
         HasSession = true;
         SessionIdText = id;
         ClearServerProjections();
@@ -196,7 +197,7 @@ public sealed partial class WorkContextViewModel : ReactiveObject {
     void Settle(ReadLease lease, WorkContextRead? read) {
         _outstanding.Remove(lease);
         var current = ReferenceEquals(lease, _current) && !_tornDown;
-        if (!current) return;
+        if (!current) { lease.Cts.Dispose(); return; }
         if (read is not null) Apply(read);
         IsReading = false;
         if (lease.RefreshPending) StartRead(lease);
