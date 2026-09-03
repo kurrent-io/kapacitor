@@ -25,10 +25,10 @@ public class PolicySnapshotStoreTests {
     public async Task LoadOrBuild_is_sticky_against_later_file_edits() {
         var repo = Tmp.CreateDir("repo");
         Tmp.CreateDir("repo/.kcap");
-        Tmp.CreateFile("repo/.kcap/approvals.yaml", ValidDoc);
+        var policyFile = Tmp.CreateFile("repo/.kcap/approvals.yaml", ValidDoc);
         var store = new PolicySnapshotStore(Config.Root);
         var first = store.LoadOrBuild("s1", repo);
-        File.Delete(Tmp.PathTo("repo/.kcap/approvals.yaml"));
+        File.Delete(policyFile);
         var second = store.LoadOrBuild("s1", repo);
         await Assert.That(second.Id).IsEqualTo(first.Id);
         await Assert.That(second.Documents.Count).IsEqualTo(1);

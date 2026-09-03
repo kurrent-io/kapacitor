@@ -168,8 +168,8 @@ public class ClaudePolicySeamTests {
         await Assert.That(consumed.Ambiguous).IsFalse();
     }
 
-    /// <summary>A wrong-typed optional degrades to null on its own. Read as one unit, a bad agent_id
-    /// skipped the evaluation entirely and took a matching deny with it.</summary>
+    /// <summary>A wrong-typed optional field cannot suppress a matching deny: each field is read on
+    /// its own and degrades to null alone.</summary>
     [Test]
     public async Task A_wrong_typed_agent_id_still_answers_the_deny() {
         WriteUserPolicy("version: 1\nrules:\n  - match: { kind: shell, command: \"git push --force*\" }\n    outcome: deny\n");
@@ -350,6 +350,72 @@ public class ClaudePolicySeamTests {
         await Assert.That(stdout.ToString()).IsEmpty();
         await Assert.That(Decisions()).IsEmpty();
         await Assert.That(new PolicyDecisionJournal(Config.Root).TakePassThroughCount(Sid)).IsEqualTo(0);
+    }
+
+    /// <summary>The head entry is spent whatever the invocation goes on to decide. An evaluation
+    /// that fails after the consume must still say so, or the record shows a prompt standing with
+    /// nothing to explain why and the entry is gone unaccounted for.</summary>
+    [Test]
+    public async Task An_evaluation_error_stands_the_prompt_and_records_the_consumed_ask() {
+        WriteUserPolicy("version: 1\nrules:\n  - match: { kind: shell, command: \"git status *\" }\n    outcome: allow\n");
+        new PolicyDecisionJournal(Config.Root).RecordAsk(Sid, null, HashOf("""{"command":"git status"}"""));
+
+        var seam = new ClaudePolicySeam(Config.Root) {
+            BeforeSnapshotLoadForTest = () => throw new InvalidOperationException("policy store unavailable"),
+        };
+        var stdout = new StringWriter();
+        var answer = await seam.HandlePermissionRequestAsync(
+            PermissionNode("Bash", """{"command":"git status"}"""), Sid, stdout);
+
+        await Assert.That(answer).IsEqualTo(SeamAnswer.NotAnswered);
+        await Assert.That(stdout.ToString()).IsEmpty();
+
+        var events = Decisions();
+        await Assert.That(events.Count).IsEqualTo(1);
+        await Assert.That(events[0]["requested_outcome"]!.GetValue<string>()).IsEqualTo("ask");
+        await Assert.That(events[0]["effective_outcome"]!.GetValue<string>()).IsEqualTo("prompt_stands");
+        await Assert.That(events[0]["failure_class"]!.GetValue<string>()).IsEqualTo("evaluation_error");
+        await Assert.That(events[0]["fresh_outcome"]!.GetValue<string>()).IsEqualTo("error");
+        await Assert.That(events[0]["pending_ask_consumed"]!.GetValue<bool>()).IsTrue();
+        await Assert.That(events[0]["correlation_ambiguous"]!.GetValue<bool>()).IsTrue();
+        await Assert.That(events[0]["snapshot_id"]!.GetValue<string>()).IsEqualTo("unknown");
+        await Assert.That(events[0]["action"]!["kind"]!.GetValue<string>()).IsEqualTo("other");
+
+        // Spent, not stranded: the next identical request finds nothing to hold a prompt for.
+        await Assert.That(new PolicyDecisionJournal(Config.Root)
+            .Consume(Sid, null, HashOf("""{"command":"git status"}""")).PendingAsk).IsFalse();
+    }
+
+    /// <summary>With no ask consumed the failure costs nothing anyone can act on, so it stays as
+    /// silent as the same failure at PreToolUse.</summary>
+    [Test]
+    public async Task An_evaluation_error_without_a_pending_ask_records_nothing() {
+        WriteUserPolicy("version: 1\nrules:\n  - match: { kind: shell, command: \"git status *\" }\n    outcome: allow\n");
+        var seam = new ClaudePolicySeam(Config.Root) {
+            BeforeSnapshotLoadForTest = () => throw new InvalidOperationException("policy store unavailable"),
+        };
+
+        var answer = await seam.HandlePermissionRequestAsync(
+            PermissionNode("Bash", """{"command":"git status"}"""), Sid, new StringWriter());
+
+        await Assert.That(answer).IsEqualTo(SeamAnswer.NotAnswered);
+        await Assert.That(Decisions()).IsEmpty();
+    }
+
+    /// <summary>Consume runs ahead of the snapshot, so a session whose policy files are gone still
+    /// spends the entry an earlier policy journaled — consume-once holds even where there is
+    /// nothing left to evaluate against.</summary>
+    [Test]
+    public async Task An_empty_snapshot_still_consumes_the_pending_ask() {
+        new PolicyDecisionJournal(Config.Root).RecordAsk(Sid, null, HashOf("""{"command":"git status"}"""));
+
+        var answer = await Seam.HandlePermissionRequestAsync(
+            PermissionNode("Bash", """{"command":"git status"}"""), Sid, new StringWriter());
+
+        await Assert.That(answer).IsEqualTo(SeamAnswer.NotAnswered);
+        await Assert.That(Decisions()).IsEmpty();
+        await Assert.That(new PolicyDecisionJournal(Config.Root)
+            .Consume(Sid, null, HashOf("""{"command":"git status"}""")).PendingAsk).IsFalse();
     }
 
     [Test]
