@@ -105,7 +105,7 @@ public class ImportScopePromptTests {
             indent: "  "
         );
 
-        await Assert.That(s.Split('\n')[0]).IsEqualTo("  About to import:");
+        await Assert.That(s.Split(Environment.NewLine)[0]).IsEqualTo("  About to import:");
         await Assert.That(s).Contains("    scope:   everything");
         await Assert.That(s).Contains("    matched: 47 sessions");
         await Assert.That(s).Contains("    visibility: org_public (from profile)");
