@@ -282,13 +282,18 @@ sealed class McpMemoryServer(ConfigRoot config, ProfileContext profiles) {
 
         var global          = args?["global"]?.GetValue<bool>() == true;
         var machineSpecific = args?["machine_specific"]?.GetValue<bool>() == true;
+        var project         = args?["project"]?.GetValue<string>();
 
-        // Fail closed rather than silently broadening scope: a null cwdRepoHash with global not
-        // explicitly requested would otherwise be sent to the server as repo_hash: null, which the
-        // server treats as a GLOBAL (all-repos) memory. Likewise a null machineId with
-        // machine_specific: true would otherwise save an untagged (visible-to-everyone) memory.
-        if (!global && cwdRepoHash is null)
-            throw new ArgumentException("Cannot resolve the current repository — run from a git checkout or pass global: true for a repo-independent memory.");
+        // A present-but-blank slug is malformed, not omitted: falling back to the repo or org home
+        // would silently widen where the memory surfaces.
+        if (project is not null && string.IsNullOrWhiteSpace(project))
+            throw new ArgumentException("project must be a project slug when supplied.");
+
+        // Fail closed rather than silently broadening scope: the server reads repo_hash: null as an
+        // org-wide memory, so a null cwdRepoHash needs an explicit home (project or global). Likewise a
+        // null machineId with machine_specific: true would save an untagged (visible-to-everyone) memory.
+        if (project is null && !global && cwdRepoHash is null)
+            throw new ArgumentException("Cannot resolve the current repository — run from a git checkout, or pass project: \"<slug>\" for a project-scoped memory or global: true for a repo-independent one.");
 
         if (machineSpecific && machineId is null)
             throw new ArgumentException("Machine id unavailable — cannot save a machine-specific memory on this host.");
@@ -300,9 +305,11 @@ sealed class McpMemoryServer(ConfigRoot config, ProfileContext profiles) {
             ["content"]           = Req("content"),
             ["kind"]              = Req("kind"),
             ["team"]              = args?["team"]?.GetValue<string>(),
-            // audience 'project' target — the people axis, distinct from rescope's place-axis project.
+            // audience 'project' target — the people axis, distinct from the place-axis 'project' below.
             ["audience_project"]  = args?["audience_project"]?.GetValue<string>(),
-            ["repo_hash"]         = global ? null : cwdRepoHash,
+            // The place axis: a project home wins over the repo, so the record carries no repo hash.
+            ["project"]           = project,
+            ["repo_hash"]         = global || project is not null ? null : cwdRepoHash,
             ["machine_tag"]       = machineSpecific ? machineId : null,
             ["machine_context"]   = machineId,
             ["source_session_id"] = null,
@@ -417,16 +424,17 @@ sealed class McpMemoryServer(ConfigRoot config, ProfileContext profiles) {
                 ["id_or_slug"] = new("string", "Memory id (32 hex) or slug.")
             }, ["id_or_slug"])),
         new("save_memory",
-            "Save a durable learning to the server. audience: 'user' (private), 'team', 'org' (everyone), or 'project' (that project's members can see + edit — pass audience_project). Saves are repo-scoped by default (to the cwd's git checkout); if the current repo can't be resolved, pass global: true for a repo-independent memory, or the save fails. Prefer update_memory when the result reports a nearDuplicate.",
+            "Save a durable learning to the server. Two orthogonal axes. PEOPLE (audience — who can see + edit): 'user' (private), 'team', 'org' (everyone), or 'project' (that project's members — pass audience_project). PLACE (where it surfaces): the cwd's repo by default; a project with project: '<slug>' (surfaces across that project's repos — use it for learnings that span repos instead of saving them org-wide); or the whole org with global: true. project wins over the repo. If the current repo can't be resolved, pass project or global: true, or the save fails. Prefer update_memory when the result reports a nearDuplicate.",
             new("object", new() {
                 ["audience"]         = new("string", "user | team | org | project"),
-                ["slug"]             = new("string", "kebab-case identifier, unique within the audience+repo pool"),
+                ["slug"]             = new("string", "kebab-case identifier, unique within the audience+place pool"),
                 ["description"]      = new("string", "One-line summary (max 300 chars)"),
                 ["content"]          = new("string", "Full memory body (max 64 KiB)"),
                 ["kind"]             = new("string", "preference | feedback | project | reference"),
                 ["team"]             = new("string", "Team name or id — required for audience 'team' if you are in several teams"),
-                ["audience_project"] = new("string", "Project slug — required for audience 'project'; that project's members become editors (you must be a member)"),
-                ["global"]           = new("boolean", "true = not tied to the current repo (required if not run from a git checkout; default: scoped to cwd repo)"),
+                ["audience_project"] = new("string", "Project slug — the PEOPLE axis: required for audience 'project'; that project's members become editors (you must be a member). Distinct from 'project' below"),
+                ["project"]          = new("string", "Project slug — the PLACE axis: homes the memory at that project so it surfaces across the project's repos (wins over the cwd repo; no membership needed). Distinct from 'audience_project' above"),
+                ["global"]           = new("boolean", "true = org-wide, not tied to the current repo (required if not run from a git checkout and no project is given; default: scoped to cwd repo)"),
                 ["machine_specific"] = new("boolean", "true = only relevant on this machine (user audience only)")
             }, ["audience", "slug", "description", "content", "kind"])),
         new("update_memory",

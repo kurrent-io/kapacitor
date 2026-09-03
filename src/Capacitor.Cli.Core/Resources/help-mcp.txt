@@ -84,8 +84,9 @@ mcp flows:
 mcp memory:
   Exposes six tools — search_memories, get_memory, save_memory, update_memory,
   rescope_memory, archive_memory — for agents to access team memories. Memories
-  are scoped to user/team/org with optional repo and machine context. Agents
-  should search before saving to avoid duplication. Requires `kcap login`.
+  have an audience (user/team/org/project members) and a home (the cwd repo, a
+  project, or the org), with optional machine context. Agents should search
+  before saving to avoid duplication. Requires `kcap login`.
 
   `kcap setup` auto-registers `kcap-memory` for both Claude Code (plugin
   `.mcp.json`) and Codex CLI (`~/.codex/config.toml`), same as sessions/review,
