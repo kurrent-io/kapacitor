@@ -1746,7 +1746,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
 
             if (display.Tty) {
                 await AnsiConsole.Progress()
-                    .AutoClear(true)
+                    .AutoClear(false)
                     .HideCompleted(false)
                     .Columns(new TaskDescriptionColumn(), new ProgressBarColumn(), new PercentageColumn())
                     .StartAsync(async ctx => {
@@ -1863,8 +1863,16 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
                     ? "Marking imported sessions private"
                     : "Sharing imported sessions with your workspace");
 
-                visibilityFailures += (await SetVisibilityForAll(
-                    httpClient, baseUrl, [.. touched], explicitVisibility)).Count;
+                var lost = await SetVisibilityForAll(
+                    httpClient, baseUrl, [.. touched], explicitVisibility);
+
+                visibilityFailures += lost.Count;
+
+                // The per-session writes only speak up for a failure, so without this the heading
+                // above renders as a section with nothing in it.
+                display.Line(lost.Count == 0
+                    ? $"{touched.Count} session{(touched.Count == 1 ? "" : "s")} updated"
+                    : $"{touched.Count - lost.Count} of {touched.Count} updated, {lost.Count} failed");
             }
         }
 
@@ -1876,7 +1884,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
 
             if (display.Tty) {
                 await AnsiConsole.Progress()
-                    .AutoClear(true)
+                    .AutoClear(false)
                     .HideCompleted(false)
                     .Columns(new TaskDescriptionColumn(), new ProgressBarColumn(), new PercentageColumn())
                     .StartAsync(async ctx => {
