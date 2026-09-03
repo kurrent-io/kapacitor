@@ -68,6 +68,9 @@ public class ShellCommandAnalyzerTests {
     [Arguments("cmd /c x")]                      // non-POSIX nested shell
     [Arguments("C:\\bash.exe -c x")]             // backslash path to a nested shell
     [Arguments("'C:\\bash.exe' -c x")]           // quoting hides neither the separator nor the .exe
+    [Arguments("env bash -c 'x'")]               // wrapper in front of a nested shell
+    [Arguments("sudo sh script.sh")]             // wrapper in front of a nested shell
+    [Arguments("echo bash")]                     // deliberate over-match: any token naming a shell
     public async Task Banned_constructs_are_unanalyzed(string command) {
         var r = ShellCommandAnalyzer.Analyze(command);
         await Assert.That(r.Analyzed).IsFalse();

@@ -40,7 +40,11 @@ public static class ShellCommandAnalyzer {
 
         bool EndSegment() {
             if (!FlushToken() || argv.Count == 0) return false;
-            if (LooksLikeAssignment(argv[0]) || IsForbiddenProgram(argv[0])) return false;
+            // Every token, not just argv[0]: a wrapper (`env bash -c`, `sudo sh`, `command bash`)
+            // otherwise hides the nested shell behind a program the analyzer reads as ordinary. A
+            // literal argument that merely names one (`echo bash`) loses analyzability with it —
+            // that only withholds allow-eligibility, and deny/ask still match through fragments.
+            if (LooksLikeAssignment(argv[0]) || argv.Any(IsForbiddenProgram)) return false;
             segments.Add(new ShellSegment([.. argv]));
             argv.Clear();
             return true;
