@@ -297,6 +297,41 @@ record RepoRecapEntry(
         string          Summary
     );
 
+record RepoSessionOwnerDto(
+        string  UserId,
+        string? Username,
+        string? DisplayName,
+        string? AvatarUrl
+    );
+
+record RepoSessionDto(
+        string               SessionId,
+        string?              Slug,
+        string?              Title,
+        RepoSessionOwnerDto? Owner,
+        string?              Vendor,
+        string               Status,
+        string               AccessLevel,
+        bool                 Stale,
+        DateTimeOffset       StartedAt,
+        DateTimeOffset?      EndedAt,
+        DateTimeOffset       LastActivityAt,
+        string?              PrimaryRepoHash,
+        bool                 IsPrimary,
+        string?              Branch,
+        string?              Cwd,
+        string?              LastPrompt,
+        string[]             WriteAttemptPaths,
+        int                  WriteAttemptCount
+    );
+
+record RepoSessionsResponse(
+        List<RepoSessionDto> Items,
+        int                  Total,
+        int                  Limit,
+        int                  Offset
+    );
+
 // ── Eval command types — see DEV-1433 ─────────────────────────────────────
 
 // Response shape from GET /api/sessions/{id}/eval-context. Only the fields
@@ -1126,6 +1161,7 @@ public sealed record CurationApplyResponse {
 [JsonSerializable(typeof(Capacitor.Cli.Core.Commands.FeedbackSubmitRequest))]
 [JsonSerializable(typeof(Capacitor.Cli.Core.Commands.FeedbackSubmitContext))]
 [JsonSerializable(typeof(Capacitor.Cli.Core.Commands.FeedbackSubmitResponse))]
+[JsonSerializable(typeof(RepoSessionsResponse))]
 [JsonSourceGenerationOptions(
     PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower,
     UseStringEnumConverter = true
