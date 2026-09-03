@@ -28,13 +28,19 @@ using Profile = Capacitor.Cli.Core.Config.Profile;
 
 namespace Capacitor.Cli.Commands;
 
-/// <summary>Setup's step-scoped rendering of façade output: every non-flush line is two-space indented, and setup still owns the guidance tail.</summary>
+/// <summary>Setup's step-scoped rendering of façade output: setup owns the guidance tail, while the
+/// indent belongs to the renderer underneath — most of the auth copy is composed in there, so shifting
+/// it from out here would move the lines this class is handed and leave the rest at column 0.</summary>
 sealed class SetupAuthProgress(IAuthProgress inner) : IAuthProgress {
-    internal const string UnreachableGuidance = "  Retry later, or pass --server-url <url>.";
+    /// <summary>What a line of setup's own output is shifted by, and what its façade renderer is built
+    /// with, so the two halves of a step land on one margin.</summary>
+    internal const string StepIndent = "  ";
 
-    public void Notice(string message) => inner.Notice(Indent(message));
+    internal const string UnreachableGuidance = "Retry later, or pass --server-url <url>.";
 
-    public void Error(string message) => inner.Error(Indent(message));
+    public void Notice(string message) => inner.Notice(message);
+
+    public void Error(string message) => inner.Error(message);
 
     public void BrowserOpening(string url) => inner.BrowserOpening(url);
 
@@ -49,7 +55,7 @@ sealed class SetupAuthProgress(IAuthProgress inner) : IAuthProgress {
 
     // Blank separators and already-indented copy (the device-flow numbered list) pass through as-is.
     internal static string Indent(string message) =>
-        string.IsNullOrWhiteSpace(message) || message.StartsWith(' ') ? message : $"  {message}";
+        string.IsNullOrWhiteSpace(message) || message.StartsWith(' ') ? message : StepIndent + message;
 }
 
 /// <summary>The browser leg's rendering, at setup's two-space indent. The URL is printed whether or not
@@ -1310,7 +1316,7 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
     /// <summary>Test seam: overrides façade construction for Step 1/2. Reset to null in a finally block.</summary>
     internal static Func<ITenantProvisioner?, OnboardingFacade>? FacadeOverride;
 
-    internal static readonly SetupAuthProgress StepProgress = new(ConsoleAuthProgress.Instance);
+    internal static readonly SetupAuthProgress StepProgress = new(new ConsoleAuthProgress(SetupAuthProgress.StepIndent));
 
     OnboardingFacade NewFacade(
             ITenantProvisioner? provisioner, ITenantPicker? picker = null, RequestedWorkspace? requested = null) =>

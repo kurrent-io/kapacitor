@@ -265,8 +265,11 @@ public class SetupFacadeParityTests {
 
     // ── the setup-scoped progress sink ───────────────────────────────────────
 
+    /// <summary>Pins the pass-through. The renderer underneath carries the step indent, so shifting
+    /// here as well would double it on the lines this sink is handed while the copy the renderer
+    /// composes for itself stayed one step out.</summary>
     [Test]
-    public async Task SetupAuthProgress_indents_facade_text_and_passes_the_rest_through() {
+    public async Task SetupAuthProgress_passes_facade_text_through_untouched() {
         var inner    = new RecordingAuthProgress();
         var progress = new SetupAuthProgress(inner);
 
@@ -279,14 +282,28 @@ public class SetupFacadeParityTests {
         progress.PollTick();
 
         await Assert.That(inner.Notices).IsEquivalentTo(new[] {
-            "  Server has no authentication configured — login not required.",
+            "Server has no authentication configured — login not required.",
             "",
             "  1. Open https://github.com/login/device in a browser",
         });
-        await Assert.That(inner.Errors).IsEquivalentTo(new[] { "  Cannot reach the Kurrent auth service." });
+        await Assert.That(inner.Errors).IsEquivalentTo(new[] { "Cannot reach the Kurrent auth service." });
         await Assert.That(inner.BrowserOpenings).IsEquivalentTo(new[] { "https://auth.example/authorize" });
         await Assert.That(inner.DeviceCodes).Count().IsEqualTo(1);
         await Assert.That(inner.PollTicks).IsEqualTo(1);
+    }
+
+    /// <summary>Pins the wiring rather than either half of it: a step's own lines and the auth copy
+    /// beside them land on one margin only if the sink handed to the façade is built with the step
+    /// indent, and neither class's own test can show that.</summary>
+    [Test]
+    public async Task StepProgress_renders_facade_copy_on_the_step_margin() {
+        using var capture = ConsoleOutput.StartCapture();
+
+        SetupCommand.StepProgress.BrowserOpening("https://auth.example/authorize");
+
+        await Assert.That(capture.GetCapturedOutput()).IsEqualTo(
+            "  Opening browser for authentication..." + Environment.NewLine
+          + "    If the browser doesn't open, visit: https://auth.example/authorize" + Environment.NewLine);
     }
 
     [Test]
