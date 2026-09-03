@@ -114,8 +114,8 @@ public sealed record ReportFirstRunImportOutcomeRequest {
     [JsonPropertyName("skipped")]  public required int Skipped  { get; init; }
     [JsonPropertyName("failed")]   public required int Failed   { get; init; }
 
-    /// <summary>A <see cref="FirstRunImportOutcomeReasons"/> token, and only on a run that moved
-    /// nothing — the server rejects the whole report otherwise.</summary>
+    /// <summary>A <see cref="FirstRunImportOutcomeReasons"/> token, and only alongside three zeroes —
+    /// the server rejects the whole report otherwise.</summary>
     [JsonPropertyName("reason")] public string? Reason { get; init; }
 }
 

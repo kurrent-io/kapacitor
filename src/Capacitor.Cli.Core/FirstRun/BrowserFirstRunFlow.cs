@@ -426,7 +426,7 @@ public sealed class BrowserFirstRunFlow(
         if (FirstRunFlowOutcomes.Import(view) is not { } answer) {
             if (view.ImportDecidedAt is { } unreadable && state.ImportedThrough != unreadable) {
                 state.ImportedThrough = unreadable;
-                state.Outcome        = Refusal(unreadable, FirstRunImportOutcomeReasons.DecisionUnreadable);
+                state.Outcome        = ReasonOnly(unreadable, FirstRunImportOutcomeReasons.DecisionUnreadable);
 
                 await DeliverOutcomeAsync(serverUrl, flowId, state, ct);
             }
@@ -449,7 +449,7 @@ public sealed class BrowserFirstRunFlow(
         if (answer.Choices.Count == 0) {
             state.Outcome = answer.IsDecline
                 ? Outcome(answer.DecidedAt, default, null)
-                : Refusal(answer.DecidedAt, FirstRunImportOutcomeReasons.DecisionUnreadable);
+                : ReasonOnly(answer.DecidedAt, FirstRunImportOutcomeReasons.DecisionUnreadable);
 
             await DeliverOutcomeAsync(serverUrl, flowId, state, ct);
 
@@ -459,7 +459,7 @@ public sealed class BrowserFirstRunFlow(
         // Nothing to scan, so nothing to run. Reported as a refusal rather than as three zeroes, which
         // is what a clean import over an already-loaded history also looks like.
         if (answer.NoReadableVendors) {
-            state.Outcome = Refusal(answer.DecidedAt, FirstRunImportOutcomeReasons.NoReadableAgents);
+            state.Outcome = ReasonOnly(answer.DecidedAt, FirstRunImportOutcomeReasons.NoReadableAgents);
 
             await DeliverOutcomeAsync(serverUrl, flowId, state, ct);
 
@@ -483,13 +483,14 @@ public sealed class BrowserFirstRunFlow(
             progress.ImportEnded();
         }
 
-        // Nothing is sent for a run that lost a pass. Its sessions are unaccounted, and three counts
-        // cannot say so — the surviving pass's figures alone would report a clean import.
-        if (moved is { } totals) {
-            state.Outcome = Outcome(answer.DecidedAt, totals, null);
+        // A run that lost a pass reports the token, not its counts: its sessions are unaccounted, and the
+        // surviving pass's figures alone would state a clean import. Silence is not available either — it
+        // reads exactly like a machine that died, and the browser waits that out before saying anything.
+        state.Outcome = moved is { } totals
+            ? Outcome(answer.DecidedAt, totals, null)
+            : ReasonOnly(answer.DecidedAt, FirstRunImportOutcomeReasons.RunFailed);
 
-            await DeliverOutcomeAsync(serverUrl, flowId, state, ct);
-        }
+        await DeliverOutcomeAsync(serverUrl, flowId, state, ct);
 
         return _clock.GetUtcNow() - began;
     }
@@ -505,10 +506,11 @@ public sealed class BrowserFirstRunFlow(
             Reason    = reason
         };
 
-    /// <summary>A refusal: three zeroes and a token. The server rejects the report outright if a reason
-    /// arrives on counts that moved something, so the zeroes are part of the contract rather than a
-    /// convenience.</summary>
-    static ReportFirstRunImportOutcomeRequest Refusal(DateTimeOffset decidedAt, string reason) =>
+    /// <summary>A token and no figures. The server rejects the report outright if a reason arrives on
+    /// non-zero counts, so the zeroes are the wire's requirement — on
+    /// <see cref="FirstRunImportOutcomeReasons.RunFailed"/> they are not a claim that nothing
+    /// landed.</summary>
+    static ReportFirstRunImportOutcomeRequest ReasonOnly(DateTimeOffset decidedAt, string reason) =>
         Outcome(decidedAt, default, reason);
 
     /// <summary>Hands over the owed outcome, keeping it for a later tick unless the server took it.</summary>
