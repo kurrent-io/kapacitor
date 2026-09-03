@@ -100,8 +100,8 @@ public class ClaudeHookCommandTests {
 
     // ── Approval-policy lifecycle: build at session-start, expire per turn, evict at session-end ──
 
-    /// <summary>A degradation the user never sees is the failure mode the spec forbids: the
-    /// snapshot is built eagerly at session-start and a loss surfaces on the hook's own stdout.</summary>
+    /// <summary>The snapshot is built eagerly at session-start and a loss surfaces on the hook's own
+    /// stdout, which must stay a single JSON object.</summary>
     [Test]
     public async Task session_start_surfaces_a_degraded_policy_snapshot() {
         // A server-scope field in a user document — parsed, then refused, so the file is dropped

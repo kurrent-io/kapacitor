@@ -3,7 +3,7 @@ namespace Capacitor.Cli.Core.Tests.Unit.Policy;
 using Capacitor.Cli.Core.Policy;
 
 public class ApprovalsYamlTests {
-    // The spec's own example document must parse: it is the reference input for the binder.
+    // The reference document shape every feature test assumes parseable — the binder's canonical input.
     const string SpecExample = """
         version: 1
         rules:

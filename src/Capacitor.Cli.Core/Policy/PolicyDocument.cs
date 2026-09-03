@@ -15,7 +15,8 @@ public sealed record RuleMatcher(
 
 public sealed record PolicyRule(RuleMatcher Match, RuleOutcome Outcome, string? Reason);
 
-/// <summary>Parsed and preserved; never consulted until the judge ships.</summary>
+/// <summary>Parsed and preserved so the snapshot hash covers it; nothing consults it at evaluation
+/// time.</summary>
 public sealed record JudgeConfig(string Mode, string? Prompt);
 
 public sealed record PolicyDocument(int Version, IReadOnlyList<PolicyRule> Rules, JudgeConfig? Judge);

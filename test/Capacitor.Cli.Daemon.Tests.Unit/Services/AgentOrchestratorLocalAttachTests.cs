@@ -237,9 +237,8 @@ public class AgentOrchestratorLocalAttachTests {
         await Assert.That(privServer.Calls.Count).IsEqualTo(0);
     }
 
-    /// Registration is no longer where the launch-bound policy documents go up — the launch enqueues
-    /// them before the runtime starts, so an immediate permission decision cannot precede them.
-    /// A snapshot on the instance must therefore add nothing here.
+    /// Registration appends no snapshot event: the launch path owns the upload, enqueuing the
+    /// documents before the runtime starts so an immediate permission decision cannot precede them.
     [Test]
     public async Task RegisterAgentAsync_does_not_upload_the_policy_snapshot() {
         var server = new TripwireServerConnection();
