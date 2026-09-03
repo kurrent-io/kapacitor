@@ -13,9 +13,6 @@ public class CwdRepositoryTests {
     [TempConfigRoot] public required TempConfigRoot Config { get; init; }
     [TempDir]        public required TempDir        Cwd    { get; init; }
 
-    [Before(Test)]
-    public void Reset() => GitProviderRouter.ResetMemoForTests();
-
     static CommandRunner RecordingRunner(List<string> commands, string? origin = "git@github.com:acme/widget.git") =>
         (cmd, args, _, _) => {
             commands.Add($"{cmd} {args}");
