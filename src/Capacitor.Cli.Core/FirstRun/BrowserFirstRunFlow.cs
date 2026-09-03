@@ -507,7 +507,7 @@ public sealed class BrowserFirstRunFlow(
         };
 
     /// <summary>A token and no figures. The server rejects the report outright if a reason arrives on
-    /// counts that moved something, so the zeroes are the wire's requirement — on
+    /// non-zero counts, so the zeroes are the wire's requirement — on
     /// <see cref="FirstRunImportOutcomeReasons.RunFailed"/> they are not a claim that nothing
     /// landed.</summary>
     static ReportFirstRunImportOutcomeRequest ReasonOnly(DateTimeOffset decidedAt, string reason) =>

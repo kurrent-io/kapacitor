@@ -5,9 +5,9 @@ namespace Capacitor.Cli.Core.FirstRun;
 /// already-loaded history looks like, so this is what separates a coded ending from a no-op — and
 /// <see cref="RunFailed"/> from the two that really did leave the history alone.
 ///
-/// <para><b>The server's closed set, spelled once.</b> It rejects a token it does not know and rejects
-/// any token at all on an outcome that moved something, so a second spelling here is a silent wire
-/// break rather than a rejected field.</para>
+/// <para><b>The server's closed set, spelled once.</b> It rejects a token it does not know, and any
+/// token that arrives on non-zero counts, so a second spelling here is a silent wire break rather than
+/// a rejected field.</para>
 /// </summary>
 public static class FirstRunImportOutcomeReasons {
     /// <summary>Repositories were chosen and no vendor on this machine could be read for them. The one
