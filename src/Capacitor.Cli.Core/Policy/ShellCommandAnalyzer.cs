@@ -151,11 +151,18 @@ public static class ShellCommandAnalyzer {
         return false;
     }
 
-    // Every spelling getopt accepts for it: the long form with or without an attached value, the
-    // short form alone, with its value attached, or bundled behind other short options.
-    static bool IsSplitStringFlag(string word) =>
-        word.StartsWith("--split-string", StringComparison.Ordinal)
-        || (word.Length > 1 && word[0] == '-' && word[1] != '-' && word.Contains('S'));
+    // getopt_long takes any unambiguous abbreviation, and no other GNU env long option begins with
+    // 's', so every nonempty prefix of `split-string` after `--` selects it — `--s`, `--sp=…` — with
+    // the value attached or separate. The short form counts alone, with its value attached, or
+    // bundled behind other short options.
+    static bool IsSplitStringFlag(string word) {
+        if (word.StartsWith("--", StringComparison.Ordinal)) {
+            var eq = word.IndexOf('=');
+            var name = eq < 0 ? word.AsSpan(2) : word.AsSpan(2, eq - 2);
+            return name.Length > 0 && "split-string".AsSpan().StartsWith(name, StringComparison.Ordinal);
+        }
+        return word.Length > 1 && word[0] == '-' && word.Contains('S');
+    }
 
     // A path-qualified or extension-carrying spelling names the same program: `C:\bash.exe` and
     // `/bin/bash` are both bash. Over-matching here only withholds allow-eligibility, which is the

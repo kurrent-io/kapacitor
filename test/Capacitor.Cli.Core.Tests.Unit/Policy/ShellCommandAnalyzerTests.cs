@@ -78,6 +78,8 @@ public class ShellCommandAnalyzerTests {
     [Arguments("xonsh -c x")]                    // modern shell on the maintained interpreter list
     [Arguments("env -S 'bash -c \"rm -rf /tmp/x\"'")]   // env re-splits the literal into a shell
     [Arguments("env --split-string='bash -c x'")]       // the long spelling of the same flag
+    [Arguments("env --split='bash -c x'")]              // getopt_long takes any unambiguous abbreviation
+    [Arguments("env --s 'sh x'")]                       // down to a single letter, value separate
     [Arguments("env FOO=1 -S 'sh x'")]                  // the flag need not follow env immediately
     [Arguments("env -S'bash -c x'")]                    // value attached to the short flag
     [Arguments("env -iS 'bash -c x'")]                  // bundled behind another short option
@@ -96,6 +98,7 @@ public class ShellCommandAnalyzerTests {
     [Arguments("git log --format=%H")]           // = and % in arguments are literal
     [Arguments("env FOO=1 git push --force")]    // assignment as env's argument, not leading
     [Arguments("curl -S https://x")]             // -S is only a split-string flag behind env
+    [Arguments("env --unset=FOO git status")]    // a long option that is no prefix of split-string
     [Arguments("grep 'a*b' file.txt")]           // glob chars inside quotes are literal
     [Arguments("echo if")]                       // a reserved word is reserved in command position only
     [Arguments("git log --grep=done")]           // reserved word inside an argument
