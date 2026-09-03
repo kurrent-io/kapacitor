@@ -11,10 +11,15 @@ public sealed record ShellAnalysis(bool Analyzed, IReadOnlyList<ShellSegment> Se
 /// Allowlist grammar: literal-token simple commands joined by top-level '&amp;&amp;', ';' or '|'.
 /// Anything else — a nested shell, a compound statement, any word the grammar cannot read as a
 /// literal — is unanalyzed and therefore never allow-eligible, the one guarantee obfuscation
-/// cannot defeat. The nested-shell ban is a MAINTAINED LIST of known interpreter names, not a claim
-/// to recognize every interpreter that exists: one the list does not name stays analyzable, so
-/// allowing it takes a rule that spells the program out — the same visible coarse grant a trailing
-/// '*' already denotes — and deny/ask rules govern it like any other program.
+/// cannot defeat. The nested-shell ban is a MAINTAINED LIST of known interpreter names matched
+/// against literal argv tokens, not a claim to recognize every interpreter that exists. A wrapper
+/// that re-splits one argument into a new command line can hide a name inside a single token, so
+/// the known such form ('env -S' / '--split-string') is refused outright; an unknown program taking
+/// a command-string argument is governed by the rules that govern that program. An interpreter the
+/// list does not name stays analyzable and is allow-eligible only through the same visible grants
+/// that authorize any program — a pattern naming it, or a deliberately universal allow
+/// (command: "*", a field-less { kind: shell } matcher) that covers every analyzed command — with
+/// deny/ask rules governing it like any other program.
 /// When in doubt, return Unanalyzed.
 /// </summary>
 public static class ShellCommandAnalyzer {
@@ -59,7 +64,7 @@ public static class ShellCommandAnalyzer {
             // literal argument that merely names one (`echo bash`) loses analyzability with it —
             // that only withholds allow-eligibility, and deny/ask still match through fragments.
             if (LooksLikeAssignment(argv[0]) || ReservedWords.Contains(argv[0])
-                || argv.Any(IsForbiddenProgram)) return false;
+                || argv.Any(IsForbiddenProgram) || SplitsAnArgumentIntoACommandLine(argv)) return false;
             segments.Add(new ShellSegment([.. argv]));
             argv.Clear();
             return true;
@@ -134,14 +139,34 @@ public static class ShellCommandAnalyzer {
         return true;
     }
 
+    // `env -S 'bash -c x'` re-splits that one literal into a fresh command line, so the shell name
+    // sits inside a token no per-token name check can see. `env` itself stays ordinary — it is the
+    // split-string flag, in any later position of the same segment, that forfeits analyzability.
+    static bool SplitsAnArgumentIntoACommandLine(List<string> argv) {
+        for (var i = 0; i < argv.Count; i++) {
+            if (!IsProgram(argv[i], static n => n.Equals("env", StringComparison.OrdinalIgnoreCase))) continue;
+            for (var j = i + 1; j < argv.Count; j++)
+                if (IsSplitStringFlag(argv[j])) return true;
+        }
+        return false;
+    }
+
+    // Every spelling getopt accepts for it: the long form with or without an attached value, the
+    // short form alone, with its value attached, or bundled behind other short options.
+    static bool IsSplitStringFlag(string word) =>
+        word.StartsWith("--split-string", StringComparison.Ordinal)
+        || (word.Length > 1 && word[0] == '-' && word[1] != '-' && word.Contains('S'));
+
     // A path-qualified or extension-carrying spelling names the same program: `C:\bash.exe` and
     // `/bin/bash` are both bash. Over-matching here only withholds allow-eligibility, which is the
     // safe direction; under-matching would let a nested shell through.
-    static bool IsForbiddenProgram(string word) {
+    static bool IsForbiddenProgram(string word) => IsProgram(word, ForbiddenPrograms.Contains);
+
+    static bool IsProgram(string word, Func<string, bool> names) {
         var name = Basename(word);
-        if (ForbiddenPrograms.Contains(name)) return true;
+        if (names(name)) return true;
         var dot = name.LastIndexOf('.');
-        return dot > 0 && ForbiddenPrograms.Contains(name[..dot]);
+        return dot > 0 && names(name[..dot]);
     }
 
     // Both separators regardless of host OS: a quoted Windows path reaches this analyzer as a

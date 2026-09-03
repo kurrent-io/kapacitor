@@ -76,6 +76,11 @@ public class ShellCommandAnalyzerTests {
     [Arguments("busybox rm -rf x")]              // the multiplexer alone, with no shell to catch
     [Arguments("nu -c 'rm -rf /'")]              // modern shell on the maintained interpreter list
     [Arguments("xonsh -c x")]                    // modern shell on the maintained interpreter list
+    [Arguments("env -S 'bash -c \"rm -rf /tmp/x\"'")]   // env re-splits the literal into a shell
+    [Arguments("env --split-string='bash -c x'")]       // the long spelling of the same flag
+    [Arguments("env FOO=1 -S 'sh x'")]                  // the flag need not follow env immediately
+    [Arguments("env -S'bash -c x'")]                    // value attached to the short flag
+    [Arguments("env -iS 'bash -c x'")]                  // bundled behind another short option
     [Arguments("if true; then rm -rf x; fi")]    // compound statement, not three simple commands
     [Arguments("for i in a; do echo x; done")]   // compound statement
     [Arguments("while true; do x; done")]        // compound statement
@@ -90,6 +95,7 @@ public class ShellCommandAnalyzerTests {
     [Arguments("grep -n issue#5 notes.txt")]     // # mid-token is literal
     [Arguments("git log --format=%H")]           // = and % in arguments are literal
     [Arguments("env FOO=1 git push --force")]    // assignment as env's argument, not leading
+    [Arguments("curl -S https://x")]             // -S is only a split-string flag behind env
     [Arguments("grep 'a*b' file.txt")]           // glob chars inside quotes are literal
     [Arguments("echo if")]                       // a reserved word is reserved in command position only
     [Arguments("git log --grep=done")]           // reserved word inside an argument

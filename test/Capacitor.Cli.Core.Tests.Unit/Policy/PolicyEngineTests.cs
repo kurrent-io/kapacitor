@@ -84,6 +84,31 @@ public class PolicyEngineTests {
         await Assert.That(evaded.Outcome).IsEqualTo(PolicyOutcome.None);
     }
 
+    /// `env -S` re-splits its literal argument into a command line, so an `env *` allow must not
+    /// reach the shell hiding in that token — while ordinary `env` use stays allow-eligible.
+    [Test]
+    public async Task Env_allow_does_not_authorize_a_split_string_argument() {
+        var doc = "version: 1\nrules:\n  - match: { kind: shell, command: \"env *\" }\n    outcome: allow\n";
+        var snap = Snap((PolicyScope.User, doc));
+        var hidden = PolicyEngine.Evaluate(snap, Bash("env -S 'bash -c \"rm -rf /tmp/x\"'"), EvaluationMode.Full);
+        await Assert.That(hidden.Outcome).IsEqualTo(PolicyOutcome.None);
+        var plain = PolicyEngine.Evaluate(snap, Bash("env FOO=1 git status"), EvaluationMode.Full);
+        await Assert.That(plain.Outcome).IsEqualTo(PolicyOutcome.Allow);
+    }
+
+    /// The boundary for an interpreter the shell-name list does not carry: a universal allow
+    /// authorizes it exactly as it authorizes any other analyzed program, and still cannot reach a
+    /// command the analyzer refused.
+    [Test]
+    public async Task Universal_shell_allow_covers_an_unlisted_interpreter_but_not_an_unanalyzed_command() {
+        var doc = "version: 1\nrules:\n  - match: { kind: shell }\n    outcome: allow\n";
+        var snap = Snap((PolicyScope.User, doc));
+        var unlisted = PolicyEngine.Evaluate(snap, Bash("someshell -c script.txt"), EvaluationMode.Full);
+        await Assert.That(unlisted.Outcome).IsEqualTo(PolicyOutcome.Allow);
+        var known = PolicyEngine.Evaluate(snap, Bash("bash -c x"), EvaluationMode.Full);
+        await Assert.That(known.Outcome).IsEqualTo(PolicyOutcome.None);
+    }
+
     [Test]
     public async Task Raw_substring_glob_matches_when_lexing_is_abandoned() {
         // Unterminated quote abandons fragment lexing; the raw substring glob still hits.
