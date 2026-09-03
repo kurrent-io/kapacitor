@@ -122,6 +122,27 @@ public class CursorHookCommandTests {
         await Assert.That(capture.GetCapturedError()).DoesNotContain("kcap login");
     }
 
+    /// <summary>Cursor's live post already spools any non-2xx, so the drain is where a 401 was lost:
+    /// the replay hit the same 401 and dropped the entry. It must instead stay spooled and land once
+    /// the server accepts the credential again.</summary>
+    [Test]
+    public async Task spooled_entry_that_hits_a_401_on_drain_is_replayed_once_the_server_accepts() {
+        using var rejecting = new Fixture(Config.Root, postStatus: HttpStatusCode.Unauthorized);
+        using var accepting = new Fixture(Config.Root);
+        rejecting.Spool.Append(Sid, "session-start/cursor", $$"""{"hook_event_name":"sessionStart","session_id":"{{Sid}}"}""");
+
+        await rejecting.HandleAsync($$"""{"hook_event_name":"postToolUse","session_id":"{{Sid}}","tool_name":"Glob"}""");
+        await Assert.That(rejecting.Spool.HasBacklog(Sid)).IsTrue();
+
+        await new CursorHookCommand(Config.Root, accepting.Profiles, new HookClock(accepting.Clock), Home).HandleCore(
+            accepting.Client,
+            stdin: new StringReader($$"""{"hook_event_name":"postToolUse","session_id":"{{Sid}}","tool_name":"Glob"}"""),
+            spool: rejecting.Spool);
+
+        await Assert.That(accepting.RouteOrder).Contains("session-start/cursor");
+        await Assert.That(rejecting.Spool.HasBacklog(Sid)).IsFalse();
+    }
+
     [Test]
     public async Task canonical_events_spool_on_POST_failure() {
         using var fx = new Fixture(Config.Root, postStatus: HttpStatusCode.InternalServerError);

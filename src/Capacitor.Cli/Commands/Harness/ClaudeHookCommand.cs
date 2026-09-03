@@ -393,8 +393,8 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
             return 0;
         }
 
-        // Auth lapsed: do not POST (server would 401) and do not drain (a 401 would Drop the
-        // spool backlog). Exit cleanly (0) so Claude shows no per-turn error banner; nudge once on
+        // Auth lapsed: do not POST and do not drain — every request would 401, so the backlog just
+        // waits for the login. Exit cleanly (0) so Claude shows no per-turn error banner; nudge once on
         // session-start via a systemMessage (shown to the user, not injected into the model context).
         if (authStatus is AuthStatus.Expired or AuthStatus.NotAuthenticated or AuthStatus.WrongServer) {
             if (command == "session-start") {
@@ -656,9 +656,9 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
 
             if (resp is null || !resp.IsSuccessStatusCode) {
                 var code      = resp is null ? 0 : (int)resp.StatusCode;
-                var permanent = resp is not null && code is < 500 and not 408 and not 429;
+                var retryable = resp is null || HookSpool.IsRetryable(code);
                 resp?.Dispose();
-                if (!permanent && sessionId is not null) spool.Append(sessionId, "session-start", body);
+                if (retryable && sessionId is not null) spool.Append(sessionId, "session-start", body);
 
                 // The envelope below is built only from a 2xx body, so this is the arm's only
                 // stdout write — without it the start event is dropped in silence.
@@ -780,9 +780,9 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
             } catch { resp = null; }
 
             if (resp is null || !resp.IsSuccessStatusCode) {
-                var permanent = resp is not null && (int)resp.StatusCode is < 500 and not 408 and not 429;
+                var retryable = resp is null || HookSpool.IsRetryable((int)resp.StatusCode);
                 resp?.Dispose();
-                if (!permanent) {
+                if (retryable) {
                     if (sessionId is not null) {
                         spool.Append(sessionId, "session-end", body);
                         await Console.Error.WriteLineAsync($"[kcap] session-end spooled; will retry on the next kcap hook ({sessionId})");
@@ -832,9 +832,9 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
                 } catch { resp = null; }
 
                 if (resp is null || !resp.IsSuccessStatusCode) {
-                    var permanent = resp is not null && (int)resp.StatusCode is < 500 and not 408 and not 429;
+                    var retryable = resp is null || HookSpool.IsRetryable((int)resp.StatusCode);
                     resp?.Dispose();
-                    if (!permanent) {
+                    if (retryable) {
                         spool.Append(sessionId, "subagent-stop", body);
                         await Console.Error.WriteLineAsync($"[kcap] subagent-stop spooled; will retry on the next kcap hook ({sessionId}/{agentId})");
                     }
@@ -1023,10 +1023,7 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
             try {
                 using var content = new StringContent(body, Encoding.UTF8, "application/json");
                 using var resp    = await client.PostOnceAsync($"{Url}/hooks/{route}", content, perAttempt, CancellationToken.None);
-                if (!resp.IsSuccessStatusCode) {
-                    var code = (int)resp.StatusCode;
-                    return code is >= 500 or 408 or 429 ? DrainOutcome.TransientStop : DrainOutcome.Drop;
-                }
+                if (!resp.IsSuccessStatusCode) return HookSpool.OutcomeOf((int)resp.StatusCode);
                 if (route == "session-end") {
                     try {
                         var node = JsonNode.Parse(await resp.Content.ReadAsStringAsync());

@@ -111,10 +111,9 @@ public sealed class CursorHookCommand(ConfigRoot config, ProfileContext profiles
         try {
             // Status-returning variant so a lapse doesn't write the per-turn "expired" stderr
             // line CreateAuthenticatedClientAsync would. On a lapse, skip HandleCore entirely:
-            // every POST would 401, and draining the spool would turn its 401s into Drops that
-            // discard the backlog — so leave it intact for replay after the user re-runs
-            // `kcap login`, and exit cleanly. Mirrors the Claude hook (#183); kcap status
-            // surfaces the expired state. Cursor has no user-facing notice channel.
+            // every POST would 401, so the backlog waits intact for the user to re-run
+            // `kcap login`, and exit cleanly. Mirrors the Claude hook; kcap status surfaces the
+            // expired state. Cursor has no user-facing notice channel.
             //
             // Bounded by its OWN Task.WhenAny against the full budget (not merely the linked
             // CancellationToken passed into it) — the one place client creation can be
@@ -403,8 +402,7 @@ public sealed class CursorHookCommand(ConfigRoot config, ProfileContext profiles
                             if (route == "subagent-start") await MaybeSpawnChildWatcherFromPayloadAsync(entryBody);
                             return DrainOutcome.Delivered;
                         }
-                        var code = (int)resp.StatusCode;
-                        return code is >= 500 or 408 or 429 ? DrainOutcome.TransientStop : DrainOutcome.Drop;
+                        return HookSpool.OutcomeOf((int)resp.StatusCode);
                     } catch { return DrainOutcome.TransientStop; }
                 }, budget.Remaining, ct);
             }

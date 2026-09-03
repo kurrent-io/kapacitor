@@ -560,3 +560,24 @@ only for owned review-flow reviewers: bypass silences permission prompts, not qu
 one-time bypass consent dialog, and the multi-CR spray would answer either. The chip is withheld for
 every vendor but Claude, the mode is session-scoped like the effort, and the harness picker no
 longer offers "Remember" — a chosen harness is always persisted for the repository.
+
+## A 401 spools
+
+Every hook path classed an HTTP 401 with the payload-rejecting 4xxs and dropped the event, so a
+credential rejected mid-session lost the lifecycle event that hit it: `kcap login` resumed recording
+from the next event, but a dropped session-start left the session without a server-side record and a
+dropped session-end left it stuck active. A 401 is now retryable, alongside 5xx, 408 and 429.
+
+**The classification is one helper, not eight copies.** The live posts (Claude's three bounded arms,
+`AgentHookPoster.PostOrSpoolAsync` for the other vendors) and the drain posters (`LifecycleSpoolDrain`,
+Claude's and Cursor's inline replays) each restated the rule, and Cursor showed why that cannot hold:
+its live post already spooled any non-2xx, so a 401'd entry survived to the next drain and was dropped
+there — a visible loss turned into a delayed silent one. Spooling at the live post is only safe once
+every drain agrees, so both sides read `HookSpool.IsRetryable`.
+
+**Retention is the spool's own.** A backlog that can only land after a human logs in is bounded the
+way an outage backlog is: the per-session byte cap and the 30-day reap. The pre-flight auth check
+still skips the drain while the token store knows the credential is dead, so a spooled 401 costs
+nothing until the login, and the drain that follows the login replays the backlog in order. On the
+vendor path a server 401 is now `Spooled` rather than `Failed` — the hook exits 0, as Claude's already
+did, and the stderr line still names `kcap login`.

@@ -101,10 +101,10 @@ public class AgentHookPosterTests : IDisposable {
     }
 
     /// <summary>
-    /// A 401 must stay <see cref="HookPostOutcome.Failed"/> — the outcome drives the caller's exit
-    /// code and is not part of this change — while the line the user actually reads names the fix.
-    /// These vendors have no user-facing stdout channel (their stdout is a handshake contract the
-    /// vendor parses), so stderr is the only place a nudge can go.
+    /// <c>PostAsync</c> has no spool, so a 401 stays <see cref="HookPostOutcome.Failed"/> here, while
+    /// the line the user actually reads names the fix. These vendors have no user-facing stdout
+    /// channel (their stdout is a handshake contract the vendor parses), so stderr is the only place
+    /// a nudge can go.
     /// </summary>
     // Globally sequential rather than keyed. "ConsoleErrorRedirect" has no other member, so it
     // serialized this Console.Error capture against nothing: Server_error_reports_Failed below
@@ -146,6 +146,53 @@ public class AgentHookPosterTests : IDisposable {
 
         await Assert.That(outcome).IsEqualTo(HookPostOutcome.Spooled);
         await Assert.That(spool.HasBacklog("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")).IsTrue();
+    }
+
+    /// <summary>A server-rejected credential is repaired by <c>kcap login</c>, so the payload is kept
+    /// for the drain that follows the login instead of being lost with the turn that hit the 401.</summary>
+    [Test]
+    public async Task PostOrSpool_on_401_spools_and_returns_Spooled() {
+        using var tmp = new TempDir();
+        var spool = new HookSpool(tmp.Path);
+        using var handler = new StubHandler(System.Net.HttpStatusCode.Unauthorized);
+        var outcome = await Poster.PostOrSpoolAsync(
+            () => Task.FromResult<(HttpClient, AuthStatus)>((new HttpClient(handler), AuthStatus.Ok)), "session-start/kiro", """{"session_id":"x"}""",
+            "kiro-hook", spool, sessionId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", route: "session-start/kiro");
+
+        await Assert.That(outcome).IsEqualTo(HookPostOutcome.Spooled);
+        await Assert.That(spool.HasBacklog("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")).IsTrue();
+    }
+
+    /// <summary>Non-vacuous control: a 4xx that rejects the payload itself still fails outright, so
+    /// the test above proves 401 is singled out rather than that every 4xx now spools.</summary>
+    [Test]
+    public async Task PostOrSpool_on_a_payload_rejecting_4xx_returns_Failed_and_spools_nothing() {
+        using var tmp = new TempDir();
+        var spool = new HookSpool(tmp.Path);
+        using var handler = new StubHandler(System.Net.HttpStatusCode.BadRequest);
+        var outcome = await Poster.PostOrSpoolAsync(
+            () => Task.FromResult<(HttpClient, AuthStatus)>((new HttpClient(handler), AuthStatus.Ok)), "session-start/kiro", """{"session_id":"x"}""",
+            "kiro-hook", spool, sessionId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", route: "session-start/kiro");
+
+        await Assert.That(outcome).IsEqualTo(HookPostOutcome.Failed);
+        await Assert.That(spool.HasBacklog("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")).IsFalse();
+    }
+
+    /// <summary>Spooling a 401 must not silence the nudge: stderr is still the only place these
+    /// vendors can name <c>kcap login</c>. Redirects the process-global Console.Error, so it runs alone.</summary>
+    [Test, NotInParallel]
+    public async Task PostOrSpool_on_401_still_names_kcap_login_on_stderr() {
+        using var tmp = new TempDir();
+        var spool = new HookSpool(tmp.Path);
+        using var handler = new StubHandler(System.Net.HttpStatusCode.Unauthorized);
+        using var capture = ConsoleOutput.StartErrorCapture("\n");
+
+        await Poster.PostOrSpoolAsync(
+            () => Task.FromResult<(HttpClient, AuthStatus)>((new HttpClient(handler), AuthStatus.Ok)), "stop/codex", """{"session_id":"x"}""",
+            "codex-hook", spool, sessionId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", route: "stop/codex");
+
+        await Assert.That(capture.GetCapturedError()).Contains(
+            AuthRejectionNotice.VendorStderrLine("codex-hook", "stop/codex", 401));
     }
 
     [Test]
