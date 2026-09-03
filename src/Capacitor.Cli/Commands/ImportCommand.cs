@@ -1521,7 +1521,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
                 var r = default(ImportChainsResult);
 
                 await AnsiConsole.Progress()
-                    .AutoClear(false)
+                    .AutoClear(true)
                     .HideCompleted(false)
                     .Columns(new TaskDescriptionColumn(), new ProgressBarColumn(), new PercentageColumn())
                     .StartAsync(async ctx => {
@@ -1615,7 +1615,8 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
 
                             r = await ImportChainsAsync(httpClient, baseUrl, chains, wrappedEvents, CancellationToken.None, sessionCwds, chainDefaultVisibility);
 
-                            // After the await, all workers have drained; mark every slot idle.
+                            // Insurance, not presentation: the frame is erased on the way out, and an
+                            // erase that ever fails should strand idle rows rather than a session name.
                             for (var i = 0; i < ImportWorkerCount; i++) IdleSlot(i);
 
                             return;
@@ -1731,7 +1732,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
 
             if (display.Tty) {
                 await AnsiConsole.Progress()
-                    .AutoClear(false)
+                    .AutoClear(true)
                     .HideCompleted(false)
                     .Columns(new TaskDescriptionColumn(), new ProgressBarColumn(), new PercentageColumn())
                     .StartAsync(async ctx => {
@@ -1860,7 +1861,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
 
             if (display.Tty) {
                 await AnsiConsole.Progress()
-                    .AutoClear(false)
+                    .AutoClear(true)
                     .HideCompleted(false)
                     .Columns(new TaskDescriptionColumn(), new ProgressBarColumn(), new PercentageColumn())
                     .StartAsync(async ctx => {
