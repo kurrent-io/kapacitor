@@ -9,10 +9,11 @@ namespace Capacitor.App.Tests.Unit;
 static class PermissionEntries {
     public static PendingPermissionRequest Entry(
             string requestId = "r1", string agentId = "a1", string vendor = "claude", string toolName = "Bash",
-            string? toolInputJson = """{"command":"ls"}""", bool omitted = false, string requestedAt = "2026-08-28T10:00:00.0000000+00:00") {
+            string? toolInputJson = """{"command":"ls"}""", bool omitted = false, string requestedAt = "2026-08-28T10:00:00.0000000+00:00",
+            string? toolUseId = null) {
         System.Text.Json.JsonElement? input = null;
         if (toolInputJson is not null) { using var d = System.Text.Json.JsonDocument.Parse(toolInputJson); input = d.RootElement.Clone(); }
-        return new PendingPermissionRequest(new PermissionPendingDto(requestId, agentId, "s1", vendor, toolName, input, null, omitted, false, requestedAt));
+        return new PendingPermissionRequest(new PermissionPendingDto(requestId, agentId, "s1", vendor, toolName, input, null, omitted, false, requestedAt, toolUseId));
     }
 
     public static PendingPermissionRequest Question(

@@ -52,6 +52,29 @@
                                    Foreground="{Binding IsError, Converter={x:Static views:ToolOutcomeBrushConverter.Instance}}" />
                     </StackPanel>
                 </DataTemplate>
+                <DataTemplate x:DataType="vm:ToolGroupItem">
+                    <StackPanel>
+                        <Button Classes="toolSummary" IsVisible="{Binding HasSummary}" Command="{Binding ToggleCommand}"
+                                Background="Transparent" BorderBrush="Transparent" Padding="0" Margin="0,0,0,6" Cursor="Hand"
+                                HorizontalAlignment="Left">
+                            <StackPanel Orientation="Horizontal" Spacing="9">
+                                <!-- Stroked chevron, not a text glyph — the 9px ▸ rendered as a dot. -->
+                                <Panel Width="12" Height="12" VerticalAlignment="Center">
+                                    <Path Stroke="{StaticResource KcapMutedBrush}" StrokeThickness="1.8"
+                                          StrokeLineCap="Round" StrokeJoin="Round"
+                                          Data="M3,4.5 L6,7.5 L9,4.5" IsVisible="{Binding IsExpanded}" />
+                                    <Path Stroke="{StaticResource KcapMutedBrush}" StrokeThickness="1.8"
+                                          StrokeLineCap="Round" StrokeJoin="Round"
+                                          Data="M4.5,3 L7.5,6 L4.5,9" IsVisible="{Binding !IsExpanded}" />
+                                </Panel>
+                                <TextBlock Text="{Binding Summary}" FontSize="11.5" Foreground="{StaticResource KcapMutedBrush}" VerticalAlignment="Center" />
+                                <TextBlock Text="✕" FontSize="11" Foreground="{StaticResource KcapDangerBrush}"
+                                           IsVisible="{Binding HasFailure}" VerticalAlignment="Center" />
+                            </StackPanel>
+                        </Button>
+                        <ItemsControl ItemsSource="{Binding VisibleCalls}" />
+                    </StackPanel>
+                </DataTemplate>
             </ItemsControl.DataTemplates>
         </ItemsControl>
 
