@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Reactive;
 using Avalonia.Collections;
 using Capacitor.Cli.Core.LocalIpc;
@@ -62,7 +63,7 @@ public sealed partial class WorkContextViewModel {
     void UpdateRequester(AgentStatusDto dto, string vendorLabel) {
         Requester = FirstNonBlank(dto.RequesterDisplay, dto.Requester) ?? "You";
         RequesterRole = $"This session · {vendorLabel}";
-        RequesterInitial = Requester[..1].ToUpperInvariant();
+        RequesterInitial = new StringInfo(Requester).SubstringByTextElements(0, 1).ToUpperInvariant();
     }
 
     static string? FirstNonBlank(params string?[] values) {
@@ -112,7 +113,7 @@ public sealed partial class WorkContextViewModel {
         Key = key;
         Title = read.Topology?.Item?.Title is { Length: > 0 } itemTitle ? itemTitle : display;
 
-        if (read.Topology is { } topology) ApplyTopology(topology, read.Assignments);
+        if (!read.TopologyFailed && read.Topology is { } topology) ApplyTopology(topology, read.Assignments);
         else if (!samePrimary) ClearTopology();
 
         ApplyLinks(read);

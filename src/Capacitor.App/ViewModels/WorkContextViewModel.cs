@@ -20,6 +20,7 @@ public enum WorkContextPhase { WaitingForSession, Loading, Ready, NoWorkItem, Si
 /// so teardown can await them all, and every lease transition happens on the UI thread.
 public sealed partial class WorkContextViewModel : ReactiveObject {
     internal static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(30);
+    static readonly IReadOnlyList<HarnessOption> DefaultHarnessOptions = HostedHarnessCatalog.Build(null);
 
     internal const string WaitingNote      = "Waiting for the session to register…";
     internal const string LoadingNote      = "Loading work context…";
@@ -156,7 +157,7 @@ public sealed partial class WorkContextViewModel : ReactiveObject {
             ? "—"
             : CheckoutLabel.Format(checkout, dto.RepoPath ?? "") + (dto.WorkLocation == WorkLocationText.Borrowed ? " · borrowed" : "");
         Branch = string.IsNullOrWhiteSpace(dto.Branch) ? "—" : dto.Branch;
-        var vendorLabel = HostedHarnessCatalog.LabelFor(HostedHarnessCatalog.Build(null), dto.Vendor);
+        var vendorLabel = HostedHarnessCatalog.LabelFor(DefaultHarnessOptions, dto.Vendor);
         Harness = $"{vendorLabel} · {HostedHarnessCatalog.ModelLabelFor(dto.Vendor, dto.Model ?? "")}";
         Transport = TransportLabel(HostedHarnessCatalog.EffectiveFamily(dto.HasTerminal, dto.Vendor));
         SessionSummaryLine = $"{Harness} · {Transport}";
@@ -191,14 +192,22 @@ public sealed partial class WorkContextViewModel : ReactiveObject {
         } catch (Exception ex) {
             read = WorkContextRead.Of(WorkContextReadKind.Unreachable, ex.Message);
         }
-        await Dispatcher.UIThread.InvokeAsync(() => Settle(lease, read));
+        try {
+            await Dispatcher.UIThread.InvokeAsync(() => Settle(lease, read));
+        } catch (Exception ex) {
+            Console.Error.WriteLine($"kcap: work context: {ex.Message}");
+        }
     }
 
     void Settle(ReadLease lease, WorkContextRead? read) {
         _outstanding.Remove(lease);
         var current = ReferenceEquals(lease, _current) && !_tornDown;
         if (!current) { lease.Cts.Dispose(); return; }
-        if (read is not null) Apply(read);
+        try {
+            if (read is not null) Apply(read);
+        } catch (Exception ex) {
+            Console.Error.WriteLine($"kcap: work context: {ex.Message}");
+        }
         IsReading = false;
         if (lease.RefreshPending) StartRead(lease);
     }
@@ -236,8 +245,13 @@ public sealed partial class WorkContextViewModel : ReactiveObject {
                 if (Phase is WorkContextPhase.Ready or WorkContextPhase.NoWorkItem) IsStale = true;
                 else Phase = WorkContextPhase.Unreachable;
                 return;
+            case WorkContextReadKind.Ready:
+                ApplyReady(read);
+                return;
+            default:
+                Phase = WorkContextPhase.Unreachable;
+                return;
         }
-        ApplyReady(read);
     }
 
     public async Task TeardownAsync() {
@@ -250,7 +264,9 @@ public sealed partial class WorkContextViewModel : ReactiveObject {
         foreach (var lease in leases) lease.Cts.Cancel();
         _current = null;
         foreach (var lease in leases)
-            if (lease.Pending is { } pending) await pending;
+            if (lease.Pending is { } pending) {
+                try { await pending; } catch (Exception) { }
+            }
         foreach (var lease in leases) lease.Cts.Dispose();
     }
 }

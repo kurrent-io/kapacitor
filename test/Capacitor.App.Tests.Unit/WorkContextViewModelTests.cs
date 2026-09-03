@@ -385,6 +385,21 @@ public class WorkContextViewModelTests {
 
     [Test]
     [NotInParallel("AvaloniaSession")]
+    public async Task A_throwing_apply_still_stops_reading_and_lets_teardown_finish() {
+        await RunOnUiAsync(async () => {
+            var h = new Harness();
+            h.Source.Enqueue(ReadyWith(Row("w1", "AI-1 — t"), Topology(Part("p1", "First", 0)), assignments: [null!]));
+
+            await h.PushAsync(Dto());
+
+            await Assert.That(h.Vm.IsReading).IsFalse();
+            await Assert.That(await h.Vm.RefreshCommand.CanExecute.FirstAsync()).IsTrue();
+            await h.Vm.TeardownAsync();
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
     public async Task The_card_shows_key_title_parts_marks_part_of_blockers_and_the_cycle_note() {
         await RunOnUiAsync(async () => {
             var h = new Harness();
@@ -586,6 +601,17 @@ public class WorkContextViewModelTests {
             await h.PushAsync(Dto(sessionId: null) with { RequesterDisplay = null, Requester = "" });
             await Assert.That(h.Vm.Requester).IsEqualTo("You");
             await Assert.That(h.Vm.RequesterInitial).IsEqualTo("Y");
+            await h.Vm.TeardownAsync();
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task The_requester_initial_keeps_a_surrogate_pair_whole() {
+        await RunOnUiAsync(async () => {
+            var h = new Harness();
+            await h.PushAsync(Dto(sessionId: null) with { RequesterDisplay = "👩 Ada", Requester = "github:1" });
+            await Assert.That(h.Vm.RequesterInitial).IsEqualTo("👩");
             await h.Vm.TeardownAsync();
         });
     }
