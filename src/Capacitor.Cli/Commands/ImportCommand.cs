@@ -268,22 +268,22 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
                 }
 
                 Console.WriteLine($"{Margin}  Loaded              {f.Loaded}");
-                Console.WriteLine($"  Resumed             {f.Resumed}");
-                Console.WriteLine($"  Already loaded      {f.AlreadyLoaded}");
-                if (f.TooShort   > 0) Console.WriteLine($"  Too short           {f.TooShort}");
-                if (f.Excluded   > 0) Console.WriteLine($"  Excluded            {f.Excluded}");
-                if (f.ProbeError > 0) Console.WriteLine($"  Probe errors        {f.ProbeError}");
-                if (f.Errored    > 0) Console.WriteLine($"  Errored             {f.Errored}");
+                Console.WriteLine($"{Margin}  Resumed             {f.Resumed}");
+                Console.WriteLine($"{Margin}  Already loaded      {f.AlreadyLoaded}");
+                if (f.TooShort   > 0) Console.WriteLine($"{Margin}  Too short           {f.TooShort}");
+                if (f.Excluded   > 0) Console.WriteLine($"{Margin}  Excluded            {f.Excluded}");
+                if (f.ProbeError > 0) Console.WriteLine($"{Margin}  Probe errors        {f.ProbeError}");
+                if (f.Errored    > 0) Console.WriteLine($"{Margin}  Errored             {f.Errored}");
 
                 if (f.RanBackground) {
                     if (f.RequestedTitles)
-                        Console.WriteLine($"  Titles              {f.TitlesGenerated} generated, {f.TitlesSkipped} skipped, {f.TitlesFailed} failed");
+                        Console.WriteLine($"{Margin}  Titles              {f.TitlesGenerated} generated, {f.TitlesSkipped} skipped, {f.TitlesFailed} failed");
 
                     if (f.RequestedSummaries)
-                        Console.WriteLine($"  Summaries           {f.SummariesGenerated} generated, {f.SummariesFailed} failed");
+                        Console.WriteLine($"{Margin}  Summaries           {f.SummariesGenerated} generated, {f.SummariesFailed} failed");
                 }
 
-                if (f.Failed > 0) Console.WriteLine($"  {failureNote}");
+                if (f.Failed > 0) Console.WriteLine($"{Margin}  {failureNote}");
             }
         }
 

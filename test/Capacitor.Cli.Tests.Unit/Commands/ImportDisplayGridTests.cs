@@ -180,6 +180,24 @@ public class ImportDisplayGridTests {
         RequestedTitles: requestedTitles
     );
 
+    /// <summary>The completion summary nests with its heading as the plan grid does — the same margin,
+    /// so a redirected nested run does not indent one and leave the other level.</summary>
+    [Test, NotInParallel]
+    [Arguments(false, "  Loaded")]
+    [Arguments(true, "    Loaded")]
+    public async Task the_done_summary_nests_with_its_heading(bool nested, string expected) {
+        using var capture = ConsoleOutput.StartCapture("\n");
+
+        new ImportCommand.ImportDisplay { Tty = false, Nested = nested }.WriteDoneGrid(
+            MakeFinal(loaded: 7));
+
+        var row = capture.GetCapturedOutput()
+                         .Split('\n')
+                         .First(l => l.TrimStart().StartsWith("Loaded", StringComparison.Ordinal));
+
+        await Assert.That(row).StartsWith(expected);
+    }
+
     /// <summary>
     /// The plain-text rows nest by the same step as the headings above them, so a redirected run of a
     /// nested import puts its counts under its section rather than level with it.
