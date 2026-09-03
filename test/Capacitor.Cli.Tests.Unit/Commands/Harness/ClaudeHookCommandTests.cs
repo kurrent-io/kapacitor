@@ -608,6 +608,25 @@ public class ClaudeHookCommandTests {
         await Assert.That(await File.ReadAllTextAsync(files[0])).Contains("\"route\":\"subagent-stop\"");
     }
 
+    /// <summary>"Spooled" promises a replay, so the line may only say so when the append persisted
+    /// something; a spool whose directory cannot be created must be reported as a drop. Redirects the
+    /// process-global Console.Error, so it runs alone.</summary>
+    [Test, NotInParallel]
+    public async Task session_end_whose_spool_write_fails_reports_the_drop_not_a_spool() {
+        using var fx  = new Fixture(Config.Root, HttpStatusCode.Unauthorized);
+        using var tmp = new TempDir();
+        tmp.CreateFile("blocker");
+        var unwritable = new HookSpool(tmp.PathTo("blocker", "spool")); // a directory under a file
+        using var capture = ConsoleOutput.StartErrorCapture("\n");
+
+        await new ClaudeHookCommand(Config.Root, fx.Profiles, new HookClock(TimeProvider.System), Home).HandleCore(
+            fx.Client, AuthStatus.Ok, unwritable, new StringReader(
+                $$"""{"hook_event_name":"SessionEnd","session_id":"{{Sid}}","transcript_path":"/none","cwd":"/tmp"}"""));
+
+        await Assert.That(capture.GetCapturedError()).Contains("session-end dropped");
+        await Assert.That(capture.GetCapturedError()).DoesNotContain("session-end spooled");
+    }
+
     /// <summary>The drain must classify a 401 as the live post does: an entry that hits one on replay
     /// stays spooled and lands once the server accepts the credential again. Otherwise spooling at
     /// the live post only turns a visible loss into a delayed silent one.</summary>

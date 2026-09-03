@@ -212,9 +212,10 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
     /// </summary>
 
     /// <summary>
-    /// One honest line for a degraded-path spool attempt. An unusable URL routes through the shared
-    /// source-aware diagnostic (which names what to fix and never echoes the URL); a budget overrun
-    /// keeps its existing wording.
+    /// One honest line for a spool attempt, on the degraded path or after a failed live POST:
+    /// "spooled" promises a replay, so it is said only when the append persisted something. An
+    /// unusable URL routes through the shared source-aware diagnostic (which names what to fix and
+    /// never echoes the URL); a budget overrun keeps its existing wording.
     /// </summary>
     async Task ReportSpoolAsync(bool spooled, string route, string key, string reason, bool unusableUrl) {
         var disposition = spooled
@@ -230,6 +231,10 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
 
         await Console.Error.WriteLineAsync($"[kcap] {disposition} ({reason})");
     }
+
+    // Why a bounded live POST left its payload to the spool: the status it got, or no response at all.
+    static string FailureReason(int statusCode) =>
+        statusCode == 0 ? "no response within the hook budget" : $"HTTP {statusCode}";
 
     internal async Task<bool> ShouldSuppressCaptureAsync(
             string? canonicalSessionId, string body, string? command, Profile? activeProfile, HookBudget budget) {
@@ -658,7 +663,10 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
                 var code      = resp is null ? 0 : (int)resp.StatusCode;
                 var retryable = resp is null || HookSpool.IsRetryable(code);
                 resp?.Dispose();
-                if (retryable && sessionId is not null) spool.Append(sessionId, "session-start", body);
+                if (retryable && sessionId is not null) {
+                    await ReportSpoolAsync(spool.Append(sessionId, "session-start", body),
+                                           "session-start", sessionId, FailureReason(code), unusableUrl: false);
+                }
 
                 // The envelope below is built only from a 2xx body, so this is the arm's only
                 // stdout write — without it the start event is dropped in silence.
@@ -780,12 +788,13 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
             } catch { resp = null; }
 
             if (resp is null || !resp.IsSuccessStatusCode) {
-                var retryable = resp is null || HookSpool.IsRetryable((int)resp.StatusCode);
+                var code      = resp is null ? 0 : (int)resp.StatusCode;
+                var retryable = resp is null || HookSpool.IsRetryable(code);
                 resp?.Dispose();
                 if (retryable) {
                     if (sessionId is not null) {
-                        spool.Append(sessionId, "session-end", body);
-                        await Console.Error.WriteLineAsync($"[kcap] session-end spooled; will retry on the next kcap hook ({sessionId})");
+                        await ReportSpoolAsync(spool.Append(sessionId, "session-end", body),
+                                               "session-end", sessionId, FailureReason(code), unusableUrl: false);
                     } else {
                         await Console.Error.WriteLineAsync("[kcap] session-end transient failure but session_id missing — cannot spool; event dropped");
                     }
@@ -832,11 +841,12 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
                 } catch { resp = null; }
 
                 if (resp is null || !resp.IsSuccessStatusCode) {
-                    var retryable = resp is null || HookSpool.IsRetryable((int)resp.StatusCode);
+                    var code      = resp is null ? 0 : (int)resp.StatusCode;
+                    var retryable = resp is null || HookSpool.IsRetryable(code);
                     resp?.Dispose();
                     if (retryable) {
-                        spool.Append(sessionId, "subagent-stop", body);
-                        await Console.Error.WriteLineAsync($"[kcap] subagent-stop spooled; will retry on the next kcap hook ({sessionId}/{agentId})");
+                        await ReportSpoolAsync(spool.Append(sessionId, "subagent-stop", body),
+                                               "subagent-stop", $"{sessionId}/{agentId}", FailureReason(code), unusableUrl: false);
                     }
                     return 0;
                 }
