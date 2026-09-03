@@ -394,6 +394,7 @@ public class AgentStatusSnapshotTests {
             var byId = fx.Orchestrator.SnapshotAgentsForStatus().ToDictionary(a => a.Id);
 
             await Assert.That(byId["blank-branch"].Branch).IsNull();
+            await Assert.That(JsonSerializer.Serialize(byId["blank-branch"], StatusIpcJsonContext.Default.AgentStatusDto)).Contains("\"branch\":null");
             await Assert.That(byId["real-branch"].Branch).IsEqualTo("feature/sidebar");
             var json = JsonSerializer.Serialize(byId["real-branch"], StatusIpcJsonContext.Default.AgentStatusDto);
             await Assert.That(json).Contains("\"branch\":\"feature/sidebar\"");
