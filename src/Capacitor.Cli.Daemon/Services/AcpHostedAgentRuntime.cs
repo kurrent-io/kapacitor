@@ -465,6 +465,11 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     /// other policy.</summary>
     readonly IReadOnlySet<string>? _admittedToolIds;
 
+    /// <summary>The approval policy this launch is judged against. Held beyond the interaction
+    /// bridge because a degraded one owes the user a transcript note: the daemon log that records
+    /// the same fact is not somewhere the person watching the session can see.</summary>
+    readonly PolicySnapshot? _policySnapshot;
+
     int _sawFirstUpdate;
 
     /// <summary>Completes when the first turn ends, however it ends — the other way to disarm the
@@ -626,6 +631,7 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
             string?                                                                         policyCwd = null
         ) {
         _admittedToolIds = admittedToolIds;
+        _policySnapshot  = policySnapshot;
         _firstOutputDeadline = firstOutputDeadline;
         _isReviewFlow        = isReviewFlow;
         _mcpSurfaceMonitor = mcpSurfaceMonitor;
@@ -1053,6 +1059,12 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
         // the selector. Emitted before the initial turn is enqueued, so it precedes that turn's output.
         if (modelOwedAnExplanation is { Length: > 0 } owed && _resolvedModel is null)
             EmitModelFallbackNote(owed);
+
+        // Same lane as every other envelope, and emitted before the opening turn: a degradation the
+        // user only learns about after the agent has acted on the weakened policy is a disclosure
+        // that arrived too late to be one.
+        if (_policySnapshot is { Degraded: true, Degradations.Count: > 0 } degraded)
+            EmitPolicyDegradedNote(degraded.Degradations[0]);
 
         // The session is established (initialize + session/new both completed) — the caller
         // (orchestrator) can now treat this agent as live. Enqueue the initial turn without
@@ -2513,6 +2525,16 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
             Seq: 0,
             Kind: AcpEventKind.SystemNote,
             Text: $"{_vendor} could not apply the model '{requestedModel}'; this session is running {_vendor}'s default model instead.",
+            TimestampIso: NowIso()));
+
+    /// <summary>Discloses a weakened approval policy where the session is actually watched. Worded
+    /// as the CLI hook's session-start notice is, minus its <c>[kcap]</c> prefix — a transcript note
+    /// already reads as the daemon's own voice.</summary>
+    void EmitPolicyDegradedNote(string firstDegradation) =>
+        EmitEnvelope(new AcpEventEnvelope(
+            Seq: 0,
+            Kind: AcpEventKind.SystemNote,
+            Text: $"approval policy degraded: {firstDegradation}",
             TimestampIso: NowIso()));
 
     /// <summary>The §8 surfacing envelope — emitted after commit and settlement, before reopen,
