@@ -8,4 +8,7 @@ public partial class WorkContextView : UserControl {
     public WorkContextView() {
         InitializeComponent();
     }
+
+    void OnHeaderPointerPressed(object? sender, Avalonia.Input.PointerPressedEventArgs e) =>
+        WindowChrome.BeginDrag(this, e);
 }

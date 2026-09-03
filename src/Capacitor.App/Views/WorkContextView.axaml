@@ -58,8 +58,9 @@
         <ScrollViewer VerticalScrollBarVisibility="Auto">
             <StackPanel Margin="16,18,16,18" Spacing="0">
 
-                <!-- Header: eyebrow, the stale dot, Refresh. -->
-                <DockPanel>
+                <!-- Header: eyebrow, the stale dot, Refresh. Also the pane's drag strip, like the
+                     workspace header on the other side of the split (see WindowChrome). -->
+                <DockPanel Background="Transparent" PointerPressed="OnHeaderPointerPressed">
                     <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="8">
                         <Ellipse x:Name="StaleDot" Width="6" Height="6" Fill="{StaticResource KcapWarningBrush}"
                                  IsVisible="{Binding IsStale}" ToolTip.Tip="Last refresh failed; showing the previous result" />

@@ -335,9 +335,10 @@ public partial class App : Application {
         // placeholder only — TerminalControl resizes its model to the real pane the moment it is
         // attached to the visual tree (WorkspaceView's own header comment).
         var attachFactory = CoreTerminalAttachClient.Factory(() => _daemonStore.SocketPath(service.DaemonName));
+        Action requestSignIn = () => OpenSignInDialog(profiles, notifier);
         WorkspaceViewModel BuildWorkspace(string agentId) => new(
             agentId, service, actions, attachFactory, () => new XtermTerminalSurface(80, 24, PtyDumpPath), TimeProvider.System, opener, permissions,
-            workContext, requestSignIn: () => OpenSignInDialog(profiles, notifier), signInCompleted: serverClients.SignInCompleted);
+            workContext, requestSignIn: requestSignIn, signInCompleted: serverClients.SignInCompleted);
 
         _coordinator = new MainWindowCoordinator(
             () => BuildAndShowMainWindow(
@@ -345,7 +346,7 @@ public partial class App : Application {
                 lifecycleStatus, launch, _navigation, _workspaceTeardown.Track, BuildWorkspace,
                 // The tenant slug the rail footer shows — profiles are named after it at sign-in.
                 tenantName: profiles?.Resolution?.ProfileName, agentsWithPending: permissions.AgentsWithPending,
-                requestSignIn: () => OpenSignInDialog(profiles, notifier)),
+                requestSignIn: requestSignIn),
             // Both close paths release the workspace: hide-to-tray keeps the window (and its
             // attach) alive, a real close discards the window the next Show() would rebuild.
             releaseWorkspace: window => (window.DataContext as MainWindowViewModel)?.CloseWorkspace());
@@ -419,8 +420,10 @@ public partial class App : Application {
     async Task FinishSignInAsync(ReauthGraph graph) {
         try {
             await graph.CloseAsync(CancellationToken.None);
-            if (graph.SignIn.Satisfied) _home?.NotifySignInCompleted();
-            if (graph.SignIn.Satisfied) _serverClients?.NotifySignInCompleted();
+            if (graph.SignIn.Satisfied) {
+                _home?.NotifySignInCompleted();
+                _serverClients?.NotifySignInCompleted();
+            }
         } catch (Exception ex) {
             Console.Error.WriteLine($"kcap: sign-in dialog teardown failed: {ex.Message}");
         }
