@@ -66,12 +66,8 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
         /// </summary>
         void Heading(string title, string colour) {
             if (Tty) {
-                if (Nested) {
-                    AnsiConsole.WriteLine();
-                    AnsiConsole.MarkupLine($"  [dim]{Markup.Escape(title)}[/]");
-                } else {
-                    AnsiConsole.Write(new Rule($"[{colour}]{Markup.Escape(title)}[/]").LeftJustified());
-                }
+                if (Nested) AnsiConsole.MarkupLine($"  [dim]{Markup.Escape(title)}[/]");
+                else AnsiConsole.Write(new Rule($"[{colour}]{Markup.Escape(title)}[/]").LeftJustified());
             } else {
                 Console.WriteLine();
                 Console.WriteLine(Nested ? $"  -- {title} --" : $"== {title} ==");

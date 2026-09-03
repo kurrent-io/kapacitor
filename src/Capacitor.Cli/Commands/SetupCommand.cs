@@ -74,7 +74,6 @@ sealed class SpectreFirstRunFlowProgress(IKeyWatcher? keys = null) : IFirstRunFl
     public void Opening(string setupUrl) {
         AnsiConsole.MarkupLine(SetupAuthProgress.Indent("Opening your browser to finish setup."));
         AnsiConsole.MarkupLine(SetupAuthProgress.Indent($"[dim]If it didn't open:[/]  {Markup.Escape(setupUrl)}"));
-        AnsiConsole.WriteLine();
 
         Refresh();
     }
