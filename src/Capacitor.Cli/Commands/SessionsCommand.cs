@@ -21,7 +21,8 @@ class SessionsCommand(ConfigRoot config, ProfileContext profiles) {
         string label;
 
         if (options.Repo is null) {
-            var repo = await RepositoryDetection.DetectRepositoryAsync(config, Directory.GetCurrentDirectory());
+            var repo = await RepositoryDetection.DetectRepositoryAsync(
+                config, Directory.GetCurrentDirectory(), detectPullRequest: false);
 
             if (repo?.Owner is null || repo.RepoName is null) {
                 await Console.Error.WriteLineAsync("Not in a git repository with a remote origin.");
