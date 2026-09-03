@@ -27,10 +27,14 @@ public sealed record WorkItemTopologyPartDto {
 /// none|cyclic|indeterminate. <see cref="Item"/> is nullable on the wire. There is no completion
 /// figure: the server does not compute one.
 public sealed record WorkItemTopologyDto {
-    [JsonPropertyName("parts")]      public List<WorkItemTopologyPartDto> Parts     { get; init; } = [];
+    List<WorkItemTopologyPartDto> _parts = [];
+    List<WorkItemRefDto> _blocks = [];
+    List<WorkItemRefDto> _blockedBy = [];
+
+    [JsonPropertyName("parts")]      public List<WorkItemTopologyPartDto> Parts     { get => _parts; init => _parts = value ?? []; }
     [JsonPropertyName("part_of")]    public WorkItemRefDto?               PartOf    { get; init; }
-    [JsonPropertyName("blocks")]     public List<WorkItemRefDto>          Blocks    { get; init; } = [];
-    [JsonPropertyName("blocked_by")] public List<WorkItemRefDto>          BlockedBy { get; init; } = [];
+    [JsonPropertyName("blocks")]     public List<WorkItemRefDto>          Blocks    { get => _blocks; init => _blocks = value ?? []; }
+    [JsonPropertyName("blocked_by")] public List<WorkItemRefDto>          BlockedBy { get => _blockedBy; init => _blockedBy = value ?? []; }
     [JsonPropertyName("cycle")]      public string                        Cycle     { get; init; } = "none";
     [JsonPropertyName("item")]       public WorkItemRefDto?               Item      { get; init; }
 }
@@ -56,6 +60,9 @@ public sealed record SessionPullRequestDto {
 /// The subset of <c>GET /api/sessions/{id}/summary</c> the sidebar reads; every other member of
 /// the server's record is ignored on deserialization.
 public sealed record SessionSummaryDto {
+    List<SessionRepositoryDto> _repositories = [];
+    List<SessionPullRequestDto> _pullRequests = [];
+
     [JsonPropertyName("session_id")]    public required string                 SessionId    { get; init; }
     [JsonPropertyName("title")]         public string?                         Title        { get; init; }
     [JsonPropertyName("vendor")]        public string?                         Vendor       { get; init; }
@@ -66,8 +73,8 @@ public sealed record SessionSummaryDto {
     [JsonPropertyName("pr_number")]     public int?                            PrNumber     { get; init; }
     [JsonPropertyName("pr_url")]        public string?                         PrUrl        { get; init; }
     [JsonPropertyName("pr_title")]      public string?                         PrTitle      { get; init; }
-    [JsonPropertyName("repositories")]  public List<SessionRepositoryDto>      Repositories { get; init; } = [];
-    [JsonPropertyName("pull_requests")] public List<SessionPullRequestDto>     PullRequests { get; init; } = [];
+    [JsonPropertyName("repositories")]  public List<SessionRepositoryDto>      Repositories { get => _repositories; init => _repositories = value ?? []; }
+    [JsonPropertyName("pull_requests")] public List<SessionPullRequestDto>     PullRequests { get => _pullRequests; init => _pullRequests = value ?? []; }
 }
 
 /// The 4xx body every <c>/api/work-items*</c> route shares; <c>work_items_not_in_plan</c> is the plan gate.

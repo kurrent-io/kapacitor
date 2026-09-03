@@ -48,6 +48,21 @@ public class WorkContextDtoTests {
     }
 
     [Test]
+    public async Task A_null_list_member_deserializes_to_empty_rather_than_null() {
+        const string topologyBody = """{"parts":null,"part_of":null,"blocks":null,"blocked_by":null,"cycle":"none","item":null}""";
+        const string summaryBody = """{"session_id":"s1","repositories":null,"pull_requests":null}""";
+
+        var topology = JsonSerializer.Deserialize(topologyBody, CapacitorJsonContext.Default.WorkItemTopologyDto)!;
+        var summary = JsonSerializer.Deserialize(summaryBody, CapacitorJsonContext.Default.SessionSummaryDto)!;
+
+        await Assert.That(topology.Parts).IsEmpty();
+        await Assert.That(topology.Blocks).IsEmpty();
+        await Assert.That(topology.BlockedBy).IsEmpty();
+        await Assert.That(summary.Repositories).IsEmpty();
+        await Assert.That(summary.PullRequests).IsEmpty();
+    }
+
+    [Test]
     public async Task Error_body_parses() {
         var error = JsonSerializer.Deserialize("""{"error":"work_items_not_in_plan","message":"Upgrade the plan."}""", CapacitorJsonContext.Default.WorkItemErrorDto)!;
 
