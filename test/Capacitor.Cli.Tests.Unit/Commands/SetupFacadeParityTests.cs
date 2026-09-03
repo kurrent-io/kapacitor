@@ -403,7 +403,10 @@ public class SetupFacadeParityTests {
     /// add. Every other provider's discovery reports a tenant count and no identity, which is why the
     /// carve-out cannot simply drop the line for everyone.
     /// </summary>
+    // AnsiConsole.Console is process-global, so this serializes against the whole assembly as its
+    // console-swapping siblings above do — the class's keys do not cover it.
     [Test]
+    [NotInParallel]
     [Arguments(AuthProvider.WorkOS, false)]
     [Arguments(AuthProvider.GitHubApp, true)]
     public async Task A_completed_discovery_names_the_identity_only_where_discovery_did_not(

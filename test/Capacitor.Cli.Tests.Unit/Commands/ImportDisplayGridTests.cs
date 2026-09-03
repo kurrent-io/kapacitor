@@ -181,6 +181,27 @@ public class ImportDisplayGridTests {
     );
 
     /// <summary>
+    /// The plain-text rows nest by the same step as the headings above them, so a redirected run of a
+    /// nested import puts its counts under its section rather than level with it.
+    /// </summary>
+    [Test, NotInParallel]
+    [Arguments(false, "  New")]
+    [Arguments(true, "    New")]
+    public async Task plain_rows_nest_with_their_heading(bool nested, string expected) {
+        using var capture = ConsoleOutput.StartCapture("\n");
+
+        new ImportCommand.ImportDisplay { Tty = false, Nested = nested }.WritePlanGrid(
+            new(New: 5, Partial: 0, AlreadyLoaded: 0, TooShort: 0, Excluded: 0, ProbeError: 0),
+            bySource: null);
+
+        var row = capture.GetCapturedOutput()
+                         .Split('\n')
+                         .First(l => l.TrimStart().StartsWith("New", StringComparison.Ordinal));
+
+        await Assert.That(row).StartsWith(expected);
+    }
+
+    /// <summary>
     /// Column 0 belongs to headings, so a line the run writes for itself is indented under the one it
     /// belongs to — and one step deeper again where the whole run is nested inside a setup step.
     /// </summary>
@@ -197,9 +218,8 @@ public class ImportDisplayGridTests {
     }
 
     /// <summary>
-    /// A grid ignores leading spaces, so the counts used to draw against the margin while the prose
-    /// beside them was indented. Padding is what puts them on the same line as everything else in the
-    /// section.
+    /// A grid ignores leading spaces, so padding is the only thing that can put the counts under the
+    /// heading they belong to rather than against the margin the prose beside them is indented from.
     /// </summary>
     [Test, NotInParallel]
     public async Task the_counts_line_up_with_the_prose_around_them() {

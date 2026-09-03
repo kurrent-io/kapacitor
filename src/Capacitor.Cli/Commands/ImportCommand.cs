@@ -50,6 +50,10 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
 
         string Indented => new(' ', Detail);
 
+        /// <summary>What a plain-text row adds to the indent already in its literal, so the two forms
+        /// nest by the same step.</summary>
+        string Margin => Nested ? "  " : "";
+
         public void Line(string plain, string? markup = null) {
             if (Quiet) return;
 
@@ -138,24 +142,24 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
 
                     foreach (var kv in bySource.OrderBy(x => x.Key, StringComparer.Ordinal)) {
                         var sc = kv.Value;
-                        Console.WriteLine($"  [{kv.Key}]");
-                        Console.WriteLine($"    New               {sc.New}");
-                        Console.WriteLine($"    Resumable         {sc.Partial}");
-                        Console.WriteLine($"    Already loaded    {sc.AlreadyLoaded}");
-                        Console.WriteLine($"    Too short         {sc.TooShort}");
-                        Console.WriteLine($"    Excluded          {sc.Excluded}");
-                        if (sc.ProbeError > 0) Console.WriteLine($"    Probe errors      {sc.ProbeError}");
+                        Console.WriteLine($"{Margin}  [{kv.Key}]");
+                        Console.WriteLine($"{Margin}    New               {sc.New}");
+                        Console.WriteLine($"{Margin}    Resumable         {sc.Partial}");
+                        Console.WriteLine($"{Margin}    Already loaded    {sc.AlreadyLoaded}");
+                        Console.WriteLine($"{Margin}    Too short         {sc.TooShort}");
+                        Console.WriteLine($"{Margin}    Excluded          {sc.Excluded}");
+                        if (sc.ProbeError > 0) Console.WriteLine($"{Margin}    Probe errors      {sc.ProbeError}");
                     }
 
                     Console.WriteLine();
                 }
 
-                Console.WriteLine($"  New               {c.New}");
-                Console.WriteLine($"  Resumable         {c.Partial}");
-                Console.WriteLine($"  Already loaded    {c.AlreadyLoaded}");
-                Console.WriteLine($"  Too short         {c.TooShort}");
-                Console.WriteLine($"  Excluded          {c.Excluded}");
-                if (c.ProbeError > 0) Console.WriteLine($"  Probe errors      {c.ProbeError}");
+                Console.WriteLine($"{Margin}  New               {c.New}");
+                Console.WriteLine($"{Margin}  Resumable         {c.Partial}");
+                Console.WriteLine($"{Margin}  Already loaded    {c.AlreadyLoaded}");
+                Console.WriteLine($"{Margin}  Too short         {c.TooShort}");
+                Console.WriteLine($"{Margin}  Excluded          {c.Excluded}");
+                if (c.ProbeError > 0) Console.WriteLine($"{Margin}  Probe errors      {c.ProbeError}");
             }
         }
 
@@ -243,27 +247,27 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
                 if (f.Failed > 0) AnsiConsole.MarkupLine($"{Indented}[dim]{failureNote}[/]");
             } else {
                 Heading("Done", "green");
-                Console.WriteLine($"  {f.Imported} imported · {f.Skipped} skipped · {f.Failed} failed");
+                Console.WriteLine($"{Margin}  {f.Imported} imported · {f.Skipped} skipped · {f.Failed} failed");
 
                 if (bySource is { Count: > 1 }) {
                     Heading("By source", "green");
 
                     foreach (var kv in bySource.OrderBy(x => x.Key, StringComparer.Ordinal)) {
                         var sf = kv.Value;
-                        Console.WriteLine($"  [{kv.Key}]");
-                        Console.WriteLine($"    Loaded              {sf.Loaded}");
-                        Console.WriteLine($"    Resumed             {sf.Resumed}");
-                        Console.WriteLine($"    Already loaded      {sf.AlreadyLoaded}");
-                        if (sf.TooShort   > 0) Console.WriteLine($"    Too short           {sf.TooShort}");
-                        if (sf.Excluded   > 0) Console.WriteLine($"    Excluded            {sf.Excluded}");
-                        if (sf.ProbeError > 0) Console.WriteLine($"    Probe errors        {sf.ProbeError}");
-                        if (sf.Errored    > 0) Console.WriteLine($"    Errored             {sf.Errored}");
+                        Console.WriteLine($"{Margin}  [{kv.Key}]");
+                        Console.WriteLine($"{Margin}    Loaded              {sf.Loaded}");
+                        Console.WriteLine($"{Margin}    Resumed             {sf.Resumed}");
+                        Console.WriteLine($"{Margin}    Already loaded      {sf.AlreadyLoaded}");
+                        if (sf.TooShort   > 0) Console.WriteLine($"{Margin}    Too short           {sf.TooShort}");
+                        if (sf.Excluded   > 0) Console.WriteLine($"{Margin}    Excluded            {sf.Excluded}");
+                        if (sf.ProbeError > 0) Console.WriteLine($"{Margin}    Probe errors        {sf.ProbeError}");
+                        if (sf.Errored    > 0) Console.WriteLine($"{Margin}    Errored             {sf.Errored}");
                     }
 
                     Console.WriteLine();
                 }
 
-                Console.WriteLine($"  Loaded              {f.Loaded}");
+                Console.WriteLine($"{Margin}  Loaded              {f.Loaded}");
                 Console.WriteLine($"  Resumed             {f.Resumed}");
                 Console.WriteLine($"  Already loaded      {f.AlreadyLoaded}");
                 if (f.TooShort   > 0) Console.WriteLine($"  Too short           {f.TooShort}");
