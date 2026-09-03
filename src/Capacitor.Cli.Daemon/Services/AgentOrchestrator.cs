@@ -2060,6 +2060,15 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 LogPolicySnapshotBuildFailed(ex, agentId);
             }
 
+            // The documents this run is judged against, enqueued BEFORE the runtime starts: the ACP
+            // runtime queues its opening prompt inside StartAsync, so an immediate
+            // session/request_permission would otherwise put a decision event ahead of the snapshot
+            // it names, and the event lane preserves insertion order. Keyed by the agent id — no
+            // vendor session id exists yet.
+            if (policySnapshot is { IsEmpty: false } uploadable) {
+                _ = _server.AppendAgentRunEventAsync(agentId, PolicyWire.ToUpload(agentId, uploadable));
+            }
+
             if (work == WorkLocation.OwnedWorktree) {
                 // Download attachments into worktree (best-effort)
                 if (attachmentIds is { Length: > 0 }) {
@@ -4085,14 +4094,6 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             agent.Id,
             new AgentRunStarted(agent.Prompt, agent.Model, agent.Effort, agent.RepoPath, agent.Worktree.Path, agent.Vendor)
         );
-
-        // The hosted counterpart of the CLI's snapshot upload: the documents this run is judged
-        // against, so a later decision event can be read against them. Keyed by the vendor session
-        // id once one exists, falling back to the agent id — the run has no other identity yet.
-        if (agent.PolicySnapshot is { IsEmpty: false } snapshot) {
-            _ = _server.AppendAgentRunEventAsync(
-                agent.Id, PolicyWire.ToUpload(agent.SessionId ?? agent.Id, snapshot));
-        }
 
         // Persist repo path and notify server so the launch dialog updates.
         _ = Task.Run(async () => {

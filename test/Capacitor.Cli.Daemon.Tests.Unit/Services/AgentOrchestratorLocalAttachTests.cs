@@ -237,39 +237,23 @@ public class AgentOrchestratorLocalAttachTests {
         await Assert.That(privServer.Calls.Count).IsEqualTo(0);
     }
 
-    /// Registration uploads the launch-bound policy documents alongside AgentRunStarted, so a later
-    /// decision event can be read against them — but only when there is something to say. Both
-    /// appends complete synchronously inside RegisterAgentAsync (the fake returns a completed task
-    /// without awaiting), so unlike the repo-path Task.Run above these assertions are not racy.
+    /// Registration is no longer where the launch-bound policy documents go up — the launch enqueues
+    /// them before the runtime starts, so an immediate permission decision cannot precede them.
+    /// A snapshot on the instance must therefore add nothing here.
     [Test]
-    public async Task RegisterAgentAsync_uploads_a_non_empty_policy_snapshot_and_nothing_for_an_empty_one() {
-        var snap = new PolicySnapshot("snap-1", [], true, ["repo policy unreadable"]);
-
+    public async Task RegisterAgentAsync_does_not_upload_the_policy_snapshot() {
         var server = new TripwireServerConnection();
         await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
-        await orch.RegisterAgentForTestAsync(Agent("pub-1", snap));
 
-        var upload = server.RunEvents.OfType<PolicySnapshotUploadV1>().Single();
-        await Assert.That(upload.SnapshotId).IsEqualTo("snap-1");
-        await Assert.That(upload.Degraded).IsTrue();
-        // No session id has been discovered this early, so the run is keyed by the agent id.
-        await Assert.That(upload.SessionId).IsEqualTo("pub-1");
-
-        // An agent that carries no snapshot, and one whose snapshot says nothing at all, both leave
-        // the server with only the AgentRunStarted append.
-        foreach (var (id, empty) in new (string, PolicySnapshot?)[] { ("none-1", null), ("empty-1", PolicySnapshot.Empty) }) {
-            var quiet = new TripwireServerConnection();
-            await using var quietOrch = AgentOrchestratorHarness.BuildOrchestrator(quiet, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
-            await quietOrch.RegisterAgentForTestAsync(Agent(id, empty));
-
-            await Assert.That(quiet.RunEvents.OfType<PolicySnapshotUploadV1>()).IsEmpty();
-            await Assert.That(quiet.RunEvents.OfType<AgentRunStarted>().Count()).IsEqualTo(1);
-        }
-
-        static AgentInstance Agent(string id, PolicySnapshot? policy) =>
-            new(id, null, "", null, "/r", "claude",
+        await orch.RegisterAgentForTestAsync(
+            new AgentInstance("pub-1", null, "", null, "/r", "claude",
                 new PtyHostedAgentRuntime("claude", new StubPtyProcess()),
-                new WorktreeInfo("/r", "", "/r"), new CancellationTokenSource()) { PolicySnapshot = policy };
+                new WorktreeInfo("/r", "", "/r"), new CancellationTokenSource()) {
+                PolicySnapshot = new PolicySnapshot("snap-1", [], true, ["repo policy unreadable"])
+            });
+
+        await Assert.That(server.RunEvents.OfType<PolicySnapshotUploadV1>()).IsEmpty();
+        await Assert.That(server.RunEvents.OfType<AgentRunStarted>().Count()).IsEqualTo(1);
     }
 
     [Test]
