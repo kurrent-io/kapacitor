@@ -139,9 +139,10 @@ server rejects it, or if the token was issued by a different server than the pro
 usable offline. If the server rejects your token while a session is running, Claude Code's hook
 says so as an in-session notice — `[kcap] The server rejected your credentials (HTTP 401) —
 session recording is paused. Run 'kcap login' to resume.` — instead of surfacing an opaque hook
-error, so you no longer have to run `kcap whoami` to work out why recording stopped. Other agents'
-hooks print the same advice to stderr instead of an in-session notice, since not every agent
-surfaces hook output in its UI. `kcap status` prints its own
+error, so you no longer have to run `kcap whoami` to work out why recording stopped. The lifecycle
+event that hit the rejection is not lost: it is spooled like an outage and re-sent on the next hook
+once you have logged in. Other agents' hooks print the same advice to stderr instead of an
+in-session notice, since not every agent surfaces hook output in its UI. `kcap status` prints its own
 **Version** line — the installed CLI version, with an inline `(update available: …)` annotation
 when a newer one is out (capped at your connected server's version, marked `(…, server version)` when
 your tenant trails npm) — see [`kcap update`](#other-commands) for the full opt-out story.
@@ -244,7 +245,7 @@ The `kcap mcp analytics` stdio server lets agents answer analytics questions abo
 Once set up, Capacitor runs silently in the background. Every Claude Code (and Codex CLI, if you installed those hooks) session is captured automatically:
 
 - **Session lifecycle** — start, end, interruptions, context compaction
-- **Durable lifecycle delivery** — if the server is briefly unreachable when a `SessionStart`/`SessionEnd` hook (or a per-subagent `SubagentStop` carrying an `agent_id`) fires (for example during a deploy), the event is spooled to `~/.config/kcap/spool/` and automatically re-sent on the next hook, so sessions don't get stuck "active", lose their start record, or leave subagents stuck "running". No action needed; stale spool entries are reaped after 30 days.
+- **Durable lifecycle delivery** — if the server is briefly unreachable when a `SessionStart`/`SessionEnd` hook (or a per-subagent `SubagentStop` carrying an `agent_id`) fires (for example during a deploy), or rejects your credentials (HTTP 401), the event is spooled to `~/.config/kcap/spool/` and automatically re-sent on the next hook — after `kcap login`, for a rejected credential — so sessions don't get stuck "active", lose their start record, or leave subagents stuck "running". No action needed beyond logging back in; stale spool entries are reaped after 30 days.
 - **Transcript data** — streamed in real time via a background watcher process over SignalR
 - **Subagent activity** — full tree of spawned subagents with their own transcripts
 - **Tool usage** — every tool call with timing and results

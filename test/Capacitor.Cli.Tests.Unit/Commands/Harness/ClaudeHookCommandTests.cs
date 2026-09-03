@@ -742,6 +742,88 @@ public class ClaudeHookCommandTests {
         await Assert.That(notice!["systemMessage"]!.GetValue<string>()).IsEqualTo(AuthRejectionNotice.RecordingNotice(StoredCredentialState.LooksValid));
     }
 
+    // ── A 401 spools ────────────────────────────────────────────────────────────────────────
+    // A rejected credential is repaired by `kcap login`, so the lifecycle event that hit it is kept
+    // for the drain that follows the login rather than lost with the turn. A dropped session-start
+    // leaves the session with no server-side record; a dropped session-end leaves it stuck "Active".
+
+    [Test]
+    public async Task session_start_on_401_is_spooled_for_replay_after_login() {
+        using var fx = new Fixture(Config.Root, HttpStatusCode.Unauthorized);
+        var stdout = new StringWriter { NewLine = "\n" };
+
+        await new ClaudeHookCommand(Config.Root, Resolutions.At("http://localhost", Config.Root), new HookClock(TimeProvider.System), Home).HandleCore(
+            fx.Client, AuthStatus.Ok, fx.Spool, new StringReader(
+                $$"""{"hook_event_name":"SessionStart","session_id":"{{Sid}}","cwd":"/tmp"}"""),
+            stdout: stdout);
+
+        var files = fx.SpoolFiles.ToList();
+        await Assert.That(files.Count).IsEqualTo(1);
+        await Assert.That(await File.ReadAllTextAsync(files[0])).Contains("\"route\":\"session-start\"");
+    }
+
+    [Test]
+    public async Task session_end_on_401_is_spooled_for_replay_after_login() {
+        using var fx = new Fixture(Config.Root, HttpStatusCode.Unauthorized);
+        await fx.HandleAsync($$"""{"hook_event_name":"SessionEnd","session_id":"{{Sid}}","transcript_path":"/none","cwd":"/tmp"}""");
+        var files = fx.SpoolFiles.ToList();
+        await Assert.That(files.Count).IsEqualTo(1);
+        await Assert.That(await File.ReadAllTextAsync(files[0])).Contains("\"route\":\"session-end\"");
+    }
+
+    [Test]
+    public async Task subagent_stop_on_401_is_spooled_for_replay_after_login() {
+        using var fx = new Fixture(Config.Root, HttpStatusCode.Unauthorized);
+        await fx.HandleAsync($$"""{"hook_event_name":"SubagentStop","session_id":"{{Sid}}","agent_id":"{{AgentId}}","transcript_path":"/none","cwd":"/tmp"}""");
+        var files = fx.SpoolFiles.ToList();
+        await Assert.That(files.Count).IsEqualTo(1);
+        await Assert.That(await File.ReadAllTextAsync(files[0])).Contains("\"route\":\"subagent-stop\"");
+    }
+
+    /// <summary>"Spooled" promises a replay, so the line may only say so when the append persisted
+    /// something; a spool whose directory cannot be created must be reported as a drop. Redirects the
+    /// process-global Console.Error, so it runs alone.</summary>
+    [Test, NotInParallel]
+    public async Task session_end_whose_spool_write_fails_reports_the_drop_not_a_spool() {
+        using var fx  = new Fixture(Config.Root, HttpStatusCode.Unauthorized);
+        using var tmp = new TempDir();
+        tmp.CreateFile("blocker");
+        var unwritable = new HookSpool(tmp.PathTo("blocker", "spool")); // a directory under a file
+        using var capture = ConsoleOutput.StartErrorCapture("\n");
+
+        await new ClaudeHookCommand(Config.Root, fx.Profiles, new HookClock(TimeProvider.System), Home).HandleCore(
+            fx.Client, AuthStatus.Ok, unwritable, new StringReader(
+                $$"""{"hook_event_name":"SessionEnd","session_id":"{{Sid}}","transcript_path":"/none","cwd":"/tmp"}"""));
+
+        await Assert.That(capture.GetCapturedError()).Contains("session-end dropped");
+        await Assert.That(capture.GetCapturedError()).DoesNotContain("session-end spooled");
+    }
+
+    /// <summary>The drain must classify a 401 as the live post does: an entry that hits one on replay
+    /// stays spooled and lands once the server accepts the credential again. Otherwise spooling at
+    /// the live post only turns a visible loss into a delayed silent one.</summary>
+    [Test]
+    public async Task spooled_entry_that_hits_a_401_on_drain_is_replayed_once_the_server_accepts() {
+        using var rejecting = new Fixture(Config.Root, HttpStatusCode.Unauthorized);
+        using var accepting = new Fixture(Config.Root);
+        rejecting.Spool.Append(Sid, "session-end", $$"""{"session_id":"{{Sid}}"}""");
+        var stdout = new StringWriter { NewLine = "\n" };
+
+        await new ClaudeHookCommand(Config.Root, rejecting.Profiles, new HookClock(TimeProvider.System), Home).HandleCore(
+            rejecting.Client, AuthStatus.Ok, rejecting.Spool, new StringReader(
+                $$"""{"hook_event_name":"Stop","session_id":"{{Sid}}","transcript_path":"/none","cwd":"/tmp"}"""),
+            stdout: stdout);
+        await Assert.That(rejecting.Spool.HasBacklog(Sid)).IsTrue();
+
+        await new ClaudeHookCommand(Config.Root, accepting.Profiles, new HookClock(TimeProvider.System), Home).HandleCore(
+            accepting.Client, AuthStatus.Ok, rejecting.Spool, new StringReader(
+                $$"""{"hook_event_name":"Stop","session_id":"{{Sid}}","transcript_path":"/none","cwd":"/tmp"}"""),
+            stdout: stdout);
+
+        await Assert.That(accepting.RouteOrder).Contains("session-end");
+        await Assert.That(rejecting.Spool.HasBacklog(Sid)).IsFalse();
+    }
+
     [Test]
     public async Task pending_backlog_is_drained_on_next_hook_when_server_up() {
         using var fx = new Fixture(Config.Root); // 200 OK
