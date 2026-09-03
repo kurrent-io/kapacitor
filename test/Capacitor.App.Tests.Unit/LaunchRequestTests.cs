@@ -67,7 +67,21 @@ public class LaunchRequestTests {
     }
 
     [Test]
-    public async Task Wire_keys_are_exactly_the_twelve_hub_fields() {
+    public async Task Permission_mode_is_carried_when_chosen() {
+        var json = Payload(new LaunchRequest("kcap-dev", "/repo", "claude", "go", PermissionMode: "acceptEdits"));
+        await Assert.That(json.GetProperty("permission_mode").GetString()).IsEqualTo("acceptEdits");
+    }
+
+    /// An absent mode adds no key: the payload an older server receives is exactly the one it
+    /// received before the field existed.
+    [Test]
+    public async Task Blank_permission_mode_is_omitted() {
+        var json = Payload(new LaunchRequest("kcap-dev", "/repo", "claude", "go", PermissionMode: "  "));
+        await Assert.That(json.TryGetProperty("permission_mode", out _)).IsFalse();
+    }
+
+    [Test]
+    public async Task Wire_keys_are_exactly_the_twelve_hub_fields_when_no_mode_is_chosen() {
         var json = Payload(new LaunchRequest("kcap-dev", "/repo", "claude", "go"));
         var keys = json.EnumerateObject().Select(p => p.Name).ToArray();
 
@@ -77,6 +91,18 @@ public class LaunchRequestTests {
         await Assert.That(keys).IsEquivalentTo([
             "daemon_name", "prompt", "model", "effort", "repo_path", "tools",
             "attachment_ids", "visibility", "grants", "vendor", "codex_posture", "acp_permission_preset"
+        ]);
+    }
+
+    [Test]
+    public async Task A_chosen_mode_adds_the_permission_mode_key() {
+        var json = Payload(new LaunchRequest("kcap-dev", "/repo", "claude", "go", PermissionMode: "auto"));
+        var keys = json.EnumerateObject().Select(p => p.Name).ToArray();
+
+        await Assert.That(keys).IsEquivalentTo([
+            "daemon_name", "prompt", "model", "effort", "repo_path", "tools",
+            "attachment_ids", "visibility", "grants", "vendor", "codex_posture", "acp_permission_preset",
+            "permission_mode"
         ]);
     }
 }

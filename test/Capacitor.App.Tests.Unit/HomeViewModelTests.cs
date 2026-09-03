@@ -31,10 +31,14 @@ public class HomeViewModelTests {
     /// developer's own ~/.config/kcap/repos.json, which no test may touch.
     static Func<Task<string[]>> Known(params string[] paths) => () => Task.FromResult(paths);
 
+    /// Primed connected: StartCommand's canExecute gates on daemon + server both being up, so a
+    /// fixture that launches must model the connected steady state.
     static HomeViewModel Build(out RecordingLaunchClient launch, out AppStateStore store, string statePath) {
         launch = new RecordingLaunchClient();
         store = new AppStateStore(statePath);
-        return new HomeViewModel(new FakeDaemonClientService(), store, launch, Known());
+        var daemon = new FakeDaemonClientService();
+        Connect(daemon);
+        return new HomeViewModel(daemon, store, launch, Known());
     }
 
     /// Repo keys compare the way the filesystem does — so the SAME repository reached under
@@ -113,24 +117,6 @@ public class HomeViewModelTests {
 
     [Test]
     [NotInParallel("AvaloniaSession")]
-    public async Task Not_remembering_leaves_the_stored_choice_untouched() {
-        await AvaloniaSession.WithImmediateRxScheduler(async () => {
-            using var tmp = TempDir.WithPathTo("app-state.json", out var path);
-            var vm = Build(out _, out var store, path);
-
-            await vm.SelectRepositoryAsync("/repo/a");
-            await vm.ChooseHarnessAsync("codex");
-            vm.RememberHarness = false;
-            await vm.ChooseHarnessAsync("pi");
-
-            await Assert.That(vm.SelectedVendor).IsEqualTo("pi");
-            var saved = await store.LoadAsync();
-            await Assert.That(saved.HarnessByRepo!["/repo/a"]).IsEqualTo("codex");
-        });
-    }
-
-    [Test]
-    [NotInParallel("AvaloniaSession")]
     public async Task Start_sends_the_selected_repository_and_harness() {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             using var tmp = TempDir.WithPathTo("app-state.json", out var path);
@@ -169,6 +155,45 @@ public class HomeViewModelTests {
 
             await vm.StartCommand.Execute();
             await Assert.That(launch.Last!.Model).IsEqualTo("");
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Permission_mode_defaults_to_manual_which_sends_nothing() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            using var tmp = TempDir.WithPathTo("app-state.json", out var path);
+            var vm = Build(out var launch, out _, path);
+
+            await vm.SelectRepositoryAsync("/repo/a");
+            await Assert.That(vm.SelectedPermissionMode).IsEqualTo(HomeViewModel.DefaultPermissionMode);
+
+            await vm.StartCommand.Execute();
+            await Assert.That(launch.Last!.PermissionMode).IsNull();
+        });
+    }
+
+    /// The mode vocabulary is Claude's, so a choice made under Claude never rides a launch of
+    /// another vendor — but it is kept, not reset, so switching back restores it.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task A_chosen_permission_mode_is_sent_for_claude_only() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            using var tmp = TempDir.WithPathTo("app-state.json", out var path);
+            var vm = Build(out var launch, out _, path);
+
+            await vm.SelectRepositoryAsync("/repo/a");
+            vm.SelectedPermissionMode = "bypassPermissions";
+            await vm.StartCommand.Execute();
+            await Assert.That(launch.Last!.PermissionMode).IsEqualTo("bypassPermissions");
+
+            await vm.ChooseHarnessAsync("codex");
+            await vm.StartCommand.Execute();
+            await Assert.That(launch.Last!.PermissionMode).IsNull();
+
+            await vm.ChooseHarnessAsync("claude");
+            await vm.StartCommand.Execute();
+            await Assert.That(launch.Last!.PermissionMode).IsEqualTo("bypassPermissions");
         });
     }
 
@@ -311,7 +336,6 @@ public class HomeViewModelTests {
             var daemon = new FakeDaemonClientService();
             using var vm = new HomeViewModel(daemon, new AppStateStore(path), new RecordingLaunchClient(), Known());
 
-            vm.RememberHarness = false;
             await vm.SelectRepositoryAsync("/repo/fresh");
 
             var repos = await vm.ListRepositoriesAsync();
@@ -421,6 +445,100 @@ public class HomeViewModelTests {
             await Assert.That(piBefore).IsTrue();
             await Assert.That(vm.Harnesses.Single(h => h.Vendor == "pi").Available).IsFalse();
             await Assert.That(vm.Harnesses.Single(h => h.Vendor == "claude").Available).IsTrue();
+        });
+    }
+
+    static void Connect(FakeDaemonClientService daemon, string connection = "connected") {
+        daemon.SnapshotsSubject.OnNext(FakeDaemonClientService.Snap(connection: connection));
+        daemon.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, null));
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Start_is_disabled_until_daemon_and_server_are_both_connected() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            using var tmp = TempDir.WithPathTo("app-state.json", out var path);
+            var daemon = new FakeDaemonClientService();
+            using var vm = new HomeViewModel(daemon, new AppStateStore(path), new RecordingLaunchClient(), Known());
+            await vm.SelectRepositoryAsync("/repo/a");
+
+            await Assert.That(await vm.StartCommand.CanExecute.FirstAsync()).IsFalse();
+
+            Connect(daemon);
+            await Assert.That(await vm.StartCommand.CanExecute.FirstAsync()).IsTrue();
+
+            daemon.SnapshotsSubject.OnNext(FakeDaemonClientService.Snap(connection: "disconnected"));
+            await Assert.That(await vm.StartCommand.CanExecute.FirstAsync()).IsFalse();
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task A_lost_server_connection_tells_the_user_to_sign_in() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            using var tmp = TempDir.WithPathTo("app-state.json", out var path);
+            var daemon = new FakeDaemonClientService();
+            using var vm = new HomeViewModel(daemon, new AppStateStore(path), new RecordingLaunchClient(), Known());
+
+            Connect(daemon);
+            await Assert.That(vm.ConnectionNotice).IsNull();
+            await Assert.That(vm.SignInVisible).IsFalse();
+
+            daemon.SnapshotsSubject.OnNext(FakeDaemonClientService.Snap(connection: "disconnected"));
+            await Assert.That(vm.ConnectionNotice).IsEqualTo(HomeViewModel.ServerLostNotice);
+            await Assert.That(vm.SignInVisible).IsTrue();
+
+            // Transient by definition — the retry resolves it or lands on "disconnected".
+            daemon.SnapshotsSubject.OnNext(FakeDaemonClientService.Snap(connection: "reconnecting"));
+            await Assert.That(vm.ConnectionNotice).IsEqualTo(HomeViewModel.ConnectingNotice);
+            await Assert.That(vm.SignInVisible).IsFalse();
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task An_unreachable_daemon_is_not_a_sign_in_problem() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            using var tmp = TempDir.WithPathTo("app-state.json", out var path);
+            var daemon = new FakeDaemonClientService();
+            using var vm = new HomeViewModel(daemon, new AppStateStore(path), new RecordingLaunchClient(), Known());
+
+            daemon.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "not running", null));
+
+            await Assert.That(vm.ConnectionNotice).IsEqualTo(HomeViewModel.DaemonDownNotice);
+            await Assert.That(vm.SignInVisible).IsFalse();
+            await Assert.That(await vm.StartCommand.CanExecute.FirstAsync()).IsFalse();
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task An_unauthorized_start_asks_for_sign_in_instead_of_the_raw_error() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            using var tmp = TempDir.WithPathTo("app-state.json", out var path);
+            var daemon = new FakeDaemonClientService();
+            var launch = new RecordingLaunchClient();
+            var signInRequests = 0;
+            using var vm = new HomeViewModel(
+                daemon, new AppStateStore(path), launch, Known(), requestSignIn: () => signInRequests++);
+            Connect(daemon);
+            await vm.SelectRepositoryAsync("/repo/a");
+            launch.Next = new LaunchOutcome(
+                false, null, "Response status code does not indicate success: 401 (Unauthorized).",
+                Unauthorized: true);
+
+            await vm.StartCommand.Execute();
+
+            await Assert.That(vm.StartError).IsNull();
+            await Assert.That(vm.SignInVisible).IsTrue();
+            await Assert.That(vm.ConnectionNotice).IsEqualTo(HomeViewModel.SignInExpiredNotice);
+
+            await vm.SignInCommand.Execute();
+            await Assert.That(signInRequests).IsEqualTo(1);
+
+            vm.NotifySignInCompleted();
+            await Assert.That(vm.SignInVisible).IsFalse();
+            await Assert.That(vm.ConnectionNotice).IsNull();
         });
     }
 

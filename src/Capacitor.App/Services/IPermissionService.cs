@@ -29,6 +29,7 @@ public sealed class PendingPermissionRequest {
     public string ToolName => Dto.ToolName;
     public string? ToolInputJson => Dto.ToolInput?.GetRawText();
     public bool ToolInputOmitted => Dto.ToolInputOmitted;
+    public string? ToolUseId => Dto.ToolUseId;
     public DateTimeOffset RequestedAt { get; }
     public ElicitationQuestions? Questions { get; }
 }

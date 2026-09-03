@@ -8,7 +8,7 @@ namespace Capacitor.Cli.Core.LocalIpc;
 public sealed record PermissionPendingDto(
     string RequestId, string AgentId, string SessionId, string Vendor, string ToolName,
     JsonElement? ToolInput, JsonElement? Suggestions, bool ToolInputOmitted, bool SuggestionsOmitted,
-    string RequestedAt);
+    string RequestedAt, string? ToolUseId = null);
 
 public sealed record PermissionResolveDto(
     string RequestId, string Decision, JsonElement? ApplyPermissions, JsonElement? UpdatedInput);
@@ -31,6 +31,7 @@ public static class PermissionWire {
     public const int MaxToolNameBytes = 512;
     public const int MaxElementBytes  = 64 * 1024;
     public const int MaxAgentIdBytes  = 128;
+    public const int MaxToolUseIdBytes = 128;
 
     /// A GUID in any case, with or without dashes, as "N"; null when the value is not a GUID.
     public static string? Canonical(string? id) =>

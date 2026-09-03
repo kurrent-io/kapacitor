@@ -86,6 +86,21 @@ public class LocalPermissionBridgeInteractiveTests {
     }
 
     [Test, NotInParallel(nameof(LocalPermissionBridgeInteractiveTests))]
+    public async Task The_hook_bodys_tool_use_id_rides_the_pending_dto() {
+        await using var h = new Harness();
+        h.Server.AwaitScript = (_, ct) => new TaskCompletionSource<PermissionDecision>().Task.WaitAsync(ct);
+        await h.StartAsync();
+
+        var response = h.Client.PostAsync($"{h.Bridge.BaseUrl}/claude/permission-request",
+            JsonContent.Create(new { session_id = Session, tool_name = "Bash", tool_input = new { command = "ls" }, tool_use_id = "toolu_01X", agent_id = "agent-1", cwd = "/repo" }));
+        var pending = await h.WaitPendingAsync();
+        await Assert.That(pending.ToolUseId).IsEqualTo("toolu_01X");
+
+        await Assert.That(h.Broker.TrySettle(pending.RequestId, Allow, "allow", "app")).IsTrue();
+        await Assert.That(await Harness.BehaviorOf(await response)).IsEqualTo("allow");
+    }
+
+    [Test, NotInParallel(nameof(LocalPermissionBridgeInteractiveTests))]
     public async Task Server_claim_first_answers_the_hook_pushes_resolved_server_and_a_later_app_claim_loses() {
         await using var h = new Harness();
         var serverDecision = new TaskCompletionSource<PermissionDecision>();
@@ -224,6 +239,8 @@ public class LocalPermissionBridgeInteractiveTests {
         await Assert.That(LocalPermissionBridge.BuildPending("r", "a1", Session, "claude", new string('n', PermissionWire.MaxToolNameBytes + 1), null, null, "t")).IsNull();
         await Assert.That(LocalPermissionBridge.BuildPending("r", new string('k', PermissionWire.MaxAgentIdBytes + 1), Session, "claude", "Bash", null, null, "t")).IsNull();
         await Assert.That(LocalPermissionBridge.BuildPending("r", "a1", Session, "codex", null, null, null, "t")!.ToolName).IsEqualTo("");
+        await Assert.That(LocalPermissionBridge.BuildPending("r", "a1", Session, "claude", "Bash", null, null, "t", "toolu_1")!.ToolUseId).IsEqualTo("toolu_1");
+        await Assert.That(LocalPermissionBridge.BuildPending("r", "a1", Session, "claude", "Bash", null, null, "t", new string('i', PermissionWire.MaxToolUseIdBytes + 1))!.ToolUseId).IsNull();
     }
 
     static async Task WaitUntil(Func<bool> condition, string what) {

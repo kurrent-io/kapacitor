@@ -122,6 +122,11 @@ internal sealed record LauncherContext(
     /// <c>CodexPosturePolicy</c> guard; null for every other launch, which keeps the derived
     /// containment values.</summary>
     public CodexLaunchPosture? CodexPosture { get; init; }
+
+    /// <summary>Caller-selected Claude permission mode, forwarded verbatim as
+    /// <c>--permission-mode</c>. Non-null only for an interactive daemon-owned-worktree Claude launch
+    /// that passed the orchestrator's <c>ClaudePermissionModePolicy</c> guard.</summary>
+    public string? PermissionMode { get; init; }
 }
 
 internal readonly record struct LaunchArgs(string[] Args, string? McpConfigPath);

@@ -47,6 +47,19 @@ public class RailSessionViewModelTests {
 
     [Test]
     [NotInParallel("AvaloniaSession")]
+    public async Task Borrowed_work_location_marks_the_vendor_line_and_the_tooltip_names_the_checkout() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var dto = Dto(kind: "review-flow", vendor: "codex") with {
+                WorktreePath = "/repo/.capacitor/worktrees/agent-1", WorkLocation = "borrowed",
+                BorrowedFrom = "/repo/.capacitor/worktrees/agent-1" };
+            using var row = new RailSessionViewModel(dto, new BehaviorSubject<string?>(null), NoPending, _ => { });
+            await Assert.That(row.Sub).StartsWith("codex · review-flow · borrowed · Opus 5 · ");
+            await Assert.That(row.Tooltip).Contains("/repo/.capacitor/worktrees/agent-1");
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
     public async Task Null_model_is_omitted_from_sub() {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             using var row = new RailSessionViewModel(Dto(model: null), new BehaviorSubject<string?>(null), NoPending, _ => { });

@@ -144,13 +144,10 @@ internal readonly record struct HostedRuntimeStart(IHostedAgentRuntime Runtime, 
 /// guards (vendor known, unattended support, repo allowed, worktree created) have already passed.
 /// </summary>
 /// <param name="CapacitorPath">
-/// Absolute path to the <c>kcap</c> binary (<c>DaemonConfig.CapacitorPath</c>) — passed to
-/// <see cref="ReviewLaunchBuilder.BuildAsync"/> as the review-launch MCP server command. This is
-/// deliberately NOT the vendor CLI path (<c>launcher.CliPath</c>): the review agent must run
-/// <c>kcap mcp review</c>, since inside the daemon the running process is <c>kcap-daemon</c> with
-/// no <c>mcp review</c> subcommand of its own, and <c>claude</c>/<c>codex</c> have no such
-/// subcommand at all (PR #244 review, Fix A — a post-refactor regression had passed
-/// <c>launcher.CliPath</c> here instead).
+/// Absolute path to the <c>kcap</c> binary (<c>DaemonConfig.CapacitorPath</c>), passed to
+/// <see cref="ReviewLaunchBuilder.BuildAsync"/> as the review-launch MCP server command. Never the
+/// vendor CLI path (<c>launcher.CliPath</c>): the review agent must run <c>kcap mcp review</c>, and
+/// neither the daemon process nor <c>claude</c>/<c>codex</c> has that subcommand.
 /// </param>
 internal sealed record RuntimeStartContext(
         string            AgentId,
@@ -250,6 +247,7 @@ internal sealed record RuntimeStartContext(
         // via thread/resume instead of thread/start, and suppresses the second SessionStarted. Null for
         // a fresh launch, every non-Codex/non-app-server launch, and constructions predating this field.
         string?             ResumeSessionId = null,
+        string?             PermissionMode = null,
         // The approval policy bound for THIS launch from the worktree above plus the daemon user's
         // own file — the same instance the AgentInstance carries, so a factory and the permission
         // seam judge against one set of documents. Null when no provider is wired, when the build

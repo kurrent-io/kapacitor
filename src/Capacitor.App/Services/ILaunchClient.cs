@@ -2,13 +2,15 @@ using System.Text.Json.Serialization;
 
 namespace Capacitor.App.Services;
 
-/// Model "" and Effort null both mean "vendor default" — the wire's own conventions (the server
-/// rejects a null model; the daemon treats whitespace as no request).
+/// Model "", Effort null and PermissionMode null all mean "vendor default" — the wire's own
+/// conventions (the server rejects a null model; the daemon treats whitespace as no request).
 public sealed record LaunchRequest(
     string DaemonName, string RepoPath, string Vendor, string? Prompt,
-    string Model = "", string? Effort = null);
+    string Model = "", string? Effort = null, string? PermissionMode = null);
 
-public sealed record LaunchOutcome(bool Started, string? AgentId, string? Error);
+/// Unauthorized marks a server 401 — the caller routes it to sign-in instead of rendering the
+/// raw transport message.
+public sealed record LaunchOutcome(bool Started, string? AgentId, string? Error, bool Unauthorized = false);
 
 /// Starting a session goes through the SERVER, not the local socket: the local Spawn frame
 /// resolves against the daemon's PTY launchers (claude and codex only), while the server's
@@ -40,6 +42,9 @@ public sealed record LaunchAgentRequestV2Payload {
     [JsonPropertyName("vendor")]                public required string   Vendor              { get; init; }
     [JsonPropertyName("codex_posture")]         public          object?  CodexPosture        { get; init; }
     [JsonPropertyName("acp_permission_preset")] public          string?  AcpPermissionPreset { get; init; }
+    // Omitted when null, so an unchosen mode leaves the payload an older server expects untouched.
+    [JsonPropertyName("permission_mode"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? PermissionMode { get; init; }
 }
 
 [JsonSerializable(typeof(LaunchAgentRequestV2Payload))]
@@ -54,5 +59,6 @@ public static class LaunchPayload {
         Effort     = string.IsNullOrWhiteSpace(r.Effort) ? null : r.Effort,
         RepoPath   = r.RepoPath,
         Vendor     = r.Vendor,
+        PermissionMode = string.IsNullOrWhiteSpace(r.PermissionMode) ? null : r.PermissionMode,
     };
 }

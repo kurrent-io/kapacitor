@@ -589,6 +589,8 @@ public static partial class DaemonRunner {
             .Where(Acp.AcpPermissionPresets.RoutedVendors.Contains)
             .ToArray();
 
+        config.PermissionModeVendors = Harness.Claude.ClaudePermissionModePolicy.AdvertisedVendors(config.SupportedVendors);
+
         // Reviewer vendor override support: a strict subset of SupportedVendors — only vendors that
         // can also run fully unattended without routing an interaction to a human. The server gates
         // a review-flow vendor override on this list rather than SupportedVendors alone, so a vendor

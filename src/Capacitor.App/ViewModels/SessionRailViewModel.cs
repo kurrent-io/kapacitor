@@ -98,15 +98,19 @@ public sealed class SessionRailViewModel : ReactiveObject, IDisposable {
     }
 
     /// The launch auto-open's counterpart: a session opened into an explicitly collapsed
-    /// worktree must never highlight an invisible row (spec §3).
+    /// worktree must never highlight an invisible row.
     public void NotifySessionOpened(string agentId) {
         var dto = _daemon.Agents.Lookup(agentId);
-        if (!dto.HasValue || dto.Value.RepoPath is not { Length: > 0 } path) return;
+        if (!dto.HasValue || WorktreeKeyFor(dto.Value) is not { Length: > 0 } path) return;
         _collapse.Set(path, collapsed: false);
     }
 
+    internal static string WorktreeKeyFor(AgentStatusDto dto) =>
+        CheckoutLabel.CheckoutPathFor(dto) ?? dto.RepoPath ?? "";
+
     // Memoized: ResolveMainRepoRoot reads .git files — cheap once, not per-changeset cheap; a
-    // path's resolution never changes within a daemon's lifetime.
+    // path's resolution never changes within a daemon's lifetime. A current daemon already sends
+    // the repository, so this only ever rewrites an older daemon's checkout path.
     string RepoRootFor(AgentStatusDto dto) {
         if (dto.RepoPath is not { Length: > 0 } path) return "";
         if (_rootByPath.TryGetValue(path, out var root)) return root;

@@ -1526,7 +1526,11 @@ public readonly record struct LaunchAgentCommand(
         // §2.7 B4: the hosted Codex thread to RESUME (via thread/resume, no second SessionStarted) instead
         // of starting fresh — set by the server only for a parked-reviewer relaunch, else null. Appended
         // last so the SignalR positional binding stays wire-compatible with old daemons.
-        string?           ResumeSessionId = null
+        string?           ResumeSessionId = null,
+        // A ClaudePermissionModes token for an interactive Claude launch; the daemon's
+        // ClaudePermissionModePolicy fails closed on any other shape. Name-bound and trailing, so
+        // old daemons ignore it and old servers never set it.
+        string?           PermissionMode = null
     );
 
 /// <summary>Caller-selected Codex launch posture. Valid ONLY for interactive, daemon-owned-worktree
@@ -1936,7 +1940,10 @@ public record BorrowProbeResult(
 public readonly record struct SendInputCommand(
         string    AgentId,
         string    Text,
-        string[]? AttachmentIds
+        string[]? AttachmentIds,
+        // Names this dispatch when the daemon has to refuse it. Null from a server that does not send
+        // one, in which case there is nothing to name and no refusal is reported.
+        Guid?     DispatchId = null
     );
 
 public readonly record struct ResizeTerminalCommand(
@@ -2014,7 +2021,10 @@ public readonly record struct DaemonConnect(
         // Advertises the RequestStatusReport2 handler (nonce-echoed reports). False from a daemon
         // predating it — the server then never sends the correlated request. Trailing name-bound
         // field so the wire stays compatible.
-        bool                                       SupportsCorrelatedStatusReports = false
+        bool                                       SupportsCorrelatedStatusReports = false,
+        // Vendor tokens this daemon accepts a launch-time permission mode for (Claude when hosted).
+        // Null from a daemon predating this field, which the server reads as "refuse a mode".
+        string[]?                                  PermissionModeVendors = null
     );
 
 public sealed record UnattendedVendorCapability(

@@ -6,7 +6,6 @@ diff. `CLAUDE.md` holds the invariants; `docs/superpowers/specs/` holds the full
 Not release notes. Each entry is written as of the change that produced it and is not revised as the
 code moves on; where an entry disagrees with the code, the code wins.
 
-
 ## The flow can enable the daemon as a service
 
 `kcap daemon service ensure` existed with no caller in the product. Making the browser able to ask for it
@@ -125,7 +124,6 @@ call site asks. Every hook, watch, daemon and MCP path shares that helper and th
 attempt; changing it for all of them in service of one caption is not the trade. An exhausted budget
 returns the status rather than throwing — the call sites catch `HttpRequestException` only, so a throw
 would turn a 503 into a crash mid-import.
-
 
 ## Secret redaction is structural
 
@@ -473,6 +471,26 @@ what bounds the outgoing resolve frame by arithmetic. An unparseable or oversize
 back to the permission card (Allow = let the TUI ask) with "Allow always" hidden for the
 question tool.
 
+## Compact tool calls in the Chat tab
+
+**AI-2418** (spec: `docs/superpowers/specs/2026-09-02-ai2418-compact-tool-calls-design.md`) folds a
+run of consecutive tool calls into one `ToolGroupItem` row: settled calls collapse to a summary line
+("Read files, ran a command"), live calls stay listed beneath it, and any prose (user turn, assistant
+text, system note) closes the run. **The fold is uniform** — a lone settled call still reads "Ran a
+command" — and **folding never hides an error**: a failed call inside a folded group puts the danger
+`✕` on the summary line. The group binds ONE inner list whose source swaps on toggle, because a
+hidden `ItemsControl` keeps its containers; expanding a group realizes every row and folding releases
+them. Expanding holds follow-tail once, so the clicked summary stays in view. Summary wording keys on
+the transcript's tool name (Codex's rollout says `shell`, its hook says `Bash`), with Codex shell
+commands classified by `CodexCommandClassifier`, ported verbatim from the server into Core so the
+server can delete its copy on the next submodule bump. A row waiting on a permission shows an accent
+`?` in the outcome slot: `PermissionPendingDto` gains an optional `tool_use_id` the daemon reads from
+the hook body (Claude's PermissionRequest hook carries it; Codex's deliberately does not), and the
+view-model recomputes the marks from pending requests and running calls on every change, diffing
+against the last marks so a call that settles while its request is still pending is cleared rather
+than masked by its `✓`. A request without an id marks the agent's sole running call and abstains
+when two or more are running.
+
 ## Launch and stop command routing
 
 The receive pump no longer awaits launch/stop EXECUTION for either command format: arrival order is
@@ -541,3 +559,55 @@ inside `HandleCore`, which that arm never reaches, so a prompt already raised si
 asymmetry is deliberate — a standing prompt is the safe outcome for the seam whose job is to answer a
 question a human is already looking at, and moving it earlier would auto-answer prompts during the
 very outage that made the evaluation least trustworthy.
+
+## Desktop shell: the checkout on the status wire
+
+**AI-2320** adds three trailing members to `AgentStatusDto` — `worktree_path`, `work_location`,
+`borrowed_from` — and makes `repo_path` the repository for every agent. Before, one field carried two
+conventions: a primary reported the repository it was launched for while running in its owned
+worktree, and a borrowed reviewer reported the worktree it borrowed. The rail filed the two one group
+apart, and nothing on the wire said they shared a checkout.
+
+**The daemon resolves the repository; the app never reads a path's shape.** `RepoLabel` recognised
+`.claude/worktrees` and `.capacitor/worktrees` tails — a guess that a reviewer borrowing a subdirectory,
+or any other layout, defeated. The daemon holds the `WorktreeInfo` and can read the `.git` entries, so
+`AgentCheckout` resolves once per agent: the source checkout's root (a borrowed cwd may sit below it),
+the main repository behind that root (a linked worktree's `.git` file names it), and the snapshot root
+for a runtime that runs in its own copy. The rail keeps `ResolveMainRepoRoot` only so an older
+daemon's checkout-shaped `repo_path` still groups; against such a daemon a reviewer's tray and card
+labels show the worktree leaf, the price of dropping the guess. The consent prompt and the activity
+log pay it too: they label a launch request's path, a wire that carries no repository behind it, so
+they name the checkout the request is for.
+
+**Both a marker and a path go on the wire, and the path is the grouping key.** A Cursor or Copilot
+reviewer runs in a private snapshot, so `worktree_path` alone would file it under a node nobody else
+shares; `borrowed_from` names the checkout it reviews, which is where it belongs — in the rail and in
+the workspace subtitle alike, through one `CheckoutLabel` so the two cannot drift. The chat relativizes
+tool paths against `worktree_path`, the checkout the agent actually runs in. `work_location` is derived from `borrowed_from` at the one stamping site,
+so the two cannot disagree, and a client that only needs the marker reads the token instead of
+comparing paths.
+
+## Desktop launcher: permission mode
+
+The new-session composer gains a Claude permission-mode chip (Manual, Accept edits, Auto, Bypass
+permissions) beside the effort chip, and Start becomes a round arrow button. Manual sends nothing —
+the `permission_mode` key is omitted, not null — so an unchanged launch is byte-identical to one
+predating the chip and an older server or daemon behaves exactly as before. Any other choice rides
+one name-bound field through `RequestLaunchAgentV2`, the server's `LaunchAgentCommand` and the
+daemon's `LauncherContext` to a `--permission-mode` argument on the interactive Claude arm only. The
+tokens live once, in Core's `ClaudePermissionModes`, so the chip and the daemon guard cannot drift.
+
+**The mode is a preference, never a containment override.** A reviewer's `bypassPermissions` and a
+borrowed checkout's prompting are guarantees, so the server's `ClaudePermissionModeRequestPolicy` and
+the daemon's `ClaudePermissionModePolicy` refuse a mode on a review-flow, PR-review, borrowed or
+non-Claude launch with a coded reason — before consent and before any worktree work, mirroring the
+Codex posture and ACP preset guards rather than silently dropping or honouring it. Only the four
+offered tokens pass; `plan` and `dontAsk` are Claude's but not the product's. The daemon advertises
+`PermissionModeVendors` on connect and the server refuses a mode toward a daemon that does not list
+the vendor, so an older daemon can never quietly run Manual under a Bypass selection.
+
+**An interactive bypass launch keeps the single-Enter submit.** `DisablesApprovalPrompts` stays true
+only for owned review-flow reviewers: bypass silences permission prompts, not question cards or the
+one-time bypass consent dialog, and the multi-CR spray would answer either. The chip is withheld for
+every vendor but Claude, the mode is session-scoped like the effort, and the harness picker no
+longer offers "Remember" — a chosen harness is always persisted for the repository.

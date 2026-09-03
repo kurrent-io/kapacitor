@@ -22,6 +22,26 @@ using Microsoft.Extensions.Logging;
 
 namespace Capacitor.Cli.Daemon.Services;
 
+/// <summary>
+/// <paramref name="Repository"/> is the main repository behind the checkout the worktree was
+/// made from — a linked worktree's own .git file names it, so a borrowed reviewer and the
+/// primary whose worktree it borrowed resolve to the same repository. <paramref name="Worktree"/>
+/// is the checkout root the agent runs in; <paramref name="BorrowedFrom"/> the checkout root a
+/// reviewer borrowed, null unless borrowed. A snapshot reviewer runs in its own copy, so its
+/// Worktree and BorrowedFrom differ.
+/// </summary>
+internal sealed record AgentCheckout(string Repository, string Worktree, string? BorrowedFrom) {
+    public static AgentCheckout Resolve(WorktreeInfo worktree, WorkLocation work, string? borrowedSnapshotSource) {
+        var borrowed   = work == WorkLocation.BorrowedCwd || borrowedSnapshotSource is not null;
+        // The source is a cwd for a borrow, which may sit below its checkout root.
+        var sourceRoot = GitRepository.FindRoot(worktree.SourceRepo) ?? worktree.SourceRepo;
+        var repository = GitRepository.ResolveMainRepoRoot(sourceRoot);
+        var runsIn     = work == WorkLocation.BorrowedCwd ? sourceRoot : worktree.SnapshotRoot ?? worktree.Path;
+
+        return new AgentCheckout(repository, runsIn, borrowed ? sourceRoot : null);
+    }
+}
+
 internal record AgentInstance(
         string                  Id,
         string?                 Prompt,
@@ -231,6 +251,11 @@ internal record AgentInstance(
     /// <summary>Authorized live checkout mirrored into this owned worktree for a runtime that
     /// cannot safely execute in-place. Refreshed before each later review round.</summary>
     public string? BorrowedSnapshotSource { get; init; }
+
+    AgentCheckout? _checkout;
+    /// <summary>Where the work lives, as the status wire reports it. Resolved once: it reads
+    /// .git entries, and neither the worktree nor the work location changes after launch.</summary>
+    public AgentCheckout Checkout => _checkout ??= AgentCheckout.Resolve(Worktree, Work, BorrowedSnapshotSource);
 
     /// <summary>The per-agent critical section. Named for its original duty (serializing the borrowed-
     /// checkout refresh against a concurrent send) but it has always wrapped the ENTIRE
@@ -1622,23 +1647,25 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             IPtyProcess? pty = null, string? startIdentity = null, string? requester = null,
             string? requesterDisplay = null, string? model = "default", int? inactivityBoundSeconds = null,
             string? prompt = null,
-            // Task 12 (unified reviewer reaping): a test that needs to control the agent's monotonic
-            // age/idle (rather than the wall-clock CreatedAt/LastOutputAt above, which the new
-            // FindReviewersToReap no longer reads) constructs its own AgentActivityClock over a
-            // FakeTimeProvider and passes it here — the SAME wiring CreateActivityClock() gives a
-            // real launch, just with a controllable time source.
-            AgentActivityClock? activityClock = null) {
+            // A test that needs to control the agent's monotonic age/idle constructs its own
+            // AgentActivityClock over a FakeTimeProvider and passes it here — the same wiring
+            // CreateActivityClock() gives a real launch, with a controllable time source.
+            AgentActivityClock? activityClock = null,
+            WorktreeInfo? worktree = null, WorkLocation work = WorkLocation.OwnedWorktree,
+            string? borrowedSnapshotSource = null) {
         var agent = new AgentInstance(
             id, prompt, model, null, "/repo", "codex",
             new PtyHostedAgentRuntime("codex", pty ?? NoopPtyProcess.Instance),
-            new WorktreeInfo("/repo", "b", "/repo"),
+            worktree ?? new WorktreeInfo("/repo", "b", "/repo"),
             new CancellationTokenSource()) {
             Kind = kind, FlowRunId = flowRunId, FlowRole = flowRole, IsPrivate = isPrivate,
             CreatedAt = createdAt ?? DateTime.UtcNow, StartIdentity = startIdentity,
             RequesterUserId = requester,
             RequesterDisplay = requesterDisplay,
             InactivityBoundSeconds = inactivityBoundSeconds,
-            ActivityClock = activityClock ?? CreateActivityClock()
+            ActivityClock = activityClock ?? CreateActivityClock(),
+            Work = work,
+            BorrowedSnapshotSource = borrowedSnapshotSource
         };
         agent.Status = status;
         if (lastOutputAt is { } lo) agent.LastOutputAt = lo;
@@ -1771,6 +1798,13 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         // lane for the consent timeout on a launch that can never proceed.
         if (AcpPermissionPresetPolicy.RejectionReason(cmd) is { } presetRejection) {
             await _server.LaunchFailedAsync(cmd.AgentId, presetRejection);
+
+            return new CommandOutcome(CommandOutcomeKind.LaunchRejected, agentId, RejectReason: CommandRejectedReason.Semantic);
+        }
+
+        // Before consent for the same reason as the preset guard above.
+        if (ClaudePermissionModePolicy.RejectionReason(cmd) is { } modeRejection) {
+            await _server.LaunchFailedAsync(cmd.AgentId, modeRejection);
 
             return new CommandOutcome(CommandOutcomeKind.LaunchRejected, agentId, RejectReason: CommandRejectedReason.Semantic);
         }
@@ -2165,6 +2199,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 // Carried verbatim; the Codex app-server factory branches thread/start -> thread/resume
                 // on it for a parked reviewer relaunch. Ignored by every other runtime.
                 ResumeSessionId: cmd.ResumeSessionId,
+                PermissionMode: cmd.PermissionMode,
                 // The same instance the AgentInstance below carries, so a factory that judges an
                 // action during its own startup uses the documents this launch was reported with.
                 PolicySnapshot: policySnapshot
@@ -3545,16 +3580,44 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             || trimmed.Equals("/exit", StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>The reasons this daemon drops a dispatched input, as the server records them. Stable
+    /// tokens, not prose: the surface shows which one applied, and <c>unknown_agent</c> additionally
+    /// stands as per-id absence proof from the only daemon that could have hosted the agent.</summary>
+    internal static class SendInputDropReason {
+        public const string UnknownAgent      = "unknown_agent";
+        public const string PrivateAgent      = "private_agent";
+        public const string ReaperClaimed     = "reaper_claimed";
+        public const string ReaperClaimedLate = "reaper_claimed_late";
+    }
+
+    /// <summary>Reports a drop to the server, when the dispatch carried an id to name. Never throws:
+    /// the drop has already happened, and a report that fails must leave the daemon exactly where
+    /// reporting nothing would. Callers inside a held section report after releasing it — the invoke
+    /// has no timeout of its own.</summary>
+    async Task ReportInputDroppedAsync(SendInputCommand cmd, string reason) {
+        if (cmd.DispatchId is not { } dispatchId) return;
+
+        try {
+            await _server.SendInputRejectedAsync(dispatchId, cmd.AgentId, reason);
+        } catch (Exception ex) {
+            LogSendInputRejectReportFailed(ex, cmd.AgentId, reason);
+        }
+    }
+
     async Task HandleSendInput(SendInputCommand cmd) {
-        var (agentId, text, attachmentIds) = cmd;
+        var (agentId, text, attachmentIds, _) = cmd;
 
         if (!_agents.TryGetValue(agentId, out var agent)) {
             LogSendInputUnknownAgent(agentId, _agents.Count);
+            await ReportInputDroppedAsync(cmd, SendInputDropReason.UnknownAgent);
+
             return;
         }
 
         if (agent.IsPrivate) {
             LogSendInputPrivateAgent(agentId);
+            await ReportInputDroppedAsync(cmd, SendInputDropReason.PrivateAgent);
+
             return; // server-origin input ignored for private agents
         }
 
@@ -3577,6 +3640,11 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         long? codexBaseline = null;
         long  codexGen      = 0;
 
+        // Set inside the section, reported outside it: the report is an unbounded server round trip,
+        // and awaiting one while holding this gate would hold every later input for that agent behind
+        // a stalled connection — and stretch the section the reaper's own claim races against.
+        string? dropReason = null;
+
         await agent.BorrowedSnapshotGate.WaitAsync(_shutdownCts.Token);
         try {
             // Losing side of the reap claim (round-dispatch grace §3): a reap-claimed agent gets
@@ -3584,6 +3652,8 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             // into a dying runtime) is deliberate; the server heals it on resubmit.
             if (agent.IsReapClaimed) {
                 LogSendInputReapClaimed(agentId);
+                dropReason = SendInputDropReason.ReaperClaimed;
+
                 return;
             }
 
@@ -3608,6 +3678,8 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
             if (agent.IsReapClaimed) {
                 LogSendInputReapClaimedLate(agentId);
+                dropReason = SendInputDropReason.ReaperClaimedLate;
+
                 return;
             }
 
@@ -3652,6 +3724,9 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             LogSendInputDelivered(agentId, agent.Runtime.Vendor, message.Length);
         } finally {
             agent.BorrowedSnapshotGate.Release();
+
+            // After the release, never before it — see dropReason's own note.
+            if (dropReason is { } reason) await ReportInputDroppedAsync(cmd, reason);
         }
 
         // Codex turn diagnostic: arm the post-send rollout-growth probe. Only reached on the
@@ -5013,6 +5088,9 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
     [LoggerMessage(Level = LogLevel.Information, Message = "SendInput delivered to agent {AgentId}'s {Vendor} runtime ({Chars} chars)")]
     partial void LogSendInputDelivered(string agentId, string vendor, int chars);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Could not report the dropped input for agent {AgentId} ({Reason})")]
+    partial void LogSendInputRejectReportFailed(Exception ex, string agentId, string reason);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "SendInput dropped: agent {AgentId} not found on this daemon ({KnownAgents} agents registered)")]
     partial void LogSendInputUnknownAgent(string agentId, int knownAgents);

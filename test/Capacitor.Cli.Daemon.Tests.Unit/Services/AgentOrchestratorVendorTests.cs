@@ -235,6 +235,117 @@ public class AgentOrchestratorVendorTests {
         await Assert.That(server.LaunchFailedCalls.Any(c => c.Reason.StartsWith("codex_posture_", StringComparison.Ordinal))).IsFalse();
     }
 
+    // ── Caller-selected Claude permission mode: the same fail-closed pre-flight guard ──────────
+    // Same bogus repo path as the posture cases, so these too prove the guard runs before any
+    // repo check or worktree work.
+
+    static LaunchAgentCommand ModeCmd(
+            string     agentId,
+            string?    mode,
+            string     vendor   = "claude",
+            LaunchKind kind     = LaunchKind.Default,
+            bool       borrowed = false
+        ) => new(
+            AgentId: agentId,
+            Prompt: "hi",
+            Model: "default",
+            Effort: null,
+            RepoPath: "/tmp/kcap-posture-guard-nonexistent",
+            Tools: null,
+            AttachmentIds: null,
+            Vendor: vendor,
+            Kind: kind,
+            Borrowed: borrowed,
+            PermissionMode: mode
+        );
+
+    [Test]
+    public async Task Permission_mode_on_a_review_flow_launch_is_rejected_before_any_worktree_work() {
+        var server     = new CaptureServerConnection();
+        var ptyFactory = new SpyPtyProcessFactory();
+
+        await using var orch = BuildPostureOrchestrator(server, ptyFactory);
+
+        await orch.HandleLaunchAgentForTest(ModeCmd("agent-mode-flow", "acceptEdits", kind: LaunchKind.ReviewFlow));
+
+        await Assert.That(server.LaunchFailedCalls.Count).IsEqualTo(1);
+        await Assert.That(server.LaunchFailedCalls[0].AgentId).IsEqualTo("agent-mode-flow");
+        await Assert.That(server.LaunchFailedCalls[0].Reason).StartsWith("permission_mode_not_overridable:");
+        await Assert.That(ptyFactory.SpawnCalls).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Permission_mode_on_a_non_claude_launch_is_rejected() {
+        var server     = new CaptureServerConnection();
+        var ptyFactory = new SpyPtyProcessFactory();
+
+        await using var orch = BuildPostureOrchestrator(server, ptyFactory);
+
+        await orch.HandleLaunchAgentForTest(ModeCmd("agent-mode-codex", "auto", vendor: "codex"));
+
+        await Assert.That(server.LaunchFailedCalls.Count).IsEqualTo(1);
+        await Assert.That(server.LaunchFailedCalls[0].Reason).StartsWith("permission_mode_wrong_vendor:");
+        await Assert.That(ptyFactory.SpawnCalls).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task A_valid_interactive_permission_mode_passes_the_guard() {
+        var server     = new CaptureServerConnection();
+        var ptyFactory = new SpyPtyProcessFactory();
+
+        await using var orch = BuildPostureOrchestrator(server, ptyFactory);
+
+        await orch.HandleLaunchAgentForTest(ModeCmd("agent-mode-ok", "bypassPermissions"));
+
+        await Assert.That(server.LaunchFailedCalls.Any(c => c.Reason.StartsWith("permission_mode_", StringComparison.Ordinal))).IsFalse();
+    }
+
+    static async Task<SpyHostedAgentRuntimeFactory> LaunchClaudeForHandoffAsync(string repoPath, string agentId, string? mode) {
+        var server     = new CaptureServerConnection();
+        var ptyFactory = new SpyPtyProcessFactory();
+        var claudeSpy  = new SpyHostedAgentRuntimeFactory("claude") { EmitsTerminalOutput = false, SupportsUnattended = true };
+
+        await using var orch = AgentOrchestratorHarness.BuildOrchestrator(
+            server, ptyFactory, new Dictionary<string, IHostedAgentLauncher>(),
+            extraRuntimeFactories: [claudeSpy]);
+
+        await orch.HandleLaunchAgentForTest(new LaunchAgentCommand(
+            AgentId: agentId,
+            Prompt: "do a thing",
+            Model: "default",
+            Effort: null,
+            RepoPath: repoPath,
+            Tools: null,
+            AttachmentIds: null,
+            Vendor: "claude",
+            PermissionMode: mode));
+
+        return claudeSpy;
+    }
+
+    /// The command→runtime handoff: the guard tests never reach a runtime and the launcher tests
+    /// build a LauncherContext by hand, so dropping `PermissionMode: cmd.PermissionMode` from the
+    /// RuntimeStartContext construction would leave every other mode test green.
+    [Test]
+    public async Task Interactive_claude_launch_threads_the_permission_mode_into_the_runtime_start_context() {
+        using var repoPath = GitRepo.CreateWithCommit();
+
+        var claudeSpy = await LaunchClaudeForHandoffAsync(repoPath, "agent-mode-thread", "acceptEdits");
+
+        await Assert.That(claudeSpy.LastContext).IsNotNull();
+        await Assert.That(claudeSpy.LastContext!.PermissionMode).IsEqualTo("acceptEdits");
+    }
+
+    [Test]
+    public async Task Interactive_claude_launch_without_a_mode_threads_null() {
+        using var repoPath = GitRepo.CreateWithCommit();
+
+        var claudeSpy = await LaunchClaudeForHandoffAsync(repoPath, "agent-mode-thread-null", mode: null);
+
+        await Assert.That(claudeSpy.LastContext).IsNotNull();
+        await Assert.That(claudeSpy.LastContext!.PermissionMode).IsNull();
+    }
+
     // ── Applied-posture echo on registration ────────────────────────────────────────────────
     // The echo is stamped on the AgentInstance so the initial registration AND every reconnect
     // re-registration report the same pair. It exists only for an interactive Codex launch on a

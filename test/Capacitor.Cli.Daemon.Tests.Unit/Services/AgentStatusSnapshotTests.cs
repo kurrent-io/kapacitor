@@ -291,4 +291,74 @@ public class AgentStatusSnapshotTests {
             await fixture.CleanupAsync();
         }
     }
+
+    /// Pins the wire's checkout trio: repo_path is the repository behind whatever the agent runs
+    /// in, worktree_path the checkout root it runs in, borrowed_from the checkout a reviewer
+    /// borrowed. The fake layout is a linked worktree whose .git file points into the main
+    /// repository, so resolution must read it rather than trust any path shape.
+    [Test]
+    public async Task Snapshot_names_the_repository_and_checkout_for_owned_and_borrowed_agents() {
+        using var tmp = new TempDir();
+        string repo = tmp.CreateDir("eventuous");
+        tmp.CreateDir("eventuous", ".git", "worktrees", "agent-1");
+        string worktree = tmp.CreateDir("eventuous", ".capacitor", "worktrees", "agent-1");
+        tmp.CreateFile(["eventuous", ".capacitor", "worktrees", "agent-1", ".git"],
+            $"gitdir: {Path.Combine(repo, ".git", "worktrees", "agent-1")}\n");
+        string snapshot = tmp.CreateDir("snapshots", "borrowed-1");
+
+        var fixture = Build();
+        var orch    = fixture.Orchestrator;
+        try {
+            orch.SeedAgentForTest("primary", worktree: new WorktreeInfo(worktree, "capacitor/agent-1", repo));
+            orch.SeedAgentForTest("direct", kind: LaunchKind.ReviewFlow,
+                worktree: WorktreeInfo.Borrowed(worktree), work: WorkLocation.BorrowedCwd);
+            orch.SeedAgentForTest("snapshot", kind: LaunchKind.ReviewFlow,
+                worktree: new WorktreeInfo(snapshot, "", worktree, IsStandalone: true, SnapshotRoot: snapshot),
+                borrowedSnapshotSource: worktree);
+
+            var byId = orch.SnapshotAgentsForStatus().ToDictionary(a => a.Id);
+
+            foreach (var id in (string[])["primary", "direct", "snapshot"])
+                await Assert.That(byId[id].RepoPath).IsEqualTo(repo);
+
+            await Assert.That(byId["primary"].WorktreePath).IsEqualTo(worktree);
+            await Assert.That(byId["primary"].WorkLocation).IsEqualTo("owned");
+            await Assert.That(byId["primary"].BorrowedFrom).IsNull();
+
+            await Assert.That(byId["direct"].WorktreePath).IsEqualTo(worktree);
+            await Assert.That(byId["direct"].WorkLocation).IsEqualTo("borrowed");
+            await Assert.That(byId["direct"].BorrowedFrom).IsEqualTo(worktree);
+
+            await Assert.That(byId["snapshot"].WorktreePath).IsEqualTo(snapshot);
+            await Assert.That(byId["snapshot"].WorkLocation).IsEqualTo("borrowed");
+            await Assert.That(byId["snapshot"].BorrowedFrom).IsEqualTo(worktree);
+        } finally {
+            await fixture.CleanupAsync();
+        }
+    }
+
+    /// A borrowed cwd can sit below the checkout root; the wire names the root, so the reviewer
+    /// lands on the same node as the session that runs at that root.
+    [Test]
+    public async Task A_borrowed_subdirectory_reports_its_checkout_root() {
+        using var tmp = new TempDir();
+        string repo = tmp.CreateDir("eventuous");
+        tmp.CreateDir("eventuous", ".git");
+        string nested = tmp.CreateDir("eventuous", "src", "Core");
+
+        var fixture = Build();
+        var orch    = fixture.Orchestrator;
+        try {
+            orch.SeedAgentForTest("r1", kind: LaunchKind.ReviewFlow,
+                worktree: WorktreeInfo.Borrowed(nested), work: WorkLocation.BorrowedCwd);
+
+            var dto = orch.SnapshotAgentsForStatus().Single();
+
+            await Assert.That(dto.RepoPath).IsEqualTo(repo);
+            await Assert.That(dto.WorktreePath).IsEqualTo(repo);
+            await Assert.That(dto.BorrowedFrom).IsEqualTo(repo);
+        } finally {
+            await fixture.CleanupAsync();
+        }
+    }
 }

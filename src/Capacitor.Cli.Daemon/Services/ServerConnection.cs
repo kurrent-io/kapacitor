@@ -688,6 +688,7 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
                     // permissions through the ACP bridge. Null on an unwired/early-startup config;
                     // wire-compatible with old servers (ignored).
                     AcpPresetVendors: _config.AcpPresetVendors,
+                    PermissionModeVendors: _config.PermissionModeVendors,
                     // Read off the handler, never asserted: an unwired connection (early startup,
                     // a test, a second ServerConnection) would otherwise invite RequestStatusReport2
                     // frames that its null-conditional invoke answers with silence.
@@ -909,6 +910,27 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
 
     public virtual Task AgentUnregisteredAsync(string agentId)
         => _hub.InvokeAsync("AgentUnregistered", new AgentUnregistered(agentId), cancellationToken: _ct);
+
+    /// <summary>Tells the server this daemon dropped a dispatched input rather than delivering it.
+    /// Without it a drop is visible only in this log, while the sender is shown a message that was
+    /// delivered — the send returning proves the transport wrote and nothing more.
+    ///
+    /// <para>Best-effort by contract, and swallowed at Debug in particular for the server that has no
+    /// such method: reporting a refusal must never be able to fail a delivery path, and a daemon
+    /// talking to an older server has to behave exactly as it did before this existed.</para></summary>
+    public virtual async Task SendInputRejectedAsync(Guid dispatchId, string agentId, string reason) {
+        try {
+            await _hub.InvokeAsync("SendInputRejected", dispatchId, agentId, reason, cancellationToken: _ct)
+                .WaitAsync(SendInputRejectedBudget, _ct);
+        } catch (Exception ex) {
+            _logger.LogDebug(ex, "Could not report the dropped input for agent {AgentId} ({Reason})", agentId, reason);
+        }
+    }
+
+    /// <summary>Bounds the report so an unresponsive server cannot pin the receive handler that is
+    /// waiting on it. The invoke has no timer of its own, and the input this reports on is already
+    /// dropped — waiting longer buys nothing anyone is still listening for.</summary>
+    static readonly TimeSpan SendInputRejectedBudget = TimeSpan.FromSeconds(10);
 
     /// <summary>
     /// The one report a shutting-down daemon can still make. Every other method here bakes in

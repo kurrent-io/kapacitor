@@ -142,6 +142,11 @@ public class DaemonConfig {
     /// </summary>
     public string[]? AcpPresetVendors { get; set; }
 
+    /// <summary>Vendor tokens this daemon accepts a launch-time permission mode for — Claude when it
+    /// is hosted. Sent over <c>DaemonConnect</c> so the server refuses a mode toward a daemon that
+    /// would ignore it. <c>null</c> until the host is built.</summary>
+    public string[]? PermissionModeVendors { get; set; }
+
     /// <summary>The home directory this daemon resolved at boot. Every home-derived daemon path
     /// reads it, so a descendant can't be handed a different one than the entry point chose.</summary>
     public UserHome Home {

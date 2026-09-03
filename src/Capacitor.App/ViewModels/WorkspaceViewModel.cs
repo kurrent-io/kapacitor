@@ -117,8 +117,8 @@ public sealed class WorkspaceViewModel : ReactiveObject {
         _title = presence.Select(p => TitleFor(p.Dto))
             .ToProperty(this, x => x.Title, TitleFor(null))
             .DisposeWith(_disposables);
-        _repoLabelText = presence.Select(p => RepoLabel.Leaf(p.Dto?.RepoPath))
-            .ToProperty(this, x => x.RepoLabelText, RepoLabel.Leaf(null))
+        _repoLabelText = presence.Select(p => CheckoutLabelFor(p.Dto))
+            .ToProperty(this, x => x.RepoLabelText, CheckoutLabelFor(null))
             .DisposeWith(_disposables);
         _vendorChip = presence.Select(p => VendorChipFor(p.Dto))
             .ToProperty(this, x => x.VendorChip, VendorChipFor(null))
@@ -175,6 +175,17 @@ public sealed class WorkspaceViewModel : ReactiveObject {
             dto = change.Current;
         }
         return new AgentPresence(dto, ended);
+    }
+
+    /// `repo / checkout`, with the marker for a borrowed reviewer; the repository alone from an
+    /// older daemon.
+    internal static string CheckoutLabelFor(AgentStatusDto? dto) {
+        var repo = RepoLabel.Leaf(dto?.RepoPath);
+        if (dto is null || CheckoutLabel.CheckoutPathFor(dto) is not { } checkout) return repo;
+
+        var label = $"{repo} / {CheckoutLabel.Format(checkout, dto.RepoPath ?? "")}";
+
+        return dto.WorkLocation == WorkLocationText.Borrowed ? $"{label} · borrowed" : label;
     }
 
     static string TitleFor(AgentStatusDto? dto) => dto?.Title ?? $"{RepoLabel.Leaf(dto?.RepoPath)} · {dto?.Vendor ?? "—"}";

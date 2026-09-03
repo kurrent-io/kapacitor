@@ -22,9 +22,14 @@ public class ChatTabViewModelTests {
     const string ToolCallLine = """{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls -la"}}]}}""";
     const string ToolResultLine = """{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}""";
     const string ToolErrorLine = """{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"boom","is_error":true}]}}""";
+    const string ReadCallLine = """{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t2","name":"Read","input":{"file_path":"/repo/x/src/a.cs"}}]}}""";
+    const string NoteLine = """{"type":"user","origin":{"kind":"task-notification"},"message":{"content":"<task-notification>\n<summary>Agent finished</summary>\n<result>\nAll good.\n</result>\n</task-notification>"}}""";
+    const string ThinkingLine = """{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"weighing it"}]}}""";
 
     static AgentStatusDto Dto(string? transcriptPath, string vendor = "claude") =>
         Agent("a1", vendor, hasTerminal: true, repoPath: "/repo/x") with { TranscriptPath = transcriptPath };
+
+    static ToolGroupItem Group(ChatTabViewModel chat, int index) => (ToolGroupItem)chat.Items[index];
 
     sealed class Harness {
         public FakeDaemonClientService Daemon { get; } = new();
@@ -87,10 +92,33 @@ public class ChatTabViewModelTests {
 
             await Assert.That(h.Chat.Phase).IsEqualTo(ChatTabPhase.Reading);
             await Assert.That(h.Chat.Items.Select(i => i.GetType().Name)).IsEquivalentTo(
-                new[] { nameof(UserTurnItem), nameof(AssistantTextItem), nameof(ToolCallItem) }, CollectionOrdering.Matching);
+                new[] { nameof(UserTurnItem), nameof(AssistantTextItem), nameof(ToolGroupItem) }, CollectionOrdering.Matching);
             await Assert.That(((UserTurnItem)h.Chat.Items[0]).Text).IsEqualTo("hello");
-            await Assert.That(((ToolCallItem)h.Chat.Items[2]).Detail).IsEqualTo("ls -la");
-            await Assert.That(((ToolCallItem)h.Chat.Items[2]).Outcome).IsEqualTo(ToolOutcome.Running);
+            await Assert.That(Group(h.Chat, 2).Calls[0].Detail).IsEqualTo("ls -la");
+            await Assert.That(Group(h.Chat, 2).Calls[0].Outcome).IsEqualTo(ToolOutcome.Running);
+            await Assert.That(Group(h.Chat, 2).Calls[0].Category).IsEqualTo(ToolCategory.Search);
+            await h.TeardownAsync();
+        });
+    }
+
+    /// Tool paths read relative to the checkout the agent runs in, which the wire names as
+    /// worktree_path; the repository alone would leave a checkout outside its own directory, or
+    /// one under `.claude/worktrees`, rendering absolute paths.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Tool_paths_relativize_against_the_worktree_the_agent_runs_in() {
+        await RunOnUiAsync(async () => {
+            var h = Claude();
+            const string worktree = "/repo/x/.claude/worktrees/slug";
+            const string readLine = """{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t2","name":"Read","input":{"file_path":"/repo/x/.claude/worktrees/slug/src/Foo.cs"}}]}}""";
+            h.Permissions.Add(PermissionEntries.Entry("r1", "a1", toolName: "Read", toolInputJson: """{"file_path":"/repo/x/.claude/worktrees/slug/src/Bar.cs"}"""));
+            await WaitUntilAsync(() => h.Chat.PendingCards.Count == 1, what: "the card");
+
+            var path = Tmp.CreateFile("t.jsonl", [readLine]);
+            await h.PushAsync(Dto(path) with { WorktreePath = worktree, WorkLocation = "owned" });
+
+            await Assert.That(Group(h.Chat, 0).Calls.Single().Detail).IsEqualTo("src/Foo.cs");
+            await WaitUntilAsync(() => ((PermissionCardViewModel)h.Chat.PendingCards[0]).Detail == "src/Bar.cs", what: "relative to the worktree once the root lands");
             await h.TeardownAsync();
         });
     }
@@ -122,15 +150,16 @@ public class ChatTabViewModelTests {
             var h = Claude();
             var path = Tmp.CreateFile("t.jsonl", [ToolCallLine, ToolResultLine]);
             await h.PushAsync(Dto(path));
-            var call = (ToolCallItem)h.Chat.Items.Single();
+            var call = Group(h.Chat, 0).Calls.Single();
             await Assert.That(call.Outcome).IsEqualTo(ToolOutcome.Done);
             await Assert.That(call.OutcomeGlyph).IsEqualTo("✓");
 
             File.AppendAllText(path, ToolCallLine + "\n" + ToolErrorLine + "\n" + ToolErrorLine.Replace("t1", "unknown") + "\n");
             await h.TickAsync();
-            await Assert.That(h.Chat.Items).Count().IsEqualTo(2);
-            await Assert.That(((ToolCallItem)h.Chat.Items[1]).Outcome).IsEqualTo(ToolOutcome.Error);
-            await Assert.That(((ToolCallItem)h.Chat.Items[1]).IsError).IsTrue();
+            await Assert.That(h.Chat.Items).Count().IsEqualTo(1);
+            await Assert.That(Group(h.Chat, 0).Calls).Count().IsEqualTo(2);
+            await Assert.That(Group(h.Chat, 0).Calls[1].Outcome).IsEqualTo(ToolOutcome.Error);
+            await Assert.That(Group(h.Chat, 0).Calls[1].IsError).IsTrue();
             await h.TeardownAsync();
         });
     }
@@ -153,7 +182,7 @@ public class ChatTabViewModelTests {
             File.WriteAllLines(path, [ToolCallLine]);
             await h.TickAsync();
             await Assert.That(h.Chat.Items).Count().IsEqualTo(1);
-            await Assert.That(h.Chat.Items[0]).IsTypeOf<ToolCallItem>();
+            await Assert.That(h.Chat.Items[0]).IsTypeOf<ToolGroupItem>();
 
             File.Delete(path);
             Directory.CreateDirectory(path);
@@ -161,6 +190,95 @@ public class ChatTabViewModelTests {
             await Assert.That(h.Chat.Phase).IsEqualTo(ChatTabPhase.Reading);
             await Assert.That(h.Chat.Items).Count().IsEqualTo(1);
             Directory.Delete(path);
+            await h.TeardownAsync();
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Consecutive_calls_across_reads_share_a_group_and_any_prose_closes_it() {
+        await RunOnUiAsync(async () => {
+            var h = Claude();
+            var path = Tmp.CreateFile("t.jsonl", [ToolCallLine]);
+            await h.PushAsync(Dto(path));
+            await Assert.That(h.Chat.Items).Count().IsEqualTo(1);
+
+            File.AppendAllText(path, ThinkingLine + "\n" + ReadCallLine + "\n");
+            await h.TickAsync();
+            await Assert.That(h.Chat.Items).Count().IsEqualTo(1);
+            await Assert.That(Group(h.Chat, 0).Calls.Select(c => c.Name)).IsEquivalentTo(new[] { "Bash", "Read" }, CollectionOrdering.Matching);
+
+            File.AppendAllText(path, AssistantLine + "\n" + ToolCallLine.Replace("t1", "t3") + "\n");
+            await h.TickAsync();
+            await Assert.That(h.Chat.Items.Select(i => i.GetType().Name)).IsEquivalentTo(
+                new[] { nameof(ToolGroupItem), nameof(AssistantTextItem), nameof(ToolGroupItem) }, CollectionOrdering.Matching);
+            await Assert.That(Group(h.Chat, 2).Calls).Count().IsEqualTo(1);
+
+            File.AppendAllText(path, NoteLine + "\n" + ToolCallLine.Replace("t1", "t4") + "\n" + UserLine + "\n" + ToolCallLine.Replace("t1", "t5") + "\n");
+            await h.TickAsync();
+            await Assert.That(h.Chat.Items.Select(i => i.GetType().Name)).IsEquivalentTo(new[] {
+                nameof(ToolGroupItem), nameof(AssistantTextItem), nameof(ToolGroupItem),
+                nameof(SystemNoteItem), nameof(ToolGroupItem), nameof(UserTurnItem), nameof(ToolGroupItem),
+            }, CollectionOrdering.Matching);
+            await h.TeardownAsync();
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task A_result_folds_its_call_and_the_summary_follows_the_settled_calls() {
+        await RunOnUiAsync(async () => {
+            var h = Claude();
+            var path = Tmp.CreateFile("t.jsonl", [ToolCallLine, ReadCallLine]);
+            await h.PushAsync(Dto(path));
+            var group = Group(h.Chat, 0);
+            await Assert.That(group.HasSummary).IsFalse();
+            await Assert.That(group.LiveCalls).Count().IsEqualTo(2);
+
+            File.AppendAllText(path, ToolResultLine + "\n");
+            await h.TickAsync();
+            await Assert.That(group.LiveCalls.Select(c => c.Name)).IsEquivalentTo(new[] { "Read" });
+            await Assert.That(group.Summary).IsEqualTo("Searched files");
+            await Assert.That(group.HasSummary).IsTrue();
+            await Assert.That(group.HasFailure).IsFalse();
+
+            File.AppendAllText(path, ToolErrorLine.Replace("t1", "unknown") + "\n");
+            await h.TickAsync();
+            await Assert.That(group.LiveCalls).Count().IsEqualTo(1);
+
+            File.AppendAllText(path, ToolErrorLine.Replace("t1", "t2") + "\n");
+            await h.TickAsync();
+            await Assert.That(group.LiveCalls).IsEmpty();
+            await Assert.That(group.Summary).IsEqualTo("Searched files, read a file");
+            await Assert.That(group.HasFailure).IsTrue();
+            await h.TeardownAsync();
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task A_reset_and_a_path_switch_start_a_fresh_group_for_later_calls() {
+        await RunOnUiAsync(async () => {
+            var h = Claude();
+            var path = Tmp.CreateFile("t.jsonl", [UserLine, ToolCallLine]);
+            await h.PushAsync(Dto(path));
+            await Assert.That(h.Chat.Items).Count().IsEqualTo(2);
+
+            File.WriteAllLines(path, [ToolCallLine]);
+            await h.TickAsync();
+            await Assert.That(h.Chat.Items).Count().IsEqualTo(1);
+            File.AppendAllText(path, ReadCallLine + "\n");
+            await h.TickAsync();
+            await Assert.That(h.Chat.Items).Count().IsEqualTo(1);
+            await Assert.That(Group(h.Chat, 0).Calls).Count().IsEqualTo(2);
+
+            var other = Tmp.CreateFile("o.jsonl", [ToolCallLine]);
+            await h.PushAsync(Dto(other));
+            await Assert.That(h.Chat.Items).Count().IsEqualTo(1);
+            await Assert.That(Group(h.Chat, 0).Calls).Count().IsEqualTo(1);
+            File.AppendAllText(other, ReadCallLine + "\n");
+            await h.TickAsync();
+            await Assert.That(Group(h.Chat, 0).Calls).Count().IsEqualTo(2);
             await h.TeardownAsync();
         });
     }
@@ -313,6 +431,119 @@ public class ChatTabViewModelTests {
             h.Permissions.Remove("q1");
             await WaitUntilAsync(() => h.Chat.PendingCards.Count == 1, what: "question card removed");
             await Assert.That(h.Chat.PendingCards[0].RequestId).IsEqualTo("r1");
+            await h.TeardownAsync();
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task A_request_with_an_id_marks_its_row_in_either_order_and_clears_on_resolve() {
+        await RunOnUiAsync(async () => {
+            var h = Claude();
+            h.Permissions.Add(PermissionEntries.Entry("r1", "a1", toolUseId: "t1"));
+            var path = Tmp.CreateFile("t.jsonl", [ToolCallLine, ReadCallLine]);
+            await h.PushAsync(Dto(path));
+            var bash = Group(h.Chat, 0).Calls[0];
+            var read = Group(h.Chat, 0).Calls[1];
+            await WaitUntilAsync(() => bash.IsAwaitingPermission, what: "the card-first mark");
+            await Assert.That(bash.OutcomeGlyph).IsEqualTo("?");
+            await Assert.That(read.IsAwaitingPermission).IsFalse();
+
+            h.Permissions.Remove("r1");
+            await WaitUntilAsync(() => !bash.IsAwaitingPermission, what: "cleared on resolve");
+
+            h.Permissions.Add(PermissionEntries.Entry("r2", "a1", toolUseId: "t2"));
+            await WaitUntilAsync(() => read.IsAwaitingPermission, what: "the row-first mark");
+            await Assert.That(bash.IsAwaitingPermission).IsFalse();
+
+            h.Permissions.Add(PermissionEntries.Entry("r3", "a1", toolUseId: "nope"));
+            await WaitUntilAsync(() => h.Chat.PendingCards.Count == 2, what: "the unmatched card");
+            await Assert.That(bash.IsAwaitingPermission).IsFalse();
+            await Assert.That(read.IsAwaitingPermission).IsTrue();
+            await h.TeardownAsync();
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Two_requests_on_one_row_keep_the_mark_until_both_go_and_a_settled_row_is_cleared() {
+        await RunOnUiAsync(async () => {
+            var h = Claude();
+            var path = Tmp.CreateFile("t.jsonl", [ToolCallLine]);
+            await h.PushAsync(Dto(path));
+            var bash = Group(h.Chat, 0).Calls[0];
+            h.Permissions.Add(PermissionEntries.Entry("r1", "a1", toolUseId: "t1"));
+            h.Permissions.Add(PermissionEntries.Entry("r2", "a1", toolUseId: "t1"));
+            await WaitUntilAsync(() => bash.IsAwaitingPermission, what: "marked");
+
+            h.Permissions.Remove("r1");
+            await WaitUntilAsync(() => h.Chat.PendingCards.Count == 1, what: "one card left");
+            await Assert.That(bash.IsAwaitingPermission).IsTrue();
+
+            File.AppendAllText(path, ToolResultLine + "\n");
+            await h.TickAsync();
+            await Assert.That(bash.Outcome).IsEqualTo(ToolOutcome.Done);
+            await Assert.That(bash.IsAwaitingPermission).IsFalse();
+            await Assert.That(h.Chat.PendingCards).Count().IsEqualTo(1);
+            await h.TeardownAsync();
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task A_request_without_an_id_marks_the_sole_running_call_and_abstains_on_two() {
+        await RunOnUiAsync(async () => {
+            var h = Claude();
+            h.Permissions.Add(PermissionEntries.Entry("r1", "a1", vendor: "codex"));
+            var path = Tmp.CreateFile("t.jsonl", [ToolCallLine]);
+            await h.PushAsync(Dto(path));
+            var first = Group(h.Chat, 0).Calls[0];
+            await WaitUntilAsync(() => first.IsAwaitingPermission, what: "the sole running call, row after card");
+
+            File.AppendAllText(path, ReadCallLine + "\n");
+            await h.TickAsync();
+            var second = Group(h.Chat, 0).Calls[1];
+            await Assert.That(first.IsAwaitingPermission).IsFalse();
+            await Assert.That(second.IsAwaitingPermission).IsFalse();
+
+            File.AppendAllText(path, ToolResultLine + "\n");
+            await h.TickAsync();
+            await Assert.That(first.IsAwaitingPermission).IsFalse();
+            await Assert.That(second.IsAwaitingPermission).IsTrue();
+
+            h.Permissions.Remove("r1");
+            await WaitUntilAsync(() => !second.IsAwaitingPermission, what: "cleared on resolve");
+
+            File.AppendAllText(path, ToolErrorLine.Replace("t1", "t2") + "\n");
+            await h.TickAsync();
+            h.Permissions.Add(PermissionEntries.Entry("r2", "a1", vendor: "codex"));
+            await WaitUntilAsync(() => h.Chat.PendingCards.Count == 1, what: "a card with nothing running");
+            await Assert.That(second.IsAwaitingPermission).IsFalse();
+            await h.TeardownAsync();
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task A_pending_request_marks_the_rebuilt_row_after_a_reset_and_a_path_switch() {
+        await RunOnUiAsync(async () => {
+            var h = Claude();
+            var path = Tmp.CreateFile("t.jsonl", [UserLine, ToolCallLine]);
+            await h.PushAsync(Dto(path));
+            h.Permissions.Add(PermissionEntries.Entry("r1", "a1", toolUseId: "t1"));
+            h.Permissions.Add(PermissionEntries.Entry("r2", "a1", vendor: "codex"));
+            await WaitUntilAsync(() => Group(h.Chat, 1).Calls[0].IsAwaitingPermission, what: "marked before the reset");
+
+            File.WriteAllLines(path, [ToolCallLine]);
+            await h.TickAsync();
+            await Assert.That(Group(h.Chat, 0).Calls[0].IsAwaitingPermission).IsTrue();
+
+            var other = Tmp.CreateFile("o.jsonl", [ToolCallLine.Replace("t1", "t9")]);
+            await h.PushAsync(Dto(other));
+            await Assert.That(Group(h.Chat, 0).Calls[0].IsAwaitingPermission).IsTrue();
+
+            h.Permissions.Remove("r2");
+            await WaitUntilAsync(() => !Group(h.Chat, 0).Calls[0].IsAwaitingPermission, what: "only the id-less request fitted t9");
             await h.TeardownAsync();
         });
     }

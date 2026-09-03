@@ -35,7 +35,8 @@ public sealed class RailSessionViewModel : ReactiveObject, IDisposable {
             IObservable<IReadOnlySet<string>> agentsWithPending, Action<string> open) {
         Id = dto.Id;
         CreatedAt = dto.CreatedAt;
-        var vendorLine = dto.Kind == "agent" ? dto.Vendor : $"{dto.Vendor} · {dto.Kind}";
+        var kindLine = dto.Kind == "agent" ? dto.Vendor : $"{dto.Vendor} · {dto.Kind}";
+        var vendorLine = dto.WorkLocation == WorkLocationText.Borrowed ? $"{kindLine} · borrowed" : kindLine;
         var age = UptimeFormat.Format(DateTime.UtcNow - DateTime.SpecifyKind(dto.CreatedAt, DateTimeKind.Utc));
 
         Primary = dto.Title ?? vendorLine;
@@ -43,7 +44,7 @@ public sealed class RailSessionViewModel : ReactiveObject, IDisposable {
             ? Join(dto.Model, age)
             : Join(vendorLine, dto.Model, age);
         StatusDot = SessionStatusDots.For(dto.Status);
-        Tooltip = Join(dto.Id, dto.Status, dto.RequesterDisplay);
+        Tooltip = Join(dto.Id, dto.Status, dto.RequesterDisplay, dto.BorrowedFrom is null ? null : $"borrowed {dto.BorrowedFrom}");
 
         _isSelected = selectedAgentId.Select(sel => sel == dto.Id)
             .ToProperty(this, x => x.IsSelected, initialValue: false)

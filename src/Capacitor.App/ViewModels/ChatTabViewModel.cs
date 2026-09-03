@@ -37,6 +37,9 @@ public sealed class ChatTabViewModel : ReactiveObject {
     readonly AvaloniaList<ChatItemViewModel> _items = new();
     readonly Dictionary<string, ToolCallItem> _pendingTools = new(StringComparer.Ordinal);
     readonly ConcurrentDictionary<string, byte> _loggedFailures = new(StringComparer.Ordinal);
+    readonly Dictionary<string, PendingPermissionRequest> _requests = new(StringComparer.Ordinal);
+    readonly HashSet<ToolCallItem> _marked = new(ReferenceEqualityComparer.Instance);
+    ToolGroupItem? _openGroup;
 
     /// The tail and the generation it belongs to, taken as one reference: reading the two
     /// separately lets a switch land between them and tag a read of the old file with the new
@@ -185,6 +188,20 @@ public sealed class ChatTabViewModel : ReactiveObject {
 
         cards.Subscribe().DisposeWith(_disposables);
 
+        permissions.Pending
+            .ObserveOn(RxSchedulers.MainThreadScheduler)
+            .Filter(p => p.AgentId == agentId)
+            .Subscribe(changes => {
+                foreach (var change in changes) {
+                    switch (change.Reason) {
+                        case ChangeReason.Add or ChangeReason.Update: _requests[change.Key] = change.Current; break;
+                        case ChangeReason.Remove: _requests.Remove(change.Key); break;
+                    }
+                }
+                Reconcile();
+            })
+            .DisposeWith(_disposables);
+
         daemon.Agents.Connect()
             .ObserveOn(RxSchedulers.MainThreadScheduler)
             .Subscribe(OnAgentsChanged)
@@ -241,8 +258,12 @@ public sealed class ChatTabViewModel : ReactiveObject {
         ReadOnlyNotice = notice;
         IsReadOnlyParticipant = notice.Length > 0;
         _vendor = dto.Vendor;
-        _root = dto.RepoPath;
-        _rootSubject.OnNext(dto.RepoPath);
+        // Tool paths are relative to the checkout the agent runs in. An older daemon sends only
+        // RepoPath: the repository for a primary, whose worktree beneath it ToolDetail strips, or
+        // the borrowed checkout for a reviewer.
+        var root = dto.WorktreePath ?? dto.RepoPath;
+        _root = root;
+        _rootSubject.OnNext(root);
         VendorLabel = HostedHarnessCatalog.LabelFor(_options, dto.Vendor);
         ModelLabel = HostedHarnessCatalog.ModelLabelFor(dto.Vendor, dto.Model ?? "");
         StatusText = dto.Status;
@@ -253,6 +274,8 @@ public sealed class ChatTabViewModel : ReactiveObject {
     void SwitchPath(string path) {
         _items.Clear();
         _pendingTools.Clear();
+        _openGroup = null;
+        _marked.Clear();
         _path = path;
         _lease = new TailLease(new JsonlTail(path), Interlocked.Increment(ref _generation));
         var wasWaiting = _phase == ChatTabPhase.Waiting;
@@ -302,6 +325,8 @@ public sealed class ChatTabViewModel : ReactiveObject {
             case TailStatus.Reset:
                 _items.Clear();
                 _pendingTools.Clear();
+                _openGroup = null;
+                _marked.Clear();
                 break;
         }
 
@@ -312,18 +337,26 @@ public sealed class ChatTabViewModel : ReactiveObject {
         foreach (var e in envelopes) {
             switch (e.Kind) {
                 case AcpEventKind.UserMessage:
+                    _openGroup = null;
                     fresh.Add(new UserTurnItem(e.Text ?? ""));
                     break;
                 case AcpEventKind.AssistantText:
+                    _openGroup = null;
                     fresh.Add(new AssistantTextItem(e.Text ?? ""));
                     break;
                 case AcpEventKind.SystemNote:
+                    _openGroup = null;
                     fresh.Add(new SystemNoteItem(e.Text ?? ""));
                     break;
                 case AcpEventKind.ToolCall: {
-                    var item = new ToolCallItem(e.ToolName ?? "tool", ToolDetail.From(e.ToolInputJson, _root));
+                    var name = e.ToolName ?? "tool";
+                    var item = new ToolCallItem(name, ToolDetail.From(e.ToolInputJson, _root), ToolSummary.Categorize(name, e.ToolInputJson));
                     if (e.ToolCallId is { } id) _pendingTools[id] = item;
-                    fresh.Add(item);
+                    if (_openGroup is null) {
+                        _openGroup = new ToolGroupItem();
+                        fresh.Add(_openGroup);
+                    }
+                    _openGroup.Add(item);
                     break;
                 }
                 case AcpEventKind.ToolResult:
@@ -333,6 +366,27 @@ public sealed class ChatTabViewModel : ReactiveObject {
             }
         }
         if (fresh.Count > 0) _items.AddRange(fresh);
+        Reconcile();
+    }
+
+    /// A row is marked iff some pending request targets it: by tool-use id when the request has
+    /// one, else the sole running call. Recomputed whole on every change to either set and diffed
+    /// against the last marks, because a settled call has already left _pendingTools by the time
+    /// its outcome flips, so the running set alone could never reach it to clear it.
+    void Reconcile() {
+        var targets = new HashSet<ToolCallItem>(ReferenceEqualityComparer.Instance);
+        var sole = _pendingTools.Count == 1 ? _pendingTools.Values.First() : null;
+        foreach (var request in _requests.Values) {
+            if (request.ToolUseId is { } id) {
+                if (_pendingTools.TryGetValue(id, out var call)) targets.Add(call);
+            } else if (sole is not null) {
+                targets.Add(sole);
+            }
+        }
+        foreach (var call in _marked) if (!targets.Contains(call)) call.IsAwaitingPermission = false;
+        foreach (var call in targets) call.IsAwaitingPermission = true;
+        _marked.Clear();
+        _marked.UnionWith(targets);
     }
 
     void LogOnce(string reason) {

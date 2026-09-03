@@ -103,7 +103,9 @@ public class ActivityViewModelTests {
         await Assert.That(first.Time).IsEqualTo(expectedTime);
         await Assert.That(first.Requester).IsEqualTo("Ada Lovelace");
         await Assert.That(first.KindLabel).IsEqualTo("Review flow");
-        await Assert.That(first.RepoLeaf).IsEqualTo("kcap-cli"); // worktree leaf stripped, RepoLabel
+        // A consent record carries the launch request's path verbatim, with no repository behind
+        // it on the wire, so the leaf is that path's own; RepoFull carries the rest.
+        await Assert.That(first.RepoLeaf).IsEqualTo("tender-honking-pebble");
         await Assert.That(first.RepoFull).IsEqualTo("/repos/kcap-cli/.claude/worktrees/tender-honking-pebble");
         await Assert.That(first.Vendor).IsEqualTo("codex");
         await Assert.That(first.Outcome).IsEqualTo("allowed");

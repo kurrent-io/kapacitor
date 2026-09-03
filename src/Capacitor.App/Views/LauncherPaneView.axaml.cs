@@ -110,6 +110,22 @@ public partial class LauncherPaneView : UserControl {
         flyout.ShowAt(anchor);
     }
 
+    void OnPermissionChipClick(object? sender, RoutedEventArgs e) {
+        if (DataContext is not HomeViewModel vm || sender is not Control anchor) return;
+
+        var flyout = new MenuFlyout();
+        foreach (var mode in HostedHarnessCatalog.PermissionModes) {
+            var item = new MenuItem {
+                Header = mode.Label, ToggleType = MenuItemToggleType.Radio,
+                IsChecked = string.Equals(vm.SelectedPermissionMode, mode.Token, StringComparison.Ordinal),
+            };
+            var token = mode.Token;
+            item.Click += (_, _) => vm.SelectedPermissionMode = token;
+            flyout.Items.Add(item);
+        }
+        flyout.ShowAt(anchor);
+    }
+
     /// The vendor's mark at a given size: the brand path when VendorIcons carries one, the tinted
     /// monogram otherwise (both from HostedHarnessCatalog.TileFor). UI-thread only (constructs
     /// thread-affine Geometry/brushes).
@@ -328,6 +344,26 @@ public sealed class EffortChipTextConverter : IValueConverter {
 
     public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture) =>
         value is string { Length: > 0 } effort ? $"Effort: {effort}" : "Default effort";
+
+    public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) =>
+        throw new NotSupportedException();
+}
+
+public sealed class PermissionChipTextConverter : IValueConverter {
+    public static readonly PermissionChipTextConverter Instance = new();
+
+    public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture) =>
+        value is string token ? HostedHarnessCatalog.PermissionModeLabelFor(token) : "";
+
+    public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) =>
+        throw new NotSupportedException();
+}
+
+public sealed class PermissionChipVisibleConverter : IValueConverter {
+    public static readonly PermissionChipVisibleConverter Instance = new();
+
+    public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture) =>
+        value is string vendor && HostedHarnessCatalog.SupportsPermissionMode(vendor);
 
     public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) =>
         throw new NotSupportedException();

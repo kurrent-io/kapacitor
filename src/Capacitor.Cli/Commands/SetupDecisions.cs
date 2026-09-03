@@ -4,7 +4,7 @@ using Capacitor.Cli.Core.Harness;
 namespace Capacitor.Cli.Commands;
 
 /// <summary>
-/// Pure decision helpers for <c>kcap setup</c>'s Step 4 (coding agents). Kept separate from
+/// Pure decision helpers for <c>kcap setup</c>'s Step 4 (harnesses). Kept separate from
 /// <see cref="CodingAgentsStep"/> so <c>SetupCommand</c>'s consent logic — building the
 /// detected-agent summary and deciding whether to install at all — is unit-testable without
 /// touching any installer delegate, filesystem, or console.

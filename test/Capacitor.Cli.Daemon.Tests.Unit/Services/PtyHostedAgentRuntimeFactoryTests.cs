@@ -1,22 +1,22 @@
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Commands;
+using Capacitor.Cli.Daemon.Harness.Claude;
 using Capacitor.Cli.Daemon.Pty;
 using Capacitor.Cli.Daemon.Services;
+using Capacitor.Cli.Daemon.Tests.Unit.Pty;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 
 /// <summary>
-/// PR #244 review (Fix A, BLOCKER): the pre-refactor orchestrator passed
-/// <c>_config.CapacitorPath</c> (the <c>kcap</c> binary) as the review-launch MCP command — the
-/// review agent runs <c>kcap mcp review</c> so the daemon-embedded MCP tools work. After the Task
-/// 10 extraction, <see cref="PtyHostedAgentRuntimeFactory.StartAsync"/> passed
-/// <c>launcher.CliPath</c> (the claude/codex binary) instead, which would make a hosted PR review
-/// try to run <c>claude mcp review</c> / <c>codex mcp review</c> — broken. These tests pin the fix:
-/// <see cref="RuntimeStartContext.CapacitorPath"/> must be threaded into
-/// <see cref="ReviewLaunchBuilder.BuildAsync"/> as the MCP command, not the vendor CLI path.
+/// <see cref="RuntimeStartContext.CapacitorPath"/> must reach <see cref="ReviewLaunchBuilder.BuildAsync"/>
+/// as the review-launch MCP command: the review agent runs <c>kcap mcp review</c>, and the vendor
+/// CLI (<c>launcher.CliPath</c>) has no such subcommand.
 /// </summary>
 public class PtyHostedAgentRuntimeFactoryTests {
+    [TempHome] public required TempHome Home { get; init; }
+    [TempDir]  public required TempDir  Tmp  { get; init; }
+
     sealed class RecordingLauncher(string vendor, string cliPath) : IHostedAgentLauncher {
         public string Vendor  { get; } = vendor;
         public string CliPath { get; } = cliPath;
@@ -55,6 +55,67 @@ public class PtyHostedAgentRuntimeFactoryTests {
             DaemonBridgeUrl: null,
             CapacitorPath: capacitorPath
         );
+
+    /// Real directories, unlike BuildInteractiveContext's: ClaudeLauncher.Prepare writes into the
+    /// worktree and the home.
+    RuntimeStartContext BuildClaudeLaunchContext(string? permissionMode) {
+        var repo     = Tmp.CreateDir("repo");
+        var worktree = Tmp.CreateDir("wt");
+        return new(
+            AgentId: "agent-mode-1",
+            Vendor: "claude",
+            SourceRepoPath: repo,
+            Worktree: new WorktreeInfo(worktree, "wt-branch", repo),
+            Prompt: "build it",
+            Model: "default",
+            Effort: null,
+            Tools: null,
+            IsReview: false,
+            IsReviewFlow: false,
+            Review: null,
+            Cols: 120,
+            Rows: 40,
+            ServerUrl: "",
+            DaemonBridgeUrl: null,
+            CapacitorPath: "kcap",
+            PermissionMode: permissionMode
+        );
+    }
+
+    /// The runtime-context→launcher handoff: the launcher's own tests build a LauncherContext by
+    /// hand, so dropping `PermissionMode = ctx.PermissionMode` here would leave them green.
+    [Test]
+    public async Task Interactive_launch_hands_the_permission_mode_to_the_launcher() {
+        var launcher = new RecordingLauncher("claude", cliPath: "/opt/vendor/claude");
+        var factory  = new PtyHostedAgentRuntimeFactory(launcher, new NullPtyProcessFactory(), NullLogger<PtyHostedAgentRuntimeFactory>.Instance);
+
+        var ctx   = BuildInteractiveContext("claude") with { PermissionMode = "acceptEdits" };
+        var start = await factory.StartAsync(ctx, CancellationToken.None);
+
+        try {
+            await Assert.That(launcher.LastPrepareCtx!.PermissionMode).IsEqualTo("acceptEdits");
+        } finally {
+            await start.Runtime.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task Interactive_claude_launch_spawns_exactly_one_selected_mode_pair() {
+        var config   = new DaemonConfig { ClaudePath = "claude", ServerUrl = "", CapacitorPath = "kcap" };
+        var launcher = new ClaudeLauncher(config, Home, NullLogger<ClaudeLauncher>.Instance);
+        var pty      = new SpyPtyProcessFactory();
+        var factory  = new PtyHostedAgentRuntimeFactory(launcher, pty, NullLogger<PtyHostedAgentRuntimeFactory>.Instance);
+
+        var start = await factory.StartAsync(BuildClaudeLaunchContext("auto"), CancellationToken.None);
+
+        try {
+            var args = pty.LastArgs!;
+            await Assert.That(args.Count(a => a == "--permission-mode")).IsEqualTo(1);
+            await Assert.That(args[Array.IndexOf(args, "--permission-mode") + 1]).IsEqualTo("auto");
+        } finally {
+            await start.Runtime.DisposeAsync();
+        }
+    }
 
     [Test]
     public async Task Review_launch_builds_the_MCP_command_from_CapacitorPath_not_the_agent_CliPath() {
