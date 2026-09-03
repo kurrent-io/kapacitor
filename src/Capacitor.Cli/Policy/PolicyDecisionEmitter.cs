@@ -11,12 +11,14 @@ using Capacitor.Cli.Core.Policy;
 /// here could outlive the hook and lose a deny that had already been written.
 /// </summary>
 internal sealed class PolicyDecisionEmitter(ConfigRoot config) {
-    public Task EmitAsync(PolicyDecisionEventV1 evt, PolicySnapshot snapshot) {
+    /// <param name="snapshot">Null only when the decision names no resolvable snapshot — a failure
+    /// that never got one — so there is nothing to upload alongside it.</param>
+    public Task EmitAsync(PolicyDecisionEventV1 evt, PolicySnapshot? snapshot) {
         try {
             var spool = new HookSpool(config);
             // Snapshot first: a decision names a snapshot id the server cannot resolve on its own,
             // and the spool delivers a session's entries in arrival order.
-            EnsureSnapshotSpooled(spool, evt.SessionId, snapshot);
+            if (snapshot is not null) EnsureSnapshotSpooled(spool, evt.SessionId, snapshot);
             var body = JsonSerializer.Serialize(evt, CapacitorJsonContext.Default.PolicyDecisionEventV1);
             spool.Append(evt.SessionId, "policy-decision", body);
         }

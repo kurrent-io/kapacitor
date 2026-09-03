@@ -31,13 +31,28 @@ internal sealed class ClaudePolicySeam(ConfigRoot config) {
         string SessionId, string Seam, string? AgentId, string? CallId, PolicySnapshot Snapshot,
         EvaluationMode Mode, CanonicalAction Action, PolicyEvaluation Eval, string InputHash, string Reason);
 
+    /// <summary>The hook payload read field by field, before any policy work. The journal
+    /// correlates on <paramref name="CallId"/> and <paramref name="InputHash"/> alone, so both are
+    /// available even when the evaluation below cannot run at all.</summary>
+    sealed record SeamFields(
+        string? ToolName, string? CallId, string? Cwd, string? AgentId, JsonElement? ToolInput, string InputHash);
+
+    /// <summary>Test-only: throws from inside the evaluation region, so the arm that must still
+    /// spend an already-consumed ask is driven by a real exception. Every production step in that
+    /// region is fail-open by construction today, which is exactly why nothing else can raise it.
+    /// Null in production.</summary>
+    internal Action? BeforeSnapshotLoadForTest;
+
     public async Task<int> HandlePreToolUseAsync(string body, string sessionId, bool renderedAgent, TextWriter stdout) {
         JsonNode? node;
         try { node = JsonNode.Parse(body); } catch { return 0; }
-        if (node is null) return 0;
+        if (node is not JsonObject payload) return 0;
 
-        var mode = renderedAgent ? EvaluationMode.TightenOnly : EvaluationMode.Full;
-        if (Prepare(node, sessionId, PolicySeams.ClaudePreToolUse, mode) is not { } ctx) return 0;
+        var mode     = renderedAgent ? EvaluationMode.TightenOnly : EvaluationMode.Full;
+        var fields   = ReadFields(payload);
+        var snapshot = LoadSnapshot(sessionId, fields.Cwd);
+        if (snapshot.IsEmpty) return 0;
+        var ctx = Build(fields, sessionId, PolicySeams.ClaudePreToolUse, snapshot, mode);
 
         var journal = new PolicyDecisionJournal(config);
 
@@ -81,11 +96,29 @@ internal sealed class ClaudePolicySeam(ConfigRoot config) {
     /// earlier seams decided for the same call can only tighten it, never loosen it.
     /// </summary>
     public async Task<SeamAnswer> HandlePermissionRequestAsync(JsonNode node, string sessionId, TextWriter stdout) {
-        if (Prepare(node, sessionId, PolicySeams.ClaudePermissionRequest, EvaluationMode.Full) is not { } ctx)
-            return SeamAnswer.NotAnswered;
+        if (node is not JsonObject payload) return SeamAnswer.NotAnswered;
 
+        var fields  = ReadFields(payload);
         var journal = new PolicyDecisionJournal(config);
-        var consumed = journal.Consume(sessionId, ctx.CallId, ctx.InputHash);
+        // Ahead of the evaluation, not after it: the head entry is spent whatever this invocation
+        // goes on to decide, or a failure here would leave it for the next identical request to
+        // take — a second prompt for a question already put to the human once.
+        var consumed = journal.Consume(sessionId, fields.CallId, fields.InputHash);
+
+        PolicySnapshot? snapshot = null;
+        SeamContext ctx;
+        try {
+            BeforeSnapshotLoadForTest?.Invoke();
+            snapshot = LoadSnapshot(sessionId, fields.Cwd);
+            if (snapshot.IsEmpty) return SeamAnswer.NotAnswered;
+            ctx = Build(fields, sessionId, PolicySeams.ClaudePermissionRequest, snapshot, EvaluationMode.Full);
+        } catch {
+            // The prompt stands, and a consumed ask is the only thing the record would otherwise
+            // lose: with none, silence matches the fail-open PreToolUse takes for the same failure.
+            if (consumed.PendingAsk) await EmitEvaluationError(sessionId, fields, snapshot, consumed);
+            return SeamAnswer.NotAnswered;
+        }
+
         // Both halves ride every event this seam emits: requested=ask alone cannot say whether the
         // guard held a stale ask over a fresh allow, or the policy asked for itself.
         var fresh = ctx.Eval.Outcome.ToString().ToLowerInvariant();
@@ -124,22 +157,12 @@ internal sealed class ClaudePolicySeam(ConfigRoot config) {
         }
     }
 
-    /// <summary>Reads the hook payload and evaluates it. Null for anything the seam must stay out
-    /// of: an unusable payload, or a session with no policy — ungoverned, not "pass-through", so no
-    /// output, no counter, no event, no network. The no-policy world pays nothing for the seam
-    /// being installed.</summary>
-    SeamContext? Prepare(JsonNode node, string sessionId, string seam, EvaluationMode mode) {
-        if (node is not JsonObject body) return null;
-
-        // Field by field: one wrong-typed optional must not cost the evaluation, or a payload the
-        // vendor still acts on would slip past a deny that matches it. An unusable tool_input
-        // normalizes to an Other-kind action, which rules can still match — never to no policy.
+    /// <summary>Reads the hook payload field by field: one wrong-typed optional must not cost the
+    /// evaluation, or a payload the vendor still acts on would slip past a deny that matches it. An
+    /// unusable tool_input normalizes to an Other-kind action, which rules can still match — never
+    /// to no policy.</summary>
+    static SeamFields ReadFields(JsonObject body) {
         var toolName = Str(body, "tool_name");
-        var callId   = Str(body, "tool_use_id");
-        var cwd      = Str(body, "cwd");
-        // The seam runs ahead of the hook command's own id normalization, so it strips the
-        // dashes itself — every kcap event carries the dashless form.
-        var agentId  = Str(body, "agent_id")?.Replace("-", "");
         JsonElement? toolInput;
         try {
             toolInput = body["tool_input"] is { } ti
@@ -147,15 +170,49 @@ internal sealed class ClaudePolicySeam(ConfigRoot config) {
                 : null;
         } catch { toolInput = null; }
 
-        var snapshot = new PolicySnapshotStore(config)
-            .LoadOrBuild(sessionId, cwd is null ? null : GitRepository.FindRoot(cwd));
-        if (snapshot.IsEmpty) return null;
+        return new(
+            toolName,
+            Str(body, "tool_use_id"),
+            Str(body, "cwd"),
+            // The seam runs ahead of the hook command's own id normalization, so it strips the
+            // dashes itself — every kcap event carries the dashless form.
+            Str(body, "agent_id")?.Replace("-", ""),
+            toolInput,
+            PolicyInputHash.Compute(toolName, toolInput));
+    }
 
-        var action = ClaudeActionNormalizer.Normalize(toolName, toolInput, cwd);
-        var eval = PolicyEngine.Evaluate(snapshot, action, mode);
+    /// <summary>An empty snapshot means the session is ungoverned, not "pass-through": no output,
+    /// no counter, no event, no network. The no-policy world pays nothing for the seam being
+    /// installed.</summary>
+    PolicySnapshot LoadSnapshot(string sessionId, string? cwd) => new PolicySnapshotStore(config)
+        .LoadOrBuild(sessionId, cwd is null ? null : GitRepository.FindRoot(cwd));
+
+    static SeamContext Build(SeamFields f, string sessionId, string seam, PolicySnapshot snapshot, EvaluationMode mode) {
+        var action = ClaudeActionNormalizer.Normalize(f.ToolName, f.ToolInput, f.Cwd);
+        var eval   = PolicyEngine.Evaluate(snapshot, action, mode);
         var reason = (eval.MatchedRules.Count > 0 ? eval.MatchedRules[0].Reason : null) ?? DefaultReason;
-        return new(sessionId, seam, agentId, callId, snapshot, mode, action, eval,
-            PolicyInputHash.Compute(toolName, toolInput), reason);
+        return new(sessionId, seam, f.AgentId, f.CallId, snapshot, mode, action, eval, f.InputHash, reason);
+    }
+
+    /// <summary>The provenance for a prompt that stands because the evaluation failed, not because
+    /// a policy asked for it. Emitted only when an ask was consumed, so the record can still
+    /// account for the entry this invocation spent.</summary>
+    Task EmitEvaluationError(string sessionId, SeamFields f, PolicySnapshot? snapshot, PolicyJournalConsume consumed) {
+        string? rawPayload;
+        try { rawPayload = f.ToolInput?.GetRawText(); } catch { rawPayload = null; }
+
+        var action = new CanonicalAction {
+            Kind = ActionKind.Other, Vendor = "claude", Cwd = f.Cwd,
+            RawToolName = string.IsNullOrEmpty(f.ToolName) ? null : f.ToolName,
+            RawPayloadJson = rawPayload,
+        };
+
+        return new PolicyDecisionEmitter(config).EmitAsync(new PolicyDecisionEventV1(
+            sessionId, f.AgentId, "claude", PolicySeams.ClaudePermissionRequest,
+            snapshot?.Id ?? "unknown", PolicyEngine.Version, "full", "ask", "prompt_stands",
+            PolicyWire.ToWire(action), [], snapshot?.Degraded ?? false, "evaluation_error",
+            f.CallId, consumed.Ambiguous, DateTimeOffset.UtcNow.ToString("O"),
+            PendingAskConsumed: true, FreshOutcome: "error"), snapshot);
     }
 
     /// <summary><see cref="JsonNode.GetValue{T}"/> throws on a value of another type, which would
