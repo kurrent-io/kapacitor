@@ -37,7 +37,7 @@ public static partial class CommandEvents {
     // verb is still a KNOWN one.
     static readonly HashSet<string> KnownVerbs = new(StringComparer.Ordinal) {
         "--help", "-h", "help", "--version", "-v",
-        "errors", "recap", "validate-plan", "eval", "login", "logout", "whoami",
+        "errors", "recap", "sessions", "validate-plan", "eval", "login", "logout", "whoami",
         "daemon", "agent", "setup", "plugin", "profile", "use", "status", "config",
         "ignore", "remap", "repos", "projects", "project", "update", "review", "mcp",
         "curate", "cleanup", "uninstall", "disable", "hide", "import", "watch",
