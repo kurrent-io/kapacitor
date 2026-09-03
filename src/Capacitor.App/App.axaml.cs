@@ -333,7 +333,8 @@ public partial class App : Application {
         // attached to the visual tree (WorkspaceView's own header comment).
         var attachFactory = CoreTerminalAttachClient.Factory(() => _daemonStore.SocketPath(service.DaemonName));
         WorkspaceViewModel BuildWorkspace(string agentId) => new(
-            agentId, service, actions, attachFactory, () => new XtermTerminalSurface(80, 24, PtyDumpPath), TimeProvider.System, opener, permissions);
+            agentId, service, actions, attachFactory, () => new XtermTerminalSurface(80, 24, PtyDumpPath), TimeProvider.System, opener, permissions,
+            new ServerWorkContextSource(_config, profiles));
 
         _coordinator = new MainWindowCoordinator(
             () => BuildAndShowMainWindow(
