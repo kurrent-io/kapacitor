@@ -93,7 +93,7 @@ of it is on this list, exhaustively:
   position, or a wrapper rule grants it argv — and every such pattern is a visible grant an author
   wrote into the file. What the maintained list guarantees is narrower and absolute: a **listed**
   shell name in any argv position, and every refused form (redirection, expansion, compound syntax,
-  an `env`/`sudo` split-string), is never allow-eligible under any pattern. Deny/ask rules govern
+  an `env` split-string), is never allow-eligible under any pattern. Deny/ask rules govern
   unlisted interpreters like any other program;
 - joined only by top-level `&&`, `;` or `|`.
 
