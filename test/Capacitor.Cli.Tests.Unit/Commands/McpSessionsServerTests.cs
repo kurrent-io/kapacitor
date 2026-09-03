@@ -43,12 +43,20 @@ public class McpSessionsServerTests {
     [Test]
     [Arguments("all")]
     [Arguments("owner")]
-    [Arguments("a/b/c")]
+    [Arguments("a//b")]
     [Arguments("DA9C523C68AEE2F1")]
     [Arguments("da9c523c")]
     public async Task BuildRepoSessionsUrl_rejects_malformed_repo(string repo) {
         await Assert.That(() => McpSessionsServer.BuildRepoSessionsUrl("http://srv", new JsonObject { ["repo"] = repo }, CwdHash))
             .Throws<ArgumentException>();
+    }
+
+    [Test]
+    public async Task BuildRepoSessionsUrl_nested_group_owner_resolves_repo_hash() {
+        var url = McpSessionsServer.BuildRepoSessionsUrl(
+            "http://srv", new JsonObject { ["repo"] = "group/subgroup/project" }, null);
+
+        await Assert.That(url).Contains($"/api/repositories/{RepoHashHelper.ComputeRepoHash("group/subgroup", "project")}/sessions");
     }
 
     [Test]

@@ -20,13 +20,22 @@ public class RepoRefTests {
     [Test]
     [Arguments("all")]
     [Arguments("owner")]
-    [Arguments("a/b/c")]
     [Arguments("DA9C523C68AEE2F1")]
     [Arguments("da9c523c")]
     [Arguments("owner /name")]
     [Arguments("/name")]
+    [Arguments("a//b")]
+    [Arguments("owner/")]
     [Arguments("")]
     public async Task Other_shapes_are_rejected(string value) {
         await Assert.That(RepoHashHelper.TryParseRepoRef(value, out _)).IsFalse();
+    }
+
+    [Test]
+    public async Task Nested_group_owner_keeps_the_group_path_in_the_hash() {
+        var ok = RepoHashHelper.TryParseRepoRef("group/subgroup/project", out var hash);
+
+        await Assert.That(ok).IsTrue();
+        await Assert.That(hash).IsEqualTo(RepoHashHelper.ComputeRepoHash("group/subgroup", "project"));
     }
 }

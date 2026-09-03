@@ -32,6 +32,14 @@ public class SessionsArgsTests {
     }
 
     [Test]
+    public async Task Nested_group_owner_repo_resolves_the_group_path_hash() {
+        var opts = SessionsArgs.Parse(["sessions", "--repo", "group/subgroup/project"], out var error);
+
+        await Assert.That(error).IsNull();
+        await Assert.That(opts!.RepoHash).IsEqualTo(RepoHashHelper.ComputeRepoHash("group/subgroup", "project"));
+    }
+
+    [Test]
     public async Task Two_state_flags_is_a_usage_error() {
         var opts = SessionsArgs.Parse(["sessions", "--active", "--all"], out var error);
 

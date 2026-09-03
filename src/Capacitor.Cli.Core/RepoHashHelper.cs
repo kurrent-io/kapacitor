@@ -12,7 +12,8 @@ public static partial class RepoHashHelper {
         return Convert.ToHexStringLower(hash)[..16];
     }
 
-    /// <summary>Accepts the two shapes a caller may name a repo by: <c>owner/name</c>, hashed here,
+    /// <summary>Accepts the two shapes a caller may name a repo by: <c>owner/name</c>, split on the
+    /// last slash so a nested-group owner (e.g. GitLab subgroups) keeps its own slashes, hashed here,
     /// or a 16-character lowercase hex hash, passed through. Uppercase hex is rejected rather than
     /// folded so a hash copied from the wrong place fails loudly.</summary>
     public static bool TryParseRepoRef(string value, out string repoHash) {
@@ -26,12 +27,18 @@ public static partial class RepoHashHelper {
             return true;
         }
 
-        var parts = value.Split('/');
+        if (value.Any(char.IsWhiteSpace)) return false;
 
-        if (parts.Length != 2 || parts[0].Length == 0 || parts[1].Length == 0) return false;
-        if (parts[0].Any(char.IsWhiteSpace) || parts[1].Any(char.IsWhiteSpace)) return false;
+        var lastSlash = value.LastIndexOf('/');
 
-        repoHash = ComputeRepoHash(parts[0], parts[1]);
+        if (lastSlash <= 0 || lastSlash == value.Length - 1) return false;
+
+        var owner = value[..lastSlash];
+        var name  = value[(lastSlash + 1)..];
+
+        if (owner.Split('/').Any(segment => segment.Length == 0)) return false;
+
+        repoHash = ComputeRepoHash(owner, name);
 
         return true;
     }
