@@ -101,7 +101,9 @@ public class ServerWorkContextSourceTests {
         handler.Gates.Enqueue(gateB1);
         handler.Gates.Enqueue(gateB2);
         var b = source.ReadAsync(Session, CancellationToken.None);
-        await WorkspaceFixtures.WaitUntilAsync(() => handler.Sent >= 3, what: "B's two requests in flight");
+        await WorkspaceFixtures.WaitUntilAsync(
+            () => { lock (handler.Gates) return handler.Gates.Count == 0; },
+            what: "B's two requests parked on their gates");
 
         handler.Status = HttpStatusCode.Unauthorized;
         var a = await source.ReadAsync(Session, CancellationToken.None);
@@ -134,5 +136,38 @@ public class ServerWorkContextSourceTests {
         var after = await source.ReadAsync(Session, CancellationToken.None);
         await Assert.That(after.Kind).IsEqualTo(WorkContextReadKind.Unreachable);
         await source.DisposeAsync(); // idempotent
+    }
+
+    [Test]
+    public async Task NoAuthRequired_is_accepted_like_Ok() {
+        var (source, handlers) = Build(Config.Root, Profiles(Config.Root), () => AuthStatus.NoAuthRequired);
+
+        var read = await source.ReadAsync(Session, CancellationToken.None);
+
+        await Assert.That(read.Kind).IsEqualTo(WorkContextReadKind.Ready);
+        await Assert.That(handlers.Count).IsEqualTo(1);
+        await source.DisposeAsync();
+    }
+
+    [Test]
+    public async Task The_callers_own_cancellation_propagates_and_the_source_stays_usable_after() {
+        var (source, handlers) = Build(Config.Root, Profiles(Config.Root));
+        await source.ReadAsync(Session, CancellationToken.None);
+        var handler = handlers.Single();
+        var gate = new TaskCompletionSource();
+        handler.Gates.Enqueue(gate);
+        using var cts = new CancellationTokenSource();
+        var pending = source.ReadAsync(Session, cts.Token);
+        await WorkspaceFixtures.WaitUntilAsync(
+            () => { lock (handler.Gates) return handler.Gates.Count == 0; },
+            what: "the read parked on its gate");
+
+        cts.Cancel();
+
+        await Assert.ThrowsAsync<OperationCanceledException>(async () => await pending);
+
+        var after = await source.ReadAsync(Session, CancellationToken.None);
+        await Assert.That(after.Kind).IsEqualTo(WorkContextReadKind.Ready);
+        await source.DisposeAsync();
     }
 }

@@ -16,6 +16,7 @@ public sealed class ServerWorkContextSource : IWorkContextSource, IAsyncDisposab
         public HttpClient Client { get; } = client;
         public int  Borrowers;
         public bool Retired;
+        public bool Disposed;
     }
 
     readonly ConfigRoot _config;
@@ -110,10 +111,10 @@ public sealed class ServerWorkContextSource : IWorkContextSource, IAsyncDisposab
     }
 
     void Release(ClientLease lease) {
-        bool dispose;
+        bool dispose = false;
         lock (_lock) {
             lease.Borrowers--;
-            dispose = lease.Retired && lease.Borrowers == 0;
+            if (lease.Retired && lease.Borrowers == 0 && !lease.Disposed) { lease.Disposed = true; dispose = true; }
         }
         if (dispose) lease.Client.Dispose();
     }
@@ -134,10 +135,10 @@ public sealed class ServerWorkContextSource : IWorkContextSource, IAsyncDisposab
         catch (Exception) { /* each read reported its own outcome; only the drain matters here */ }
 
         if (lease is not null) {
-            bool dispose;
+            bool dispose = false;
             lock (_lock) {
                 lease.Retired = true;
-                dispose = lease.Borrowers == 0;
+                if (lease.Borrowers == 0 && !lease.Disposed) { lease.Disposed = true; dispose = true; }
             }
             if (dispose) lease.Client.Dispose();
         }

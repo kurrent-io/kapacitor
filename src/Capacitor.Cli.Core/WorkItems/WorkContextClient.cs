@@ -52,5 +52,5 @@ public sealed class WorkContextClient(HttpClient http, string serverUrl) : IWork
     static bool IsTransient(Exception e, CancellationToken ct) =>
         e is OperationCanceledException
             ? !ct.IsCancellationRequested
-            : e is HttpRequestException or JsonException or NotSupportedException;
+            : e is HttpRequestException or JsonException or NotSupportedException or IOException;
 }
