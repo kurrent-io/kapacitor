@@ -381,6 +381,7 @@ Recap session c4de7fbe-cff5-4e2c-bf80-9858d02f58be and propose what should be do
 kcap sessions                       # running sessions on the current repo, everyone you can see
 kcap sessions --all --mine          # your own, running and ended
 kcap sessions --repo acme/widgets   # another repository, by owner/name or 16-hex hash
+kcap sessions --ended --limit 50   # the last 50 ended sessions
 kcap sessions --touching src/Foo    # sessions with an Edit/Write attempt on a matching path
 kcap sessions --json                # the raw server response
 ```
