@@ -369,7 +369,7 @@ public class AgentStatusSnapshotTests {
         var fx = Build();
         try {
             var pty = fx.Orchestrator.SeedAgentForTest("pty-1");
-            var acp = AgentOrchestratorHarness.SeedAcpAgent(fx.Orchestrator, "acp-1", new FakeAcpRuntime());
+            AgentOrchestratorHarness.SeedAcpAgent(fx.Orchestrator, "acp-1", new FakeAcpRuntime());
             var both = AgentOrchestratorHarness.SeedAcpAgent(fx.Orchestrator, "acp-2", new FakeAcpRuntime { AcpSessionId = "handshake" });
             both.SessionId = "discovered";
 
