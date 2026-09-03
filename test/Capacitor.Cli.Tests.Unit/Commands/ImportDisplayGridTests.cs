@@ -181,6 +181,52 @@ public class ImportDisplayGridTests {
     );
 
     /// <summary>
+    /// Column 0 belongs to headings, so a line the run writes for itself is indented under the one it
+    /// belongs to — and one step deeper again where the whole run is nested inside a setup step.
+    /// </summary>
+    [Test, NotInParallel]
+    [Arguments(false, "  Found 3 sessions.")]
+    [Arguments(true, "    Found 3 sessions.")]
+    public async Task a_line_sits_under_its_heading_rather_than_against_the_margin(
+            bool nested, string expected) {
+        using var capture = ConsoleOutput.StartCapture("\n");
+
+        new ImportCommand.ImportDisplay { Tty = false, Nested = nested }.Line("Found 3 sessions.");
+
+        await Assert.That(capture.GetCapturedOutput()).IsEqualTo(expected + "\n");
+    }
+
+    /// <summary>
+    /// A grid ignores leading spaces, so the counts used to draw against the margin while the prose
+    /// beside them was indented. Padding is what puts them on the same line as everything else in the
+    /// section.
+    /// </summary>
+    [Test, NotInParallel]
+    public async Task the_counts_line_up_with_the_prose_around_them() {
+        var originalConsole = AnsiConsole.Console;
+        var buffer          = new StringWriter();
+        AnsiConsole.Console = AnsiConsole.Create(new AnsiConsoleSettings {
+            Ansi        = AnsiSupport.No,
+            ColorSystem = ColorSystemSupport.NoColors,
+            Out         = new AnsiConsoleOutput(buffer),
+        });
+
+        try {
+            new ImportCommand.ImportDisplay { Tty = true }.WritePlanGrid(
+                new(New: 5, Partial: 0, AlreadyLoaded: 0, TooShort: 0, Excluded: 0, ProbeError: 0),
+                bySource: null);
+        } finally {
+            AnsiConsole.Console = originalConsole;
+        }
+
+        var counts = buffer.ToString()
+                           .Split('\n')
+                           .First(l => l.Contains("New", StringComparison.Ordinal));
+
+        await Assert.That(counts).StartsWith("  ");
+    }
+
+    /// <summary>
     /// A section heading is the structure of the output only where the run is itself the command. Nested
     /// inside a setup step it is subordinate to a rule already drawn, and is marked as such.
     /// </summary>

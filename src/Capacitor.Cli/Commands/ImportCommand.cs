@@ -38,11 +38,23 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
         /// per section is right only where the run is itself the command.</summary>
         public bool Nested { get; init; }
 
+        /// <summary>
+        /// Where a line of this run's own output starts. <b>Column 0 belongs to headings</b>, and only a
+        /// heading that is a rule sits there — everything a section contains is indented under it.
+        ///
+        /// <para>Renderables need it as a <see cref="Padder"/> rather than as text: a grid or a table
+        /// ignores leading spaces and would otherwise draw against the margin while the prose beside it
+        /// is indented.</para>
+        /// </summary>
+        int Detail => Nested ? 4 : 2;
+
+        string Indented => new(' ', Detail);
+
         public void Line(string plain, string? markup = null) {
             if (Quiet) return;
 
-            if (Tty) AnsiConsole.MarkupLine(markup ?? Markup.Escape(plain));
-            else Console.WriteLine(plain);
+            if (Tty) AnsiConsole.MarkupLine(Indented + (markup ?? Markup.Escape(plain)));
+            else Console.WriteLine(Indented + plain);
         }
 
         /// <summary>
@@ -113,7 +125,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
                         );
                     }
 
-                    AnsiConsole.Write(sub);
+                    AnsiConsole.Write(new Padder(sub).Padding(Detail, 0, 0, 0));
                 }
 
                 var grid = new Grid().AddColumn().AddColumn();
@@ -123,7 +135,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
                 grid.AddRow("[bold]Too short[/]", c.TooShort.ToString());
                 grid.AddRow("[bold]Excluded[/]", c.Excluded.ToString());
                 if (c.ProbeError > 0) grid.AddRow("[bold]Probe errors[/]", $"[red]{c.ProbeError}[/]");
-                AnsiConsole.Write(grid);
+                AnsiConsole.Write(new Padder(grid).Padding(Detail, 0, 0, 0));
             } else {
                 if (bySource is { Count: > 1 }) {
                     Heading("By source", "yellow");
@@ -164,7 +176,8 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
 
                 // Three buckets, not one: import knows the difference and a single number would hide it.
                 AnsiConsole.MarkupLine(
-                    $"[green]{f.Imported}[/] imported · {f.Skipped} skipped · "
+                    Indented
+                  + $"[green]{f.Imported}[/] imported · {f.Skipped} skipped · "
                   + (f.Failed > 0 ? $"[red]{f.Failed}[/] failed" : "0 failed"));
 
                 if (bySource is { Count: > 1 }) {
@@ -206,7 +219,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
                         );
                     }
 
-                    AnsiConsole.Write(sub);
+                    AnsiConsole.Write(new Padder(sub).Padding(Detail, 0, 0, 0));
                 }
 
                 var grid = new Grid().AddColumn().AddColumn();
@@ -229,9 +242,9 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
                         grid.AddRow("[bold]Summaries[/]", $"{f.SummariesGenerated} generated, {f.SummariesFailed} failed");
                 }
 
-                AnsiConsole.Write(grid);
+                AnsiConsole.Write(new Padder(grid).Padding(Detail, 0, 0, 0));
 
-                if (f.Failed > 0) AnsiConsole.MarkupLine($"[dim]{failureNote}[/]");
+                if (f.Failed > 0) AnsiConsole.MarkupLine($"{Indented}[dim]{failureNote}[/]");
             } else {
                 Heading("Done", "green");
                 Console.WriteLine($"  {f.Imported} imported · {f.Skipped} skipped · {f.Failed} failed");

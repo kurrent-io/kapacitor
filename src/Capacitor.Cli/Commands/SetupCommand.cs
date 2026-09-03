@@ -985,29 +985,29 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
 
         grid.AddRow("[bold]Config[/]", Markup.Escape(AppConfig.GetConfigPath(config)));
 
-        AnsiConsole.Write(grid);
+        AnsiConsole.Write(new Padder(grid).Padding(2, 0, 0, 0));
 
         // hooks only load at coding-agent session start. The common case is a user
         // running `kcap setup` from inside an already-running session, which won't stream
         // live until it restarts — so tell them, but only when something was actually
         // installed (no point promising recording we never wired up).
         var restartTip = LiveRecordingRestartTip(installResult);
-        if (restartTip is not null) AnsiConsole.MarkupLine($"\n{restartTip}");
+        if (restartTip is not null) AnsiConsole.MarkupLine($"\n  {restartTip}");
 
         // Setup itself is user-scope and works fine outside a repo, but sessions recorded
         // from non-repo directories have no owner/repo/branch/PR enrichment (see
         // RepositoryDetection.DetectRepositoryAsync), which weakens grouping in the UI.
         if (gitRoot is null) {
             AnsiConsole.MarkupLine(
-                $"\n[yellow]Tip:[/] you ran setup outside a git working tree ([dim]{Markup.Escape(Environment.CurrentDirectory)}[/]).");
+                $"\n  [yellow]Tip:[/] you ran setup outside a git working tree ([dim]{Markup.Escape(Environment.CurrentDirectory)}[/]).");
             AnsiConsole.MarkupLine(
-                "  Hooks fire from any directory, but sessions recorded outside a repo won't include owner/repo/branch context.");
+                "    Hooks fire from any directory, but sessions recorded outside a repo won't include owner/repo/branch context.");
             AnsiConsole.MarkupLine(
-                "  [dim]cd[/] into your project before recording to capture full session context.");
+                "    [dim]cd[/] into your project before recording to capture full session context.");
         }
 
-        AnsiConsole.MarkupLine("\n[dim]Optional:[/] start the daemon with [cyan]kcap daemon start -d[/]");
-        AnsiConsole.MarkupLine("[dim]Optional:[/] import past sessions with [cyan]kcap import --org[/]");
+        AnsiConsole.MarkupLine("\n  [dim]Optional:[/] start the daemon with [cyan]kcap daemon start -d[/]");
+        AnsiConsole.MarkupLine("  [dim]Optional:[/] import past sessions with [cyan]kcap import --org[/]");
 
         WriteNextSteps(ShouldOfferGuidedTour(detectedSummary is not null, claudeSettingsPath, stepPaths));
 
