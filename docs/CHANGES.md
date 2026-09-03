@@ -619,3 +619,34 @@ only for owned review-flow reviewers: bypass silences permission prompts, not qu
 one-time bypass consent dialog, and the multi-CR spray would answer either. The chip is withheld for
 every vendor but Claude, the mode is session-scoped like the effort, and the harness picker no
 longer offers "Remember" — a chosen harness is always persisted for the repository.
+
+## Desktop shell: the work-context sidebar
+
+**AI-2198** (spec: `docs/superpowers/specs/2026-09-03-ai2198-work-context-sidebar-design.md`) adds the
+400px right column of the session workspace: the session's work item with its declared parts and
+blockers, its pull requests, who is attached, and the session's facts. **It is built on the three
+reads the server exposes over HTTP** — a session's assignments, a work item's topology, and the
+session summary — and everything work-item detail the server serves only in-process to its own
+dashboard (state, overview, per-part completion, links with URL and state, contributors) renders as
+a SOON pill until a read endpoint exists. The card shows the session's primary work item; a
+repo-less session has no work item at all, because the server requires a repository on one, and the
+pane says so rather than showing an item without a key.
+
+**The key is split from the server's label by convention, not contract.** The assignments route
+labels a keyed item `"KEY — title"`; the pane takes the half before the separator as the key and the
+topology item's title as the title. A change to that composition shows the whole label as the title
+and drops the key chip — safe, but silent, which is why the dependency is named here.
+
+**Reads are leased by session id.** The daemon puts `session_id` and `branch` on the status wire, and
+each read carries a lease with its own cancellation; a switch starts the new session's read at once
+and drops the old one's result, teardown cancels and awaits every outstanding lease, and all lease
+bookkeeping runs on the UI thread. The reader fails closed: a 2xx with an unparseable body is a
+failure, a final 401 on any route signs the pane out, a 403 is "not in plan" only with the exact plan
+code. A section blip dims the pane and keeps the last good section; an authoritative empty answer
+clears it; signed-out, not-in-plan and unknown-session clear every server-derived projection.
+
+**The app's server clients are one set with one cleanup.** The work-context source holds its HTTP
+client by lease so overlapping reads never see it disposed, retires it on sign-out, and is torn down
+with the launch client through a holder that memoizes the cleanup, so both teardown paths reach it
+and nothing is disposed twice. The window gains a minimum width equal to its default: 310 of rail plus
+400 of pane must never squeeze the terminal column to nothing.
