@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Acp;
+using Capacitor.Cli.Core.Policy;
 using Microsoft.Extensions.Logging;
 
 namespace Capacitor.Cli.Daemon.Acp;
@@ -45,7 +46,17 @@ internal sealed partial class AcpInteractionBridge(
         AcpLaunchPermissionPreset?                                                    preset = null,
         // Fire-and-forget audit sink invoked once per preset auto-approval (through a non-throwing
         // boundary). Null in tests / when no server connection is wired.
-        Action<AcpAutoApprovalNotice>?                                                notifyAutoApproval = null
+        Action<AcpAutoApprovalNotice>?                                                notifyAutoApproval = null,
+        // The launch's own policy, evaluated ahead of the preset on the INTERACTIVE path. Null (or
+        // empty) leaves every arm below exactly as it is.
+        PolicySnapshot?                                                               policySnapshot = null,
+        string?                                                                       policyVendor = null,
+        // Fire-and-forget audit sink for one policy decision (through a non-throwing boundary).
+        Action<PolicyDecisionEventV1>?                                                notifyPolicyDecision = null,
+        // The launch's working directory, which a relative tool-call path is resolved against. Without
+        // it such a frame normalizes to Other and no path rule can match it, while the preset arm —
+        // which reads the raw frame kind — would still auto-approve.
+        string?                                                                       policyCwd = null
     ) {
     static readonly IReadOnlySet<string> EmptyAdmitted = new HashSet<string>(StringComparer.Ordinal);
 
@@ -217,6 +228,50 @@ internal sealed partial class AcpInteractionBridge(
             return CancelledResult();
         }
 
+        // The launch's own policy, ahead of every kcap layer that could widen it (INTERACTIVE path
+        // only). A deny or an allow is answered here; an ask is terminal for these layers — the
+        // preset below is skipped and the request parks on the human lane — and only a no-decision
+        // falls through unchanged. A throwing evaluation leaves the request on the lane rather than
+        // deciding it.
+        var policyForcedAsk = false;
+
+        if (unattendedPolicy == AcpUnattendedInteractionPolicy.Disabled
+         && policySnapshot is { IsEmpty: false } snapshot) {
+            CanonicalAction?  action     = null;
+            PolicyEvaluation? evaluation = null;
+
+            try {
+                action     = AcpActionNormalizer.Normalize(parsed.ToolCall, policyVendor ?? "unknown", policyCwd);
+                evaluation = PolicyEngine.Evaluate(snapshot, action, EvaluationMode.Full);
+            } catch (Exception ex) {
+                LogPolicyEvaluationFailed(ex, agentId);
+            }
+
+            if (action is { } act && evaluation is { } eval) {
+                var correlationId = TryGetToolCallId(parsed.ToolCall);
+
+                switch (eval.Outcome) {
+                    case PolicyOutcome.Deny:
+                        TryNotifyPolicyDecision(snapshot, act, eval, parsed.SessionId, correlationId, "deny", "deny");
+
+                        return DenyResult(options);
+                    case PolicyOutcome.Allow when TrySelectSingleAllowOnce(options) is { } policyChoice:
+                        TryNotifyPolicyDecision(snapshot, act, eval, parsed.SessionId, correlationId, "allow", "allow");
+
+                        return SelectedResult(policyChoice);
+                    case PolicyOutcome.Allow:
+                        // Nothing offered unambiguously means allow-once. Degrade to the layers below
+                        // rather than answering with an option id the agent never offered.
+                        TryNotifyPolicyDecision(snapshot, act, eval, parsed.SessionId, correlationId, "allow", "pass_through");
+                        break;
+                    case PolicyOutcome.Ask:
+                        TryNotifyPolicyDecision(snapshot, act, eval, parsed.SessionId, correlationId, "ask", "parked");
+                        policyForcedAsk = true;
+                        break;
+                }
+            }
+        }
+
         // Launch-time permission preset (INTERACTIVE path only). Sits strictly between "frame
         // understood" and "forward to human": it can only ever replace a prompt with an allow — never
         // a cancel, never a standing grant. Auto-approve iff the request's ACP tool kind is one the
@@ -224,6 +279,7 @@ internal sealed partial class AcpInteractionBridge(
         // kind the preset does not cover, a kind-less frame, zero/multiple allow_once, or a sole
         // allow_always — falls through to the interactive forward below.
         if (unattendedPolicy == AcpUnattendedInteractionPolicy.Disabled
+         && !policyForcedAsk
          && preset is not null
          && TryGetToolKind(parsed.ToolCall) is { } toolKind
          && preset.AutoApprovedKinds.Contains(toolKind)) {
@@ -586,13 +642,8 @@ internal sealed partial class AcpInteractionBridge(
         if (options.Count == 0)
             return CancelledResult()!.Value;
 
-        // A refusal is answered with the agent's own reject option where it offered one. Answering
-        // `cancelled` instead tells the agent the prompt turn was cancelled — a different thing, and
-        // one an agent may respond to by tearing the session down rather than moving on.
         if (NegativeOutcomes.Contains(decision.Outcome))
-            return TrySelectReject(decision, options) is { } rejection
-                ? SelectedResult(rejection)
-                : CancelledResult()!.Value;
+            return DenyResult(options, decision.SelectedOptionId);
 
         // Fail-safe allowlist: only a RECOGNIZED affirmative outcome can ever produce an allow
         // "selected". An unrecognized/typo'd string maps to cancelled. There is deliberately no
@@ -621,6 +672,17 @@ internal sealed partial class AcpInteractionBridge(
         return matched is not null ? SelectedResult(matched) : CancelledResult()!.Value;
     }
 
+    /// <summary>The ONE refusal answer, whatever refused — a human decision or the launch's own
+    /// policy. A refusal is answered with the agent's own reject option where it offered one, because
+    /// answering <c>cancelled</c> instead tells the agent the prompt turn was cancelled — a different
+    /// thing, and one an agent may respond to by tearing the session down rather than moving on.
+    /// <paramref name="selectedOptionId"/> is the refuser's explicitly chosen id where it had one;
+    /// a policy deny has none and takes the least-privilege reject.</summary>
+    static JsonElement DenyResult(IReadOnlyList<PermissionOptionDto> options, string? selectedOptionId = null) =>
+        TrySelectReject(selectedOptionId, options) is { } rejection
+            ? SelectedResult(rejection)
+            : CancelledResult()!.Value;
+
     /// <summary>The reject option to answer a refusal with, or null when the agent offered none (the
     /// caller then falls back to <c>cancelled</c> — with no way to say no, saying nothing is honest).
     /// An explicitly chosen id wins, but ONLY when it resolves to a reject-kind option: a refusal must
@@ -628,10 +690,10 @@ internal sealed partial class AcpInteractionBridge(
     /// reject, preferring <c>reject_once</c> over <c>reject_always</c>, and never guessing between two
     /// of the same kind — the standing-refusal case is exactly where a wrong pick persists.</summary>
     static PermissionOptionDto? TrySelectReject(
-            AcpInteractionDecision decision, IReadOnlyList<PermissionOptionDto> options) {
+            string? selectedOptionId, IReadOnlyList<PermissionOptionDto> options) {
         var rejects = options.Where(o => o.Kind is { } k && RejectKinds.Contains(k)).ToArray();
 
-        if (decision.SelectedOptionId is { } optionId)
+        if (selectedOptionId is { } optionId)
             return Addressable(rejects.FirstOrDefault(o => o.OptionId == optionId), options);
 
         var once   = rejects.Where(o => o.Kind == "reject_once").ToArray();
@@ -712,6 +774,22 @@ internal sealed partial class AcpInteractionBridge(
         }
     }
 
+    /// <summary>The same non-throwing boundary for the policy decision audit. One event per
+    /// evaluated request, so there is nothing ambiguous about which call it answers.</summary>
+    void TryNotifyPolicyDecision(
+            PolicySnapshot snapshot, CanonicalAction action, PolicyEvaluation evaluation,
+            string sessionId, string? correlationId, string requested, string effective) {
+        try {
+            notifyPolicyDecision?.Invoke(new PolicyDecisionEventV1(
+                sessionId, agentId, policyVendor ?? "unknown", PolicySeams.AcpRequestPermission, snapshot.Id,
+                PolicyEngine.Version, "full", requested, effective, PolicyWire.ToWire(action),
+                PolicyWire.ToWire(evaluation.MatchedRules), snapshot.Degraded, null, correlationId, false,
+                DateTimeOffset.UtcNow.ToString("O")));
+        } catch (Exception ex) {
+            logger.LogDebug(ex, "ACP: policy decision audit notify threw for agent {AgentId}; ignoring", agentId);
+        }
+    }
+
     static JsonElement SelectedResult(PermissionOptionDto chosen) =>
         JsonSerializer.SerializeToElement(
             new PermissionOutcomeResult(new PermissionOutcomeDto("selected", chosen.OptionId)),
@@ -764,6 +842,9 @@ internal sealed partial class AcpInteractionBridge(
     // ACP kind + the preset token, plus the tool title as EXPLICITLY untrusted, agent-supplied context.
     [LoggerMessage(Level = LogLevel.Information, Message = "ACP preset '{Preset}' auto-approved '{Kind}' permission for agent {AgentId} (tool title, untrusted: {ToolTitle})")]
     partial void LogPresetAutoApproved(string agentId, string kind, string preset, string toolTitle);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "ACP: policy evaluation failed for agent {AgentId}; the permission request takes the human lane")]
+    partial void LogPolicyEvaluationFailed(Exception exception, string agentId);
 
     [LoggerMessage(Level = LogLevel.Information, Message = "ACP unattended review-flow: declined permission for agent {AgentId} ({Reason}); returning cancelled")]
     partial void LogUnattendedAutoApproveDeclined(string agentId, string reason);

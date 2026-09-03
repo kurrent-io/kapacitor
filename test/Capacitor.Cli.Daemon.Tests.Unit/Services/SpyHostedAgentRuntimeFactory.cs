@@ -43,7 +43,12 @@ sealed class SpyHostedAgentRuntimeFactory(string vendor) : IHostedAgentRuntimeFa
 
     public bool IsAvailable() => true;
 
+    /// <summary>Runs at the instant the runtime would start, before anything the launch does
+    /// afterwards — the seam for asserting what the orchestrator had already published by then.</summary>
+    public Action? OnStart { get; init; }
+
     public Task<HostedRuntimeStart> StartAsync(RuntimeStartContext ctx, CancellationToken ct) {
+        OnStart?.Invoke();
         StartCalls++;
         LastAgentId = ctx.AgentId;
         LastContext = ctx;

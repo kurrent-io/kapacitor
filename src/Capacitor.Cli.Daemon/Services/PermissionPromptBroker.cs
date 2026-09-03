@@ -15,7 +15,8 @@ internal abstract record PermissionStreamItem {
 internal static class PermissionSettlements {
     public const string Allow = "allow", Deny = "deny", Withdrawn = "withdrawn";
     public const string SourceApp = "app", SourceServer = "server", SourceAgentGone = "agent_gone",
-                        SourceNoUi = "no_ui", SourceDaemonShutdown = "daemon_shutdown";
+                        SourceNoUi = "no_ui", SourceDaemonShutdown = "daemon_shutdown",
+                        SourcePolicy = "policy";
     public static readonly PermissionDecision DenyDecision = new("deny", null, null);
 }
 

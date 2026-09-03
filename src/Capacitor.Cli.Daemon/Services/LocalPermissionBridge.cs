@@ -7,13 +7,15 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.LocalIpc;
+using Capacitor.Cli.Core.Policy;
+using Capacitor.Cli.Daemon.Harness.Claude;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
 namespace Capacitor.Cli.Daemon.Services;
 
 internal readonly record struct PermissionAttribution(string? AgentId, string SessionId, string? Cwd);
-internal readonly record struct AttributedAgent(string AgentId);
+internal readonly record struct AttributedAgent(string AgentId, PolicySnapshot? PolicySnapshot = null);
 
 /// <summary>
 /// Localhost-only HTTP bridge that fronts the server's permission flow for spawned
@@ -625,6 +627,39 @@ internal sealed partial class LocalPermissionBridge(
                         DateTimeOffset.UtcNow.ToString("O"), ToolUseIdOf(node))
                     : null;
 
+                // The launched agent's own policy answers before a human is asked. The vendor gate
+                // is deliberate: a hosted Codex request parks unevaluated. Anything the evaluation
+                // throws leaves the request on the human lane rather than dropping it.
+                if (vendor is "claude" && attributed is { PolicySnapshot: { IsEmpty: false } snapshot } governed) {
+                    ClaudeHostedPolicyResult? policy = null;
+                    try {
+                        policy = ClaudeHostedPolicySeam.Evaluate(
+                            canonicalSessionId!, governed.AgentId, snapshot, toolName, toolInput,
+                            node["cwd"]?.GetValue<string>());
+                    } catch (Exception ex) {
+                        LogPolicyEvaluationFailed(logger, ex, governed.AgentId);
+                    }
+
+                    if (policy is { } decided) {
+                        if (decided.Outcome is PolicyOutcome.Allow or PolicyOutcome.Deny) {
+                            var behavior = decided.Outcome == PolicyOutcome.Allow
+                                ? PermissionSettlements.Allow
+                                : PermissionSettlements.Deny;
+                            _decisionLog?.Record(new PermissionDecisionRecord(
+                                DateTimeOffset.UtcNow.ToString("O"), governed.AgentId, canonicalSessionId!, vendor,
+                                toolName ?? "", behavior, PermissionSettlements.SourcePolicy));
+                            _ = server.AppendAgentRunEventAsync(governed.AgentId, decided.Event);
+                            // No Register: a call the policy answered raises no card, and the
+                            // decision log plus the run event are its audit trail.
+                            await WriteResponseAsync(context, BuildHookResponseJson(new PermissionDecision(behavior, null, null), vendor));
+
+                            return;
+                        }
+
+                        _ = server.AppendAgentRunEventAsync(governed.AgentId, decided.Event);
+                    }
+                }
+
                 if (pending is null) {
                     // Server-only path.
                     if (attributed is not null) LogPendingOutOfBounds(logger, sessionId);
@@ -931,6 +966,9 @@ internal sealed partial class LocalPermissionBridge(
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Denied out-of-allowlist tool {ToolName} for unattended participant session {SessionId}")]
     static partial void LogReviewerToolDenied(ILogger logger, string sessionId, string toolName);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Policy evaluation failed for agent {AgentId}; the permission request takes the human lane")]
+    static partial void LogPolicyEvaluationFailed(ILogger logger, Exception exception, string agentId);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Permission bridge handler error")]
     static partial void LogBridgeHandlerError(ILogger logger, Exception exception);

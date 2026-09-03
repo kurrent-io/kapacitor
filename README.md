@@ -16,6 +16,7 @@
 - [Getting started](#getting-started) — [Install](#1-install-the-cli) · [Setup](#2-run-setup) · [Import](#3-import-existing-sessions-optional) · [Dashboard](#4-open-the-dashboard) · [MCP servers](#sessions-and-flows-mcp-servers-for-agents)
 - [What it records](#what-it-records)
 - [CLI commands](#cli-commands)
+  - Approvals: [policy](#approval-policy)
   - Sessions: [recap](#session-recap) · [validate-plan](#plan-validation) · [hide](#hide-session) · [disable](#disable-recording) · [errors](#error-extraction) · [eval](#session-evaluation-llm-as-judge)
   - Reviewing: [review](#pr-review-with-full-context) · [curate](#curate-guidelines)
   - MCP servers: [sessions](#sessions-mcp-server-for-agents) · [flows](#flows-mcp-server-for-agents) · [flow-result](#flow-result-mcp-server-hosted-reviewers) · [memory](#memory-mcp-server-for-agents)
@@ -281,6 +282,7 @@ At a glance — each links to its section below:
 | Command | What it does |
 |---------|--------------|
 | [`kcap setup`](#initial-setup) | Interactive wizard — server, auth, agent hooks, daemon |
+| [`.kcap/approvals.yaml`](#approval-policy) | Auto-allow, deny, or force-ask specific tool calls |
 | [`kcap import`](#loading-historical-sessions) | Backfill past sessions from every detected agent |
 | [`kcap recap`](#session-recap) | AI summary + per-turn outline of a session |
 | [`kcap validate-plan`](#plan-validation) | Check that every planned item was completed |
@@ -350,6 +352,32 @@ Legacy `--plugin-scope <user|project|skip>` is retained for backwards compatibil
 New scripts should prefer `--skip-claude-hooks` / `--skip-codex-hooks` and `kcap plugin install --project` for project scope.
 
 If you run `kcap setup` outside any git working tree, it still completes — hooks install user-scope and fire for every session — but a tip at the end reminds you that sessions recorded from non-repo directories won't capture owner/repo/branch/PR context. The Step 6 import is skipped too, since there's no origin remote to scope it to.
+
+### Approval policy
+
+Cut down on prompt fatigue by telling kcap what to auto-approve, auto-deny, or still ask about. Drop rules in a **policy file** — `.kcap/approvals.yaml` at the repo root (commit it — it's PR-reviewable, like a CODEOWNERS file) and/or `~/.config/kcap/approvals.yaml` for your own machine (honors `KCAP_CONFIG_DIR`) — and every matching tool call gets one of three outcomes: **allow** (run it, no prompt — on an ACP-routed agent this only fires when it offers a single, unambiguous allow option; otherwise the normal prompt still shows), **deny** (refuse the call — only Claude's `PreToolUse` hook shows your `reason:` to the agent; every other seam answers with a bare refusal, and the reason still lands in kcap's audit trail), or **ask** (force a prompt even where the agent's own auto-mode would normally have skipped one). The same rules, with identical semantics, govern a local Claude Code session (its `PreToolUse` and `PermissionRequest` hooks), a hosted (daemon-launched) Claude session (evaluated before the request reaches the human-approval lane), and ACP-routed agents — Cursor, GitHub Copilot, Kiro, OpenCode, Gemini — (evaluated ahead of kcap's own launch presets). A **rendered** session's local checks only ever tighten: deny and ask still apply, but nothing gets auto-allowed there. Anything the rules don't decide **passes through** unchanged to the agent's native behavior, so turning the policy on never makes a session noisier, and a repo with no file behaves exactly as it does today. Unattended review-flow launches are out of scope: a reviewer runs with no human to prompt, so it stays under its own containment rather than this policy layer.
+
+```yaml
+version: 1
+rules:
+  - match: { kind: shell, command: "git push --force*" }
+    outcome: deny
+    reason: force-push goes through the PR lane
+  - match: { kind: shell, command: ["git status *", "git diff *", "dotnet build *"] }
+    outcome: allow           # the trailing * is the visible opt-in to arbitrary extra argv
+  - match: { kind: mcp_tool, server: "kcap-*" }
+    outcome: allow
+  - match: { kind: shell, command: "gh pr merge" }
+    outcome: ask
+```
+
+`match.kind` is one of `shell`, `file_edit`, `file_read`, `network`, `mcp_tool`, `other`. An **allow** pattern must cover the whole command: `git status` allows only `git status`, and `git status *` allows anything after it purely because of that trailing bare `*` — broad auto-approval has to be visible in the file, never a silent default. **Deny**/**ask** patterns are looser and match a run of tokens anywhere in the command, so `git push --force*` also catches `git push --force origin main`. A shell command kcap can't fully analyze — redirection, expansion, globs, compound syntax like `if`/`for`, a known shell name anywhere in the line (`bash`, `sh`, `pwsh`, `busybox` and friends, wrappers included), or an `env -S`/`--split-string` form that packs a whole command line into one argument — is **never allow-eligible** no matter what it contains; it can still be denied or asked about, just never auto-approved. That list of shell names is maintained, not exhaustive, so a lesser-known interpreter is analyzed like any other program: it's auto-approved exactly when an allow rule already in the file fully covers the command — whether that rule names the interpreter outright, a glob covers its position, or a wrapper rule like `env *`/`sudo *` grants it the argv. A shell name on that maintained list, though, is never auto-approved no matter what rule covers it. `judge:` is accepted and parsed in the file today, but it's inert — nothing calls an LLM classifier yet.
+
+A file that steps outside the supported YAML subset (block/flow mappings and sequences, plain/quoted scalars, literal `|`/`|-` blocks, comments — nothing else) or that sets `caps`/`enforcement` (reserved for centrally-managed policy scopes, invalid in a local file) is never half-applied. It's dropped entirely, and kcap says so loudly at the next session start instead of silently losing your rules:
+
+```
+[kcap] approval policy degraded: repo policy at /path/.kcap/approvals.yaml ignored: <reason>
+```
 
 ### Session recap
 

@@ -139,7 +139,11 @@ internal static class AgentOrchestratorHarness {
             lifetime,
             logger,
             consentGate,
-            deferProcessorPublication
+            deferProcessorPublication,
+            // Wired unconditionally so the launch path builds a snapshot exactly as production does.
+            // The scratch config root and a fresh checkout carry no approval documents, so every test
+            // that writes none still gets an empty snapshot and no upload.
+            policySnapshots: new PolicySnapshotProvider(configRoot.Root)
         ) {
             _tmp    = tmp;
             _config = configRoot;

@@ -3,6 +3,7 @@ using Capacitor.Cli.Core.Acp;
 using Capacitor.Cli.Daemon.Acp;
 using Capacitor.Cli.Core.Commands;
 using Capacitor.Cli.Core.LocalIpc;
+using Capacitor.Cli.Core.Policy;
 using Capacitor.Cli.Daemon.Harness.Codex;
 
 namespace Capacitor.Cli.Daemon.Services;
@@ -246,5 +247,10 @@ internal sealed record RuntimeStartContext(
         // via thread/resume instead of thread/start, and suppresses the second SessionStarted. Null for
         // a fresh launch, every non-Codex/non-app-server launch, and constructions predating this field.
         string?             ResumeSessionId = null,
-        string?             PermissionMode = null
+        string?             PermissionMode = null,
+        // The approval policy bound for THIS launch from the worktree above plus the daemon user's
+        // own file — the same instance the AgentInstance carries, so a factory and the permission
+        // seam judge against one set of documents. Null when no provider is wired, when the build
+        // failed, and for constructions predating this field.
+        PolicySnapshot?     PolicySnapshot = null
     );

@@ -7,6 +7,7 @@ using Capacitor.Cli.Tests.Unit.SessionStartMemory;
 using Capacitor.Cli.Core.Setup;
 using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.Config;
+using Capacitor.Cli.Core.Policy;
 using Microsoft.Extensions.Time.Testing;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
@@ -48,6 +49,177 @@ public class ClaudeHookCommandTests {
         using var fx = new Fixture(Config.Root);
         await fx.HandleAsync($$"""{"hook_event_name":"SessionStart","session_id":"{{Sid}}","cwd":"/tmp"}""");
         await Assert.That(fx.RouteOrder).Contains("session-start");
+    }
+
+    /// <summary>Pins the seam's position: <c>PreToolUse</c> is decided before a client is ever built,
+    /// so an unreachable server or a slow auth probe — both of which return early from
+    /// <c>HandleWithDeps</c> — cannot silently disable a deny. The injected factory throws, so any
+    /// client construction ahead of the branch fails the test rather than passing quietly.</summary>
+    [Test]
+    public async Task pre_tool_use_is_decided_before_any_client_is_created() {
+        using var fx = new Fixture(Config.Root);
+        File.WriteAllText(Config.Root.Path("approvals.yaml"),
+            "version: 1\nrules:\n  - match: { kind: shell, command: \"git push --force*\" }\n    outcome: deny\n");
+        var stdout = new StringWriter();
+
+        var exit = await new ClaudeHookCommand(Config.Root, fx.Profiles, new HookClock(TimeProvider.System), Home)
+            .HandleWithDeps(fx.Spool, new StringReader(
+                $$"""{"hook_event_name":"PreToolUse","session_id":"{{Sid}}","tool_name":"Bash","tool_input":{"command":"git push --force"},"cwd":"/tmp"}"""),
+                () => throw new InvalidOperationException("the seam must decide before a client exists"),
+                stdout);
+
+        await Assert.That(exit).IsEqualTo(0);
+        await Assert.That(stdout.ToString()).Contains("\"permissionDecision\":\"deny\"");
+        // Spool-first: the decision is a local line, and nothing reached the network.
+        await Assert.That(new HookSpool(Config.Root).HasBacklog(Sid)).IsTrue();
+        await Assert.That(fx.ServerRequestCount).IsEqualTo(0);
+        await Assert.That(fx.RouteOrder).IsEmpty();
+    }
+
+    /// <summary>The seam decides ahead of every other fail-open boundary in this method, so an
+    /// unforeseen throw inside its branch must still exit 0. A non-zero exit is Claude's opaque
+    /// hook-error banner, and for a natively auto-allowed tool the deny that never got written
+    /// lets the call run.</summary>
+    [Test]
+    public async Task pre_tool_use_fails_open_when_the_branch_throws() {
+        using var fx = new Fixture(Config.Root);
+        File.WriteAllText(Config.Root.Path("approvals.yaml"),
+            "version: 1\nrules:\n  - match: { kind: shell, command: \"git push --force*\" }\n    outcome: deny\n");
+        var stdout = new ClosedPipeWriter();
+
+        var exit = await new ClaudeHookCommand(Config.Root, fx.Profiles, new HookClock(TimeProvider.System), Home)
+            .HandleWithDeps(fx.Spool, new StringReader(
+                $$"""{"hook_event_name":"PreToolUse","session_id":"{{Sid}}","tool_name":"Bash","tool_input":{"command":"git push --force"},"cwd":"/tmp"}"""),
+                () => throw new InvalidOperationException("the seam must decide before a client exists"),
+                stdout);
+
+        await Assert.That(exit).IsEqualTo(0);
+        // Non-vacuous: the exit came out of the catch, not from a branch that never reached the write.
+        await Assert.That(stdout.Attempted).IsTrue();
+    }
+
+    // ── Approval-policy lifecycle: build at session-start, expire per turn, evict at session-end ──
+
+    /// <summary>The snapshot is built eagerly at session-start and a loss surfaces on the hook's own
+    /// stdout, which must stay a single JSON object.</summary>
+    [Test]
+    public async Task session_start_surfaces_a_degraded_policy_snapshot() {
+        // A server-scope field in a user document — parsed, then refused, so the file is dropped
+        // with a degradation rather than silently ignored.
+        File.WriteAllText(Config.Root.Path("approvals.yaml"), "version: 1\nenforcement: strict\n");
+        using var fx = new Fixture(Config.Root);
+        var stdout = new StringWriter { NewLine = "\n" };
+
+        var exit = await new ClaudeHookCommand(Config.Root, Resolutions.At("http://localhost", Config.Root), new HookClock(TimeProvider.System), Home).HandleCore(
+            fx.Client, AuthStatus.Ok, fx.Spool, new StringReader(
+                $$"""{"hook_event_name":"SessionStart","session_id":"{{Sid}}","cwd":"/tmp"}"""),
+            stdout: stdout);
+
+        await Assert.That(exit).IsEqualTo(0);
+        var notice = JsonNode.Parse(stdout.ToString().Trim());
+        await Assert.That(notice!["systemMessage"]!.GetValue<string>()).Contains("approval policy degraded");
+        // Built eagerly, not on the first tool call: the snapshot that governs the session is frozen here.
+        await Assert.That(new PolicySnapshotStore(Config.Root).TryLoad(Sid)).IsNotNull();
+    }
+
+    /// <summary>A degraded snapshot and a server-rejected credential both want the session-start
+    /// stdout. Claude reads that stdout as a single value, so the two notices share one object or
+    /// one of them is lost — and a second object would cost the reader both.</summary>
+    [Test, NotInParallel]
+    public async Task session_start_merges_a_policy_degradation_into_the_401_notice() {
+        File.WriteAllText(Config.Root.Path("approvals.yaml"), "version: 1\nenforcement: strict\n");
+        using var fx = new Fixture(Config.Root, HttpStatusCode.Unauthorized);
+        var stdout = new StringWriter { NewLine = "\n" };
+
+        var exit = await new ClaudeHookCommand(Config.Root, Resolutions.At("http://localhost", Config.Root), new HookClock(TimeProvider.System), Home).HandleCore(
+            fx.Client, AuthStatus.Ok, fx.Spool, new StringReader(
+                $$"""{"hook_event_name":"SessionStart","session_id":"{{Sid}}","cwd":"/tmp"}"""),
+            stdout: stdout);
+
+        await Assert.That(exit).IsEqualTo(0);
+        var lines = stdout.ToString().Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        await Assert.That(lines.Length).IsEqualTo(1);
+        var written = JsonNode.Parse(lines[0]) as JsonObject;
+        await Assert.That(written).IsNotNull();
+        var message = written!["systemMessage"]!.GetValue<string>();
+        await Assert.That(message).Contains(AuthRejectionNotice.RecordingNotice(StoredCredentialState.LooksValid));
+        await Assert.That(message).Contains("approval policy degraded");
+    }
+
+    /// <summary>The degraded arm never reaches HandleCore, so without its own freeze the first
+    /// PreToolUse would build the snapshot against files edited since the session began — the
+    /// per-session freeze silently lost exactly when the server is unreachable.</summary>
+    [Test]
+    public async Task session_start_freezes_the_policy_snapshot_on_the_degraded_arm() {
+        File.WriteAllText(Config.Root.Path("approvals.yaml"), "version: 1\nenforcement: strict\n");
+        using var fx = new Fixture(Config.Root);
+        var stdout = new StringWriter { NewLine = "\n" };
+
+        // Unusable URL: no client is ever built, so HandleWithDeps returns from the degraded arm.
+        var exit = await new ClaudeHookCommand(Config.Root, Resolutions.At("not-a-url", Config.Root), new HookClock(TimeProvider.System), Home)
+            .HandleWithDeps(fx.Spool, new StringReader(
+                $$"""{"hook_event_name":"SessionStart","session_id":"{{Sid}}","cwd":"/tmp"}"""),
+                () => throw new InvalidOperationException("no client is buildable for an unusable URL"),
+                stdout);
+
+        await Assert.That(exit).IsEqualTo(0);
+        await Assert.That(new PolicySnapshotStore(Config.Root).TryLoad(Sid)).IsNotNull();
+        // The degradation still reaches the user, as one object — this arm writes no other.
+        var lines = stdout.ToString().Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        await Assert.That(lines.Length).IsEqualTo(1);
+        await Assert.That(JsonNode.Parse(lines[0])!["systemMessage"]!.GetValue<string>())
+            .Contains("approval policy degraded");
+    }
+
+    [Test]
+    public async Task stop_clears_the_turn_journal() {
+        var journal = new PolicyDecisionJournal(Config.Root);
+        journal.RecordAsk(Sid, null, "h1");
+        await Assert.That(File.Exists(Config.Root.Path("policy", "journal", $"{Sid}.json"))).IsTrue();
+        using var fx = new Fixture(Config.Root);
+
+        var exit = await new ClaudeHookCommand(Config.Root, Resolutions.At("http://localhost", Config.Root), new HookClock(TimeProvider.System), Home).HandleCore(
+            fx.Client, AuthStatus.Ok, fx.Spool, new StringReader(
+                $$"""{"hook_event_name":"Stop","session_id":"{{Sid}}","cwd":"/tmp"}"""));
+
+        await Assert.That(exit).IsEqualTo(0);
+        await Assert.That(journal.Consume(Sid, null, "h1").PendingAsk).IsFalse();
+    }
+
+    [Test]
+    public async Task session_end_stamps_the_policy_pass_through_count() {
+        new PolicyDecisionJournal(Config.Root).IncrementPassThrough(Sid);
+        using var fx = new Fixture(Config.Root);
+
+        var exit = await fx.HandleAsync($$"""{"hook_event_name":"SessionEnd","session_id":"{{Sid}}","cwd":"/tmp"}""");
+
+        await Assert.That(exit).IsEqualTo(0);
+        var posted = fx.Sent.Single(s => s.StartsWith("/hooks/session-end|", StringComparison.Ordinal));
+        var body   = JsonNode.Parse(posted[(posted.IndexOf('|') + 1)..]);
+        await Assert.That(body!["policy_pass_through_count"]!.GetValue<long>()).IsEqualTo(1L);
+    }
+
+    /// <summary>Session-end is the only eviction the policy directories get, so what it leaves
+    /// behind accumulates for the life of the config dir.</summary>
+    [Test]
+    public async Task session_end_evicts_the_sessions_policy_files() {
+        var store = new PolicySnapshotStore(Config.Root);
+        store.LoadOrBuild(Sid, null);
+        var journal = new PolicyDecisionJournal(Config.Root);
+        journal.RecordAsk(Sid, "call-1", "h1");
+        var marker = Config.Root.Path("policy", "uploaded", $"{Sid}-0123456789abcdef");
+        Directory.CreateDirectory(Path.GetDirectoryName(marker)!);
+        File.WriteAllText(marker, "");
+        await Assert.That(store.TryLoad(Sid)).IsNotNull();
+        await Assert.That(File.Exists(Config.Root.Path("policy", "journal", $"{Sid}.json"))).IsTrue();
+
+        using var fx = new Fixture(Config.Root);
+        var exit = await fx.HandleAsync($$"""{"hook_event_name":"SessionEnd","session_id":"{{Sid}}","cwd":"/tmp"}""");
+
+        await Assert.That(exit).IsEqualTo(0);
+        await Assert.That(store.TryLoad(Sid)).IsNull();
+        await Assert.That(journal.Consume(Sid, "call-1", "h1").ExactOutcome).IsNull();
+        await Assert.That(File.Exists(marker)).IsFalse();
     }
 
     [Test]
@@ -873,6 +1045,20 @@ public class ClaudeHookCommandTests {
         await Assert.That(stdout.ToString()).IsEmpty();
     }
 
+    /// <summary>A hook stdout that has gone away mid-write — the decision is computed, and writing
+    /// it out is what throws.</summary>
+    sealed class ClosedPipeWriter : TextWriter {
+        public bool Attempted { get; private set; }
+        public override System.Text.Encoding Encoding => System.Text.Encoding.UTF8;
+        public override void Write(char value) => Fail();
+        public override void Write(string? value) => Fail();
+
+        void Fail() {
+            Attempted = true;
+            throw new IOException("Broken pipe");
+        }
+    }
+
     sealed class Fixture : IDisposable {
         readonly TempHome      _home = new();
         readonly string         _tmpHome;
@@ -899,6 +1085,9 @@ public class ClaudeHookCommandTests {
         public string         MemoryIndexBody   { get; set; } = "[]";
         public HttpStatusCode MemoryIndexStatus { get; set; } = HttpStatusCode.OK;
         public TimeSpan       MemoryIndexDelay  { get; set; } = TimeSpan.Zero;
+
+        /// <summary>Every request the stub server saw, for a test asserting that none arrived.</summary>
+        public int ServerRequestCount => _memoryServer.LogEntries.Count;
 
         public bool MemoryIndexRequested    => MemoryIndexRequestCount > 0;
         public int  MemoryIndexRequestCount => _memoryServer.LogEntries
