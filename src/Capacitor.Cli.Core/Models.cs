@@ -960,6 +960,7 @@ public sealed record CurationApplyResponse {
 
 [JsonSerializable(typeof(List<RecapEntry>))]
 [JsonSerializable(typeof(List<RepoRecapEntry>))]
+[JsonSerializable(typeof(RepoSessionsResponse))]
 [JsonSerializable(typeof(PlanArtifactDto))]
 [JsonSerializable(typeof(PlanArtifactsResponseDto))]
 [JsonSerializable(typeof(EvalContextResult))]
@@ -1161,7 +1162,6 @@ public sealed record CurationApplyResponse {
 [JsonSerializable(typeof(Capacitor.Cli.Core.Commands.FeedbackSubmitRequest))]
 [JsonSerializable(typeof(Capacitor.Cli.Core.Commands.FeedbackSubmitContext))]
 [JsonSerializable(typeof(Capacitor.Cli.Core.Commands.FeedbackSubmitResponse))]
-[JsonSerializable(typeof(RepoSessionsResponse))]
 [JsonSourceGenerationOptions(
     PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower,
     UseStringEnumConverter = true
