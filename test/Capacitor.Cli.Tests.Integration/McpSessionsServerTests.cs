@@ -166,14 +166,14 @@ public class McpSessionsServerTests : IDisposable {
     }
 
     [Test]
-    public async Task Tools_list_returns_five_tools_with_correct_names() {
+    public async Task Tools_list_returns_six_tools_with_correct_names() {
         using var proc = SpawnMcpServer();
         try {
             var response = await SendRequest(proc, ToolsListRequest(2));
 
             var tools = response["result"]?["tools"]?.AsArray();
             await Assert.That(tools).IsNotNull();
-            await Assert.That(tools!.Count).IsEqualTo(5);
+            await Assert.That(tools!.Count).IsEqualTo(6);
 
             var names = tools.Select(t => t?["name"]?.GetValue<string>()).ToHashSet();
             await Assert.That(names.Contains("search_sessions")).IsTrue();
@@ -181,10 +181,34 @@ public class McpSessionsServerTests : IDisposable {
             await Assert.That(names.Contains("get_session_transcript")).IsTrue();
             await Assert.That(names.Contains("get_turn")).IsTrue();
             await Assert.That(names.Contains("list_turns")).IsTrue();
+            await Assert.That(names.Contains("list_repo_sessions")).IsTrue();
 
             // Hard gate: search_sessions carries the comparative routing cue.
             var searchDesc = tools.First(t => t?["name"]?.GetValue<string>() == "search_sessions")!["description"]!.GetValue<string>();
             await Assert.That(searchDesc).Contains("before grepping the code or git log");
+        } finally {
+            await ShutdownAsync(proc);
+        }
+    }
+
+    [Test]
+    public async Task List_repo_sessions_hits_the_repo_route_for_the_cwd_repo() {
+        using var repo = CwdRepo("acme", "widgets");
+        var       hash = RepoHashHelper.ComputeRepoHash("acme", "widgets");
+
+        _server.Given(Request.Create().WithPath($"/api/repositories/{hash}/sessions").UsingGet().WithParam("state", "active"))
+            .RespondWith(Response.Create().WithStatusCode(200).WithBody(
+                """{"items":[{"session_id":"s-1","slug":null,"title":"Fix","owner":null,"vendor":"claude","status":"active","access_level":"full","stale":false,"started_at":"2026-09-02T09:00:00+00:00","ended_at":null,"last_activity_at":"2026-09-02T10:00:00+00:00","primary_repo_hash":null,"is_primary":true,"branch":"main","cwd":"/w","last_prompt":null,"write_attempt_paths":[],"write_attempt_count":0}],"total":1,"limit":20,"offset":0}"""));
+
+        using var proc = SpawnMcpServer(workingDirectory: repo.Path);
+        try {
+            await SendRequest(proc, InitializeRequest(1));
+
+            var response = await SendRequest(proc, ToolsCallRequest(2, "list_repo_sessions", new JsonObject()));
+            var text     = response["result"]?["content"]?[0]?["text"]?.GetValue<string>();
+
+            await Assert.That(response["result"]?["isError"]).IsNull();
+            await Assert.That(text).Contains("\"session_id\":\"s-1\"");
         } finally {
             await ShutdownAsync(proc);
         }
