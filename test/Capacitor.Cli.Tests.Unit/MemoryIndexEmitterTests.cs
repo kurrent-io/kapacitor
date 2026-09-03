@@ -114,21 +114,21 @@ public class MemoryIndexEmitterTests {
 
     [Test]
     public async Task Preserves_server_order_within_a_group() {
-        // Server returns most-recently-updated first; the emitter must not reorder within a bucket.
+        // The server ranks entries; the emitter must not reorder within a bucket.
         var index = Index(
-            ("newest", "org", "a"),
-            ("middle", "org", "b"),
-            ("oldest", "org", "c")
+            ("first", "org", "a"),
+            ("second", "org", "b"),
+            ("third", "org", "c")
         );
 
         var fragment = MemoryIndexEmitter.BuildFragment(index, disabled: false)!;
 
-        var newest = fragment.IndexOf("- newest:", StringComparison.Ordinal);
-        var middle = fragment.IndexOf("- middle:", StringComparison.Ordinal);
-        var oldest = fragment.IndexOf("- oldest:", StringComparison.Ordinal);
+        var first = fragment.IndexOf("- first:", StringComparison.Ordinal);
+        var second = fragment.IndexOf("- second:", StringComparison.Ordinal);
+        var third = fragment.IndexOf("- third:", StringComparison.Ordinal);
 
-        await Assert.That(newest).IsLessThan(middle);
-        await Assert.That(middle).IsLessThan(oldest);
+        await Assert.That(first).IsLessThan(second);
+        await Assert.That(second).IsLessThan(third);
     }
 
     [Test]
