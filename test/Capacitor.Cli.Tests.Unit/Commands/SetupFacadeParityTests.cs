@@ -1,3 +1,4 @@
+using System.Text;
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core.Auth;
 using static Capacitor.Tests.Helpers.AuthFixtures;
@@ -20,11 +21,44 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 /// differs between the ubuntu-latest and windows-latest CI legs — not something a unit test can
 /// pin (mirrors why LoginFacadeParityTests always passes --github too).
 /// </summary>
-[NotInParallel([
-    nameof(CliTelemetry) + "." + nameof(CliTelemetry.TestSink),
-    "AuthProviderDiscoveryCache"
-])]
+// Bare, and one level only: these drive Console and SetupCommand.FacadeOverride, both process-global,
+// so a group key that names neither is not exclusion. A method constraint would shadow this one.
+[NotInParallel]
 public class SetupFacadeParityTests {
+    /// <summary>
+    /// Captures what setup writes through Spectre. It writes its step banners via <c>AnsiConsole</c>
+    /// rather than <c>IAuthProgress</c> or plain <c>Console.Out</c>, and the static console caches its
+    /// writer at first use, so redirecting <c>Console.Out</c> does not reach it — the singleton itself
+    /// has to be swapped.
+    ///
+    /// <para>Restoring is a call rather than a <c>using</c> so a test can put the console back before
+    /// it asserts: a failure raised while the singleton is swapped renders into the buffer.</para>
+    /// </summary>
+    sealed class SpectreCapture {
+        readonly IAnsiConsole  _original = AnsiConsole.Console;
+        readonly StringBuilder _text     = new();
+
+        public static SpectreCapture Start() {
+            var capture = new SpectreCapture();
+
+            AnsiConsole.Console = AnsiConsole.Create(new AnsiConsoleSettings {
+                Ansi        = AnsiSupport.No,
+                ColorSystem = ColorSystemSupport.NoColors,
+                Out         = new AnsiConsoleOutput(new StringWriter(capture._text)),
+            });
+
+            // A runner's console reports its own width, and an unpinned layout wraps the lines these
+            // tests read back.
+            AnsiConsole.Profile.Width = 120;
+
+            return capture;
+        }
+
+        public string Text => _text.ToString();
+
+        public void Restore() => AnsiConsole.Console = _original;
+    }
+
     [TempConfigRoot] public required TempConfigRoot Config { get; init; }
     [TempHome] public required TempHome Home { get; init; }
 
@@ -171,7 +205,6 @@ public class SetupFacadeParityTests {
 
     // The façade owns the reason line; setup still owns the guidance tail its old single line carried.
     [Test]
-    [NotInParallel]
     public async Task RunDiscoveryAsync_unreachable_proxy_still_prints_the_legacy_guidance_tail() {
         using var handler = AuthHttp.Script(); // no /config route — proxy unreachable
 
@@ -189,7 +222,6 @@ public class SetupFacadeParityTests {
     // checked against them once it commits.
 
     [Test]
-    [NotInParallel]
     public async Task RunDiscoveryAsync_hands_the_requested_workspace_to_the_provisioner() {
         using var handler = AuthHttp.Script(); // no /config route — discovery fails after construction
 
@@ -209,7 +241,6 @@ public class SetupFacadeParityTests {
     // The guard is only worth anything if the boundary is the thing that refuses, so this drives the
     // real facade with it attached and asserts nothing durable was written.
     [Test]
-    [NotInParallel]
     public async Task A_commit_that_would_publish_another_workspace_writes_nothing() {
         using var handler = AuthHttp.Script(
             proxyConfig: """{"github_client_id":"cid"}""",
@@ -273,10 +304,7 @@ public class SetupFacadeParityTests {
 
     // ── Step 2: RunLoginStepAsync ────────────────────────────────────────────
 
-    // AnsiConsole.Console is process-global state (see below) — fully serialize this test against
-    // everything else, mirroring AuthProgressTests' console-redirection convention.
     [Test]
-    [NotInParallel]
     public async Task RunLoginStepAsync_loginComplete_reports_the_already_published_identity_without_a_facade_call() {
         await ConfigMutator.MutateAsync(Config.Root, c => c with {
             Profiles      = new Dictionary<string, Profile> { ["acme"] = new() { ServerUrl = "https://acme.kcap.ai" } },
@@ -292,20 +320,7 @@ public class SetupFacadeParityTests {
 
         SetupCommand.FacadeOverride = _ => throw new InvalidOperationException("loginComplete must not call the façade");
 
-        // SetupCommand writes Step 2's banner via AnsiConsole (not IAuthProgress, and not plain
-        // Console.Out — Spectre's static AnsiConsole.Console caches its writer at first use, so
-        // Console.SetOut alone doesn't redirect it), so swap the singleton console to capture it.
-        var originalConsole = AnsiConsole.Console;
-        var buffer          = new StringWriter();
-        AnsiConsole.Console = AnsiConsole.Create(new AnsiConsoleSettings {
-            Ansi        = AnsiSupport.No,
-            ColorSystem = ColorSystemSupport.NoColors,
-            Out         = new AnsiConsoleOutput(buffer),
-        });
-
-        // Pinned: a runner's console reports its own width, and an unpinned layout wraps the line these
-        // assertions read.
-        AnsiConsole.Profile.Width = 120;
+        var console = SpectreCapture.Start();
 
         int exitCode;
 
@@ -314,11 +329,11 @@ public class SetupFacadeParityTests {
                 loginComplete: true, provider: AuthProvider.GitHubApp, serverUrl: "https://acme.kcap.ai",
                 forceDevice: false, activeProfile: "acme");
         } finally {
-            AnsiConsole.Console = originalConsole;
+            console.Restore();
         }
 
         await Assert.That(exitCode).IsEqualTo(0);
-        await Assert.That(buffer.ToString()).Contains("Logged in as alice");
+        await Assert.That(console.Text).Contains("Logged in as alice");
     }
 
     // A None-provider setup must still mint the auth_provider stamp, and only inside the commit boundary.
@@ -379,7 +394,6 @@ public class SetupFacadeParityTests {
     /// both halves: exactly one notice, and nothing of setup's own on stdout.
     /// </summary>
     [Test]
-    [NotInParallel]
     public async Task RunLoginStepAsync_reports_the_sign_in_once() {
         using var handler  = AuthHttp.Script(authConfig: """{"provider":"GitHubApp","github_client_id":"cid"}""");
         var       progress = new RecordingAuthProgress();
@@ -403,25 +417,12 @@ public class SetupFacadeParityTests {
     /// add. Every other provider's discovery reports a tenant count and no identity, which is why the
     /// carve-out cannot simply drop the line for everyone.
     /// </summary>
-    // AnsiConsole.Console is process-global, so this serializes against the whole assembly as its
-    // console-swapping siblings above do — the class's keys do not cover it.
     [Test]
-    [NotInParallel]
     [Arguments(AuthProvider.WorkOS, false)]
     [Arguments(AuthProvider.GitHubApp, true)]
     public async Task A_completed_discovery_names_the_identity_only_where_discovery_did_not(
             string provider, bool named) {
-        var originalConsole = AnsiConsole.Console;
-        var buffer          = new StringWriter();
-        AnsiConsole.Console = AnsiConsole.Create(new AnsiConsoleSettings {
-            Ansi        = AnsiSupport.No,
-            ColorSystem = ColorSystemSupport.NoColors,
-            Out         = new AnsiConsoleOutput(buffer),
-        });
-
-        // Pinned: a runner's console reports its own width, and an unpinned layout wraps the line these
-        // assertions read.
-        AnsiConsole.Profile.Width = 120;
+        var console = SpectreCapture.Start();
 
         int exitCode;
 
@@ -430,11 +431,11 @@ public class SetupFacadeParityTests {
                 loginComplete: true, provider: provider, serverUrl: "https://acme.kcap.ai",
                 forceDevice: false, activeProfile: "acme");
         } finally {
-            AnsiConsole.Console = originalConsole;
+            console.Restore();
         }
 
         await Assert.That(exitCode).IsEqualTo(0);
-        await Assert.That(buffer.ToString().Contains("Logged in as")).IsEqualTo(named);
+        await Assert.That(console.Text.Contains("Logged in as")).IsEqualTo(named);
     }
 
     [Test]
