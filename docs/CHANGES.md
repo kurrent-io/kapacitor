@@ -525,9 +525,12 @@ re-splits one token into a command line, hiding a name inside it) keeps its raw 
 restriction-only component with an empty coverage set, so deny/ask can still fire on it but allow
 has nothing to cover. The shell-name check is a maintained list, so an interpreter outside it stays
 analyzable — and therefore allow-eligible exactly as any other program is: through a pattern naming
-it, or through a deliberately universal allow (`command: "*"`, a field-less `{ kind: shell }`
-matcher), both visible in the policy file. Widening the grammar without re-deriving the
-coverage-set argument would quietly make obfuscated commands allow-eligible.
+it, through a deliberately universal allow (`command: "*"`, a field-less `{ kind: shell }` matcher),
+or through an allow whose trailing rest token hands arbitrary argv to a program that can execute
+others (`env *`, `sudo *`) — all three visible in the policy file, the last because that trailing
+`*` is the file's own opt-in to arbitrary extra argv and what it wraps rides on it. Widening the
+grammar without re-deriving the coverage-set argument would quietly make obfuscated commands
+allow-eligible.
 
 **Allow requires full coverage at an exact token count.** `git status` allows only `git status`; the
 trailing bare `*` in `git status *` is the one thing that opts a rule into arbitrary extra argv, and
