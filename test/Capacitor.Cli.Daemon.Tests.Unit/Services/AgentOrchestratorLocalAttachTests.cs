@@ -6,6 +6,7 @@ using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.LocalIpc;
 using Capacitor.Cli.Daemon.Harness.Claude;
 using Capacitor.Cli.Daemon.Harness.Codex;
+using Capacitor.Cli.Core.Policy;
 using Capacitor.Cli.Daemon.Pty;
 using Capacitor.Cli.Daemon.Services;
 using Capacitor.Cli.Daemon.Tests.Unit.Pty;
@@ -234,6 +235,24 @@ public class AgentOrchestratorLocalAttachTests {
             new PtyHostedAgentRuntime("claude", new StubPtyProcess()), new WorktreeInfo("/r", "", "/r"), new CancellationTokenSource()) { IsPrivate = true };
         await privOrch.RegisterAgentForTestAsync(priv);
         await Assert.That(privServer.Calls.Count).IsEqualTo(0);
+    }
+
+    /// Registration appends no snapshot event: the launch path owns the upload, enqueuing the
+    /// documents before the runtime starts so an immediate permission decision cannot precede them.
+    [Test]
+    public async Task RegisterAgentAsync_does_not_upload_the_policy_snapshot() {
+        var server = new TripwireServerConnection();
+        await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+
+        await orch.RegisterAgentForTestAsync(
+            new AgentInstance("pub-1", null, "", null, "/r", "claude",
+                new PtyHostedAgentRuntime("claude", new StubPtyProcess()),
+                new WorktreeInfo("/r", "", "/r"), new CancellationTokenSource()) {
+                PolicySnapshot = new PolicySnapshot("snap-1", [], true, ["repo policy unreadable"])
+            });
+
+        await Assert.That(server.RunEvents.OfType<PolicySnapshotUploadV1>()).IsEmpty();
+        await Assert.That(server.RunEvents.OfType<AgentRunStarted>().Count()).IsEqualTo(1);
     }
 
     [Test]
@@ -973,6 +992,9 @@ public class AgentOrchestratorLocalAttachTests {
         NullLogger<ServerConnection>.Instance
     ) {
         public ConcurrentBag<string> Calls { get; } = [];
+        /// The run-event payloads themselves, for a test asserting WHICH events an agent produced
+        /// rather than only that the method ran.
+        public ConcurrentBag<object> RunEvents { get; } = [];
         public (int Cols, int Rows)? LastDims { get; private set; }
 
         public override Task SendTerminalDimensionsAsync(string agentId, int cols, int rows) { LastDims = (cols, rows); Calls.Add(nameof(SendTerminalDimensionsAsync)); return Task.CompletedTask; }
@@ -982,7 +1004,7 @@ public class AgentOrchestratorLocalAttachTests {
         public override Task AgentUnregisteredAsync(string agentId) { Calls.Add(nameof(AgentUnregisteredAsync)); return Task.CompletedTask; }
         public override Task UpdateRepoPathsAsync() { Calls.Add(nameof(UpdateRepoPathsAsync)); return Task.CompletedTask; }
         public override Task SendTerminalOutputAsync(string agentId, string base64Data, CancellationToken ct = default) { Calls.Add(nameof(SendTerminalOutputAsync)); return Task.CompletedTask; }
-        public override Task AppendAgentRunEventAsync(string agentId, object evt) { Calls.Add(nameof(AppendAgentRunEventAsync)); return Task.CompletedTask; }
+        public override Task AppendAgentRunEventAsync(string agentId, object evt) { Calls.Add(nameof(AppendAgentRunEventAsync)); RunEvents.Add(evt); return Task.CompletedTask; }
         public override Task<EndAgentSessionResult> EndAgentSessionAsync(string agentId, string reason) { Calls.Add(nameof(EndAgentSessionAsync)); return Task.FromResult(new EndAgentSessionResult()); }
 
         public override Task<PermissionDecision> RequestPermissionAsync(

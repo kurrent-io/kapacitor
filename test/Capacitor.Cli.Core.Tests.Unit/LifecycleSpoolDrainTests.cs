@@ -70,6 +70,44 @@ public class LifecycleSpoolDrainTests {
         }
     }
 
+    /// <summary>A 401 is a lapsed credential, which <c>kcap login</c> repairs: the backlog must
+    /// outlive it, and a terminal entry that never landed must not mark the session ended.</summary>
+    [Test]
+    public async Task a_401_keeps_the_backlog_and_does_not_mark_the_session_ended() {
+        using var tmp = new TempDir();
+        var life = new HookSpool(tmp.Path);
+        var tx   = new TranscriptSpool(tmp.PathTo("tx"));
+        life.Append(Sid, "session-start/kiro", """{"phase":"start"}""");
+        life.Append(Sid, "session-end/kiro",   """{"phase":"end"}""");
+
+        using var handler = new StubHandler((_, _) => new HttpResponseMessage(HttpStatusCode.Unauthorized));
+        using var client  = new HttpClient(handler);
+
+        await LifecycleSpoolDrain.RunAsync(Markers, client, "http://s", life, tx, currentSessionId: null,
+            budget: TimeSpan.FromSeconds(5), ct: CancellationToken.None);
+
+        await Assert.That(life.HasBacklog(Sid)).IsTrue();
+        await Assert.That(life.IsMarkedEnded(Sid)).IsFalse();
+    }
+
+    /// <summary>Non-vacuous control: a 4xx that rejects the payload itself is still dropped, so the
+    /// test above proves 401 is singled out rather than that every 4xx is now retained.</summary>
+    [Test]
+    public async Task a_4xx_that_rejects_the_payload_is_still_dropped() {
+        using var tmp = new TempDir();
+        var life = new HookSpool(tmp.Path);
+        var tx   = new TranscriptSpool(tmp.PathTo("tx"));
+        life.Append(Sid, "session-start/kiro", """{"phase":"start"}""");
+
+        using var handler = new StubHandler((_, _) => new HttpResponseMessage(HttpStatusCode.BadRequest));
+        using var client  = new HttpClient(handler);
+
+        await LifecycleSpoolDrain.RunAsync(Markers, client, "http://s", life, tx, currentSessionId: null,
+            budget: TimeSpan.FromSeconds(5), ct: CancellationToken.None);
+
+        await Assert.That(life.HasBacklog(Sid)).IsFalse();
+    }
+
     [Test]
     public async Task drains_start_then_transcript_then_end_for_a_session_with_no_further_hook() {
         using var tmp = new TempDir();

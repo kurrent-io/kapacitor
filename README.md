@@ -16,6 +16,7 @@
 - [Getting started](#getting-started) — [Install](#1-install-the-cli) · [Setup](#2-run-setup) · [Import](#3-import-existing-sessions-optional) · [Dashboard](#4-open-the-dashboard) · [MCP servers](#sessions-and-flows-mcp-servers-for-agents)
 - [What it records](#what-it-records)
 - [CLI commands](#cli-commands)
+  - Approvals: [policy](#approval-policy)
   - Sessions: [recap](#session-recap) · [validate-plan](#plan-validation) · [hide](#hide-session) · [disable](#disable-recording) · [errors](#error-extraction) · [eval](#session-evaluation-llm-as-judge)
   - Reviewing: [review](#pr-review-with-full-context) · [curate](#curate-guidelines)
   - MCP servers: [sessions](#sessions-mcp-server-for-agents) · [flows](#flows-mcp-server-for-agents) · [flow-result](#flow-result-mcp-server-hosted-reviewers) · [memory](#memory-mcp-server-for-agents)
@@ -138,9 +139,10 @@ server rejects it, or if the token was issued by a different server than the pro
 usable offline. If the server rejects your token while a session is running, Claude Code's hook
 says so as an in-session notice — `[kcap] The server rejected your credentials (HTTP 401) —
 session recording is paused. Run 'kcap login' to resume.` — instead of surfacing an opaque hook
-error, so you no longer have to run `kcap whoami` to work out why recording stopped. Other agents'
-hooks print the same advice to stderr instead of an in-session notice, since not every agent
-surfaces hook output in its UI. `kcap status` prints its own
+error, so you no longer have to run `kcap whoami` to work out why recording stopped. The lifecycle
+event that hit the rejection is not lost: it is spooled like an outage and re-sent on the next hook
+once you have logged in. Other agents' hooks print the same advice to stderr instead of an
+in-session notice, since not every agent surfaces hook output in its UI. `kcap status` prints its own
 **Version** line — the installed CLI version, with an inline `(update available: …)` annotation
 when a newer one is out (capped at your connected server's version, marked `(…, server version)` when
 your tenant trails npm) — see [`kcap update`](#other-commands) for the full opt-out story.
@@ -243,7 +245,7 @@ The `kcap mcp analytics` stdio server lets agents answer analytics questions abo
 Once set up, Capacitor runs silently in the background. Every Claude Code (and Codex CLI, if you installed those hooks) session is captured automatically:
 
 - **Session lifecycle** — start, end, interruptions, context compaction
-- **Durable lifecycle delivery** — if the server is briefly unreachable when a `SessionStart`/`SessionEnd` hook (or a per-subagent `SubagentStop` carrying an `agent_id`) fires (for example during a deploy), the event is spooled to `~/.config/kcap/spool/` and automatically re-sent on the next hook, so sessions don't get stuck "active", lose their start record, or leave subagents stuck "running". No action needed; stale spool entries are reaped after 30 days.
+- **Durable lifecycle delivery** — if the server is briefly unreachable when a `SessionStart`/`SessionEnd` hook (or a per-subagent `SubagentStop` carrying an `agent_id`) fires (for example during a deploy), or rejects your credentials (HTTP 401), the event is spooled to `~/.config/kcap/spool/` and automatically re-sent on the next hook — after `kcap login`, for a rejected credential — so sessions don't get stuck "active", lose their start record, or leave subagents stuck "running". No action needed beyond logging back in; stale spool entries are reaped after 30 days.
 - **Transcript data** — streamed in real time via a background watcher process over SignalR
 - **Subagent activity** — full tree of spawned subagents with their own transcripts
 - **Tool usage** — every tool call with timing and results
@@ -281,8 +283,10 @@ At a glance — each links to its section below:
 | Command | What it does |
 |---------|--------------|
 | [`kcap setup`](#initial-setup) | Interactive wizard — server, auth, agent hooks, daemon |
+| [`.kcap/approvals.yaml`](#approval-policy) | Auto-allow, deny, or force-ask specific tool calls |
 | [`kcap import`](#loading-historical-sessions) | Backfill past sessions from every detected agent |
 | [`kcap recap`](#session-recap) | AI summary + per-turn outline of a session |
+| [`kcap sessions`](#listing-sessions-on-a-repository) | List a repo's sessions you can see, running first |
 | [`kcap validate-plan`](#plan-validation) | Check that every planned item was completed |
 | [`kcap hide`](#hide-session) | Mark a session owner-only |
 | [`kcap disable`](#disable-recording) | Stop recording and delete server-side data |
@@ -351,6 +355,32 @@ New scripts should prefer `--skip-claude-hooks` / `--skip-codex-hooks` and `kcap
 
 If you run `kcap setup` outside any git working tree, it still completes — hooks install user-scope and fire for every session — but a tip at the end reminds you that sessions recorded from non-repo directories won't capture owner/repo/branch/PR context. The Step 6 import is skipped too, since there's no origin remote to scope it to.
 
+### Approval policy
+
+Cut down on prompt fatigue by telling kcap what to auto-approve, auto-deny, or still ask about. Drop rules in a **policy file** — `.kcap/approvals.yaml` at the repo root (commit it — it's PR-reviewable, like a CODEOWNERS file) and/or `~/.config/kcap/approvals.yaml` for your own machine (honors `KCAP_CONFIG_DIR`) — and every matching tool call gets one of three outcomes: **allow** (run it, no prompt — on an ACP-routed agent this only fires when it offers a single, unambiguous allow option; otherwise the normal prompt still shows), **deny** (refuse the call — only Claude's `PreToolUse` hook shows your `reason:` to the agent; every other seam answers with a bare refusal, and the reason still lands in kcap's audit trail), or **ask** (force a prompt even where the agent's own auto-mode would normally have skipped one). The same rules, with identical semantics, govern a local Claude Code session (its `PreToolUse` and `PermissionRequest` hooks), a hosted (daemon-launched) Claude session (evaluated before the request reaches the human-approval lane), and ACP-routed agents — Cursor, GitHub Copilot, Kiro, OpenCode, Gemini — (evaluated ahead of kcap's own launch presets). A **rendered** session's local checks only ever tighten: deny and ask still apply, but nothing gets auto-allowed there. Anything the rules don't decide **passes through** unchanged to the agent's native behavior, so turning the policy on never makes a session noisier, and a repo with no file behaves exactly as it does today. Unattended review-flow launches are out of scope: a reviewer runs with no human to prompt, so it stays under its own containment rather than this policy layer.
+
+```yaml
+version: 1
+rules:
+  - match: { kind: shell, command: "git push --force*" }
+    outcome: deny
+    reason: force-push goes through the PR lane
+  - match: { kind: shell, command: ["git status *", "git diff *", "dotnet build *"] }
+    outcome: allow           # the trailing * is the visible opt-in to arbitrary extra argv
+  - match: { kind: mcp_tool, server: "kcap-*" }
+    outcome: allow
+  - match: { kind: shell, command: "gh pr merge" }
+    outcome: ask
+```
+
+`match.kind` is one of `shell`, `file_edit`, `file_read`, `network`, `mcp_tool`, `other`. An **allow** pattern must cover the whole command: `git status` allows only `git status`, and `git status *` allows anything after it purely because of that trailing bare `*` — broad auto-approval has to be visible in the file, never a silent default. **Deny**/**ask** patterns are looser and match a run of tokens anywhere in the command, so `git push --force*` also catches `git push --force origin main`. A shell command kcap can't fully analyze — redirection, expansion, globs, compound syntax like `if`/`for`, a known shell name anywhere in the line (`bash`, `sh`, `pwsh`, `busybox` and friends, wrappers included), or an `env -S`/`--split-string` form that packs a whole command line into one argument — is **never allow-eligible** no matter what it contains; it can still be denied or asked about, just never auto-approved. That list of shell names is maintained, not exhaustive, so a lesser-known interpreter is analyzed like any other program: it's auto-approved exactly when an allow rule already in the file fully covers the command — whether that rule names the interpreter outright, a glob covers its position, or a wrapper rule like `env *`/`sudo *` grants it the argv. A shell name on that maintained list, though, is never auto-approved no matter what rule covers it. `judge:` is accepted and parsed in the file today, but it's inert — nothing calls an LLM classifier yet.
+
+A file that steps outside the supported YAML subset (block/flow mappings and sequences, plain/quoted scalars, literal `|`/`|-` blocks, comments — nothing else) or that sets `caps`/`enforcement` (reserved for centrally-managed policy scopes, invalid in a local file) is never half-applied. It's dropped entirely, and kcap says so loudly at the next session start instead of silently losing your rules:
+
+```
+[kcap] approval policy degraded: repo policy at /path/.kcap/approvals.yaml ignored: <reason>
+```
+
 ### Session recap
 
 By default, shows a concise AI-generated summary — why the work was done, key decisions, and anything left unfinished — followed by a per-turn outline (one prose line per turn) and a `--get-turn <N>` pointer for drilling into any turn. Use `--full` for the complete transcript with all prompts, responses, and file changes.
@@ -373,6 +403,19 @@ If the kcap plugin is installed, you can also use the `/kcap:recap` skill inside
 ```
 Recap session c4de7fbe-cff5-4e2c-bf80-9858d02f58be and propose what should be done next.
 ```
+
+### Listing sessions on a repository
+
+```bash
+kcap sessions                       # running sessions on the current repo, everyone you can see
+kcap sessions --all --mine          # your own, running and ended
+kcap sessions --repo acme/widgets   # another repository, by owner/name or 16-hex hash
+kcap sessions --ended --limit 50   # the last 50 ended sessions
+kcap sessions --touching src/Foo    # sessions with an Edit/Write attempt on a matching path
+kcap sessions --json                # the raw server response
+```
+
+Answers "which session is doing this, and is it still running?" for a checkout. Rows are visibility-filtered, so a teammate's private session simply does not appear. Each row shows status (`active`, `stale` after an hour of silence, or `ended`), your access level on it, owner, vendor, branch, last activity and title; below full access the branch is blank and `--touching` cannot match the row. Path evidence comes from Edit/Write tool inputs at invocation time, so edits applied through a shell script leave nothing to match. Drill in with `kcap recap --full <session-id>` (full access only).
 
 ### Plan validation
 
@@ -462,12 +505,14 @@ kcap mcp sessions
 
 Stdio MCP server that exposes past Capacitor sessions to coding agents (Claude Code, Codex, Cursor, Copilot, Gemini, Antigravity) so they can search and recall prior work without leaving the chat. **Claude Code:** auto-registered via the plugin's `.mcp.json`. **Codex CLI:** `kcap setup` / `kcap plugin install --codex` register it (alongside `kcap-review`) directly in `~/.codex/config.toml` under `[mcp_servers]`, so there's nothing extra to do — launch Codex from your repo directory so the server resolves the right repo. Enabling the kcap plugin through Codex's native plugin manager (`codex plugin add`) also provides them via the plugin's `.codex-mcp.json` descriptor. **Cursor:** `kcap setup` / `kcap plugin install --cursor` register it (alongside the other three kcap servers) in `~/.cursor/mcp.json`; opt out with `--skip-cursor-mcp`. **GitHub Copilot CLI:** `kcap setup` / `kcap plugin install --copilot` register it (alongside the other three kcap servers) in `~/.copilot/mcp-config.json`; opt out with `--skip-copilot-mcp`. **Gemini CLI:** `kcap setup` / `kcap plugin install --gemini` register it (alongside the other three kcap servers) in the shared `~/.gemini/settings.json`; opt out with `--skip-gemini-mcp`. **Google Antigravity:** `kcap setup` / `kcap plugin install --antigravity` register it (alongside the other three kcap servers) in `~/.gemini/config/mcp_config.json` — Antigravity's own MCP file, not the Gemini CLI's `settings.json`; opt out with `--skip-antigravity-mcp`.
 
-It provides four tools:
+It provides six tools:
 
 - **`search_sessions`** — free-text search over past sessions (and subagent transcripts), searching the current repo first and automatically widening to every visible repo when results come back thin (the response then carries `widened_to_all_repos: true`, and each hit includes its own repo). Pass `repo: "all"` to search across every repo you can see up front, or `repo: "owner/name"` for a different one — an explicit `repo` (including `"all"`) never auto-widens. Filter by `author` / `author_github_id`. Returns ranked hits with `session_id`, snippet, and (for transcript hits) `hit_event_index` + `agent_id` for drilling in.
+- **`list_repo_sessions`** — the sessions on a repository you are allowed to see, running first, ordered by last activity, with `access_level`, `stale`, branch, cwd, last prompt and Edit/Write attempt paths (blank below full access). `repo` defaults to the current repo and accepts `owner/name` or a 16-hex hash; `state` is `active` (default), `ended` or `all`; `owner` is `me` or a canonical id; `touching_path` matches attempt paths on full-access rows only.
 - **`get_session_summary`** — concise `summary_text` + `plan` for a session. Use this to orient before reading the transcript.
 - **`get_session_transcript`** — speaker-tagged events from a session. Pair `around_event` (and `agent_id` if the hit was in a subagent) with the values returned by `search_sessions` to fetch the exact decision context.
 - **`get_turn`** — the full event transcript for one turn (user prompt, tool calls + results, assistant text) by `session_id` + `turn_index`. A turn is one user message and the assistant's full response up to the next user message.
+- **`list_turns`** — every turn of a session with its prose summary, prompt, tools, files and token counts; works on running sessions at `activity` access and above.
 
 The server is repo-aware — it resolves the current working directory to a repo hash at startup, and `search_sessions` defaults its `repo` filter to that hash, auto-widening to all repos only when that pinned search comes back thin. **If the current repo can't be resolved** (run outside a git checkout, or a missing/unparseable `origin` remote), `search_sessions` returns an error asking you to pass `repo: "owner/name"` or `repo: "all"` — it will not silently search across all repos.
 

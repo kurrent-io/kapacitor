@@ -8,7 +8,7 @@ namespace Capacitor.Cli;
 /// builds the SessionStart "team memory" index
 /// fragment from the <c>GET /api/memories/index</c> response body: a JSON array of
 /// <c>{memory_id, slug, audience, description, kind, scope_kind, project_slug}</c>,
-/// already capped and most-recently-updated first by the server.
+/// already capped and ranked by the server.
 /// <para>
 /// Entries are grouped by <c>audience</c> (org → team → user), preserving the
 /// server's order within each group, and rendered as <c>slug [scope]: description</c>

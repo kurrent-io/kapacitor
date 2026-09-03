@@ -252,7 +252,15 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
                                   && AcpPermissionPresets.TryResolve(ctx.AcpPermissionPreset, out var resolvedPreset)
                     ? resolvedPreset
                     : null,
-                notifyAutoApproval: notice => _ = connection.NotifyAcpAutoApprovalAsync(notice)
+                notifyAutoApproval: notice => _ = connection.NotifyAcpAutoApprovalAsync(notice),
+                // The launch's own policy, evaluated at the permission seam ahead of the preset. Null
+                // for an ungoverned launch, which leaves the bridge's arms exactly as they were.
+                policySnapshot: ctx.PolicySnapshot,
+                notifyPolicyDecision: evt => _ = connection.AppendAgentRunEventAsync(ctx.AgentId, evt),
+                // The same directory the child is spawned in, so a relative tool-call path resolves to
+                // the file the agent will actually touch — an unresolvable one evaluates as Other and
+                // slips past every path rule.
+                policyCwd: ctx.Worktree.Path
             );
 
             // MUST precede StartAsync below: the handshake's SetLaunchStage stamps are no-ops against

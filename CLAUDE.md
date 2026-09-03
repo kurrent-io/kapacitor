@@ -58,6 +58,11 @@ Deliberate choices a change can silently undo — each looks like a bug until yo
 - **Auth commits in one ordered boundary** — claims, then config and provider stamp, then tokens —
   behind a totalized result. `kcap login` never repoints `server_url`; `kcap setup` and the wizard
   adopt it.
+- **A 401 spools; only a rejected payload drops.** Every live hook post and every drain poster
+  classifies a status through `HookSpool.IsRetryable`, where a 401 is retryable like a 5xx: the
+  credential is what `kcap login` repairs, so the event must outlive the lapse. Restating the rule
+  at a call site lets a vendor spool a status the drain then drops — a visible loss turned into a
+  delayed silent one. Retention while the lapse lasts is the spool's own byte cap and 30-day reap.
 - **Secret redaction rewrites decoded JSON string values, never the serialized line.** A pattern run
   over the whole line matches past the value it found into the surrounding structure, and the server
   drops an unparseable line silently. A line the writer refuses is replaced by a placeholder —

@@ -103,8 +103,7 @@ public static class LifecycleSpoolDrain {
                 }
                 return DrainOutcome.Delivered;
             }
-            var code = (int)resp.StatusCode;
-            return code is >= 500 or 408 or 429 ? DrainOutcome.TransientStop : DrainOutcome.Drop;
+            return HookSpool.OutcomeOf((int)resp.StatusCode);
         } catch { return DrainOutcome.TransientStop; }
     }
 

@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Threading.Channels;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Acp;
+using Capacitor.Cli.Core.Policy;
 using Capacitor.Cli.Daemon.Acp;
 using Capacitor.Cli.Daemon.Harness.Kiro;
 using Microsoft.Extensions.Logging;
@@ -464,6 +465,11 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     /// other policy.</summary>
     readonly IReadOnlySet<string>? _admittedToolIds;
 
+    /// <summary>The approval policy this launch is judged against. Held beyond the interaction
+    /// bridge because a degraded one owes the user a transcript note: the daemon log that records
+    /// the same fact is not somewhere the person watching the session can see.</summary>
+    readonly PolicySnapshot? _policySnapshot;
+
     int _sawFirstUpdate;
 
     /// <summary>Completes when the first turn ends, however it ends — the other way to disarm the
@@ -619,9 +625,13 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
             bool                                                                            isReviewFlow = false,
             IReadOnlySet<string>?                                                           admittedToolIds = null,
             AcpLaunchPermissionPreset?                                                      acpPermissionPreset = null,
-            Action<AcpAutoApprovalNotice>?                                                  notifyAutoApproval = null
+            Action<AcpAutoApprovalNotice>?                                                  notifyAutoApproval = null,
+            PolicySnapshot?                                                                 policySnapshot = null,
+            Action<PolicyDecisionEventV1>?                                                  notifyPolicyDecision = null,
+            string?                                                                         policyCwd = null
         ) {
         _admittedToolIds = admittedToolIds;
+        _policySnapshot  = policySnapshot;
         _firstOutputDeadline = firstOutputDeadline;
         _isReviewFlow        = isReviewFlow;
         _mcpSurfaceMonitor = mcpSurfaceMonitor;
@@ -661,7 +671,13 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
                 HandleUnexpectedUnattendedInteraction,
                 admittedToolIds,
                 acpPermissionPreset,
-                notifyAutoApproval);
+                notifyAutoApproval,
+                policySnapshot,
+                // The vendor this runtime already speaks for — the policy vocabulary's vendor field
+                // and the launch's vendor are the same fact, so they cannot be given two answers.
+                vendor,
+                notifyPolicyDecision,
+                policyCwd);
         }
 
         // The original launch's incarnation. Every later candidate goes through the same wiring
@@ -918,6 +934,13 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
         _mcpServersForResume = mcpServers?.ToArray() ?? NoMcpServers;
 
         var connection = _installed.Connection;
+
+        // Ahead of the read loop, which is what admits inbound session/request_permission: a
+        // degradation the user only learns about after a peer has already acted under the weakened
+        // policy is a disclosure that arrived too late to be one. Same ordered envelope lane as
+        // every other note, so it also precedes the opening turn.
+        if (_policySnapshot is { Degraded: true, Degradations.Count: > 0 } degraded)
+            EmitPolicyDegradedNote(degraded.Degradations[0]);
 
         _installed.LoopTask = RunIncarnationLoopAsync(_installed);
         _turnWorkerTask     = RunTurnWorkerAsync(_cts.Token);
@@ -2503,6 +2526,16 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
             Seq: 0,
             Kind: AcpEventKind.SystemNote,
             Text: $"{_vendor} could not apply the model '{requestedModel}'; this session is running {_vendor}'s default model instead.",
+            TimestampIso: NowIso()));
+
+    /// <summary>Discloses a weakened approval policy where the session is actually watched. Worded
+    /// as the CLI hook's session-start notice is, minus its <c>[kcap]</c> prefix — a transcript note
+    /// already reads as the daemon's own voice.</summary>
+    void EmitPolicyDegradedNote(string firstDegradation) =>
+        EmitEnvelope(new AcpEventEnvelope(
+            Seq: 0,
+            Kind: AcpEventKind.SystemNote,
+            Text: $"approval policy degraded: {firstDegradation}",
             TimestampIso: NowIso()));
 
     /// <summary>The §8 surfacing envelope — emitted after commit and settlement, before reopen,

@@ -383,6 +383,7 @@ public static partial class DaemonRunner {
         builder.Services.AddSingleton<PermissionIpc>();
         builder.Services.AddSingleton(sp => new PermissionDecisionLog(
             coverageStateDir, sp.GetRequiredService<ILogger<PermissionDecisionLog>>()));
+        builder.Services.AddSingleton<PolicySnapshotProvider>();
 
         // The DaemonStatus push: ONE notifier singleton shared by ServerConnection (pulses on hub
         // state transitions) and AgentOrchestrator (pulses on agent mutation) via their optional

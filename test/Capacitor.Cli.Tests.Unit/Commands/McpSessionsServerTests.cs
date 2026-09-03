@@ -1,10 +1,92 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.Core;
 
 namespace Capacitor.Cli.Tests.Unit.Commands;
 
 public class McpSessionsServerTests {
+    const string CwdHash = "da9c523c68aee2f1";
+
+    [Test]
+    public async Task BuildRepoSessionsUrl_no_repo_uses_cwd_hash_and_defaults_state_to_active() {
+        var url = McpSessionsServer.BuildRepoSessionsUrl("http://srv", args: null, cwdRepoHash: CwdHash);
+
+        await Assert.That(url).IsEqualTo($"http://srv/api/repositories/{CwdHash}/sessions?state=active");
+    }
+
+    [Test]
+    public async Task BuildRepoSessionsUrl_blank_repo_is_treated_as_absent() {
+        var url = McpSessionsServer.BuildRepoSessionsUrl("http://srv", new JsonObject { ["repo"] = "  " }, CwdHash);
+
+        await Assert.That(url).Contains($"/api/repositories/{CwdHash}/sessions");
+    }
+
+    [Test]
+    public async Task BuildRepoSessionsUrl_no_repo_and_no_cwd_hash_fails_closed_without_offering_all() {
+        var ex = await Assert.That(() => McpSessionsServer.BuildRepoSessionsUrl("http://srv", args: null, cwdRepoHash: null))
+            .Throws<ArgumentException>();
+
+        await Assert.That(ex!.Message).Contains("<owner>/<name>");
+        await Assert.That(ex.Message).DoesNotContain("\"all\"");
+    }
+
+    [Test]
+    public async Task BuildRepoSessionsUrl_owner_name_is_hashed_locally_and_hash_passes_through() {
+        var byName = McpSessionsServer.BuildRepoSessionsUrl("http://srv", new JsonObject { ["repo"] = "kurrent-io/kcap-server" }, null);
+        var byHash = McpSessionsServer.BuildRepoSessionsUrl("http://srv", new JsonObject { ["repo"] = CwdHash }, null);
+
+        await Assert.That(byName).Contains($"/api/repositories/{RepoHashHelper.ComputeRepoHash("kurrent-io", "kcap-server")}/sessions");
+        await Assert.That(byHash).Contains($"/api/repositories/{CwdHash}/sessions");
+    }
+
+    [Test]
+    [Arguments("all")]
+    [Arguments("owner")]
+    [Arguments("a//b")]
+    [Arguments("DA9C523C68AEE2F1")]
+    [Arguments("da9c523c")]
+    public async Task BuildRepoSessionsUrl_rejects_malformed_repo(string repo) {
+        await Assert.That(() => McpSessionsServer.BuildRepoSessionsUrl("http://srv", new JsonObject { ["repo"] = repo }, CwdHash))
+            .Throws<ArgumentException>();
+    }
+
+    [Test]
+    public async Task BuildRepoSessionsUrl_nested_group_owner_resolves_repo_hash() {
+        var url = McpSessionsServer.BuildRepoSessionsUrl(
+            "http://srv", new JsonObject { ["repo"] = "group/subgroup/project" }, null);
+
+        await Assert.That(url).Contains($"/api/repositories/{RepoHashHelper.ComputeRepoHash("group/subgroup", "project")}/sessions");
+    }
+
+    [Test]
+    public async Task BuildRepoSessionsUrl_rejects_non_string_repo_and_bad_state() {
+        await Assert.That(() => McpSessionsServer.BuildRepoSessionsUrl("http://srv", new JsonObject { ["repo"] = 42 }, CwdHash))
+            .Throws<ArgumentException>();
+        await Assert.That(() => McpSessionsServer.BuildRepoSessionsUrl("http://srv", new JsonObject { ["state"] = "running" }, CwdHash))
+            .Throws<ArgumentException>();
+    }
+
+    [Test]
+    public async Task BuildRepoSessionsUrl_encodes_owner_and_touching_path_and_passes_paging() {
+        var url = McpSessionsServer.BuildRepoSessionsUrl(
+            "http://srv",
+            new JsonObject {
+                ["state"]         = "ended",
+                ["owner"]         = "user_01ABC DEF",
+                ["touching_path"] = "src/Foo Bar.cs",
+                ["limit"]         = 5,
+                ["offset"]        = 10
+            },
+            CwdHash);
+
+        await Assert.That(url).Contains("state=ended");
+        await Assert.That(url).Contains("owner=user_01ABC%20DEF");
+        await Assert.That(url).Contains("touching_path=src%2FFoo%20Bar.cs");
+        await Assert.That(url).Contains("limit=5");
+        await Assert.That(url).Contains("offset=10");
+    }
+
     [Test]
     public async Task BuildSearchUrl_no_args_no_cwd_hash_fails_closed() {
         // Superseded fail-open expectation: with no repo resolvable and none requested, this now

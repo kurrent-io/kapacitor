@@ -178,6 +178,7 @@ public class CommandEventsTests {
     [Arguments("status")]
     [Arguments("hook")] // known-but-denylisted verbs are still KNOWN verbs — the two lists are independent
     [Arguments("uninstall")]
+    [Arguments("sessions")]
     public async Task Known_verbs_report_themselves(string command) {
         await Assert.That(CommandEvents.ReportableCommand(command)).IsEqualTo(command);
     }

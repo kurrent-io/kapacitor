@@ -12,6 +12,7 @@ using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Core.Harness.Claude;
 using Capacitor.Cli.Core.Harness.Codex;
+using Capacitor.Cli.Core.Policy;
 using Capacitor.Cli.Daemon.Harness.Antigravity;
 using Capacitor.Cli.Daemon.Harness.Claude;
 using Capacitor.Cli.Daemon.Harness.Codex;
@@ -149,6 +150,12 @@ internal record AgentInstance(
     /// one; null everywhere else. Stored here (like the posture pair above) so initial registration
     /// and every reconnect re-registration report the same value.</summary>
     public string?              PermissionPreset  { get; init; }
+
+    /// <summary>The approval policy bound once at launch, from the worktree this agent runs in plus
+    /// the daemon user's own file. Held for the run so every permission this agent raises is judged
+    /// against the same documents the launch was reported with, whatever the files later say.
+    /// Null when no provider was wired, or when the build failed.</summary>
+    public PolicySnapshot?      PolicySnapshot    { get; init; }
 
     /// <summary>The runtime transport this agent actually launched on, reported to the server on
     /// AgentRegistered so it can validate its launch decision. Each runtime owns its own transport
@@ -399,6 +406,8 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     // registered singleton when one exists) keep compiling unchanged.
     readonly DaemonStatusNotifier _statusNotifier;
 
+    readonly PolicySnapshotProvider? _policySnapshots;
+
     /// <summary>
     /// Relays a borrowed reviewer's flow submission to the server under the DAEMON's credential.
     ///
@@ -640,7 +649,10 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             // Null in every pre-existing construction site — those get a private broker nobody else
             // reaches. DaemonRunner passes the DI-registered singleton so the permission bridge and
             // local IPC attribute against the same pending-request set this orchestrator withdraws from.
-            PermissionPromptBroker?                           permissionBroker = null
+            PermissionPromptBroker?                           permissionBroker = null,
+            // Null in every pre-existing construction site — those launches carry no policy snapshot
+            // at all. DaemonRunner's bare AddSingleton lets DI fill this in production.
+            PolicySnapshotProvider?                           policySnapshots = null
         ) {
         _shutdownCts       = CancellationTokenSource.CreateLinkedTokenSource(lifetime.ApplicationStopping);
         _config            = config;
@@ -658,6 +670,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         _logger            = logger;
         _consentGate       = consentGate;
         _statusNotifier    = statusNotifier ?? new();
+        _policySnapshots   = policySnapshots;
 
         // Phase B (D4): per-daemon PID-record store + this daemon's logical id + boot epoch.
         // Records live under "{stateDir}/{name}/agents" so they are unambiguously THIS daemon's own
@@ -866,21 +879,21 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
         if (query.AgentId is { Length: > 0 } rawId) {
             var raw = live.Where(a => string.Equals(a.Id, rawId, StringComparison.Ordinal)).ToList();
-            if (raw.Count == 1) return new AttributedAgent(raw[0].Id);
+            if (raw.Count == 1) return new AttributedAgent(raw[0].Id, raw[0].PolicySnapshot);
             if (PermissionWire.Canonical(rawId) is { } canonicalId) {
                 var canon = live.Where(a => PermissionWire.Canonical(a.Id) == canonicalId).ToList();
-                if (canon.Count == 1) return new AttributedAgent(canon[0].Id);
+                if (canon.Count == 1) return new AttributedAgent(canon[0].Id, canon[0].PolicySnapshot);
             }
         }
 
         var bySession = live.Where(a => a.SessionId is { } s && PermissionWire.Canonical(s) == canonicalSession).ToList();
-        if (bySession.Count == 1) return new AttributedAgent(bySession[0].Id);
+        if (bySession.Count == 1) return new AttributedAgent(bySession[0].Id, bySession[0].PolicySnapshot);
 
         if (query.Cwd is { Length: > 0 } cwd) {
             var wanted = Path.TrimEndingDirectorySeparator(cwd);
             var byCwd = live.Where(a => string.Equals(
                 Path.TrimEndingDirectorySeparator(a.Worktree.Path), wanted, RepoPathStore.PathComparison)).ToList();
-            if (byCwd.Count == 1) return new AttributedAgent(byCwd[0].Id);
+            if (byCwd.Count == 1) return new AttributedAgent(byCwd[0].Id, byCwd[0].PolicySnapshot);
         }
 
         return null;
@@ -2036,6 +2049,29 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 worktree = await _worktreeManager.CreateAsync(repoPath, baseRef: baseRef);
             }
 
+            // The checkout the agent runs in is what the session's repo policy file means — the same
+            // trust boundary the local seams read. Bound once here so the whole run is judged against
+            // one set of documents. A policy that cannot be built is not a launch failure: the launch
+            // proceeds with no snapshot, and the permission seam falls back to prompting.
+            PolicySnapshot? policySnapshot = null;
+            try {
+                policySnapshot = _policySnapshots?.BuildFor(worktree.Path);
+            } catch (Exception ex) {
+                LogPolicySnapshotBuildFailed(ex, agentId);
+            }
+
+            // The documents this run is judged against, enqueued BEFORE the runtime starts: the ACP
+            // runtime queues its opening prompt inside StartAsync, so an immediate
+            // session/request_permission would otherwise put a decision event ahead of the snapshot
+            // it names, and the event lane preserves insertion order. Keyed by the agent id — no
+            // vendor session id exists yet.
+            if (policySnapshot is { IsEmpty: false } uploadable) {
+                if (uploadable.Degraded)
+                    LogPolicySnapshotDegraded(agentId,
+                        uploadable.Degradations.Count > 0 ? uploadable.Degradations[0] : "unspecified");
+                _ = _server.AppendAgentRunEventAsync(agentId, PolicyWire.ToUpload(agentId, uploadable));
+            }
+
             if (work == WorkLocation.OwnedWorktree) {
                 // Download attachments into worktree (best-effort)
                 if (attachmentIds is { Length: > 0 }) {
@@ -2175,7 +2211,10 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 // Carried verbatim; the Codex app-server factory branches thread/start -> thread/resume
                 // on it for a parked reviewer relaunch. Ignored by every other runtime.
                 ResumeSessionId: cmd.ResumeSessionId,
-                PermissionMode: cmd.PermissionMode
+                PermissionMode: cmd.PermissionMode,
+                // The same instance the AgentInstance below carries, so a factory that judges an
+                // action during its own startup uses the documents this launch was reported with.
+                PolicySnapshot: policySnapshot
             );
 
             HostedRuntimeStart start;
@@ -2281,6 +2320,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 // so a reconnect re-registration reports the same value. Only ever set for an
                 // interactive ACP launch (the policy above rejects any other shape).
                 PermissionPreset    = cmd.AcpPermissionPreset,
+                PolicySnapshot      = policySnapshot,
                 ReviewerBridgeToken = reviewerToken,
                 BorrowedSnapshotSource = borrowedSnapshotSource,
                 Kind                = cmd.Kind,       // Phase B (D2): flow identity + kind for LiveAgents/status report
@@ -5040,6 +5080,12 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to download launch attachments for agent {AgentId} (continuing)")]
     partial void LogAttachmentDownloadFailed(Exception ex, string agentId);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to build the approval-policy snapshot for agent {AgentId}; launching without one (permissions fall back to prompting)")]
+    partial void LogPolicySnapshotBuildFailed(Exception ex, string agentId);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Approval-policy snapshot for agent {AgentId} is degraded: {FirstDegradation}")]
+    partial void LogPolicySnapshotDegraded(string agentId, string firstDegradation);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to refresh borrowed-checkout snapshot for agent {AgentId}; rejecting the round and terminating the reviewer")]
     partial void LogBorrowedSnapshotRefreshFailed(Exception ex, string agentId);

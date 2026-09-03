@@ -1,4 +1,3 @@
-using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Capacitor.Cli.Core;
@@ -20,7 +19,7 @@ class RecapCommand(ConfigRoot config, ProfileContext profiles) {
             return 1;
         }
 
-        var hash = ComputeRepoHash(repo.Owner, repo.RepoName);
+        var hash = RepoHashHelper.ComputeRepoHash(repo.Owner, repo.RepoName);
 
         using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync(config, profiles, baseUrl);
 
@@ -71,13 +70,6 @@ class RecapCommand(ConfigRoot config, ProfileContext profiles) {
         }
 
         return 0;
-    }
-
-    static string ComputeRepoHash(string owner, string repoName) {
-        var input = $"{owner}/{repoName}".ToLowerInvariant();
-        var hash  = SHA256.HashData(Encoding.UTF8.GetBytes(input));
-
-        return Convert.ToHexStringLower(hash)[..16];
     }
 
     public async Task<int> HandleRecap(string sessionId, bool chain, bool full = false) {

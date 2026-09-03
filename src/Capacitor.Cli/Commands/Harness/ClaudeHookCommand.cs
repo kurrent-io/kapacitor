@@ -4,6 +4,7 @@ using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.Harness.Claude;
+using Capacitor.Cli.Core.Policy;
 using Capacitor.Cli.SessionStartMemory;
 using Capacitor.Cli.Core.Harness;
 
@@ -78,6 +79,29 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
         var budget    = clock.Budget(Ceiling(command));
         var clientCap = budget.Remaining;
 
+        // Approval policy is decided before any client exists. The seam only appends its events to
+        // the spool, so it needs no server — and routing it through HandleCore would let an
+        // unreachable server (or an auth probe over budget) silently disable every deny, since that
+        // path returns before HandleCore is ever reached.
+        if (command == "pre-tool-use") {
+            // Every other decision lane already degrades an unforeseen throw to exit 0. Without the
+            // same boundary here a crash exits non-zero, which Claude renders as its opaque
+            // hook-error banner — and for a natively auto-allowed tool the deny that never got
+            // written lets the call run.
+            try {
+                if (sessionId is null) return 0;
+                // Same two gates the rest of this method honours: a disabled session, and a repo/path
+                // the profile excludes — an excluded session is ungoverned because its decisions could
+                // not be recorded, and the audit contract is that every engine decision is.
+                if (await ShouldSuppressCaptureAsync(sessionId, body, command, profiles.Effective, budget)) return 0;
+
+                var rendered = Environment.GetEnvironmentVariable("KCAP_RENDERED_AGENT") is "1";
+
+                return await new Cli.Harness.Claude.ClaudePolicySeam(config)
+                    .HandlePreToolUseAsync(body, sessionId, rendered, stdout ?? Console.Out);
+            } catch { return 0; }
+        }
+
         // Skip client construction entirely for an unusable URL: the factory funnels into
         // EnsureAbsolute, and this runs before ANY dispatch, so every Claude event would die here.
         // Falling into the same degraded arm a client-creation timeout already uses keeps capture
@@ -103,6 +127,14 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
                         agentId: null, cwd: cwd, skipTitle: isResumeOrCompact);
                 } catch { }
             }
+
+            // The freeze is a local file write that needs no client, so it belongs on this arm too:
+            // without it the first PreToolUse builds the snapshot against files edited since the
+            // session began, and the session is governed by a policy it never started under.
+            string? degradedPolicyNotice = command == "session-start" && sessionId is not null
+                ? FreezePolicySnapshot(sessionId, cwd is null ? null : GitRepository.FindRoot(cwd))
+                : null;
+
             // Report what the append ACTUALLY did, and only for events that are spoolable at all —
             // announcing "spooled" ahead of the attempt would claim a replay that may never happen.
             var unusableUrl = !HookHttp.IsPostable(Url);
@@ -120,6 +152,9 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
                 await Console.Error.WriteLineAsync(
                     UnusableUrlDiagnostic.Build(profiles.Resolution.Source, Url, $"{command ?? "hook"} dropped (not a spoolable event)"));
             }
+
+            // Nothing else on this arm writes stdout, so the notice is the arm's only object.
+            WriteSessionStart(stdout ?? Console.Out, null, degradedPolicyNotice);
 
             return 0;
         }
@@ -212,9 +247,10 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
     /// </summary>
 
     /// <summary>
-    /// One honest line for a degraded-path spool attempt. An unusable URL routes through the shared
-    /// source-aware diagnostic (which names what to fix and never echoes the URL); a budget overrun
-    /// keeps its existing wording.
+    /// One honest line for a spool attempt, on the degraded path or after a failed live POST:
+    /// "spooled" promises a replay, so it is said only when the append persisted something. An
+    /// unusable URL routes through the shared source-aware diagnostic (which names what to fix and
+    /// never echoes the URL); a budget overrun keeps its existing wording.
     /// </summary>
     async Task ReportSpoolAsync(bool spooled, string route, string key, string reason, bool unusableUrl) {
         var disposition = spooled
@@ -230,6 +266,10 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
 
         await Console.Error.WriteLineAsync($"[kcap] {disposition} ({reason})");
     }
+
+    // Why a bounded live POST left its payload to the spool: the status it got, or no response at all.
+    static string FailureReason(int statusCode) =>
+        statusCode == 0 ? "no response within the hook budget" : $"HTTP {statusCode}";
 
     internal async Task<bool> ShouldSuppressCaptureAsync(
             string? canonicalSessionId, string body, string? command, Profile? activeProfile, HookBudget budget) {
@@ -393,8 +433,8 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
             return 0;
         }
 
-        // Auth lapsed: do not POST (server would 401) and do not drain (a 401 would Drop the
-        // spool backlog). Exit cleanly (0) so Claude shows no per-turn error banner; nudge once on
+        // Auth lapsed: do not POST and do not drain — every request would 401, so the backlog just
+        // waits for the login. Exit cleanly (0) so Claude shows no per-turn error banner; nudge once on
         // session-start via a systemMessage (shown to the user, not injected into the model context).
         if (authStatus is AuthStatus.Expired or AuthStatus.NotAuthenticated or AuthStatus.WrongServer) {
             if (command == "session-start") {
@@ -543,18 +583,23 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
             // attributed even when cwd is a subdirectory. Fail-open: GitRepository.FindRoot swallows
             // I/O errors and returns null when no repo is found, in which case the field is simply
             // omitted (older servers ignore unknown fields regardless).
-            if (sessionCwd is not null && GitRepository.FindRoot(sessionCwd) is { } workspaceRoot) {
+            var repoRoot = sessionCwd is null ? null : GitRepository.FindRoot(sessionCwd);
+
+            if (repoRoot is not null) {
                 try {
                     var node = JsonNode.Parse(body);
 
                     if (node is not null) {
-                        node["workspace_root"] = workspaceRoot;
+                        node["workspace_root"] = repoRoot;
                         body                    = node.ToJsonString();
                     }
                 } catch {
                     // Best effort
                 }
             }
+
+            // A degradation must reach the user, so it rides whatever this arm writes to stdout below.
+            var policyNotice = sessionId is null ? null : FreezePolicySnapshot(sessionId, repoRoot);
 
             // Inject default_visibility from the active V2 profile. The legacy top-level
             // LegacyV1Config.DefaultVisibility shape is not populated by v2 configs (the field
@@ -600,6 +645,7 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
                     spool.Append(sessionId, "session-start", body);
                     await Console.Error.WriteLineAsync($"[kcap] session-start spooled (ordering guard); will retry on the next kcap hook ({sessionId})");
                 }
+                WriteSessionStart(writer, null, policyNotice);
                 return 0;
             }
 
@@ -656,15 +702,19 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
 
             if (resp is null || !resp.IsSuccessStatusCode) {
                 var code      = resp is null ? 0 : (int)resp.StatusCode;
-                var permanent = resp is not null && code is < 500 and not 408 and not 429;
+                var retryable = resp is null || HookSpool.IsRetryable(code);
                 resp?.Dispose();
-                if (!permanent && sessionId is not null) spool.Append(sessionId, "session-start", body);
+                if (retryable && sessionId is not null) {
+                    await ReportSpoolAsync(spool.Append(sessionId, "session-start", body),
+                                           "session-start", sessionId, FailureReason(code), unusableUrl: false);
+                }
 
                 // The envelope below is built only from a 2xx body, so this is the arm's only
                 // stdout write — without it the start event is dropped in silence.
-                if (code == 401) {
-                    writer.WriteLine(new JsonObject { ["systemMessage"] = AuthRejectionNotice.RecordingNotice(StoredCredentialState.LooksValid) }.ToJsonString());
-                }
+                var rejection = code == 401
+                    ? new JsonObject { ["systemMessage"] = AuthRejectionNotice.RecordingNotice(StoredCredentialState.LooksValid) }.ToJsonString()
+                    : null;
+                WriteSessionStart(writer, rejection, policyNotice);
 
                 return 0;
             }
@@ -696,6 +746,8 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
             }
 
             // Context-envelope emission (lessons/version-nudge).
+            string? envelope = null;
+
             if (responseNode is not null) {
                 try {
                     // The EFFECTIVE profile (the `activeProfile` resolved above), not
@@ -729,18 +781,16 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
                         HarnessId.Claude, sessionId, activeProfile?.DisableWorkItemsNudge is true, home);
                     var harnessNudge = HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true, config, home);
 
-                    var envelope = SessionStartAdditionalContext.BuildEnvelope(
+                    envelope = SessionStartAdditionalContext.BuildEnvelope(
                         lessonsFragment, nudgeFragment, memoryFragment, coordinationFragment, workItemsNudge, harnessNudge);
-
-                    if (envelope is not null) {
-                        writer.WriteLine(envelope);
-                    }
                 } catch {
                     // Best effort — never break session capture for hook output emission.
                 }
             }
 
             resp.Dispose();
+
+            WriteSessionStart(writer, envelope, policyNotice);
 
             return 0;
         }
@@ -755,10 +805,16 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
                 var node = JsonNode.Parse(body);
                 sessionId = node?["session_id"]?.GetValue<string>();
                 if (node is not null) {
+                    // Stamped before the body is frozen so a spooled replay carries the count too.
+                    if (sessionId is not null) StampPassThroughCount(node, sessionId);
                     node["ended_at"] = DateTimeOffset.UtcNow.ToString("O");
                     body             = node.ToJsonString();
                 }
             } catch { }
+
+            // The session is over and the server holds the uploaded snapshot, so nothing here is
+            // read again — and session-end is the only thing that evicts these directories.
+            if (sessionId is not null) EvictPolicyState(sessionId);
 
             // Ordering guard: if this session's backlog couldn't fully drain, spool the fresh
             // session-end so a stranded session-start always reaches the server before it.
@@ -780,12 +836,13 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
             } catch { resp = null; }
 
             if (resp is null || !resp.IsSuccessStatusCode) {
-                var permanent = resp is not null && (int)resp.StatusCode is < 500 and not 408 and not 429;
+                var code      = resp is null ? 0 : (int)resp.StatusCode;
+                var retryable = resp is null || HookSpool.IsRetryable(code);
                 resp?.Dispose();
-                if (!permanent) {
+                if (retryable) {
                     if (sessionId is not null) {
-                        spool.Append(sessionId, "session-end", body);
-                        await Console.Error.WriteLineAsync($"[kcap] session-end spooled; will retry on the next kcap hook ({sessionId})");
+                        await ReportSpoolAsync(spool.Append(sessionId, "session-end", body),
+                                               "session-end", sessionId, FailureReason(code), unusableUrl: false);
                     } else {
                         await Console.Error.WriteLineAsync("[kcap] session-end transient failure but session_id missing — cannot spool; event dropped");
                     }
@@ -832,11 +889,12 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
                 } catch { resp = null; }
 
                 if (resp is null || !resp.IsSuccessStatusCode) {
-                    var permanent = resp is not null && (int)resp.StatusCode is < 500 and not 408 and not 429;
+                    var code      = resp is null ? 0 : (int)resp.StatusCode;
+                    var retryable = resp is null || HookSpool.IsRetryable(code);
                     resp?.Dispose();
-                    if (!permanent) {
-                        spool.Append(sessionId, "subagent-stop", body);
-                        await Console.Error.WriteLineAsync($"[kcap] subagent-stop spooled; will retry on the next kcap hook ({sessionId}/{agentId})");
+                    if (retryable) {
+                        await ReportSpoolAsync(spool.Append(sessionId, "subagent-stop", body),
+                                               "subagent-stop", $"{sessionId}/{agentId}", FailureReason(code), unusableUrl: false);
                     }
                     return 0;
                 }
@@ -844,6 +902,15 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
                 resp.Dispose();
                 return 0;
             }
+        }
+
+        // The turn is over, so its pending asks expire with it: a decision journalled for one turn
+        // must never answer an identical call in the next.
+        if (command == "stop") {
+            try {
+                var stopSessionId = JsonNode.Parse(body)?["session_id"]?.GetValue<string>();
+                if (stopSessionId is not null) new PolicyDecisionJournal(config).ClearTurn(stopSessionId);
+            } catch { }
         }
 
         using var sharedContent = new StringContent(body, Encoding.UTF8, "application/json");
@@ -908,6 +975,87 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
         }
 
         return 0;
+    }
+
+    /// <summary>
+    /// Freezes the session's approval policy at session start rather than at the first tool call, so
+    /// an edit landing mid-session cannot change what governs a session already under way. Returns
+    /// the degradation notice the user must see, or null when there is nothing to say.
+    /// </summary>
+    string? FreezePolicySnapshot(string sessionId, string? repoRoot) {
+        try {
+            var snapshot = new PolicySnapshotStore(config).LoadOrBuild(sessionId, repoRoot);
+
+            return snapshot.Degraded && snapshot.Degradations.Count > 0
+                ? $"[kcap] approval policy degraded: {snapshot.Degradations[0]}"
+                : null;
+        } catch {
+            // Best effort — a policy hiccup never fails the hook.
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Writes the session-start arm's single stdout object, folding a policy-degradation notice
+    /// into whatever the flow produced. One object, never two: Claude parses the hook's stdout as
+    /// one value, so a notice written beside an envelope would cost the reader both.
+    /// </summary>
+    static void WriteSessionStart(TextWriter writer, string? json, string? policyNotice) {
+        if (policyNotice is null) {
+            if (json is not null) writer.WriteLine(json);
+
+            return;
+        }
+
+        JsonObject? merged;
+        try { merged = json is null ? new JsonObject() : JsonNode.Parse(json) as JsonObject; }
+        catch { merged = null; }
+
+        if (merged is null) {
+            writer.WriteLine(json);
+
+            return;
+        }
+
+        merged["systemMessage"] = merged["systemMessage"] is JsonValue existing && existing.TryGetValue<string>(out var text)
+            ? $"{text}\n{policyNotice}"
+            : policyNotice;
+
+        writer.WriteLine(merged.ToJsonString());
+    }
+
+    /// <summary>Records how many tool calls ran past the policy engine unmatched, and resets the
+    /// counter so a resumed session never re-reports them.</summary>
+    void StampPassThroughCount(JsonNode node, string sessionId) {
+        try {
+            var count = new PolicyDecisionJournal(config).TakePassThroughCount(sessionId);
+            if (count > 0) node["policy_pass_through_count"] = count;
+        } catch { }
+    }
+
+    /// <summary>Drops the session's snapshot, journal and snapshot-upload markers. Best effort
+    /// throughout: a file that will not delete costs disk, never the hook.</summary>
+    void EvictPolicyState(string sessionId) {
+        var key = PolicySnapshotStore.Sanitize(sessionId);
+        TryDelete(config.Path("policy", "sessions", $"{key}.json"));
+        TryDelete(config.Path("policy", "journal", $"{key}.json"));
+
+        try {
+            var uploaded = config.Path("policy", "uploaded");
+
+            if (Directory.Exists(uploaded)) {
+                // The same sanitized key the emitter names the marker with — the raw id can carry a
+                // separator that would put the file somewhere this prefix never sees. Matched by
+                // prefix rather than a glob because the key is followed by a snapshot-id suffix.
+                foreach (var marker in Directory.EnumerateFiles(uploaded)) {
+                    if (Path.GetFileName(marker).StartsWith($"{key}-", StringComparison.Ordinal)) TryDelete(marker);
+                }
+            }
+        } catch { }
+
+        static void TryDelete(string path) {
+            try { File.Delete(path); } catch { }
+        }
     }
 
     /// <summary>
@@ -1023,10 +1171,7 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
             try {
                 using var content = new StringContent(body, Encoding.UTF8, "application/json");
                 using var resp    = await client.PostOnceAsync($"{Url}/hooks/{route}", content, perAttempt, CancellationToken.None);
-                if (!resp.IsSuccessStatusCode) {
-                    var code = (int)resp.StatusCode;
-                    return code is >= 500 or 408 or 429 ? DrainOutcome.TransientStop : DrainOutcome.Drop;
-                }
+                if (!resp.IsSuccessStatusCode) return HookSpool.OutcomeOf((int)resp.StatusCode);
                 if (route == "session-end") {
                     try {
                         var node = JsonNode.Parse(await resp.Content.ReadAsStringAsync());
