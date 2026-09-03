@@ -119,6 +119,14 @@ public class KcapMcpRegistryReviewFlowTests {
     }
 
     [Test]
+    public async Task Sessions_server_advertises_exactly_its_unattended_safe_tool_set() {
+        var advertised = McpSessionsServer.BuildToolsList().Select(t => t.Name).ToHashSet(StringComparer.Ordinal);
+        var classified = KcapMcpRegistry.ReviewFlowUnattendedSafeTools["kcap-sessions"];
+
+        await Assert.That(advertised.SetEquals(classified)).IsTrue();
+    }
+
+    [Test]
     public async Task Unattended_safe_set_is_exactly_the_catalogs_safe_names() {
         var safeNames = KcapMcpRegistry.ReservedResultChannelTools
             .Where(t => t.UnattendedSafe)

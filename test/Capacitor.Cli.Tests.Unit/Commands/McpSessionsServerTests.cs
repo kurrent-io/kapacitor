@@ -78,6 +78,7 @@ public class McpSessionsServerTests {
         await Assert.That(url).Contains("limit=5");
         await Assert.That(url).Contains("offset=10");
     }
+
     [Test]
     public async Task BuildSearchUrl_no_args_no_cwd_hash_fails_closed() {
         // Superseded fail-open expectation: with no repo resolvable and none requested, this now

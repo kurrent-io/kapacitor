@@ -728,7 +728,7 @@ sealed class McpSessionsServer(ConfigRoot config, ProfileContext profiles) {
         return envelope.ToJsonString();
     }
 
-    static McpTool[] BuildToolsList() => [
+    internal static McpTool[] BuildToolsList() => [
         new(
             "search_sessions",
             "Search past Kurrent Capacitor sessions by free-text question and/or author name. Searches the current repo first and AUTOMATICALLY widens to all visible repos when results are thin (response then carries widened_to_all_repos: true); every hit includes its repo, so check it before assuming a hit is from this repo. Pass repo: \"all\" to search everywhere explicitly, or repo: \"<owner>/<name>\" to pin another repo (explicit repo never widens). Returns ranked hits with session_id, title, owner, snippet, and (for transcript hits) hit_event_index + agent_id for drilling into the exact moment with get_session_transcript. For 'have we done this before / why did we / who decided X / when did we work on Y' questions, search here before grepping the code or git log — it searches the reasoning across past sessions, not just the code.",

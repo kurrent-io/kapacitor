@@ -2,7 +2,7 @@ using Capacitor.Cli.Core;
 
 namespace Capacitor.Cli.Commands;
 
-internal sealed record SessionsOptions(string State, string? Repo, bool Mine, string? Touching, int Limit, bool Json);
+internal sealed record SessionsOptions(string State, string? Repo, string? RepoHash, bool Mine, string? Touching, int Limit, bool Json);
 
 /// <summary>Parses <c>kcap sessions</c> flags. The generic top-level flag helper returns the first
 /// value and validates nothing, so exclusivity, value presence and shapes are checked here.</summary>
@@ -15,6 +15,7 @@ internal static class SessionsArgs {
 
         string? state    = null;
         string? repo     = null;
+        string? repoHash = null;
         var     mine     = false;
         string? touching = null;
         var     limit    = 20;
@@ -37,11 +38,13 @@ internal static class SessionsArgs {
                 case "--repo":
                     if (!TryValue(args, ref i, out repo)) { error = "--repo needs a value"; return null; }
 
-                    if (!RepoHashHelper.TryParseRepoRef(repo, out _)) {
+                    if (!RepoHashHelper.TryParseRepoRef(repo, out var hash)) {
                         error = "--repo must be <owner>/<name> or a 16-hex repo hash";
 
                         return null;
                     }
+
+                    repoHash = hash;
 
                     break;
                 case "--touching":
@@ -63,7 +66,7 @@ internal static class SessionsArgs {
             }
         }
 
-        return new(state?.TrimStart('-') ?? "active", repo, mine, touching, limit, json);
+        return new(state?.TrimStart('-') ?? "active", repo, repoHash, mine, touching, limit, json);
     }
 
     static bool TryValue(string[] args, ref int i, out string value) {

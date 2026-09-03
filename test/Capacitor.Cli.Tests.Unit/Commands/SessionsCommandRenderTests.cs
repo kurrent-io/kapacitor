@@ -21,6 +21,22 @@ public class SessionsCommandRenderTests {
         await Assert.That(text).Contains("main");
         await Assert.That(text).Contains("overview");
         await Assert.That(text).Contains("kcap recap --full <session-id>");
+
+        var lines      = text.Split('\n');
+        var branchCol  = lines[0].IndexOf("BRANCH", StringComparison.Ordinal);
+        var s2Line     = lines.Single(l => l.Contains("s-2"));
+
+        await Assert.That(s2Line).DoesNotContain("main");
+        await Assert.That(s2Line.Substring(branchCol, 24).Trim()).IsEmpty();
+    }
+
+    [Test]
+    public async Task Table_shows_the_overflow_line_when_total_exceeds_the_page() {
+        var page = new RepoSessionsResponse([Row("s-1", "active", "full", "main")], 5, 1, 0);
+
+        var text = SessionsCommand.Render(page, "acme/widgets", "active");
+
+        await Assert.That(text).Contains("Showing 1 of 5");
     }
 
     [Test]
@@ -32,7 +48,7 @@ public class SessionsCommandRenderTests {
 
     [Test]
     public async Task Url_maps_mine_to_owner_me_and_encodes_touching() {
-        var url = SessionsCommand.BuildUrl("http://srv", "da9c523c68aee2f1", new("all", null, true, "src/Foo Bar", 7, false));
+        var url = SessionsCommand.BuildUrl("http://srv", "da9c523c68aee2f1", new("all", null, null, true, "src/Foo Bar", 7, false));
 
         await Assert.That(url).IsEqualTo("http://srv/api/repositories/da9c523c68aee2f1/sessions?state=all&limit=7&owner=me&touching_path=src%2FFoo%20Bar");
     }

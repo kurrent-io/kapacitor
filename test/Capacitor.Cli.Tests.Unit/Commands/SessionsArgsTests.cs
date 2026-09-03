@@ -1,4 +1,5 @@
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.Core;
 
 namespace Capacitor.Cli.Tests.Unit.Commands;
 
@@ -23,6 +24,7 @@ public class SessionsArgsTests {
         await Assert.That(error).IsNull();
         await Assert.That(opts!.State).IsEqualTo("ended");
         await Assert.That(opts.Repo).IsEqualTo("acme/widgets");
+        await Assert.That(opts.RepoHash).IsEqualTo(RepoHashHelper.ComputeRepoHash("acme", "widgets"));
         await Assert.That(opts.Mine).IsTrue();
         await Assert.That(opts.Touching).IsEqualTo("src/Foo");
         await Assert.That(opts.Limit).IsEqualTo(5);

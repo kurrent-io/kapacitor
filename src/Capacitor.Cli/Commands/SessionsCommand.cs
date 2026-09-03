@@ -31,12 +31,9 @@ class SessionsCommand(ConfigRoot config, ProfileContext profiles) {
 
             repoHash = RepoHashHelper.ComputeRepoHash(repo.Owner, repo.RepoName);
             label    = $"{repo.Owner}/{repo.RepoName}";
-        } else if (!RepoHashHelper.TryParseRepoRef(options.Repo, out repoHash)) {
-            await Console.Error.WriteLineAsync("kcap sessions: --repo must be <owner>/<name> or a 16-hex repo hash");
-
-            return 1;
         } else {
-            label = options.Repo;
+            repoHash = options.RepoHash!;
+            label    = options.Repo;
         }
 
         var       baseUrl    = profiles.Resolution.ServerUrl!;
