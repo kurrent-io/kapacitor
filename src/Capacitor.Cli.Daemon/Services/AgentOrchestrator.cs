@@ -2066,6 +2066,9 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             // it names, and the event lane preserves insertion order. Keyed by the agent id — no
             // vendor session id exists yet.
             if (policySnapshot is { IsEmpty: false } uploadable) {
+                if (uploadable.Degraded)
+                    LogPolicySnapshotDegraded(agentId,
+                        uploadable.Degradations.Count > 0 ? uploadable.Degradations[0] : "unspecified");
                 _ = _server.AppendAgentRunEventAsync(agentId, PolicyWire.ToUpload(agentId, uploadable));
             }
 
@@ -5080,6 +5083,9 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to build the approval-policy snapshot for agent {AgentId}; launching without one (permissions fall back to prompting)")]
     partial void LogPolicySnapshotBuildFailed(Exception ex, string agentId);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Approval-policy snapshot for agent {AgentId} is degraded: {FirstDegradation}")]
+    partial void LogPolicySnapshotDegraded(string agentId, string firstDegradation);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to refresh borrowed-checkout snapshot for agent {AgentId}; rejecting the round and terminating the reviewer")]
     partial void LogBorrowedSnapshotRefreshFailed(Exception ex, string agentId);
