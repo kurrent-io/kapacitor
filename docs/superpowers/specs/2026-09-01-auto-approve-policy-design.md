@@ -81,12 +81,17 @@ of it is on this list, exhaustively:
   arithmetic expansion), no backticks, no glob metacharacters, no here-docs, no process
   substitution, no redirection of any kind, no backgrounding, no `eval`/`exec`, no nested shell —
   where the nested-shell ban is enforced as a **maintained list of known shell program names**,
-  matched on the basename, extension-stripped and case-insensitively, in **any** argv position (so
-  a wrapper like `env bash -c` or `sudo sh` cannot hide one). Recognition, not exhaustion: no
-  static analyzer can name every interpreter. An interpreter outside the list stays analyzable and
-  is allow-eligible only through an explicit pattern naming it — a `someshell *` allow, the same
-  visible coarse-grant opt-in the trailing `*` already denotes — with deny/ask rules governing it
-  like any other program;
+  matched on the basename, extension-stripped and case-insensitively, against **literal argv
+  tokens** in **any** position (so a wrapper like `env bash -c` or `sudo sh` cannot hide one). A
+  wrapper that re-splits one of its arguments into a fresh command line hides the name *inside* a
+  token instead, where no per-token check reaches it; the analyzer refuses the known such form
+  (`env -S` / `--split-string`, in any spelling getopt accepts), and an unknown program taking a
+  command-string argument is governed by the rules that govern that program. Recognition, not
+  exhaustion: no static analyzer can name every interpreter. An interpreter outside the list stays
+  analyzable and is allow-eligible only through the same visible grants that authorize any other
+  program — a pattern naming it (`someshell *`), or a deliberately universal allow (`command: "*"`,
+  or a field-less `{ kind: shell }` matcher) that authorizes every analyzed command and is the
+  loudest grant a policy can carry — with deny/ask rules governing it like any other program;
 - joined only by top-level `&&`, `;` or `|`.
 
 Everything else — including ordinary redirection (`git status > file` performs a write the argv

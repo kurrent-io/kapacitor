@@ -519,10 +519,15 @@ the alternative is a policy that reads tighter than it behaves.
 
 **An unanalyzed shell command can never be allowed** — not through a coarse `{ kind: shell }`
 matcher, not through a substring hit. `ShellCommandAnalyzer`'s allowlist grammar (literal tokens,
-only `&&`/`;`/`|` joins) decides "analyzed"; anything with redirection, expansion, a glob, or a
-nested shell keeps its raw string as a restriction-only component with an empty coverage set, so
-deny/ask can still fire on it but allow has nothing to cover. Widening that grammar without
-re-deriving the coverage-set argument would quietly make obfuscated commands allow-eligible.
+only `&&`/`;`/`|` joins) decides "analyzed"; anything with redirection, expansion, a glob, compound
+syntax, a **known** shell name in any argv position, or an `env -S`/`--split-string` form (which
+re-splits one token into a command line, hiding a name inside it) keeps its raw string as a
+restriction-only component with an empty coverage set, so deny/ask can still fire on it but allow
+has nothing to cover. The shell-name check is a maintained list, so an interpreter outside it stays
+analyzable — and therefore allow-eligible exactly as any other program is: through a pattern naming
+it, or through a deliberately universal allow (`command: "*"`, a field-less `{ kind: shell }`
+matcher), both visible in the policy file. Widening the grammar without re-deriving the
+coverage-set argument would quietly make obfuscated commands allow-eligible.
 
 **Allow requires full coverage at an exact token count.** `git status` allows only `git status`; the
 trailing bare `*` in `git status *` is the one thing that opts a rule into arbitrary extra argv, and
