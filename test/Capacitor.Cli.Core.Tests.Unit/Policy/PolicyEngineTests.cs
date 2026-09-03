@@ -1,5 +1,7 @@
 namespace Capacitor.Cli.Core.Tests.Unit.Policy;
 
+using System.Text.Json;
+using Capacitor.Cli.Core.Harness.Claude;
 using Capacitor.Cli.Core.Policy;
 
 public class PolicyEngineTests {
@@ -16,6 +18,9 @@ public class PolicyEngineTests {
             Analyzed = analysis.Analyzed, Segments = analysis.Segments,
         };
     }
+
+    static JsonElement Fetch(string url) =>
+        JsonDocument.Parse($$"""{"url":"{{url}}"}""").RootElement.Clone();
 
     const string UserDoc = """
         version: 1
@@ -155,6 +160,25 @@ public class PolicyEngineTests {
         await Assert.That(PolicyEngine.Evaluate(snap, portMiss, EvaluationMode.Full).Outcome).IsEqualTo(PolicyOutcome.None);
         var mcp = new CanonicalAction { Kind = ActionKind.McpTool, Vendor = "v", Server = "kcap-flows", Tool = "start_review_flow" };
         await Assert.That(PolicyEngine.Evaluate(snap, mcp, EvaluationMode.Full).Outcome).IsEqualTo(PolicyOutcome.Allow);
+    }
+
+    /// The rule names the port the operator would write; the URL omits it. Both must meet, or a
+    /// port-scoped ask over an ordinary https URL never fires.
+    [Test]
+    public async Task Port_scoped_rule_matches_a_url_that_omits_the_default_port() {
+        var doc = """
+            version: 1
+            rules:
+              - match: { kind: network, host: "registry.example", port: 443 }
+                outcome: ask
+              - match: { kind: network, host: "blocked.example", port: 443 }
+                outcome: deny
+            """;
+        var snap = Snap((PolicyScope.User, doc));
+        var ask = ClaudeActionNormalizer.Normalize("WebFetch", Fetch("https://registry.example/"), null);
+        await Assert.That(PolicyEngine.Evaluate(snap, ask, EvaluationMode.Full).Outcome).IsEqualTo(PolicyOutcome.Ask);
+        var deny = ClaudeActionNormalizer.Normalize("WebFetch", Fetch("https://blocked.example:443/x"), null);
+        await Assert.That(PolicyEngine.Evaluate(snap, deny, EvaluationMode.Full).Outcome).IsEqualTo(PolicyOutcome.Deny);
     }
 
     [Test]

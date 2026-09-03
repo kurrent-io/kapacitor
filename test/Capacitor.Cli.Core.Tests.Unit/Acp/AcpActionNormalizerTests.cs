@@ -35,6 +35,21 @@ public class AcpActionNormalizerTests {
         await Assert.That(a.Host).IsEqualTo("example.com");
     }
 
+    /// A URL that omits the port still carries the scheme default, so `port: 443` reaches both
+    /// spellings instead of only the explicit one.
+    [Test]
+    public async Task Fetch_carries_the_scheme_default_port() {
+        var implicitPort = AcpActionNormalizer.Normalize(
+            ToolCall("""{"kind":"fetch","rawInput":{"url":"https://example.com/x"}}"""), "gemini", null);
+        await Assert.That(implicitPort.Port).IsEqualTo(443);
+        var explicitPort = AcpActionNormalizer.Normalize(
+            ToolCall("""{"kind":"fetch","rawInput":{"url":"https://example.com:443/x"}}"""), "gemini", null);
+        await Assert.That(explicitPort.Port).IsEqualTo(443);
+        var nonDefault = AcpActionNormalizer.Normalize(
+            ToolCall("""{"kind":"fetch","rawInput":{"url":"https://example.com:8443/x"}}"""), "gemini", null);
+        await Assert.That(nonDefault.Port).IsEqualTo(8443);
+    }
+
     [Test]
     public async Task Unknown_or_incomplete_tool_calls_fall_to_other() {
         var noCommand = AcpActionNormalizer.Normalize(ToolCall("""{"kind":"execute"}"""), "cursor", null);

@@ -43,7 +43,9 @@ public static class ClaudeActionNormalizer {
                 if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || uri.IdnHost.Length == 0) break;
                 return new() {
                     Kind = ActionKind.Network, Vendor = Vendor, Cwd = cwd, Url = url,
-                    Host = uri.IdnHost.ToLowerInvariant(), Port = uri.IsDefaultPort ? null : uri.Port,
+                    // Uri supplies the scheme default when the URL omits it, so a port-scoped rule
+                    // matches both spellings of the same endpoint.
+                    Host = uri.IdnHost.ToLowerInvariant(), Port = uri.Port,
                 };
             }
             default: {

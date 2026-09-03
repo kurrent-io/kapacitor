@@ -49,6 +49,18 @@ public class ClaudeActionNormalizerTests {
         await Assert.That(a.Port).IsEqualTo(8443);
     }
 
+    /// A URL that omits the port still carries the scheme default, so `port: 443` reaches both
+    /// spellings instead of only the explicit one.
+    [Test]
+    public async Task WebFetch_carries_the_scheme_default_port() {
+        var implicitPort = ClaudeActionNormalizer.Normalize("WebFetch", Input("""{"url":"https://example.com/x"}"""), null);
+        await Assert.That(implicitPort.Port).IsEqualTo(443);
+        var explicitPort = ClaudeActionNormalizer.Normalize("WebFetch", Input("""{"url":"https://example.com:443/x"}"""), null);
+        await Assert.That(explicitPort.Port).IsEqualTo(443);
+        var plain = ClaudeActionNormalizer.Normalize("WebFetch", Input("""{"url":"http://example.com/x"}"""), null);
+        await Assert.That(plain.Port).IsEqualTo(80);
+    }
+
     [Test]
     public async Task Mcp_tool_names_split_on_the_second_separator() {
         var a = ClaudeActionNormalizer.Normalize("mcp__kcap-flows__start_review_flow", Input("{}"), null);
