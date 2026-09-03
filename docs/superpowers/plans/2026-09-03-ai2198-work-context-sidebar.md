@@ -274,7 +274,7 @@ public class WorkContextDtoTests {
 
         var rows = JsonSerializer.Deserialize(body, CapacitorJsonContext.Default.ListSessionWorkItemAssignmentDto)!;
 
-        await Assert.That(rows).HasCount().EqualTo(1);
+        await Assert.That(rows.Count).IsEqualTo(1);
         await Assert.That(rows[0].WorkItemId).IsEqualTo("w1");
         await Assert.That(rows[0].Label).IsEqualTo("AI-2198 — Desktop shell: work-context sidebar");
         await Assert.That(rows[0].Source).IsEqualTo("mcp");
@@ -1168,7 +1168,7 @@ public class ServerWorkContextSourceTests {
 
         await Assert.That(signedOut.Kind).IsEqualTo(WorkContextReadKind.SignedOut);
         await Assert.That(handlers[0].Disposed).IsTrue();
-        await Assert.That(handlers).HasCount().EqualTo(2);
+        await Assert.That(handlers.Count).IsEqualTo(2);
         await Assert.That(next.Kind).IsEqualTo(WorkContextReadKind.Ready);
         await source.DisposeAsync();
     }
@@ -1657,12 +1657,12 @@ public class WorkContextViewModelTests {
             await h.PushAsync(Dto());
             var gate = h.Source.Gate();
             h.Time.Advance(WorkContextViewModel.PollInterval); // the read parks on the gate, so TickAsync's await would never return
-            await Assert.That(h.Source.Requested).HasCount().EqualTo(2);
+            await Assert.That(h.Source.Requested.Count).IsEqualTo(2);
             await Assert.That(h.Vm.IsReading).IsTrue();
             await Assert.That(await h.Vm.RefreshCommand.CanExecute.FirstAsync()).IsFalse();
 
             h.Time.Advance(WorkContextViewModel.PollInterval);
-            await Assert.That(h.Source.Requested).HasCount().EqualTo(2);
+            await Assert.That(h.Source.Requested.Count).IsEqualTo(2);
 
             gate.SetResult(Ready());
             await h.Vm.PendingReadForTesting!;
@@ -1671,7 +1671,7 @@ public class WorkContextViewModelTests {
             h.Source.Enqueue(Ready());
             await h.Vm.RefreshCommand.Execute();
             await h.Vm.PendingReadForTesting!;
-            await Assert.That(h.Source.Requested).HasCount().EqualTo(3);
+            await Assert.That(h.Source.Requested.Count).IsEqualTo(3);
             await h.Vm.TeardownAsync();
         });
     }
@@ -1713,7 +1713,7 @@ public class WorkContextViewModelTests {
             await Assert.That(h.Vm.IsReading).IsTrue();
             await Assert.That(await h.Vm.RefreshCommand.CanExecute.FirstAsync()).IsFalse();
             h.Time.Advance(WorkContextViewModel.PollInterval);
-            await Assert.That(h.Source.Requested).HasCount().EqualTo(2);
+            await Assert.That(h.Source.Requested.Count).IsEqualTo(2);
 
             gateB.SetResult(Ready());
             await h.Vm.PendingReadForTesting!;
@@ -1753,7 +1753,7 @@ public class WorkContextViewModelTests {
 
             await Assert.That(h.Vm.SessionIdText).IsEqualTo(SessionA);
             await Assert.That(h.Vm.Phase).IsEqualTo(WorkContextPhase.NoWorkItem);
-            await Assert.That(h.Source.Requested).HasCount().EqualTo(1);
+            await Assert.That(h.Source.Requested.Count).IsEqualTo(1);
             await h.Vm.TeardownAsync();
         });
     }
@@ -1772,18 +1772,18 @@ public class WorkContextViewModelTests {
             h.Source.Enqueue(Ready());
             h.SignIn.OnNext(Unit.Default);
             await h.Vm.PendingReadForTesting!;
-            await Assert.That(h.Source.Requested).HasCount().EqualTo(2);
+            await Assert.That(h.Source.Requested.Count).IsEqualTo(2);
             await Assert.That(h.Vm.Phase).IsEqualTo(WorkContextPhase.NoWorkItem);
 
             var gate = h.Source.Gate();
             h.Time.Advance(WorkContextViewModel.PollInterval); // parked on the gate; do not await it
             h.SignIn.OnNext(Unit.Default);
-            await Assert.That(h.Source.Requested).HasCount().EqualTo(3);
+            await Assert.That(h.Source.Requested.Count).IsEqualTo(3);
             h.Source.Enqueue(Ready());
             gate.SetResult(WorkContextRead.Of(WorkContextReadKind.SignedOut));
             await h.Vm.PendingReadForTesting!;
             await h.Vm.PendingReadForTesting!;
-            await Assert.That(h.Source.Requested).HasCount().EqualTo(4);
+            await Assert.That(h.Source.Requested.Count).IsEqualTo(4);
             await Assert.That(h.Vm.Phase).IsEqualTo(WorkContextPhase.NoWorkItem);
             await h.Vm.TeardownAsync();
         });
@@ -1829,7 +1829,7 @@ public class WorkContextViewModelTests {
             gateB.TrySetResult(Ready());
             h.SignIn.OnNext(Unit.Default);
             h.Time.Advance(WorkContextViewModel.PollInterval);
-            await Assert.That(h.Source.Requested).HasCount().EqualTo(2);
+            await Assert.That(h.Source.Requested.Count).IsEqualTo(2);
             await Assert.That(h.Vm.Phase).IsEqualTo(WorkContextPhase.Loading);
         });
     }
@@ -2238,7 +2238,7 @@ Append inside `WorkContextViewModelTests` (before the closing brace), and add `u
                 ReadyWith(Row("w9", "AI-9 — other"), new WorkItemTopologyDto()));
             await h.PushAsync(Dto());
             await h.TickAsync();
-            await Assert.That(h.Vm.Parts).HasCount().EqualTo(1);
+            await Assert.That(h.Vm.Parts.Count).IsEqualTo(1);
             await Assert.That(h.Vm.IsStale).IsTrue();
 
             await h.TickAsync();
@@ -2298,7 +2298,7 @@ Append inside `WorkContextViewModelTests` (before the closing brace), and add `u
 
             h.Opener.ThrowOnOpen = new InvalidOperationException("no browser");
             await h.Vm.Links[0].OpenCommand.Execute();
-            await Assert.That(h.Opener.Opened).HasCount().EqualTo(2);
+            await Assert.That(h.Opener.Opened.Count).IsEqualTo(2);
             await h.Vm.TeardownAsync();
         });
     }
@@ -2312,7 +2312,7 @@ Append inside `WorkContextViewModelTests` (before the closing brace), and add `u
             h.Source.Enqueue(ReadyWith(null, summary: withPr), ReadyWith(null, summary: null, summaryFailed: true), ReadyWith(null));
             await h.PushAsync(Dto());
             await h.TickAsync();
-            await Assert.That(h.Vm.Links).HasCount().EqualTo(1);
+            await Assert.That(h.Vm.Links.Count).IsEqualTo(1);
             await Assert.That(h.Vm.IsStale).IsTrue();
             await h.TickAsync();
             await Assert.That(h.Vm.Links).IsEmpty();
@@ -2358,7 +2358,7 @@ Append inside `WorkContextViewModelTests` (before the closing brace), and add `u
             await Assert.That(h.Vm.Phase).IsEqualTo(WorkContextPhase.NoWorkItem);
             await Assert.That(h.Vm.Parts).IsEmpty();
             await Assert.That(h.Vm.Key).IsNull();
-            await Assert.That(h.Vm.Links).HasCount().EqualTo(1);
+            await Assert.That(h.Vm.Links.Count).IsEqualTo(1);
             await h.Vm.TeardownAsync();
         });
     }
@@ -2682,7 +2682,7 @@ Append to `WorkspaceViewModelTests`:
             await vm.TeardownAsync();
             source.Default = WorkContextRead.Of(WorkContextReadKind.Ready);
             daemon.Agents.AddOrUpdate(Agent("a1", "claude", hasTerminal: true, repoPath: "/repo/myproj", sessionId: "ffffffffffffffffffffffffffffffff"));
-            await Assert.That(source.Requested).HasCount().EqualTo(1);
+            await Assert.That(source.Requested.Count).IsEqualTo(1);
         });
     }
 ```
