@@ -88,14 +88,13 @@ of it is on this list, exhaustively:
   (`env -S` / `--split-string`, in any spelling getopt accepts), and an unknown program taking a
   command-string argument is governed by the rules that govern that program. Recognition, not
   exhaustion: no static analyzer can name every interpreter. An interpreter outside the list stays
-  analyzable and is allow-eligible only through the same visible grants that authorize any other
-  program: a pattern naming it (`someshell *`); a deliberately universal allow (`command: "*"`, or a
-  field-less `{ kind: shell }` matcher) that authorizes every analyzed command and is the loudest
-  grant a policy can carry; or an allow whose trailing rest token hands arbitrary argv to a program
-  that can execute others (`env *`, `sudo *`) — that trailing `*` is precisely this spec's visible
-  opt-in to arbitrary extra argv, so what such a program is given to run rides on the same grant.
-  Deny/ask rules govern all three like any other program, and listed shells and refused forms
-  (`env -S`) stay unanalyzed under every one of them;
+  analyzable and is allow-eligible exactly when the analyzed command is fully covered by the
+  policy's ordinary allow patterns — whether a pattern names the interpreter, a glob spans its
+  position, or a wrapper rule grants it argv — and every such pattern is a visible grant an author
+  wrote into the file. What the maintained list guarantees is narrower and absolute: a **listed**
+  shell name in any argv position, and every refused form (redirection, expansion, compound syntax,
+  an `env`/`sudo` split-string), is never allow-eligible under any pattern. Deny/ask rules govern
+  unlisted interpreters like any other program;
 - joined only by top-level `&&`, `;` or `|`.
 
 Everything else — including ordinary redirection (`git status > file` performs a write the argv

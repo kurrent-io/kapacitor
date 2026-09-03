@@ -524,11 +524,11 @@ syntax, a **known** shell name in any argv position, or an `env -S`/`--split-str
 re-splits one token into a command line, hiding a name inside it) keeps its raw string as a
 restriction-only component with an empty coverage set, so deny/ask can still fire on it but allow
 has nothing to cover. The shell-name check is a maintained list, so an interpreter outside it stays
-analyzable — and therefore allow-eligible exactly as any other program is: through a pattern naming
-it, through a deliberately universal allow (`command: "*"`, a field-less `{ kind: shell }` matcher),
-or through an allow whose trailing rest token hands arbitrary argv to a program that can execute
-others (`env *`, `sudo *`) — all three visible in the policy file, the last because that trailing
-`*` is the file's own opt-in to arbitrary extra argv and what it wraps rides on it. Widening the
+analyzable — and allow-eligible exactly when the analyzed command is fully covered by the policy's
+ordinary allow patterns, whatever form the covering pattern takes: naming the interpreter, a glob
+spanning its position, or a wrapper rule granting it argv (`env *`, `sudo *`). Every such pattern is
+a grant visible in the policy file; what the maintained list guarantees is narrower and absolute — a
+**known** shell name in any argv position is never allow-eligible under any pattern. Widening the
 grammar without re-deriving the coverage-set argument would quietly make obfuscated commands
 allow-eligible.
 

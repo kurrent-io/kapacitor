@@ -16,12 +16,12 @@ public sealed record ShellAnalysis(bool Analyzed, IReadOnlyList<ShellSegment> Se
 /// that re-splits one argument into a new command line can hide a name inside a single token, so
 /// the known such form ('env -S' / '--split-string') is refused outright; an unknown program taking
 /// a command-string argument is governed by the rules that govern that program. An interpreter the
-/// list does not name stays analyzable and is allow-eligible only through the same visible grants
-/// that authorize any program — a pattern naming it, a deliberately universal allow (command: "*",
-/// a field-less { kind: shell } matcher) that covers every analyzed command, or an allow whose
-/// trailing rest token hands arbitrary argv to a program that can execute others ('env *',
-/// 'sudo *'), that trailing '*' being the visible opt-in to arbitrary extra argv on which whatever
-/// it wraps rides — with deny/ask rules governing it like any other program.
+/// list does not name stays analyzable and is allow-eligible exactly when the analyzed command is
+/// fully covered by the policy's ordinary allow patterns — a pattern naming it, a glob spanning its
+/// position, or a wrapper rule granting it argv — every such pattern a visible grant an author wrote
+/// into the file. What the list guarantees is narrower: a LISTED shell name in any argv position is
+/// never allow-eligible under any pattern, and deny/ask govern an unlisted one like any other
+/// program.
 /// When in doubt, return Unanalyzed.
 /// </summary>
 public static class ShellCommandAnalyzer {
