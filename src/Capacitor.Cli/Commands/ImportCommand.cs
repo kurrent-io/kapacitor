@@ -1215,7 +1215,8 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
                     .Distinct()
                     .Count();
                 var totalGroups = excludedByRepo.Count + excludedByPath.Count;
-                await Console.Error.WriteLineAsync($"Auto-skipping {distinctSessions} session(s) from {totalGroups} excluded source(s) (non-interactive).");
+                await Console.Error.WriteLineAsync(
+                    $"{display.Indented}Auto-skipping {distinctSessions} session(s) from {totalGroups} excluded source(s) (non-interactive).");
             }
 
             for (var i = 0; i < classifications.Count; i++) {
@@ -1484,7 +1485,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
             if (existing.Count > 0) {
                 display.BeginPhase("Making existing sessions private");
 
-                var unprivatized = await SetVisibilityNoneForAll(httpClient, baseUrl, existing);
+                var unprivatized = await SetVisibilityNoneForAll(httpClient, baseUrl, existing, display.Indented);
 
                 if (unprivatized.Count > 0) {
                     var blocked = unprivatized.ToHashSet(StringComparer.Ordinal);
@@ -1501,7 +1502,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
 
                     foreach (var sessionId in blocked) {
                         await Console.Error.WriteLineAsync(
-                            $"  ! skipping {sessionId}: could not make it private first, and importing "
+                            $"{display.Indented}! skipping {sessionId}: could not make it private first, and importing "
                           + "into it would publish new content to the audience it already has");
                     }
                 }
@@ -1623,7 +1624,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
                                     IdleSlot(slot);
                                     // Errors print to scrollback above the live region —
                                     // Spectre.Console.Progress flushes prior writes.
-                                    AnsiConsole.MarkupLine(FormatSkippedReasonMarkup(sid, reason));
+                                    AnsiConsole.MarkupLine(display.Indented + FormatSkippedReasonMarkup(sid, reason));
                                 },
                             };
 
@@ -1762,19 +1763,19 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
                                         case ImportOutcome.Loaded:
                                         case ImportOutcome.Resumed:
                                             AnsiConsole.MarkupLine(
-                                                $"[green]✓[/] Loading [cyan]{Markup.Escape(c.SessionId)}[/] ({c.Vendor.VendorId})"
+                                                $"{display.Indented}[green]✓[/] Loading [cyan]{Markup.Escape(c.SessionId)}[/] ({c.Vendor.VendorId})"
                                             );
 
                                             break;
                                         case ImportOutcome.Skipped:
                                             AnsiConsole.MarkupLine(
-                                                $"[yellow]~[/] Skipping [cyan]{Markup.Escape(c.SessionId)}[/] (already current)"
+                                                $"{display.Indented}[yellow]~[/] Skipping [cyan]{Markup.Escape(c.SessionId)}[/] (already current)"
                                             );
 
                                             break;
                                         case ImportOutcome.Failed:
                                             AnsiConsole.MarkupLine(
-                                                $"[red]✗[/] Failed [cyan]{Markup.Escape(c.SessionId)}[/]"
+                                                $"{display.Indented}[red]✗[/] Failed [cyan]{Markup.Escape(c.SessionId)}[/]"
                                             );
 
                                             break;
@@ -1784,13 +1785,13 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
                                             // lifecycle-only repair, etc.), not always "nested
                                             // under parent".
                                             AnsiConsole.MarkupLine(
-                                                $"[grey]·[/] Already loaded [cyan]{Markup.Escape(c.SessionId)}[/] (no new content)"
+                                                $"{display.Indented}[grey]·[/] Already loaded [cyan]{Markup.Escape(c.SessionId)}[/] (no new content)"
                                             );
 
                                             break;
                                         case null:
                                             AnsiConsole.MarkupLine(
-                                                $"[grey]·[/] Refreshed [cyan]{Markup.Escape(c.SessionId)}[/] (repository backfill, already loaded)"
+                                                $"{display.Indented}[grey]·[/] Refreshed [cyan]{Markup.Escape(c.SessionId)}[/] (repository backfill, already loaded)"
                                             );
 
                                             break;
@@ -1864,7 +1865,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
                     : "Sharing imported sessions with your workspace");
 
                 var lost = await SetVisibilityForAll(
-                    httpClient, baseUrl, [.. touched], explicitVisibility);
+                    httpClient, baseUrl, [.. touched], explicitVisibility, display.Indented);
 
                 visibilityFailures += lost.Count;
 
@@ -1901,14 +1902,14 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
 
                                 for (var i = seenT; i < tList.Count; i++) {
                                     var (sid, reason) = tList[i];
-                                    AnsiConsole.MarkupLine($"  [red]✗[/] title failed for [cyan]{Markup.Escape(sid)}[/]: {Markup.Escape(reason)}");
+                                    AnsiConsole.MarkupLine($"{display.Indented}[red]✗[/] title failed for [cyan]{Markup.Escape(sid)}[/]: {Markup.Escape(reason)}");
                                 }
 
                                 seenT = tList.Count;
 
                                 for (var i = seenS; i < sList.Count; i++) {
                                     var (sid, reason) = sList[i];
-                                    AnsiConsole.MarkupLine($"  [red]✗[/] summary failed for [cyan]{Markup.Escape(sid)}[/]: {Markup.Escape(reason)}");
+                                    AnsiConsole.MarkupLine($"{display.Indented}[red]✗[/] summary failed for [cyan]{Markup.Escape(sid)}[/]: {Markup.Escape(reason)}");
                                 }
 
                                 seenS = sList.Count;
@@ -3270,8 +3271,9 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
     internal static Task<IReadOnlyList<string>> SetVisibilityNoneForAll(
             HttpClient            httpClient,
             string                baseUrl,
-            IReadOnlyList<string> sessionIds
-        ) => SetVisibilityForAll(httpClient, baseUrl, sessionIds, "none");
+            IReadOnlyList<string> sessionIds,
+            string                indent = ""
+        ) => SetVisibilityForAll(httpClient, baseUrl, sessionIds, "none", indent);
 
     /// <summary>
     /// Failures are logged inline (one line per session) but never throw — the import already
@@ -3284,7 +3286,8 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
             HttpClient            httpClient,
             string                baseUrl,
             IReadOnlyList<string> sessionIds,
-            string                visibility
+            string                visibility,
+            string                indent = ""
         ) {
         var lost = new List<string>();
 
@@ -3303,14 +3306,14 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
                     lost.Add(sessionId);
 
                     await Console.Error.WriteLineAsync(
-                        $"  ! visibility={visibility} failed for {sessionId}: HTTP {(int)resp.StatusCode}"
+                        $"{indent}! visibility={visibility} failed for {sessionId}: HTTP {(int)resp.StatusCode}"
                     );
                 }
             } catch (Exception ex) {
                 lost.Add(sessionId);
 
                 await Console.Error.WriteLineAsync(
-                    $"  ! visibility={visibility} failed for {sessionId}: {ex.Message}"
+                    $"{indent}! visibility={visibility} failed for {sessionId}: {ex.Message}"
                 );
             }
         }

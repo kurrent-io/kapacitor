@@ -64,5 +64,27 @@ public class ImportPrivateTests : IDisposable {
 
         await Assert.That(attempted).IsEqualTo(3);
     }
+
+    /// <summary>
+    /// The failure line belongs to the phase heading above it, and this writer is a static with no
+    /// display to ask, so the margin has to arrive as an argument. Console is process-global, hence
+    /// the bare exclusion.
+    /// </summary>
+    [Test]
+    [NotInParallel]
+    public async Task SetVisibilityForAll_reports_a_failure_on_the_margin_it_was_given() {
+        _server.Given(Request.Create().WithPath("/api/sessions/*/visibility").UsingPut())
+            .RespondWith(Response.Create().WithStatusCode(500));
+
+        using var client  = new HttpClient();
+        using var capture = ConsoleOutput.StartErrorCapture("\n");
+
+        var lost = await ImportCommand.SetVisibilityForAll(
+            client, _server.Url!, ["sess1"], "org", indent: "    ");
+
+        await Assert.That(lost).IsEquivalentTo(new[] { "sess1" });
+        await Assert.That(capture.GetCapturedError())
+                    .StartsWith("    ! visibility=org failed for sess1: HTTP 500");
+    }
 }
 
