@@ -28,7 +28,7 @@ public class PolicySnapshotStoreTests {
         Tmp.CreateFile("repo/.kcap/approvals.yaml", ValidDoc);
         var store = new PolicySnapshotStore(Config.Root);
         var first = store.LoadOrBuild("s1", repo);
-        File.Delete(Path.Combine(repo, ".kcap", "approvals.yaml"));
+        File.Delete(Tmp.PathTo("repo/.kcap/approvals.yaml"));
         var second = store.LoadOrBuild("s1", repo);
         await Assert.That(second.Id).IsEqualTo(first.Id);
         await Assert.That(second.Documents.Count).IsEqualTo(1);
@@ -37,9 +37,7 @@ public class PolicySnapshotStoreTests {
     [Test]
     public async Task Corrupt_persisted_snapshot_rebuilds_with_a_degradation() {
         var store = new PolicySnapshotStore(Config.Root);
-        var path = Config.Root.Path("policy", "sessions", "bad.json");
-        Directory.CreateDirectory(Config.Root.Path("policy", "sessions"));
-        File.WriteAllText(path, "{not json");
+        var path = Config.CreateDir("policy", "sessions").CreateFile("bad.json", "{not json");
         var snap = store.LoadOrBuild("bad", repoRoot: null);
         await Assert.That(snap.Documents.Count).IsEqualTo(0);
         await Assert.That(snap.Degraded).IsTrue();

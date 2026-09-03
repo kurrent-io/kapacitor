@@ -13,7 +13,7 @@ public class PolicySnapshotBuilderTests {
         var repo = Tmp.CreateDir("repo");
         Tmp.CreateDir("repo/.kcap");
         Tmp.CreateFile("repo/.kcap/approvals.yaml", ValidDoc);
-        File.WriteAllText(Config.Root.Path("approvals.yaml"), ValidDoc);
+        Config.CreateFile("approvals.yaml", ValidDoc);
         var snap = PolicySnapshotBuilder.Build(repo, Config.Root);
         await Assert.That(snap.Documents.Count).IsEqualTo(2);
         await Assert.That(snap.Documents[0].Scope).IsEqualTo(PolicyScope.Repo);
@@ -33,7 +33,7 @@ public class PolicySnapshotBuilderTests {
         var repo = Tmp.CreateDir("repo");
         Tmp.CreateDir("repo/.kcap");
         Tmp.CreateFile("repo/.kcap/approvals.yaml", "version: 1\ncaps: { narrower_widening: off }\n");
-        File.WriteAllText(Config.Root.Path("approvals.yaml"), ValidDoc);
+        Config.CreateFile("approvals.yaml", ValidDoc);
         var snap = PolicySnapshotBuilder.Build(repo, Config.Root);
         await Assert.That(snap.Documents.Count).IsEqualTo(1);
         await Assert.That(snap.Documents[0].Scope).IsEqualTo(PolicyScope.User);      // user doc survives
@@ -48,7 +48,7 @@ public class PolicySnapshotBuilderTests {
         var repo = Tmp.CreateDir("repo");
         Tmp.CreateDir("repo/.kcap");
         Tmp.CreateFile("repo/.kcap/approvals.yaml", "version: 1\ncaps: { narrower_widening: off }\n");
-        File.WriteAllText(Config.Root.Path("approvals.yaml"), "version: 2\n");
+        Config.CreateFile("approvals.yaml", "version: 2\n");
         var snap = PolicySnapshotBuilder.Build(repo, Config.Root);
         await Assert.That(snap.Documents.Count).IsEqualTo(0);
         await Assert.That(snap.Degradations.Count).IsEqualTo(2);
@@ -75,7 +75,7 @@ public class PolicySnapshotBuilderTests {
         var a = PolicySnapshotBuilder.Build(repo, Config.Root);
         var b = PolicySnapshotBuilder.Build(repo, Config.Root);
         await Assert.That(a.Id).IsEqualTo(b.Id);
-        File.WriteAllText(Path.Combine(repo, ".kcap", "approvals.yaml"), ValidDoc + "  - match: { kind: shell }\n    outcome: ask\n");
+        Tmp.CreateFile("repo/.kcap/approvals.yaml", ValidDoc + "  - match: { kind: shell }\n    outcome: ask\n");
         var c = PolicySnapshotBuilder.Build(repo, Config.Root);
         await Assert.That(c.Id).IsNotEqualTo(a.Id);
     }
@@ -88,13 +88,13 @@ public class PolicySnapshotBuilderTests {
         var repoX = Tmp.CreateDir("repo-x");
         Tmp.CreateDir("repo-x/.kcap");
         Tmp.CreateFile("repo-x/.kcap/approvals.yaml", DocX);
-        File.WriteAllText(Config.Root.Path("approvals.yaml"), DocY);
+        Config.CreateFile("approvals.yaml", DocY);
         var xy = PolicySnapshotBuilder.Build(repoX, Config.Root);
 
         var repoY = Tmp.CreateDir("repo-y");
         Tmp.CreateDir("repo-y/.kcap");
         Tmp.CreateFile("repo-y/.kcap/approvals.yaml", DocY);
-        File.WriteAllText(Config.Root.Path("approvals.yaml"), DocX);
+        Config.CreateFile("approvals.yaml", DocX);
         var yx = PolicySnapshotBuilder.Build(repoY, Config.Root);
 
         await Assert.That(xy.Id).IsNotEqualTo(yx.Id);
@@ -111,13 +111,13 @@ public class PolicySnapshotBuilderTests {
         var repoA = Tmp.CreateDir("repo-a");
         Tmp.CreateDir("repo-a/.kcap");
         Tmp.CreateFile("repo-a/.kcap/approvals.yaml", Doc + Pad);
-        File.WriteAllText(Config.Root.Path("approvals.yaml"), Doc);
+        Config.CreateFile("approvals.yaml", Doc);
         var a = PolicySnapshotBuilder.Build(repoA, Config.Root);
 
         var repoB = Tmp.CreateDir("repo-b");
         Tmp.CreateDir("repo-b/.kcap");
         Tmp.CreateFile("repo-b/.kcap/approvals.yaml", Doc);
-        File.WriteAllText(Config.Root.Path("approvals.yaml"), Pad + Doc);
+        Config.CreateFile("approvals.yaml", Pad + Doc);
         var b = PolicySnapshotBuilder.Build(repoB, Config.Root);
 
         await Assert.That(a.Documents.Count).IsEqualTo(2);
@@ -127,7 +127,7 @@ public class PolicySnapshotBuilderTests {
 
     [Test]
     public async Task Null_repo_root_reads_only_the_user_scope() {
-        File.WriteAllText(Config.Root.Path("approvals.yaml"), ValidDoc);
+        Config.CreateFile("approvals.yaml", ValidDoc);
         var snap = PolicySnapshotBuilder.Build(repoRoot: null, Config.Root);
         await Assert.That(snap.Documents.Count).IsEqualTo(1);
         await Assert.That(snap.Documents[0].Scope).IsEqualTo(PolicyScope.User);
