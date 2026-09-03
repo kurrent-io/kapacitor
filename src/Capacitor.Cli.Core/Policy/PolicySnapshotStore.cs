@@ -41,7 +41,9 @@ public sealed class PolicySnapshotStore(ConfigRoot config) {
         catch { return (LoadOutcome.Corrupt, null); }
     }
 
-    public void Save(string sessionKey, PolicySnapshot snapshot) {
+    /// <summary>False when the snapshot did not reach disk: the caller decides what an unfrozen
+    /// session costs, since a later hook rebuilds from whatever the live files say by then.</summary>
+    public bool Save(string sessionKey, PolicySnapshot snapshot) {
         try {
             var path = PathFor(sessionKey);
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
@@ -52,8 +54,9 @@ public sealed class PolicySnapshotStore(ConfigRoot config) {
             var tmp = path + "." + Guid.NewGuid().ToString("N")[..8] + ".tmp";
             File.WriteAllText(tmp, JsonSerializer.Serialize(file, PolicyJsonContext.Default.PolicySnapshotFileV1));
             File.Move(tmp, path, overwrite: true);
+            return true;
         }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return false; }
     }
 
     public PolicySnapshot LoadOrBuild(string sessionKey, string? repoRoot) {
@@ -68,8 +71,17 @@ public sealed class PolicySnapshotStore(ConfigRoot config) {
                 Degradations = [.. built.Degradations, $"persisted snapshot at {path} was unloadable; rebuilt from live files"],
             };
         }
-        Save(sessionKey, built);
-        return built;
+        if (Save(sessionKey, built)) return built;
+
+        // Unpersisted means unfrozen: the next hook rebuilds from the live files, so a deny that
+        // governed this call can be edited away mid-session. Say so rather than hand back a
+        // snapshot that looks clean.
+        var directory = Path.GetDirectoryName(PathFor(sessionKey))!;
+        return built with {
+            Degraded = true,
+            Degradations = [.. built.Degradations,
+                $"session snapshot could not be persisted under {directory}; policy may not stay frozen for this session"],
+        };
     }
 
     internal static string Sanitize(string sessionKey) =>

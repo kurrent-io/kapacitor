@@ -45,6 +45,19 @@ public class PolicySnapshotStoreTests {
         await Assert.That(snap.Degradations.Any(d => d.Contains("unloadable"))).IsTrue();
     }
 
+    /// <summary>A snapshot that never reached disk leaves the session unfrozen — the next hook
+    /// rebuilds from files that may have changed since — so the loss must reach the caller rather
+    /// than hiding behind a clean-looking snapshot.</summary>
+    [Test]
+    public async Task An_unpersistable_snapshot_is_returned_degraded() {
+        // A file where the sessions directory belongs: the save cannot create its parent.
+        Config.CreateDir("policy").CreateFile("sessions", "");
+        var snap = new PolicySnapshotStore(Config.Root).LoadOrBuild("s1", repoRoot: null);
+        await Assert.That(snap.Degraded).IsTrue();
+        await Assert.That(snap.Degradations.Any(d => d.Contains("could not be persisted"))).IsTrue();
+        await Assert.That(snap.Degradations.Any(d => d.Contains("may not stay frozen"))).IsTrue();
+    }
+
     [Test]
     public async Task Absent_persisted_snapshot_rebuilds_without_a_degradation() {
         var store = new PolicySnapshotStore(Config.Root);
