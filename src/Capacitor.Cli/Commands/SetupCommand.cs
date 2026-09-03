@@ -1359,9 +1359,13 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
     internal async Task<int> RunLoginStepAsync(
             bool loginComplete, string provider, string serverUrl, bool forceDevice, string activeProfile) {
         if (loginComplete) {
-            var cfgAfter = await AppConfig.LoadProfileConfig(config);
-            var tokens   = await new TokenStore(config).LoadAsync(cfgAfter.ActiveProfile);
-            AnsiConsole.MarkupLine($"  [green]✓[/] Logged in as [cyan]{Markup.Escape(tokens?.GitHubUsername ?? "?")}[/]");
+            // Discovery's WorkOS leg reports the sign-in itself, naming the workspace it picked. Every
+            // other provider's discovery reports a tenant count and no identity, so this is its only one.
+            if (provider != AuthProvider.WorkOS) {
+                var cfgAfter = await AppConfig.LoadProfileConfig(config);
+                var tokens   = await new TokenStore(config).LoadAsync(cfgAfter.ActiveProfile);
+                AnsiConsole.MarkupLine($"  [green]✓[/] Logged in as [cyan]{Markup.Escape(tokens?.GitHubUsername ?? "?")}[/]");
+            }
 
             return 0;
         }
@@ -1376,13 +1380,12 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
         }
 
         if (provider == AuthProvider.None) {
-            // The façade's ConsoleAuthProgress already printed the "no authentication configured" notice.
+            // The façade already printed the "no authentication configured" notice through this sink.
             return 0;
         }
 
-        var loggedInTokens = await new TokenStore(config).LoadAsync(activeProfile);
-        await Console.Out.WriteLineAsync($"  ✓ Logged in as {loggedInTokens?.GitHubUsername}");
-
+        // The façade's notice is the shared report: `kcap login` and the desktop wizard render from it
+        // too, so setup restating it is the half to drop rather than suppress.
         return 0;
     }
 

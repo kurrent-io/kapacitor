@@ -369,6 +369,63 @@ public class SetupFacadeParityTests {
         await Assert.That(ReadConfig().Profiles["acme"].ServerUrl).IsEqualTo("https://acme.kcap.ai");
     }
 
+    /// <summary>
+    /// One report per sign-in. The façade's notice is the shared one — <c>kcap login</c> and the desktop
+    /// wizard render from it — so setup adding its own puts the same sentence on screen twice. Pinned on
+    /// both halves: exactly one notice, and nothing of setup's own on stdout.
+    /// </summary>
+    [Test]
+    [NotInParallel]
+    public async Task RunLoginStepAsync_reports_the_sign_in_once() {
+        using var handler  = AuthHttp.Script(authConfig: """{"provider":"GitHubApp","github_client_id":"cid"}""");
+        var       progress = new RecordingAuthProgress();
+
+        SetupCommand.FacadeOverride = _ => NewFacade(Config.Root, progress, handler);
+
+        using var console = ConsoleOutput.StartCapture();
+
+        var exitCode = await new SetupCommand(Config.Root, Resolutions.None(Config.Root), new RecordingBrowser(), Home).RunLoginStepAsync(
+            loginComplete: false, provider: AuthProvider.GitHubApp, serverUrl: "https://acme.kcap.ai",
+            forceDevice: true, activeProfile: "acme");
+
+        await Assert.That(exitCode).IsEqualTo(0);
+        await Assert.That(progress.Notices.Count(n => n.StartsWith("Logged in as", StringComparison.Ordinal)))
+                    .IsEqualTo(1);
+        await Assert.That(console.GetCapturedOutput()).DoesNotContain("Logged in as");
+    }
+
+    /// <summary>
+    /// Discovery's WorkOS leg reports the sign-in with the workspace it picked, so step 2 has nothing to
+    /// add. Every other provider's discovery reports a tenant count and no identity, which is why the
+    /// carve-out cannot simply drop the line for everyone.
+    /// </summary>
+    [Test]
+    [Arguments(AuthProvider.WorkOS, false)]
+    [Arguments(AuthProvider.GitHubApp, true)]
+    public async Task A_completed_discovery_names_the_identity_only_where_discovery_did_not(
+            string provider, bool named) {
+        var originalConsole = AnsiConsole.Console;
+        var buffer          = new StringWriter();
+        AnsiConsole.Console = AnsiConsole.Create(new AnsiConsoleSettings {
+            Ansi        = AnsiSupport.No,
+            ColorSystem = ColorSystemSupport.NoColors,
+            Out         = new AnsiConsoleOutput(buffer),
+        });
+
+        int exitCode;
+
+        try {
+            exitCode = await new SetupCommand(Config.Root, Resolutions.None(Config.Root), new RecordingBrowser(), Home).RunLoginStepAsync(
+                loginComplete: true, provider: provider, serverUrl: "https://acme.kcap.ai",
+                forceDevice: false, activeProfile: "acme");
+        } finally {
+            AnsiConsole.Console = originalConsole;
+        }
+
+        await Assert.That(exitCode).IsEqualTo(0);
+        await Assert.That(buffer.ToString().Contains("Logged in as")).IsEqualTo(named);
+    }
+
     [Test]
     public async Task RunLoginStepAsync_explicit_login_failure_prints_login_failed_and_returns_one() {
         using var handler = AuthHttp.Script(authConfig: """{"provider":"martian"}""");
