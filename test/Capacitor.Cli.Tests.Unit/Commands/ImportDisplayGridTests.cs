@@ -288,8 +288,9 @@ public class ImportDisplayGridTests {
     /// The TTY half, which is the only place a rule exists at all — so a nesting regression that drew one
     /// would be invisible to the plain-text pins above.
     ///
-    /// <para>Asserted structurally rather than by styling: the rule's glyph row is what reads as a step
-    /// boundary, and no capture in this suite can see dim.</para>
+    /// <para>The rule's glyph row is the whole assertion: it is what reads as a section boundary, no
+    /// capture here can see dim, and the indent is the plain-text pins' business — asserting rendered
+    /// leading whitespace measured the host's console rather than this code.</para>
     /// </summary>
     [Test, NotInParallel]
     [Arguments(false, true)]
@@ -318,7 +319,6 @@ public class ImportDisplayGridTests {
         await Assert.That(output).Contains("Discovering");
         // Spectre draws a rule as a run of box-drawing glyphs either side of the title.
         await Assert.That(output.Contains('─')).IsEqualTo(ruled);
-        await Assert.That(output.Contains("  Discovering")).IsEqualTo(!ruled);
     }
 
     /// <summary>Quiet outranks both: <c>--discover --json</c>'s whole stdout has to parse.</summary>
