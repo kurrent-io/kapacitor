@@ -33,6 +33,11 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
         /// </summary>
         public bool Quiet { get; init; }
 
+        /// <summary>This run is a step inside setup, which has already drawn the rule its sections sit
+        /// under — so each one is subordinate to that rule rather than a sibling of it. A full-width rule
+        /// per section is right only where the run is itself the command.</summary>
+        public bool Nested { get; init; }
+
         public void Line(string plain, string? markup = null) {
             if (Quiet) return;
 
@@ -40,15 +45,31 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
             else Console.WriteLine(plain);
         }
 
+        /// <summary>
+        /// Every section label, so a nested run cannot end up subordinating its phases and then closing
+        /// with a full-width rule of its own.
+        ///
+        /// <para>The nested TTY line supplies the vertical space a <see cref="Rule"/> brings with it,
+        /// which a bare line does not.</para>
+        /// </summary>
+        void Heading(string title, string colour) {
+            if (Tty) {
+                if (Nested) {
+                    AnsiConsole.WriteLine();
+                    AnsiConsole.MarkupLine($"  [dim]{Markup.Escape(title)}[/]");
+                } else {
+                    AnsiConsole.Write(new Rule($"[{colour}]{Markup.Escape(title)}[/]").LeftJustified());
+                }
+            } else {
+                Console.WriteLine();
+                Console.WriteLine(Nested ? $"  -- {title} --" : $"== {title} ==");
+            }
+        }
+
         public void BeginPhase(string title) {
             if (Quiet) return;
 
-            if (Tty) {
-                AnsiConsole.Write(new Rule($"[yellow]{Markup.Escape(title)}[/]").LeftJustified());
-            } else {
-                Console.WriteLine();
-                Console.WriteLine($"== {title} ==");
-            }
+            Heading(title, "yellow");
         }
 
         public void WritePlanGrid(
@@ -57,7 +78,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
             ) {
             if (Tty) {
                 if (bySource is { Count: > 1 }) {
-                    AnsiConsole.Write(new Rule("[yellow]By source[/]").LeftJustified());
+                    Heading("By source", "yellow");
 
                     var sub = new Grid()
                         .AddColumn()
@@ -105,8 +126,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
                 AnsiConsole.Write(grid);
             } else {
                 if (bySource is { Count: > 1 }) {
-                    Console.WriteLine();
-                    Console.WriteLine("== By source ==");
+                    Heading("By source", "yellow");
 
                     foreach (var kv in bySource.OrderBy(x => x.Key, StringComparer.Ordinal)) {
                         var sc = kv.Value;
@@ -140,7 +160,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
             var failureNote = $"{f.Failed} didn't land. Re-run to retry them — anything already imported isn't sent again.";
 
             if (Tty) {
-                AnsiConsole.Write(new Rule("[green]Done[/]").LeftJustified());
+                Heading("Done", "green");
 
                 // Three buckets, not one: import knows the difference and a single number would hide it.
                 AnsiConsole.MarkupLine(
@@ -148,7 +168,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
                   + (f.Failed > 0 ? $"[red]{f.Failed}[/] failed" : "0 failed"));
 
                 if (bySource is { Count: > 1 }) {
-                    AnsiConsole.Write(new Rule("[green]By source[/]").LeftJustified());
+                    Heading("By source", "green");
 
                     var sub = new Grid()
                         .AddColumn()
@@ -213,13 +233,11 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
 
                 if (f.Failed > 0) AnsiConsole.MarkupLine($"[dim]{failureNote}[/]");
             } else {
-                Console.WriteLine();
-                Console.WriteLine("== Done ==");
+                Heading("Done", "green");
                 Console.WriteLine($"  {f.Imported} imported · {f.Skipped} skipped · {f.Failed} failed");
 
                 if (bySource is { Count: > 1 }) {
-                    Console.WriteLine();
-                    Console.WriteLine("== By source ==");
+                    Heading("By source", "green");
 
                     foreach (var kv in bySource.OrderBy(x => x.Key, StringComparer.Ordinal)) {
                         var sf = kv.Value;
@@ -256,8 +274,8 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
             }
         }
 
-        public static ImportDisplay Create(bool quiet = false) =>
-            new() { Tty = !quiet && !Console.IsOutputRedirected, Quiet = quiet };
+        public static ImportDisplay Create(bool quiet = false, bool nested = false) =>
+            new() { Tty = !quiet && !Console.IsOutputRedirected, Quiet = quiet, Nested = nested };
     }
 
     internal enum ClassificationStatus {
@@ -712,7 +730,8 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
             bool                          discoverJson            = false,
             DateTimeOffset?               windowsAsOf             = null,
             Action<ImportRunOutcome>?     onFinished              = null,
-            Action<ImportDiscoveryResult>? onDiscovered           = null
+            Action<ImportDiscoveryResult>? onDiscovered           = null,
+            bool                          nested                  = false
         ) {
         // A caller that wants the figures rather than the rendering says so by handing one over; the
         // console is the default consumer, not the only one.
@@ -725,7 +744,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
         using var httpClient = discoverOnly
             ? new HttpClient()
             : await HttpClientExtensions.CreateAuthenticatedClientAsync(config, profiles, baseUrl);
-        var       display    = ImportDisplay.Create(quiet: discoverJson);
+        var       display    = ImportDisplay.Create(quiet: discoverJson, nested: nested);
 
         // --- Sources ---
         // Back-compat: a null caller (legacy or test) means "Claude only". Once

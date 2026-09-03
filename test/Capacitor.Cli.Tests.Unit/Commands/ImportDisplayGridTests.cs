@@ -1,4 +1,5 @@
 using Capacitor.Cli.Commands;
+using Spectre.Console;
 
 namespace Capacitor.Cli.Tests.Unit.Commands;
 
@@ -178,6 +179,66 @@ public class ImportDisplayGridTests {
         RequestedSummaries: requestedSummaries,
         RequestedTitles: requestedTitles
     );
+
+    /// <summary>
+    /// A section heading is the structure of the output only where the run is itself the command. Nested
+    /// inside a setup step it is subordinate to a rule already drawn, and is marked as such.
+    /// </summary>
+    [Test, NotInParallel]
+    [Arguments(false, "== Discovering ==")]
+    [Arguments(true, "  -- Discovering --")]
+    public async Task a_phase_heading_is_subordinate_only_when_the_run_is_nested(
+            bool nested, string expected) {
+        using var capture = ConsoleOutput.StartCapture();
+
+        new ImportCommand.ImportDisplay { Tty = false, Nested = nested }.BeginPhase("Discovering");
+
+        await Assert.That(capture.GetCapturedOutput().Replace("\r\n", "\n")).Contains(expected);
+    }
+
+    /// <summary>
+    /// The TTY half, which is the only place a rule exists at all — so a nesting regression that drew one
+    /// would be invisible to the plain-text pins above.
+    ///
+    /// <para>Asserted structurally rather than by styling: the rule's glyph row is what reads as a step
+    /// boundary, and no capture in this suite can see dim.</para>
+    /// </summary>
+    [Test, NotInParallel]
+    [Arguments(false, true)]
+    [Arguments(true, false)]
+    public async Task on_a_terminal_only_an_unnested_section_draws_a_rule(bool nested, bool ruled) {
+        var originalConsole = AnsiConsole.Console;
+        var buffer          = new StringWriter();
+        AnsiConsole.Console = AnsiConsole.Create(new AnsiConsoleSettings {
+            Ansi        = AnsiSupport.No,
+            ColorSystem = ColorSystemSupport.NoColors,
+            Out         = new AnsiConsoleOutput(buffer),
+        });
+
+        try {
+            new ImportCommand.ImportDisplay { Tty = true, Nested = nested }.BeginPhase("Discovering");
+        } finally {
+            AnsiConsole.Console = originalConsole;
+        }
+
+        var output = buffer.ToString();
+
+        await Assert.That(output).Contains("Discovering");
+        // Spectre draws a rule as a run of box-drawing glyphs either side of the title.
+        await Assert.That(output.Contains('─')).IsEqualTo(ruled);
+        await Assert.That(output.Contains("  Discovering")).IsEqualTo(!ruled);
+    }
+
+    /// <summary>Quiet outranks both: <c>--discover --json</c>'s whole stdout has to parse.</summary>
+    [Test, NotInParallel]
+    public async Task a_quiet_run_draws_no_phase_heading_nested_or_not() {
+        using var capture = ConsoleOutput.StartCapture();
+
+        new ImportCommand.ImportDisplay { Tty = false, Quiet = true, Nested = true }.BeginPhase("Discovering");
+        new ImportCommand.ImportDisplay { Tty = false, Quiet = true }.BeginPhase("Discovering");
+
+        await Assert.That(capture.GetCapturedOutput()).DoesNotContain("Discovering");
+    }
 
     static string CaptureNonTtyOutput(Action<ImportCommand.ImportDisplay> render) {
         using var capture = ConsoleOutput.StartCapture();

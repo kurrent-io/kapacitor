@@ -245,7 +245,10 @@ sealed class SetupImportLane(
             discoverOnly: true,
             discoverJson: true,
             windowsAsOf:  asOf,
-            onDiscovered: result => found = result);
+            onDiscovered: result => found = result,
+            // Inert while the discovery call stays quiet, and the reason this is set anyway: un-quieting
+            // it would otherwise draw step-weight rules in the middle of the browser leg's own copy.
+            nested:       true);
 
         if (exit != 0 || found is null) return null;
 
@@ -301,7 +304,8 @@ sealed class SetupImportLane(
             // What makes the shared stop honest, since the profile default cannot reach the class the
             // visibility predicate admits unconditionally.
             shareWithOrg:       pass.Level is FirstRunImportLevel.Shared,
-            onFinished:         o => outcome = o);
+            onFinished:         o => outcome = o,
+            nested:             true);
 
         return outcome;
     }
@@ -1236,7 +1240,8 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
             needOrgPick:             false,
             storedOrg:               null,
             autoSkipExclusions:      inv.AutoSkipExclusions,
-            defaultVisibility:       inv.DefaultVisibility);
+            defaultVisibility:       inv.DefaultVisibility,
+            nested:                  true);
 
     /// <summary>
     /// Every import source, one per catalogue vendor.
