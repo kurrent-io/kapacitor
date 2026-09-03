@@ -74,6 +74,8 @@ public class ShellCommandAnalyzerTests {
     [Arguments("ash -c 'x'")]                    // nested shell
     [Arguments("busybox sh x")]                  // applet multiplexer in front of a nested shell
     [Arguments("busybox rm -rf x")]              // the multiplexer alone, with no shell to catch
+    [Arguments("nu -c 'rm -rf /'")]              // modern shell on the maintained interpreter list
+    [Arguments("xonsh -c x")]                    // modern shell on the maintained interpreter list
     [Arguments("if true; then rm -rf x; fi")]    // compound statement, not three simple commands
     [Arguments("for i in a; do echo x; done")]   // compound statement
     [Arguments("while true; do x; done")]        // compound statement

@@ -11,15 +11,18 @@ public sealed record ShellAnalysis(bool Analyzed, IReadOnlyList<ShellSegment> Se
 /// Allowlist grammar: literal-token simple commands joined by top-level '&amp;&amp;', ';' or '|'.
 /// Anything else — a nested shell, a compound statement, any word the grammar cannot read as a
 /// literal — is unanalyzed and therefore never allow-eligible, the one guarantee obfuscation
-/// cannot defeat. The named sets below are recognition, not exhaustion: what they miss stays
-/// analyzable, so deny/ask rules remain the tool for interpreters the grammar has no opinion on.
+/// cannot defeat. The nested-shell ban is a MAINTAINED LIST of known interpreter names, not a claim
+/// to recognize every interpreter that exists: one the list does not name stays analyzable, so
+/// allowing it takes a rule that spells the program out — the same visible coarse grant a trailing
+/// '*' already denotes — and deny/ask rules govern it like any other program.
 /// When in doubt, return Unanalyzed.
 /// </summary>
 public static class ShellCommandAnalyzer {
     static readonly SearchValues<char> UnquotedForbidden = SearchValues.Create("$`<>(){}[]*?\\");
     static readonly HashSet<string> ForbiddenPrograms = new(StringComparer.OrdinalIgnoreCase)
         { "eval", "exec", "sh", "bash", "zsh", "dash", "ksh", "csh", "tcsh", "fish", "ash",
-          "mksh", "yash", "busybox", "pwsh", "powershell", "cmd" };
+          "mksh", "yash", "busybox", "pwsh", "powershell", "cmd",
+          "nu", "xonsh", "elvish", "osh", "oil", "rc", "es", "ion", "tclsh" };
 
     // Reserved only in command position, and case-sensitively so — `echo if` is an ordinary
     // argument and a program spelled `IF` is an ordinary program, but a segment STARTING with one

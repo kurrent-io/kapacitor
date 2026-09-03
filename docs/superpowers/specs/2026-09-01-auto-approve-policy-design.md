@@ -79,7 +79,14 @@ of it is on this list, exhaustively:
 
 - simple commands whose every token is a **literal word** — no `$`-anything (parameter, command,
   arithmetic expansion), no backticks, no glob metacharacters, no here-docs, no process
-  substitution, no redirection of any kind, no backgrounding, no `eval`/`exec`, no nested shell;
+  substitution, no redirection of any kind, no backgrounding, no `eval`/`exec`, no nested shell —
+  where the nested-shell ban is enforced as a **maintained list of known shell program names**,
+  matched on the basename, extension-stripped and case-insensitively, in **any** argv position (so
+  a wrapper like `env bash -c` or `sudo sh` cannot hide one). Recognition, not exhaustion: no
+  static analyzer can name every interpreter. An interpreter outside the list stays analyzable and
+  is allow-eligible only through an explicit pattern naming it — a `someshell *` allow, the same
+  visible coarse-grant opt-in the trailing `*` already denotes — with deny/ask rules governing it
+  like any other program;
 - joined only by top-level `&&`, `;` or `|`.
 
 Everything else — including ordinary redirection (`git status > file` performs a write the argv
