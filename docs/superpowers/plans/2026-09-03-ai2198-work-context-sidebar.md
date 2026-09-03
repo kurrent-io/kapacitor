@@ -1819,7 +1819,7 @@ public class WorkContextViewModelTests {
             h.Push(Dto(sessionId: SessionA));
             var gateB = h.Source.Gate();
             h.Push(Dto(sessionId: SessionB));
-            await Assert.That(h.Source.InFlight).IsEqualTo(2);
+            await Assert.That(h.Source.InFlight).IsEqualTo(1); // the switch already cancelled A; only B is parked
 
             var teardown = h.Vm.TeardownAsync();
             await teardown;
