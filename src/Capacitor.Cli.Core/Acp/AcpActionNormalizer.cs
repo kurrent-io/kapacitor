@@ -35,10 +35,16 @@ public static class AcpActionNormalizer {
             case "read" or "search" or "edit" or "move" or "delete": {
                 var paths = new List<string>();
 
+                // Every location must resolve or none of them count: skipping one would leave a
+                // multi-target call carrying only the paths a rule can see, so an allow covering
+                // those would authorize the target that stayed invisible.
                 if (toolCall.Arr("locations") is { } locations)
-                    foreach (var location in locations.EnumerateArray())
-                        if (location.Str("path") is { Length: > 0 } p && LexicalPaths.TryResolve(cwd, p) is { } resolved)
-                            paths.Add(resolved);
+                    foreach (var location in locations.EnumerateArray()) {
+                        if (location.Str("path") is not { Length: > 0 } p
+                         || LexicalPaths.TryResolve(cwd, p) is not { } resolved)
+                            return Other(toolCall, vendor, cwd);
+                        paths.Add(resolved);
+                    }
 
                 if (paths.Count == 0 && rawInput?.Str("path") is { Length: > 0 } single
                  && LexicalPaths.TryResolve(cwd, single) is { } fallback)

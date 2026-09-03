@@ -27,6 +27,31 @@ public class AcpActionNormalizerTests {
         await Assert.That(a.Paths).IsEquivalentTo(new[] { "/wt/a.cs", "/wt/b.cs" });
     }
 
+    /// <summary>One unresolvable entry takes the whole call: keeping the resolvable path alone would
+    /// let an allow written for it authorize a target no rule ever saw.</summary>
+    [Test]
+    public async Task An_unresolvable_location_falls_the_whole_call_to_other() {
+        var a = AcpActionNormalizer.Normalize(
+            ToolCall("""{"kind":"edit","locations":[{"path":"/wt/a.cs"},{"path":"src/b.cs"}]}"""), "cursor", null);
+        await Assert.That(a.Kind).IsEqualTo(ActionKind.Other);
+        await Assert.That(a.Paths).IsEmpty();
+    }
+
+    [Test]
+    public async Task Locations_that_all_resolve_carry_every_path() {
+        var a = AcpActionNormalizer.Normalize(
+            ToolCall("""{"kind":"edit","locations":[{"path":"/wt/a.cs"},{"path":"src/b.cs"}]}"""), "cursor", "/wt");
+        await Assert.That(a.Kind).IsEqualTo(ActionKind.FileEdit);
+        await Assert.That(a.Paths).IsEquivalentTo(new[] { "/wt/a.cs", "/wt/src/b.cs" });
+    }
+
+    [Test]
+    public async Task A_location_without_a_path_falls_the_whole_call_to_other() {
+        var a = AcpActionNormalizer.Normalize(
+            ToolCall("""{"kind":"edit","locations":[{"path":"/wt/a.cs"},{"line":3}]}"""), "cursor", "/wt");
+        await Assert.That(a.Kind).IsEqualTo(ActionKind.Other);
+    }
+
     [Test]
     public async Task Fetch_maps_to_network() {
         var a = AcpActionNormalizer.Normalize(
