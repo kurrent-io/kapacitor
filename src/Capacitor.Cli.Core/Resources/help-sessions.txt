@@ -1,0 +1,18 @@
+kcap sessions — Sessions on a repository
+
+Usage: kcap sessions [--active | --ended | --all] [--repo <owner/name|hash>] [--mine] [--touching <path>] [--limit <n>] [--json]
+
+Lists the sessions on a repository that you are allowed to see, running
+ones first, ordered by last activity. Below full access a row shows no
+branch, cwd, prompt or paths.
+
+Options:
+  --active                Running sessions only (default)
+  --ended                 Ended sessions only
+  --all                   Both
+  --repo <owner/name|hash>  Another repository (default: the current checkout's origin)
+  --mine                  Only your own sessions
+  --touching <path>       Only sessions with an Edit/Write attempt whose path contains <path>
+                          (full-access rows only; shell-applied edits leave no evidence)
+  --limit <n>             Rows to show, 1-100 (default 20)
+  --json                  Print the server response as JSON

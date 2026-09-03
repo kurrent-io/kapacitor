@@ -264,6 +264,8 @@ switch (command) {
 
         return await new RecapCommand(config, profiles).HandleRecap(recapSessionId, useChain, useFull);
     }
+    case "sessions":
+        return await new SessionsCommand(config, profiles).HandleAsync(args);
     case "validate-plan": {
         var vpSessionId = ResolveSessionId(args);
 

@@ -180,6 +180,7 @@ sealed class McpSessionsServer(ConfigRoot config, ProfileContext profiles) {
                 "get_session_transcript" => await SendWithRefreshRetryAsync(client, baseUrl, c => c.GetAsync(BuildTranscriptUrl(baseUrl, arguments))),
                 "get_turn"               => await SendWithRefreshRetryAsync(client, baseUrl, c => c.GetAsync(BuildTurnDetailUrl(baseUrl, arguments))),
                 "list_turns"             => await SendWithRefreshRetryAsync(client, baseUrl, c => c.GetAsync(BuildTurnsUrl(baseUrl, arguments))),
+                "list_repo_sessions"     => await SendWithRefreshRetryAsync(client, baseUrl, c => c.GetAsync(BuildRepoSessionsUrl(baseUrl, arguments, cwdRepoHash))),
                 _                        => throw new ArgumentException($"Unknown tool: {toolName}")
             };
 
@@ -302,6 +303,52 @@ sealed class McpSessionsServer(ConfigRoot config, ProfileContext profiles) {
 
         return await send(client);
     }
+
+    const string RepoShapeMessage =
+        "`repo` must be \"<owner>/<name>\" or a 16-hex repo hash. This tool is repo-scoped, so \"all\" is not accepted.";
+
+    internal static string BuildRepoSessionsUrl(string baseUrl, JsonObject? args, string? cwdRepoHash) {
+        var explicitRepo = ReadString(args, "repo", RepoShapeMessage);
+        if (string.IsNullOrWhiteSpace(explicitRepo)) explicitRepo = null;
+
+        string repoHash;
+
+        if (explicitRepo is null) {
+            repoHash = cwdRepoHash ?? throw new ArgumentException(
+                "Cannot resolve the current repository owner/name from git metadata (e.g. a missing or " +
+                "unparseable 'origin' remote). Pass repo: \"<owner>/<name>\" or a 16-hex repo hash.");
+        } else if (!RepoHashHelper.TryParseRepoRef(explicitRepo, out repoHash)) {
+            throw new ArgumentException(RepoShapeMessage);
+        }
+
+        var state = ReadString(args, "state", "`state` must be a string: active, ended or all.") ?? "active";
+
+        if (state is not ("active" or "ended" or "all"))
+            throw new ArgumentException("`state` must be active, ended or all.");
+
+        var qs = new List<string> { $"state={state}" };
+
+        if (ReadString(args, "owner", "`owner` must be a string.") is { Length: > 0 } owner)
+            qs.Add($"owner={Uri.EscapeDataString(owner)}");
+
+        if (ReadString(args, "touching_path", "`touching_path` must be a string.") is { Length: > 0 } touching)
+            qs.Add($"touching_path={Uri.EscapeDataString(touching)}");
+
+        if (TryReadInt(args, "limit", out var limit)) qs.Add($"limit={limit}");
+
+        if (TryReadInt(args, "offset", out var offset)) qs.Add($"offset={offset}");
+
+        return $"{baseUrl}/api/repositories/{repoHash}/sessions?" + string.Join("&", qs);
+    }
+
+    // A non-string JSON value must surface as a validation error, not as the generic internal
+    // error the outer guard produces for an InvalidOperationException from GetValue<string>().
+    static string? ReadString(JsonObject? args, string key, string shapeMessage) =>
+        args?[key] switch {
+            null                                          => null,
+            JsonValue v when v.TryGetValue(out string? s) => s,
+            _                                             => throw new ArgumentException(shapeMessage)
+        };
 
     internal static string BuildSearchUrl(string baseUrl, JsonObject? args, string? cwdRepoHash) {
         var url = $"{baseUrl}/api/sessions/search";
@@ -681,7 +728,7 @@ sealed class McpSessionsServer(ConfigRoot config, ProfileContext profiles) {
         return envelope.ToJsonString();
     }
 
-    static McpTool[] BuildToolsList() => [
+    internal static McpTool[] BuildToolsList() => [
         new(
             "search_sessions",
             "Search past Kurrent Capacitor sessions by free-text question and/or author name. Searches the current repo first and AUTOMATICALLY widens to all visible repos when results are thin (response then carries widened_to_all_repos: true); every hit includes its repo, so check it before assuming a hit is from this repo. Pass repo: \"all\" to search everywhere explicitly, or repo: \"<owner>/<name>\" to pin another repo (explicit repo never widens). Returns ranked hits with session_id, title, owner, snippet, and (for transcript hits) hit_event_index + agent_id for drilling into the exact moment with get_session_transcript. For 'have we done this before / why did we / who decided X / when did we work on Y' questions, search here before grepping the code or git log — it searches the reasoning across past sessions, not just the code.",
@@ -694,6 +741,22 @@ sealed class McpSessionsServer(ConfigRoot config, ProfileContext profiles) {
                     ["repo"] = new("string", "Optional: \"all\" for cross-repo, \"<owner>/<name>\", or a 16-hex repo hash. Defaults to the current repo (resolved from cwd at server startup) with automatic widening to all repos when results are thin."),
                     ["limit"] = new("integer", "Default 10, max 50."),
                     ["offset"] = new("integer", "Default 0, max 500.")
+                },
+                []
+            )
+        ),
+        new(
+            "list_repo_sessions",
+            "List the sessions on a repository that you are allowed to see, running ones first, ordered by last activity. Each row carries session_id, owner, vendor, status, access_level, stale, started_at, last_activity_at, branch, cwd, last_prompt, write_attempt_paths and write_attempt_count. Rows are visibility-filtered: a teammate who is missing may simply have a private session. Below access_level \"full\" the branch, cwd, prompt and paths are blank, and touching_path only ever matches sessions you hold at \"full\". stale means no activity for over an hour. write_attempt_paths are Edit/Write tool inputs recorded at invocation time: attempts, not confirmed writes; first call per event only; paths as the tool received them; nothing from Bash, MultiEdit, NotebookEdit, apply_patch, MCP file tools or subagents. On a running session, list_turns works at \"activity\" and above while get_turn and get_session_transcript need \"full\": for a full row, the latest closed turn is get_turn on the last index list_turns returns; an activity row stops at list_turns. Reach for this when you find unexplained state in a checkout and need to know which session is doing it.",
+            new(
+                "object",
+                new() {
+                    ["repo"]          = new("string",  "Optional: \"<owner>/<name>\" or a 16-hex repo hash. Defaults to the current repo (resolved from cwd at server startup). \"all\" is not accepted; the tool is repo-scoped."),
+                    ["state"]         = new("string",  "Optional: active (default), ended, or all."),
+                    ["owner"]         = new("string",  "Optional: \"me\" or a canonical user id. Absent means everyone visible."),
+                    ["touching_path"] = new("string",  "Optional: substring matched against the stored write-attempt paths as the tool received them."),
+                    ["limit"]         = new("integer", "Default 20, max 100."),
+                    ["offset"]        = new("integer", "Default 0, max 500.")
                 },
                 []
             )

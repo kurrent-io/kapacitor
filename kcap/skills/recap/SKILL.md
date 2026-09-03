@@ -15,7 +15,7 @@ description: >-
   kcap-sessions MCP tools.
 ---
 
-> **For agents:** When the `kcap-sessions` MCP server is available, prefer its tools (`search_sessions`, `get_session_summary`, `list_turns`, `get_turn`, `get_session_transcript`) for retrieving past sessions. This CLI-wrapped skill remains a fallback for shell use and when MCP isn't installed.
+> **For agents:** When the `kcap-sessions` MCP server is available, prefer its tools (`search_sessions`, `list_repo_sessions`, `get_session_summary`, `list_turns`, `get_turn`, `get_session_transcript`) for retrieving past sessions. This CLI-wrapped skill remains a fallback for shell use and when MCP isn't installed.
 
 # Session Recap
 
