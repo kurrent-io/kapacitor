@@ -9,14 +9,25 @@ public sealed record ShellAnalysis(bool Analyzed, IReadOnlyList<ShellSegment> Se
 
 /// <summary>
 /// Allowlist grammar: literal-token simple commands joined by top-level '&amp;&amp;', ';' or '|'.
-/// Anything else is unanalyzed and therefore never allow-eligible — the one guarantee
-/// obfuscation cannot defeat. When in doubt, return Unanalyzed.
+/// Anything else — a nested shell, a compound statement, any word the grammar cannot read as a
+/// literal — is unanalyzed and therefore never allow-eligible, the one guarantee obfuscation
+/// cannot defeat. The named sets below are recognition, not exhaustion: what they miss stays
+/// analyzable, so deny/ask rules remain the tool for interpreters the grammar has no opinion on.
+/// When in doubt, return Unanalyzed.
 /// </summary>
 public static class ShellCommandAnalyzer {
     static readonly SearchValues<char> UnquotedForbidden = SearchValues.Create("$`<>(){}[]*?\\");
     static readonly HashSet<string> ForbiddenPrograms = new(StringComparer.OrdinalIgnoreCase)
-        { "eval", "exec", "sh", "bash", "zsh", "dash", "ksh", "csh", "tcsh", "fish",
-          "pwsh", "powershell", "cmd" };
+        { "eval", "exec", "sh", "bash", "zsh", "dash", "ksh", "csh", "tcsh", "fish", "ash",
+          "mksh", "yash", "busybox", "pwsh", "powershell", "cmd" };
+
+    // Reserved only in command position, and case-sensitively so — `echo if` is an ordinary
+    // argument and a program spelled `IF` is an ordinary program, but a segment STARTING with one
+    // of these is a compound statement whose body the ';'-joined grammar reads as separate simple
+    // commands. `if true; then rm -rf x; fi` would otherwise analyze as three of them.
+    static readonly HashSet<string> ReservedWords = new(StringComparer.Ordinal)
+        { "if", "then", "elif", "else", "fi", "for", "while", "until", "do", "done",
+          "case", "esac", "in", "function", "select", "time", "coproc" };
 
     public static ShellAnalysis Analyze(string command) {
         var segments = new List<ShellSegment>();
@@ -44,7 +55,8 @@ public static class ShellCommandAnalyzer {
             // otherwise hides the nested shell behind a program the analyzer reads as ordinary. A
             // literal argument that merely names one (`echo bash`) loses analyzability with it —
             // that only withholds allow-eligibility, and deny/ask still match through fragments.
-            if (LooksLikeAssignment(argv[0]) || argv.Any(IsForbiddenProgram)) return false;
+            if (LooksLikeAssignment(argv[0]) || ReservedWords.Contains(argv[0])
+                || argv.Any(IsForbiddenProgram)) return false;
             segments.Add(new ShellSegment([.. argv]));
             argv.Clear();
             return true;

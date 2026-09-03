@@ -71,6 +71,12 @@ public class ShellCommandAnalyzerTests {
     [Arguments("env bash -c 'x'")]               // wrapper in front of a nested shell
     [Arguments("sudo sh script.sh")]             // wrapper in front of a nested shell
     [Arguments("echo bash")]                     // deliberate over-match: any token naming a shell
+    [Arguments("ash -c 'x'")]                    // nested shell
+    [Arguments("busybox sh x")]                  // applet multiplexer in front of a nested shell
+    [Arguments("busybox rm -rf x")]              // the multiplexer alone, with no shell to catch
+    [Arguments("if true; then rm -rf x; fi")]    // compound statement, not three simple commands
+    [Arguments("for i in a; do echo x; done")]   // compound statement
+    [Arguments("while true; do x; done")]        // compound statement
     public async Task Banned_constructs_are_unanalyzed(string command) {
         var r = ShellCommandAnalyzer.Analyze(command);
         await Assert.That(r.Analyzed).IsFalse();
@@ -83,6 +89,8 @@ public class ShellCommandAnalyzerTests {
     [Arguments("git log --format=%H")]           // = and % in arguments are literal
     [Arguments("env FOO=1 git push --force")]    // assignment as env's argument, not leading
     [Arguments("grep 'a*b' file.txt")]           // glob chars inside quotes are literal
+    [Arguments("echo if")]                       // a reserved word is reserved in command position only
+    [Arguments("git log --grep=done")]           // reserved word inside an argument
     public async Task Literal_lookalikes_stay_analyzed(string command) =>
         await Assert.That(ShellCommandAnalyzer.Analyze(command).Analyzed).IsTrue();
 }
