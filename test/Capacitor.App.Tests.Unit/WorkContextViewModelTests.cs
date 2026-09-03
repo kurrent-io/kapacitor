@@ -362,4 +362,251 @@ public class WorkContextViewModelTests {
             await Assert.That(h.Vm.Phase).IsEqualTo(WorkContextPhase.Loading);
         });
     }
+
+    static SessionWorkItemAssignmentDto Row(string id, string label, bool primary = true) =>
+        new() { WorkItemId = id, Label = label, Source = "mcp", Confidence = 1, IsPrimary = primary };
+
+    static WorkItemTopologyPartDto Part(string id, string title, int ordinal) =>
+        new() { WorkItemId = id, Title = title, Ordinal = ordinal };
+
+    static SessionPullRequestDto Pr(string owner, string repo, int number, string? url = null, string? title = null) =>
+        new() { RepoHash = "h", Owner = owner, RepoName = repo, Number = number, Url = url, Title = title };
+
+    static WorkContextRead ReadyWith(
+            SessionWorkItemAssignmentDto? primary, WorkItemTopologyDto? topology = null, SessionSummaryDto? summary = null,
+            bool topologyFailed = false, bool summaryFailed = false, IReadOnlyList<SessionWorkItemAssignmentDto>? assignments = null) =>
+        new(WorkContextReadKind.Ready, assignments ?? (primary is null ? [] : [primary]), primary, topology,
+            summary ?? new SessionSummaryDto { SessionId = SessionA }, topologyFailed, summaryFailed, null);
+
+    static WorkItemTopologyDto Topology(params WorkItemTopologyPartDto[] parts) => new() {
+        Parts = [.. parts],
+        Item = new WorkItemRefDto { WorkItemId = "w1", Title = "Desktop shell: work-context sidebar" },
+    };
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task The_card_shows_key_title_parts_marks_part_of_blockers_and_the_cycle_note() {
+        await RunOnUiAsync(async () => {
+            var h = new Harness();
+            var topology = Topology(Part("p2", "Second", 1), Part("p1", "First", 0)) with {
+                PartOf = new WorkItemRefDto { WorkItemId = "w0", Title = "Parent epic" },
+                BlockedBy = [new WorkItemRefDto { WorkItemId = "b1", Title = "Pin the helper" }],
+                Cycle = "indeterminate",
+            };
+            h.Source.Enqueue(ReadyWith(Row("w1", "AI-2198 — old label"), topology,
+                assignments: [Row("w1", "AI-2198 — old label"), Row("p1", "part", primary: false)]));
+
+            await h.PushAsync(Dto());
+
+            await Assert.That(h.Vm.Phase).IsEqualTo(WorkContextPhase.Ready);
+            await Assert.That(h.Vm.Key).IsEqualTo("AI-2198");
+            await Assert.That(h.Vm.Title).IsEqualTo("Desktop shell: work-context sidebar");
+            await Assert.That(h.Vm.PartOfTitle).IsEqualTo("Parent epic");
+            await Assert.That(h.Vm.Parts.Select(p => p.Title)).IsEquivalentTo(new[] { "First", "Second" }, TUnit.Assertions.Enums.CollectionOrdering.Matching);
+            await Assert.That(h.Vm.Parts[0].Mark).IsEqualTo(WorkContextPartMark.ThisSession);
+            await Assert.That(h.Vm.Parts[1].Mark).IsEqualTo(WorkContextPartMark.Unknown);
+            await Assert.That(h.Vm.PartsHeader).IsEqualTo("2 parts");
+            await Assert.That(h.Vm.BlockedBy[0]).IsEqualTo("Pin the helper");
+            await Assert.That(h.Vm.HasBlockers).IsTrue();
+            await Assert.That(h.Vm.CycleNote).IsEqualTo("Dependencies could not be fully resolved");
+            await h.Vm.TeardownAsync();
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task The_label_display_is_the_title_when_the_topology_has_no_item_and_a_cycle_note_needs_no_blockers() {
+        await RunOnUiAsync(async () => {
+            var h = new Harness();
+            h.Source.Enqueue(ReadyWith(Row("w1", "Daemon tests flake"), new WorkItemTopologyDto { Cycle = "cyclic" }));
+
+            await h.PushAsync(Dto());
+
+            await Assert.That(h.Vm.Key).IsNull();
+            await Assert.That(h.Vm.Title).IsEqualTo("Daemon tests flake");
+            await Assert.That(h.Vm.PartsHeader).IsEqualTo("0 parts");
+            await Assert.That(h.Vm.HasParts).IsFalse();
+            await Assert.That(h.Vm.HasBlockers).IsFalse();
+            await Assert.That(h.Vm.CycleNote).IsEqualTo("Dependencies form a cycle");
+            await h.Vm.TeardownAsync();
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task A_topology_blip_keeps_parts_for_the_same_primary_and_clears_them_for_a_new_one() {
+        await RunOnUiAsync(async () => {
+            var h = new Harness();
+            h.Source.Enqueue(
+                ReadyWith(Row("w1", "AI-1 — t"), Topology(Part("p1", "First", 0))),
+                ReadyWith(Row("w1", "AI-1 — t"), topology: null, topologyFailed: true),
+                ReadyWith(Row("w9", "AI-9 — other"), topology: null, topologyFailed: true),
+                ReadyWith(Row("w9", "AI-9 — other"), new WorkItemTopologyDto()));
+            await h.PushAsync(Dto());
+            await h.TickAsync();
+            await Assert.That(h.Vm.Parts.Count).IsEqualTo(1);
+            await Assert.That(h.Vm.IsStale).IsTrue();
+
+            await h.TickAsync();
+            await Assert.That(h.Vm.Key).IsEqualTo("AI-9");
+            await Assert.That(h.Vm.Parts).IsEmpty();
+            await Assert.That(h.Vm.IsStale).IsTrue();
+
+            await h.TickAsync();
+            await Assert.That(h.Vm.IsStale).IsFalse();
+            await Assert.That(h.Vm.Parts).IsEmpty();
+            await h.Vm.TeardownAsync();
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Links_come_from_the_list_with_the_top_level_triple_as_a_repository_aware_fallback() {
+        await RunOnUiAsync(async () => {
+            var h = new Harness();
+            var dup = new SessionSummaryDto {
+                SessionId = SessionA, RepoOwner = "kurrent-io", RepoName = "kcap-cli", PrNumber = 42, PrUrl = "https://github.com/kurrent-io/kcap-cli/pull/42", PrTitle = "Top",
+                PullRequests = [Pr("kurrent-io", "kcap-cli", 42, "https://github.com/kurrent-io/kcap-cli/pull/42", "Listed")],
+            };
+            var otherRepo = dup with { PullRequests = [Pr("kurrent-io", "kcap-server", 42, "https://github.com/kurrent-io/kcap-server/pull/42", "Server")] };
+            var noIdentity = dup with { RepoOwner = null, RepoName = null, PullRequests = [Pr("x", "y", 42, null, "Elsewhere")] };
+            h.Source.Enqueue(ReadyWith(null, summary: dup), ReadyWith(null, summary: otherRepo), ReadyWith(null, summary: noIdentity));
+
+            await h.PushAsync(Dto());
+            await Assert.That(h.Vm.Links.Select(l => l.Title)).IsEquivalentTo(new[] { "Listed" });
+            await Assert.That(h.Vm.Links[0].Eyebrow).IsEqualTo("PULL REQUEST");
+            await Assert.That(h.Vm.Links[0].Key).IsEqualTo("#42");
+
+            await h.TickAsync();
+            await Assert.That(h.Vm.Links.Select(l => l.Title)).IsEquivalentTo(new[] { "Server", "Top" });
+
+            await h.TickAsync();
+            await Assert.That(h.Vm.Links.Select(l => l.Title)).IsEquivalentTo(new[] { "Elsewhere" });
+            await h.Vm.TeardownAsync();
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Links_open_through_the_policy_and_a_throwing_opener_is_caught() {
+        await RunOnUiAsync(async () => {
+            var h = new Harness();
+            var summary = new SessionSummaryDto {
+                SessionId = SessionA,
+                PullRequests = [Pr("o", "r", 1, "https://github.com/o/r/pull/1", "Https"), Pr("o", "r", 2, "file:///etc/passwd", "File"), Pr("o", "r", 3, "pull/3", "Relative"), Pr("o", "r", 4, null, "None")],
+            };
+            h.Source.Enqueue(ReadyWith(null, summary: summary));
+            await h.PushAsync(Dto());
+
+            await Assert.That(h.Vm.Links.Select(l => l.CanOpen)).IsEquivalentTo(new[] { true, false, false, false }, TUnit.Assertions.Enums.CollectionOrdering.Matching);
+            await h.Vm.Links[0].OpenCommand.Execute();
+            await Assert.That(h.Opener.Opened).IsEquivalentTo(new[] { "https://github.com/o/r/pull/1" });
+
+            h.Opener.ThrowOnOpen = new InvalidOperationException("no browser");
+            await h.Vm.Links[0].OpenCommand.Execute();
+            await Assert.That(h.Opener.Opened.Count).IsEqualTo(2);
+            await h.Vm.TeardownAsync();
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task A_summary_blip_keeps_the_link_cards_and_an_empty_summary_clears_them() {
+        await RunOnUiAsync(async () => {
+            var h = new Harness();
+            var withPr = new SessionSummaryDto { SessionId = SessionA, PullRequests = [Pr("o", "r", 1, null, "One")] };
+            h.Source.Enqueue(ReadyWith(null, summary: withPr), ReadyWith(null, summary: null, summaryFailed: true), ReadyWith(null));
+            await h.PushAsync(Dto());
+            await h.TickAsync();
+            await Assert.That(h.Vm.Links.Count).IsEqualTo(1);
+            await Assert.That(h.Vm.IsStale).IsTrue();
+            await h.TickAsync();
+            await Assert.That(h.Vm.Links).IsEmpty();
+            await Assert.That(h.Vm.IsStale).IsFalse();
+            await h.Vm.TeardownAsync();
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Terminal_phases_clear_every_server_projection_but_keep_the_facts_and_requester() {
+        await RunOnUiAsync(async () => {
+            foreach (var kind in new[] { WorkContextReadKind.SignedOut, WorkContextReadKind.NotInPlan, WorkContextReadKind.SessionUnknown }) {
+                var h = new Harness();
+                var summary = new SessionSummaryDto { SessionId = SessionA, PullRequests = [Pr("o", "r", 1, null, "One")] };
+                h.Source.Enqueue(ReadyWith(Row("w1", "AI-1 — t"), Topology(Part("p1", "First", 0)), summary), WorkContextRead.Of(kind));
+                await h.PushAsync(Dto());
+                await h.TickAsync();
+
+                await Assert.That(h.Vm.Key).IsNull();
+                await Assert.That(h.Vm.Title).IsEqualTo("");
+                await Assert.That(h.Vm.Parts).IsEmpty();
+                await Assert.That(h.Vm.BlockedBy).IsEmpty();
+                await Assert.That(h.Vm.CycleNote).IsNull();
+                await Assert.That(h.Vm.Links).IsEmpty();
+                await Assert.That(h.Vm.Repository).IsEqualTo("myproj");
+                await Assert.That(h.Vm.Requester).IsEqualTo("You");
+                await h.Vm.TeardownAsync();
+            }
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task A_null_primary_clears_the_card_to_no_work_item_but_keeps_the_links() {
+        await RunOnUiAsync(async () => {
+            var h = new Harness();
+            var summary = new SessionSummaryDto { SessionId = SessionA, PullRequests = [Pr("o", "r", 1, null, "One")] };
+            h.Source.Enqueue(ReadyWith(Row("w1", "AI-1 — t"), Topology(Part("p1", "First", 0)), summary), ReadyWith(null, summary: summary));
+            await h.PushAsync(Dto());
+            await h.TickAsync();
+
+            await Assert.That(h.Vm.Phase).IsEqualTo(WorkContextPhase.NoWorkItem);
+            await Assert.That(h.Vm.Parts).IsEmpty();
+            await Assert.That(h.Vm.Key).IsNull();
+            await Assert.That(h.Vm.Links.Count).IsEqualTo(1);
+            await h.Vm.TeardownAsync();
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task The_requester_row_prefers_the_display_name_then_the_id_then_you_and_skips_blanks() {
+        await RunOnUiAsync(async () => {
+            var h = new Harness();
+            await h.PushAsync(Dto(sessionId: null) with { RequesterDisplay = "  Ada Lovelace ", Requester = "github:1" });
+            await Assert.That(h.Vm.Requester).IsEqualTo("Ada Lovelace");
+            await Assert.That(h.Vm.RequesterInitial).IsEqualTo("A");
+            await Assert.That(h.Vm.RequesterRole).IsEqualTo("This session · Claude Code");
+
+            await h.PushAsync(Dto(sessionId: null) with { RequesterDisplay = "   ", Requester = "github:1" });
+            await Assert.That(h.Vm.Requester).IsEqualTo("github:1");
+            await Assert.That(h.Vm.RequesterInitial).IsEqualTo("G");
+
+            await h.PushAsync(Dto(sessionId: null) with { RequesterDisplay = null, Requester = "" });
+            await Assert.That(h.Vm.Requester).IsEqualTo("You");
+            await Assert.That(h.Vm.RequesterInitial).IsEqualTo("Y");
+            await h.Vm.TeardownAsync();
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Sections_default_open_parts_and_collapsed_people_and_session_and_toggle() {
+        await RunOnUiAsync(async () => {
+            var h = new Harness();
+            await Assert.That(h.Vm.PartsExpanded).IsTrue();
+            await Assert.That(h.Vm.PeopleExpanded).IsFalse();
+            await Assert.That(h.Vm.SessionExpanded).IsFalse();
+
+            await h.Vm.TogglePartsCommand.Execute();
+            await h.Vm.TogglePeopleCommand.Execute();
+            await h.Vm.ToggleSessionCommand.Execute();
+
+            await Assert.That(h.Vm.PartsExpanded).IsFalse();
+            await Assert.That(h.Vm.PeopleExpanded).IsTrue();
+            await Assert.That(h.Vm.SessionExpanded).IsTrue();
+            await h.Vm.TeardownAsync();
+        });
+    }
 }
