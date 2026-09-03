@@ -55,13 +55,13 @@ public sealed class StatusCommand(
                 var expiryText = remaining.TotalHours > 1
                     ? $"expires in {remaining.TotalHours:F0}h"
                     : $"expires in {remaining.TotalMinutes:F0}m";
-                await Console.Out.WriteLineAsync($"{tokens.GitHubUsername} ({tokens.Provider}) ✓ token valid ({expiryText})");
+                await Console.Out.WriteLineAsync($"{tokens.GitHubUsername} ✓ token valid ({expiryText})");
             } else {
                 var rawTokens = await new TokenStore(config).LoadForProfileAsync(profiles.Name);
 
                 await Console.Out.WriteLineAsync(
                     rawTokens is not null
-                        ? $"{rawTokens.GitHubUsername} ({rawTokens.Provider}) ✗ token expired (run: kcap login)"
+                        ? $"{rawTokens.GitHubUsername} ✗ token expired (run: kcap login)"
                         : "not authenticated (run: kcap login)"
                 );
             }

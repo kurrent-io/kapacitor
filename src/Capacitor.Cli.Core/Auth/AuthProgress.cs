@@ -34,25 +34,34 @@ public interface IAuthProgress {
     void PollTick();
 }
 
-/// <summary>Reproduces exactly what the CLI printed to stdout/stderr before <see cref="IAuthProgress"/> existed.</summary>
-public sealed class ConsoleAuthProgress : IAuthProgress {
+/// <summary>Renders auth progress as console lines.</summary>
+/// <param name="indent">
+/// Shifts every line this writes, so a caller whose output belongs to an enclosing section indents the
+/// whole block. It has to live here rather than in a decorator: most of this copy is composed in these
+/// methods, so nothing wrapping <see cref="IAuthProgress"/> can reach it.
+/// </param>
+public sealed class ConsoleAuthProgress(string indent = "") : IAuthProgress {
     public static readonly ConsoleAuthProgress Instance = new();
 
-    public void Notice(string message) => Console.Out.WriteLine(message);
+    public void Notice(string message) => Console.Out.WriteLine(Shifted(message));
 
-    public void Error(string message) => Console.Error.WriteLine(message);
+    public void Error(string message) => Console.Error.WriteLine(Shifted(message));
 
     public void BrowserOpening(string url) {
-        Console.Out.WriteLine("Opening browser for authentication...");
-        Console.Out.WriteLine($"  If the browser doesn't open, visit: {url}");
+        Console.Out.WriteLine(Shifted("Opening browser for authentication..."));
+        Console.Out.WriteLine(Shifted($"  If the browser doesn't open, visit: {url}"));
     }
 
     public void DeviceCode(string code, string verificationUri, string? provider, bool prefilled) {
-        Console.Out.WriteLine(prefilled ? $"  2. Check the code shown is {code}" : $"  2. Enter the code: {code}");
-        Console.Out.WriteLine(provider is null ? "  3. Approve access when asked." : $"  3. Approve access when {provider} asks.");
+        Console.Out.WriteLine(Shifted(prefilled ? $"  2. Check the code shown is {code}" : $"  2. Enter the code: {code}"));
+        Console.Out.WriteLine(Shifted(provider is null ? "  3. Approve access when asked." : $"  3. Approve access when {provider} asks."));
         Console.Out.WriteLine();
-        Console.Write("Waiting for you to authorize...");
+        Console.Write(Shifted("Waiting for you to authorize..."));
     }
 
+    /// <summary>Unshifted: the dots continue the "Waiting…" line rather than starting one.</summary>
     public void PollTick() => Console.Write(".");
+
+    /// <summary>A blank separator stays blank — an indented one is trailing whitespace.</summary>
+    string Shifted(string line) => indent.Length == 0 || line.Length == 0 ? line : indent + line;
 }

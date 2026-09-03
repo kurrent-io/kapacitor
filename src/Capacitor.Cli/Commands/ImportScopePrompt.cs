@@ -58,18 +58,21 @@ public static partial class ImportScopePrompt {
     /// The same text is printed in non-TTY runs (with --yes) so the imported
     /// scope is recorded in CI logs.
     /// </summary>
+    /// <param name="indent">Shifts the whole block, label included: it belongs to whatever section the
+    /// caller has open rather than heading one of its own.</param>
     public static string FormatSummary(
             ImportScope           scope,
             int                   matchedCount,
             IReadOnlyList<string> repoSamples,
-            string                visibilityDescription
+            string                visibilityDescription,
+            string                indent = ""
         ) {
         var sb = new StringBuilder();
-        sb.AppendLine("About to import:");
-        sb.AppendLine($"  scope:   {ScopeLabel(scope)}");
-        sb.AppendLine($"{MatchedPrefix}{matchedCount}{MatchedSuffix(matchedCount, repoSamples.Count)}");
-        sb.AppendLine($"  repos:   {RepoLine(repoSamples)}");
-        sb.Append($"  visibility: {visibilityDescription}");
+        sb.AppendLine($"{indent}About to import:");
+        sb.AppendLine($"{indent}  scope:   {ScopeLabel(scope)}");
+        sb.AppendLine($"{indent}{MatchedPrefix}{matchedCount}{MatchedSuffix(matchedCount, repoSamples.Count)}");
+        sb.AppendLine($"{indent}  repos:   {RepoLine(repoSamples)}");
+        sb.Append($"{indent}  visibility: {visibilityDescription}");
 
         return sb.ToString();
     }
@@ -191,9 +194,10 @@ public static partial class ImportScopePrompt {
             int                   matchedCount,
             IReadOnlyList<string> repoSamples,
             string                visibilityDescription,
-            bool                  skip
+            bool                  skip,
+            string                indent = ""
         ) {
-        WriteSummaryToStderr(scope, matchedCount, repoSamples, visibilityDescription);
+        WriteSummaryToStderr(scope, matchedCount, repoSamples, visibilityDescription, indent);
 
         if (skip) return true;
 
@@ -213,18 +217,19 @@ public static partial class ImportScopePrompt {
             ImportScope           scope,
             int                   matchedCount,
             IReadOnlyList<string> repoSamples,
-            string                visibilityDescription
+            string                visibilityDescription,
+            string                indent
         ) {
         var console = AnsiConsole.Create(
             new AnsiConsoleSettings { Out = new AnsiConsoleOutput(Console.Error) }
         );
 
-        console.WriteLine("About to import:");
-        console.WriteLine($"  scope:   {ScopeLabel(scope)}");
+        console.WriteLine($"{indent}About to import:");
+        console.WriteLine($"{indent}  scope:   {ScopeLabel(scope)}");
         console.MarkupLine(
-            $"{MatchedPrefix}[bold cyan]{matchedCount}[/]{Markup.Escape(MatchedSuffix(matchedCount, repoSamples.Count))}"
+            $"{indent}{MatchedPrefix}[bold cyan]{matchedCount}[/]{Markup.Escape(MatchedSuffix(matchedCount, repoSamples.Count))}"
         );
-        console.WriteLine($"  repos:   {RepoLine(repoSamples)}");
-        console.WriteLine($"  visibility: {visibilityDescription}");
+        console.WriteLine($"{indent}  repos:   {RepoLine(repoSamples)}");
+        console.WriteLine($"{indent}  visibility: {visibilityDescription}");
     }
 }

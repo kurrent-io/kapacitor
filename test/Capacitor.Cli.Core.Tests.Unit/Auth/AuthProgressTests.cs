@@ -127,4 +127,56 @@ public class AuthProgressTests {
 
         await Assert.That(capture.GetCapturedOutput()).IsEqualTo(".");
     }
+
+    /// <summary>Pins the shift on copy this class composes rather than receives, which is the whole
+    /// reason the indent lives here: a decorator around <see cref="IAuthProgress"/> sees only the
+    /// strings it is handed, so indenting out there moves the notices and leaves these at column 0.
+    /// </summary>
+    [Test]
+    public async Task ConsoleAuthProgress_indent_shifts_the_copy_it_composes_itself() {
+        using var capture = ConsoleOutput.StartCapture();
+
+        new ConsoleAuthProgress("  ").BrowserOpening("https://example.test/authorize");
+
+        await Assert.That(capture.GetCapturedOutput()).IsEqualTo(
+            "  Opening browser for authentication..." + Environment.NewLine
+          + "    If the browser doesn't open, visit: https://example.test/authorize" + Environment.NewLine);
+    }
+
+    /// <summary>The numbered lines carry their own two spaces, so an indent has to shift them on top
+    /// of that rather than replace it — the list stays a step inside the line introducing it.</summary>
+    [Test]
+    public async Task ConsoleAuthProgress_indent_shifts_the_device_code_block() {
+        using var capture = ConsoleOutput.StartCapture();
+
+        new ConsoleAuthProgress("  ").DeviceCode("UC123", "https://example.test", null, prefilled: false);
+
+        await Assert.That(capture.GetCapturedOutput()).IsEqualTo(
+            "    2. Enter the code: UC123" + Environment.NewLine
+          + "    3. Approve access when asked." + Environment.NewLine
+          + Environment.NewLine
+          + "  Waiting for you to authorize...");
+    }
+
+    /// <summary>The login flow spaces its output with empty notices, and an indented one is a line of
+    /// trailing whitespace rather than a separator.</summary>
+    [Test]
+    public async Task ConsoleAuthProgress_indent_leaves_an_empty_notice_empty() {
+        using var capture = ConsoleOutput.StartCapture();
+
+        new ConsoleAuthProgress("  ").Notice("");
+
+        await Assert.That(capture.GetCapturedOutput()).IsEqualTo(Environment.NewLine);
+    }
+
+    /// <summary>The dots continue the "Waiting…" line rather than starting one, so shifting them would
+    /// break the line they are appended to.</summary>
+    [Test]
+    public async Task ConsoleAuthProgress_indent_does_not_shift_a_poll_dot() {
+        using var capture = ConsoleOutput.StartCapture();
+
+        new ConsoleAuthProgress("  ").PollTick();
+
+        await Assert.That(capture.GetCapturedOutput()).IsEqualTo(".");
+    }
 }

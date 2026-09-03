@@ -1,4 +1,5 @@
 using Capacitor.Cli.Commands;
+using Spectre.Console;
 
 namespace Capacitor.Cli.Tests.Unit.Commands;
 
@@ -178,6 +179,158 @@ public class ImportDisplayGridTests {
         RequestedSummaries: requestedSummaries,
         RequestedTitles: requestedTitles
     );
+
+    /// <summary>The completion summary nests with its heading as the plan grid does — the same margin,
+    /// so a redirected nested run does not indent one and leave the other level.</summary>
+    [Test, NotInParallel]
+    [Arguments(false, "  Loaded")]
+    [Arguments(true, "    Loaded")]
+    public async Task the_done_summary_nests_with_its_heading(bool nested, string expected) {
+        using var capture = ConsoleOutput.StartCapture("\n");
+
+        new ImportCommand.ImportDisplay { Tty = false, Nested = nested }.WriteDoneGrid(
+            MakeFinal(loaded: 7));
+
+        var row = capture.GetCapturedOutput()
+                         .Split('\n')
+                         .First(l => l.TrimStart().StartsWith("Loaded", StringComparison.Ordinal));
+
+        await Assert.That(row).StartsWith(expected);
+    }
+
+    /// <summary>
+    /// The plain-text rows nest by the same step as the headings above them, so a redirected run of a
+    /// nested import puts its counts under its section rather than level with it.
+    /// </summary>
+    [Test, NotInParallel]
+    [Arguments(false, "  New")]
+    [Arguments(true, "    New")]
+    public async Task plain_rows_nest_with_their_heading(bool nested, string expected) {
+        using var capture = ConsoleOutput.StartCapture("\n");
+
+        new ImportCommand.ImportDisplay { Tty = false, Nested = nested }.WritePlanGrid(
+            new(New: 5, Partial: 0, AlreadyLoaded: 0, TooShort: 0, Excluded: 0, ProbeError: 0),
+            bySource: null);
+
+        var row = capture.GetCapturedOutput()
+                         .Split('\n')
+                         .First(l => l.TrimStart().StartsWith("New", StringComparison.Ordinal));
+
+        await Assert.That(row).StartsWith(expected);
+    }
+
+    /// <summary>
+    /// Column 0 belongs to headings, so a line the run writes for itself is indented under the one it
+    /// belongs to — and one step deeper again where the whole run is nested inside a setup step.
+    /// </summary>
+    [Test, NotInParallel]
+    [Arguments(false, "  Found 3 sessions.")]
+    [Arguments(true, "    Found 3 sessions.")]
+    public async Task a_line_sits_under_its_heading_rather_than_against_the_margin(
+            bool nested, string expected) {
+        using var capture = ConsoleOutput.StartCapture("\n");
+
+        new ImportCommand.ImportDisplay { Tty = false, Nested = nested }.Line("Found 3 sessions.");
+
+        await Assert.That(capture.GetCapturedOutput()).IsEqualTo(expected + "\n");
+    }
+
+    /// <summary>
+    /// A grid ignores leading spaces, so padding is the only thing that can put the counts under the
+    /// heading they belong to rather than against the margin the prose beside them is indented from.
+    /// </summary>
+    [Test, NotInParallel]
+    public async Task the_counts_line_up_with_the_prose_around_them() {
+        var originalConsole = AnsiConsole.Console;
+        var buffer          = new StringWriter();
+        AnsiConsole.Console = AnsiConsole.Create(new AnsiConsoleSettings {
+            Ansi        = AnsiSupport.No,
+            ColorSystem = ColorSystemSupport.NoColors,
+            Out         = new AnsiConsoleOutput(buffer),
+        });
+
+        // Pinned, because a rule fills the width and a heading wraps against it: a runner's console
+        // reports its own, so an unpinned layout asserts whatever the host happens to be.
+        AnsiConsole.Profile.Width = 120;
+
+        try {
+            new ImportCommand.ImportDisplay { Tty = true }.WritePlanGrid(
+                new(New: 5, Partial: 0, AlreadyLoaded: 0, TooShort: 0, Excluded: 0, ProbeError: 0),
+                bySource: null);
+        } finally {
+            AnsiConsole.Console = originalConsole;
+        }
+
+        var counts = buffer.ToString()
+                           .Split('\n')
+                           .First(l => l.Contains("New", StringComparison.Ordinal));
+
+        await Assert.That(counts).StartsWith("  ");
+    }
+
+    /// <summary>
+    /// A section heading is the structure of the output only where the run is itself the command. Nested
+    /// inside a setup step it is subordinate to a rule already drawn, and is marked as such.
+    /// </summary>
+    [Test, NotInParallel]
+    [Arguments(false, "== Discovering ==")]
+    [Arguments(true, "  -- Discovering --")]
+    public async Task a_phase_heading_is_subordinate_only_when_the_run_is_nested(
+            bool nested, string expected) {
+        using var capture = ConsoleOutput.StartCapture();
+
+        new ImportCommand.ImportDisplay { Tty = false, Nested = nested }.BeginPhase("Discovering");
+
+        await Assert.That(capture.GetCapturedOutput().Replace("\r\n", "\n")).Contains(expected);
+    }
+
+    /// <summary>
+    /// The TTY half, which is the only place a rule exists at all — so a nesting regression that drew one
+    /// would be invisible to the plain-text pins above.
+    ///
+    /// <para>The rule's glyph row is the whole assertion: it is what reads as a section boundary, no
+    /// capture here can see dim, and the indent is the plain-text pins' business — asserting rendered
+    /// leading whitespace measured the host's console rather than this code.</para>
+    /// </summary>
+    [Test, NotInParallel]
+    [Arguments(false, true)]
+    [Arguments(true, false)]
+    public async Task on_a_terminal_only_an_unnested_section_draws_a_rule(bool nested, bool ruled) {
+        var originalConsole = AnsiConsole.Console;
+        var buffer          = new StringWriter();
+        AnsiConsole.Console = AnsiConsole.Create(new AnsiConsoleSettings {
+            Ansi        = AnsiSupport.No,
+            ColorSystem = ColorSystemSupport.NoColors,
+            Out         = new AnsiConsoleOutput(buffer),
+        });
+
+        // Pinned, because a rule fills the width and a heading wraps against it: a runner's console
+        // reports its own, so an unpinned layout asserts whatever the host happens to be.
+        AnsiConsole.Profile.Width = 120;
+
+        try {
+            new ImportCommand.ImportDisplay { Tty = true, Nested = nested }.BeginPhase("Discovering");
+        } finally {
+            AnsiConsole.Console = originalConsole;
+        }
+
+        var output = buffer.ToString();
+
+        await Assert.That(output).Contains("Discovering");
+        // Spectre draws a rule as a run of box-drawing glyphs either side of the title.
+        await Assert.That(output.Contains('─')).IsEqualTo(ruled);
+    }
+
+    /// <summary>Quiet outranks both: <c>--discover --json</c>'s whole stdout has to parse.</summary>
+    [Test, NotInParallel]
+    public async Task a_quiet_run_draws_no_phase_heading_nested_or_not() {
+        using var capture = ConsoleOutput.StartCapture();
+
+        new ImportCommand.ImportDisplay { Tty = false, Quiet = true, Nested = true }.BeginPhase("Discovering");
+        new ImportCommand.ImportDisplay { Tty = false, Quiet = true }.BeginPhase("Discovering");
+
+        await Assert.That(capture.GetCapturedOutput()).DoesNotContain("Discovering");
+    }
 
     static string CaptureNonTtyOutput(Action<ImportCommand.ImportDisplay> render) {
         using var capture = ConsoleOutput.StartCapture();

@@ -92,6 +92,25 @@ public class ImportScopePromptTests {
         await Assert.That(s).Contains("visibility: org_public (from profile)");
     }
 
+    /// <summary>Pins the label with the block rather than on its own: the label is what sat at column 0
+    /// while its own rows were indented, so an indent that reaches the rows and not the label leaves
+    /// exactly the raggedness the shift exists to remove.</summary>
+    [Test]
+    public async Task FormatSummary_indent_shifts_the_label_with_the_rows_under_it() {
+        var s = ImportScopePrompt.FormatSummary(
+            scope: new ImportScope.All(),
+            matchedCount: 47,
+            repoSamples: ["EventStore/kcap"],
+            visibilityDescription: "org_public (from profile)",
+            indent: "  "
+        );
+
+        await Assert.That(s.Split(Environment.NewLine)[0]).IsEqualTo("  About to import:");
+        await Assert.That(s).Contains("    scope:   everything");
+        await Assert.That(s).Contains("    matched: 47 sessions");
+        await Assert.That(s).Contains("    visibility: org_public (from profile)");
+    }
+
     [Test]
     public async Task FormatSummary_Org_includes_org_name() {
         var s = ImportScopePrompt.FormatSummary(
