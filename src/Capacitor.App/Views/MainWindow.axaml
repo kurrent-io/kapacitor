@@ -8,7 +8,7 @@
                      x:DataType="vm:MainWindowViewModel"
                      Title="Kurrent Capacitor Desktop"
                      Icon="avares://Kurrent Capacitor/Assets/kcap-icon.png"
-                     Width="1200" Height="760"
+                     Width="1200" MinWidth="1200" Height="760"
                      Background="{StaticResource KcapCanvasBrush}"
                      ExtendClientAreaToDecorationsHint="True">
     <!-- The window lives on the Sessions surface (spec §3, revised): rail | workspace, where the

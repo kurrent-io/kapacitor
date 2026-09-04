@@ -42,7 +42,7 @@ public class MainWindowViewModelTests {
         var (actions, _) = NewActions(service);
         var attach = new FakeTerminalAttachClientFactory();
         return new WorkspaceViewModel(
-            agentId, service, actions, attach.Factory, () => new FakeTerminalSurface(), new FakeTimeProvider(), new RecordingOpener(), new FakePermissionService());
+            agentId, service, actions, attach.Factory, () => new FakeTerminalSurface(), new FakeTimeProvider(), new RecordingOpener(), new FakePermissionService(), new FakeWorkContextSource());
     }
 
     [Test]

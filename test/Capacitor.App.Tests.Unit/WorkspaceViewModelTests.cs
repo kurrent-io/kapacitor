@@ -3,6 +3,7 @@ using System.Reactive.Subjects;
 using Capacitor.App.Services;
 using Capacitor.App.ViewModels;
 using Capacitor.Cli.Core.LocalIpc;
+using Capacitor.Cli.Core.WorkItems;
 using DynamicData;
 using Microsoft.Extensions.Time.Testing;
 using TUnit.Assertions.Enums;
@@ -24,7 +25,7 @@ public class WorkspaceViewModelTests {
     static WorkspaceViewModel Build(
             FakeDaemonClientService daemon, AgentActionService actions, FakeTerminalAttachClientFactory factory,
             FakeTimeProvider time, string agentId = "a1") =>
-        new(agentId, daemon, actions, factory.Factory, () => new FakeTerminalSurface(), time, new RecordingOpener(), new FakePermissionService());
+        new(agentId, daemon, actions, factory.Factory, () => new FakeTerminalSurface(), time, new RecordingOpener(), new FakePermissionService(), new FakeWorkContextSource());
 
     static AgentActionService NewActions(
             ScriptedLocalControlOps ops, RecordingNotifier notifier, RecordingOpener opener,
@@ -226,6 +227,31 @@ public class WorkspaceViewModelTests {
             await Assert.That(vm.Title).IsEqualTo("Review this PR");
             await Assert.That(vm.RepoLabelText).IsEqualTo("myproj / agent-6da2 · borrowed");
             await vm.TeardownAsync();
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task WorkContext_is_fed_by_the_same_presence_and_torn_down_with_the_workspace() {
+        await RunOnUiAsync(async () => {
+            var daemon = new FakeDaemonClientService();
+            var source = new FakeWorkContextSource();
+            var factory = new FakeTerminalAttachClientFactory();
+            var vm = new WorkspaceViewModel("a1", daemon, NewActions(new ScriptedLocalControlOps(), new RecordingNotifier(), new RecordingOpener()),
+                factory.Factory, () => new FakeTerminalSurface(), new FakeTimeProvider(), new RecordingOpener(), new FakePermissionService(), source);
+            await Assert.That(vm.WorkContext.Phase).IsEqualTo(WorkContextPhase.WaitingForSession);
+
+            daemon.Agents.AddOrUpdate(Agent("a1", "claude", hasTerminal: true, repoPath: "/repo/myproj", sessionId: "0123456789abcdef0123456789abcdef"));
+            await (vm.Terminal.PendingResolveWorkForTesting ?? Task.CompletedTask);
+            await (vm.WorkContext.PendingReadForTesting ?? Task.CompletedTask);
+
+            await Assert.That(vm.WorkContext.Repository).IsEqualTo("myproj");
+            await Assert.That(source.Requested).IsEquivalentTo(new[] { "0123456789abcdef0123456789abcdef" });
+
+            await vm.TeardownAsync();
+            source.Default = WorkContextRead.Of(WorkContextReadKind.Ready);
+            daemon.Agents.AddOrUpdate(Agent("a1", "claude", hasTerminal: true, repoPath: "/repo/myproj", sessionId: "ffffffffffffffffffffffffffffffff"));
+            await Assert.That(source.Requested.Count).IsEqualTo(1);
         });
     }
 }

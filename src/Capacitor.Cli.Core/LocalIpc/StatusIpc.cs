@@ -62,7 +62,14 @@ public sealed record AgentStatusDto(
     // The checkout root a borrowed reviewer reviews — for a runtime that needs its own snapshot
     // this differs from WorktreePath, and it is the node the reviewer belongs under. Null unless
     // borrowed.
-    string? BorrowedFrom = null);
+    string? BorrowedFrom = null,
+    // The session id the daemon reports to the server: discovered from the transcript for a PTY
+    // vendor, taken from the handshake for an ACP one. Null is "older daemon", "not resolved yet"
+    // or "no session for this runtime" alike — a client waits, it never distinguishes them.
+    string? SessionId = null,
+    // The branch of the checkout the agent runs in; null from an older daemon or a launch that
+    // recorded none (a borrowed in-place checkout).
+    string? Branch = null);
 
 /// Wire tokens for <see cref="AgentStatusDto.WorkLocation"/>, compared literally by every
 /// client, so they never change.

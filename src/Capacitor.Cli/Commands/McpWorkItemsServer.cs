@@ -9,6 +9,7 @@ using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.Telemetry;
 using Capacitor.Cli.Core.Config;
+using Capacitor.Cli.Core.WorkItems;
 
 namespace Capacitor.Cli.Commands;
 
@@ -258,7 +259,8 @@ sealed class McpWorkItemsServer(ConfigRoot config, ProfileContext profiles) {
     /// dashless key the server expects, instead of silently missing the intended session.
     /// </summary>
     internal static string ResolveSessionId(JsonObject? args) {
-        if (args?["session_id"]?.GetValue<string>() is { Length: > 0 } explicitId) return explicitId.Replace("-", "");
+        if (args?["session_id"]?.GetValue<string>() is { Length: > 0 } explicitId)
+            return WorkContextIds.CanonicalSessionId(explicitId) ?? throw new ArgumentException(NoSessionIdMessage);
         if (ArgParsing.ResolveSessionIdFromEnv() is { Length: > 0 } fromEnv) return fromEnv;
 
         throw new ArgumentException(NoSessionIdMessage);
@@ -294,20 +296,10 @@ sealed class McpWorkItemsServer(ConfigRoot config, ProfileContext profiles) {
     /// a different route.
     /// </summary>
     internal static string ItemUrl(string baseUrl, JsonObject? args, string idKey, string suffix) {
-        var id = RequireString(args, idKey);
-
-        // Escaping alone is NOT sufficient containment. `.` is unreserved in RFC 3986, so
-        // EscapeDataString leaves it untouched, and a dot segment is then removed by URI
-        // normalization before the request is sent: an id of "." collapses
-        // /api/work-items/./breakdown to /api/work-items/breakdown, and ".." reaches
-        // /api/breakdown — a different route entirely, whose response would be attributed to the
-        // id the caller passed.
-        //
-        // Exactly these two, and no more (review correction): "..." and longer runs are ordinary
-        // path segments, not dot segments, so rejecting them would refuse an id the server might
-        // accept. A caller-supplied "%2e" is inert — EscapeDataString escapes the '%' itself to
-        // "%252e", and standard URI processing does not decode twice.
-        if (id is "." or "..") throw new ArgumentException($"'{idKey}' is not a valid work item id.");
+        // Validation before escaping, and the dot-segment refusal, are WorkContextIds' — escaping
+        // alone leaves "." and ".." to walk out of the route.
+        var id = WorkContextIds.ValidWorkItemId(RequireString(args, idKey))
+              ?? throw new ArgumentException($"'{idKey}' is not a valid work item id.");
 
         return $"{baseUrl}/api/work-items/{Uri.EscapeDataString(id)}/{suffix}";
     }

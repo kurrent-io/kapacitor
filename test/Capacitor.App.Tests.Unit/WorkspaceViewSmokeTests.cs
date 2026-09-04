@@ -42,7 +42,7 @@ public class WorkspaceViewSmokeTests {
         var attach = new FakeTerminalAttachClientFactory();
         var vm = new WorkspaceViewModel(
             agentId, daemon, NewActions(), attach.Factory, surface ?? (() => new FakeTerminalSurface()),
-            new FakeTimeProvider(), new RecordingOpener(), new FakePermissionService());
+            new FakeTimeProvider(), new RecordingOpener(), new FakePermissionService(), new FakeWorkContextSource());
         return (new WorkspaceView { DataContext = vm }, vm, daemon, attach);
     }
 
@@ -104,7 +104,7 @@ public class WorkspaceViewSmokeTests {
             var names = new[] {
                 "WorkspaceTitle", "WorkspaceRepo", "WorkspaceVendorChip", "ChatTabButton",
                 "TerminalTabButton", "NoTerminalNote", "TerminalHost", "TerminalBanners",
-                "DetachButton", "ReattachButton", "SessionEndedNote", "ChatHost",
+                "DetachButton", "ReattachButton", "SessionEndedNote", "ChatHost", "WorkContextHost",
             };
             foreach (var name in names)
                 await Assert.That(Find<Control>(window, name)).IsNotNull().Because($"{name} should resolve");
@@ -112,6 +112,33 @@ public class WorkspaceViewSmokeTests {
             var chatHost = Find<ChatTabView>(window, "ChatHost")!;
             foreach (var name in new[] { "ChatItems", "ChatPhaseNote", "ComposerInput", "SendButton" })
                 await Assert.That(chatHost.FindControl<Control>(name)).IsNotNull().Because($"{name} should resolve");
+
+            var pane = Find<WorkContextView>(window, "WorkContextHost")!;
+            foreach (var name in new[] {
+                "RefreshButton", "StaleDot", "WorkContextKey", "WorkContextTitle", "PartOfLine", "PartsToggle", "PartsList",
+                "BlockedByBlock", "CycleNoteText", "PhaseNoteText", "SignInButton", "RetryButton", "LinkCards", "IssueSoonCard",
+                "WhoToggle", "SessionToggle", "SessionSummaryText", "SessionFacts",
+            })
+                await Assert.That(pane.FindControl<Control>(name)).IsNotNull().Because($"{name} should resolve");
+
+            window.Close();
+            Dispatcher.UIThread.RunJobs();
+            await vm.TeardownAsync();
+        });
+    }
+
+    /// The pane takes its fixed 400 and the terminal the rest, so the PTY size the terminal
+    /// reports is the real center-pane width.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task The_pane_is_400_wide_and_the_terminal_takes_the_remainder() {
+        await RunOnUiAsync(async () => {
+            var (window, vm, _, _) = await ShowPtyAsync();
+
+            var pane = Find<WorkContextView>(window, "WorkContextHost")!;
+            var terminal = Find<TerminalControl>(window, "TerminalHost")!;
+            await Assert.That(pane.Bounds.Width).IsEqualTo(400);
+            await Assert.That(terminal.Bounds.Width).IsEqualTo(window.Bounds.Width - 400);
 
             window.Close();
             Dispatcher.UIThread.RunJobs();

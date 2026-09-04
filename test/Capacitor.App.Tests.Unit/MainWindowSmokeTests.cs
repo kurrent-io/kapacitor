@@ -32,7 +32,7 @@ public class MainWindowSmokeTests {
     /// pieces MainWindowViewModelTests wires, over the actions this file's NewActions built.
     static WorkspaceViewModel NewWorkspace(FakeDaemonClientService service, AgentActionService actions, string agentId) =>
         new(agentId, service, actions, new FakeTerminalAttachClientFactory().Factory,
-            () => new FakeTerminalSurface(), new FakeTimeProvider(), new RecordingOpener(), new FakePermissionService());
+            () => new FakeTerminalSurface(), new FakeTimeProvider(), new RecordingOpener(), new FakePermissionService(), new FakeWorkContextSource());
 
     [Test]
     [NotInParallel("AvaloniaSession")]
@@ -291,7 +291,7 @@ public class MainWindowSmokeTests {
             var vm = new MainWindowViewModel(
                 service, CancellationToken.None, activity,
                 workspaceFactory: agentId => new WorkspaceViewModel(
-                    agentId, service, actions, attach.Factory, () => new FakeTerminalSurface(), new FakeTimeProvider(), new RecordingOpener(), new FakePermissionService()));
+                    agentId, service, actions, attach.Factory, () => new FakeTerminalSurface(), new FakeTimeProvider(), new RecordingOpener(), new FakePermissionService(), new FakeWorkContextSource()));
             var window = new MainWindow { DataContext = vm };
             window.Show();
             Dispatcher.UIThread.RunJobs();
@@ -378,7 +378,7 @@ public class MainWindowSmokeTests {
                 var vm = new MainWindowViewModel(
                     service, CancellationToken.None, TestActivity.New(),
                     workspaceFactory: agentId => new WorkspaceViewModel(
-                        agentId, service, actions, attach.Factory, () => new FakeTerminalSurface(), new FakeTimeProvider(), new RecordingOpener(), new FakePermissionService()));
+                        agentId, service, actions, attach.Factory, () => new FakeTerminalSurface(), new FakeTimeProvider(), new RecordingOpener(), new FakePermissionService(), new FakeWorkContextSource()));
                 var window = new MainWindow { DataContext = vm };
                 window.Show();
                 Dispatcher.UIThread.RunJobs();
@@ -514,6 +514,18 @@ public class MainWindowSmokeTests {
                 return noTabs && railPresent && newSessionRow;
             });
             await Assert.That(ok).IsTrue();
+        });
+    }
+
+    /// 310 of rail plus 400 of pane must never squeeze the center column to nothing.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task MainWindow_pins_its_minimum_width_to_the_default_width() {
+        await AvaloniaSession.RunOnUiAsync(async () => {
+            var window = new MainWindow { DataContext = new MainWindowViewModel(new FakeDaemonClientService(), CancellationToken.None, TestActivity.New()) };
+
+            await Assert.That(window.MinWidth).IsEqualTo(1200);
+            await Assert.That(window.Width).IsEqualTo(1200);
         });
     }
 }
