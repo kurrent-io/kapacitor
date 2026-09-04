@@ -26,7 +26,7 @@ namespace Capacitor.App.Tests.Unit;
 public class WorkspaceNavigationTests {
     const string Id1 = "0123456789abcdef0123456789abcdef";
     const string Id2 = "fedcba9876543210fedcba9876543210";
-    const string UnusableId = "Launched, but the session id was unusable — open it from the session list.";
+    const string UnusableId = HomeViewModel.UnusableIdMessage;
 
     /// The tracker as the VM sees it (Action&lt;Func&lt;Task&gt;&gt;): records every registration and
     /// starts it immediately, exactly like WorkspaceTeardownTracker.Track — so a test can count
