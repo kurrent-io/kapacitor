@@ -66,6 +66,7 @@ public class HomeViewSmokeTests {
             Dispatcher.UIThread.RunJobs();
 
             var names = new[] {
+                "LauncherHeadline", "LauncherRepoSubtitle",
                 "GoalInput", "RepositoryChip", "AgentChip", "EffortChip", "PermissionChip", "StartButton",
                 "StartErrorText", "ConnectionNoticeText", "DaemonStartMessageText",
                 "StartDaemonButton", "RetryDaemonButton", "HomeSignInButton",
@@ -78,6 +79,8 @@ public class HomeViewSmokeTests {
             return resolved;
         });
 
+        await Assert.That(found["LauncherHeadline"]).IsTrue();
+        await Assert.That(found["LauncherRepoSubtitle"]).IsTrue();
         await Assert.That(found["GoalInput"]).IsTrue();
         await Assert.That(found["RepositoryChip"]).IsTrue();
         await Assert.That(found["AgentChip"]).IsTrue();
@@ -90,6 +93,42 @@ public class HomeViewSmokeTests {
         await Assert.That(found["StartDaemonButton"]).IsTrue();
         await Assert.That(found["RetryDaemonButton"]).IsTrue();
         await Assert.That(found["HomeSignInButton"]).IsTrue();
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Headline_keeps_a_fixed_question_and_a_repo_subtitle() {
+        var (question, subtitleBefore, subtitleVisibleBefore, subtitleAfter, subtitleVisibleAfter) =
+            await AvaloniaSession.DispatchAsync(async () => {
+                var (_, vm, _, _, tmp) = Build();
+                using var _tmp = tmp;
+                var window = new Window { Content = new LauncherPaneView { DataContext = vm }, Width = 900, Height = 600 };
+                window.Show();
+                Dispatcher.UIThread.RunJobs();
+
+                var headline = Find<TextBlock>(window, "LauncherHeadline")!;
+                var subtitle = Find<TextBlock>(window, "LauncherRepoSubtitle")!;
+                var beforeText = subtitle.Text;
+                var beforeVisible = subtitle.IsVisible;
+
+                await vm.SelectRepositoryAsync("/repos/Kurrent-Capacitor-New-Machine");
+                Dispatcher.UIThread.RunJobs();
+
+                var afterText = subtitle.Text;
+                var afterVisible = subtitle.IsVisible;
+                var q = headline.Text;
+
+                window.Close();
+                Dispatcher.UIThread.RunJobs();
+                vm.Dispose();
+                return (q, beforeText, beforeVisible, afterText, afterVisible);
+            });
+
+        await Assert.That(question).IsEqualTo("What should we build?");
+        await Assert.That(subtitleVisibleBefore).IsFalse();
+        await Assert.That(subtitleBefore ?? "").IsEqualTo("");
+        await Assert.That(subtitleVisibleAfter).IsTrue();
+        await Assert.That(subtitleAfter).IsEqualTo("Kurrent-Capacitor-New-Machine");
     }
 
     [Test]
