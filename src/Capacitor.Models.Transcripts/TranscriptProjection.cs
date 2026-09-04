@@ -1,4 +1,5 @@
 using Capacitor.Models.Transcripts.Harness.Claude;
+using Capacitor.Models.Transcripts.Harness.Codex;
 
 namespace Capacitor.Models.Transcripts;
 
@@ -14,6 +15,7 @@ public interface ITranscriptProjection {
 public static class TranscriptProjection {
     public static ITranscriptProjection? For(string vendor) => vendor.ToLowerInvariant() switch {
         "claude" => ClaudeTranscriptEvents.Instance,
+        "codex" => CodexRolloutEvents.Instance,
         _ => null,
     };
 }
