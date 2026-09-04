@@ -294,6 +294,10 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
             .DisposeWith(_disposables);
 
         SignInCommand = ReactiveCommand.Create(() => { _requestSignIn?.Invoke(); });
+
+        // Adopt a recent known repo when the launcher starts empty — fire-and-forget; the picker
+        // also calls EnsureDefaultRepositoryAsync before listing.
+        _ = EnsureDefaultRepositoryAsync();
     }
 
     /// MainWindow owns Start/Retry (lifecycle startAction + shutdown token). The launcher banner
@@ -391,9 +395,12 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
     /// known repos (what the server's launch dialog sees), and the current selection (a
     /// picker-added repo with no remembered harness and no agent yet lives nowhere else).
     /// Deduped under PathComparer with remembered keys added first, so where two casings are one
-    /// repository the casing the user picked is the one displayed. Scratch is always last; the
-    /// view renders it separated.
+    /// repository the casing the user picked is the one displayed. Scratch ("No repository") is
+    /// offered only when that list is empty — with real repos, an empty selection adopts the
+    /// most recently used known path instead.
     public async Task<IReadOnlyList<RepositoryOption>> ListRepositoriesAsync() {
+        await EnsureDefaultRepositoryAsync();
+
         var byRepo = (await _state.LoadAsync()).HarnessByRepo;
         var known = await _knownRepos();
 
@@ -423,9 +430,38 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
             .Select(p => new RepositoryOption(p, Lookup(byRepo, p) ?? DefaultVendor, PathComparer.Equals(p, selected)))
             .ToList();
 
-        options.Add(new RepositoryOption(
-            ScratchRepoPath, Lookup(byRepo, ScratchRepoPath) ?? DefaultVendor, selected.Length == 0));
+        if (paths.Count == 0)
+            options.Add(new RepositoryOption(
+                ScratchRepoPath, Lookup(byRepo, ScratchRepoPath) ?? DefaultVendor, selected.Length == 0));
         return options;
+    }
+
+    /// When nothing is selected, adopt the most recently used known repository (then a remembered
+    /// harness key, then an agent root). No-op when a selection already exists or nothing is known.
+    public async Task EnsureDefaultRepositoryAsync() {
+        if (SelectedRepoPath.Length > 0) return;
+        if (await PreferRecentRepositoryAsync() is not { Length: > 0 } recent) return;
+        await SelectRepositoryAsync(recent);
+    }
+
+    async Task<string?> PreferRecentRepositoryAsync() {
+        foreach (var path in await _knownRepos()) {
+            var normalized = PlatformPaths.Normalize(path);
+            if (normalized.Length > 0) return normalized;
+        }
+
+        foreach (var key in (await _state.LoadAsync()).HarnessByRepo?.Keys ?? []) {
+            var normalized = PlatformPaths.Normalize(key);
+            if (normalized.Length > 0) return normalized;
+        }
+
+        foreach (var agent in _daemon.Agents.Items) {
+            if (agent.RepoPath is not { Length: > 0 } repoPath) continue;
+            var normalized = PlatformPaths.Normalize(GitRepository.ResolveMainRepoRoot(repoPath));
+            if (normalized.Length > 0) return normalized;
+        }
+
+        return null;
     }
 
     /// Sets the repository and restores that repository's remembered harness, or DefaultVendor

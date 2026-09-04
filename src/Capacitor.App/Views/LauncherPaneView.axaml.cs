@@ -48,8 +48,8 @@ public partial class LauncherPaneView : UserControl {
 
         var flyout = PanelFlyout(rows, minWidth: 300);
         foreach (var option in await vm.ListRepositoriesAsync()) {
-            // Scratch ("No repository") is listed after real repos — the separator is only the
-            // break between those two groups, never a stray rule above the first row.
+            // Scratch is only listed when there are no real repos — still separate it visually
+            // if it ever shares the menu with another row.
             if (option.RepoPath.Length == 0 && rows.Children.Count > 0)
                 rows.Children.Add(ChoiceSeparator());
             rows.Children.Add(RepositoryRow(vm, option, muted, flyout));

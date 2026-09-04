@@ -313,22 +313,42 @@ public class HomeViewModelTests {
 
     [Test]
     [NotInParallel("AvaloniaSession")]
-    public async Task The_scratch_target_is_always_the_last_repository_entry() {
+    public async Task Scratch_appears_only_when_no_real_repositories() {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             using var tmp = TempDir.WithPathTo("app-state.json", out var path);
             var daemon = new FakeDaemonClientService();
             using var vm = new HomeViewModel(daemon, new AppStateStore(path), new RecordingLaunchClient(), Known());
 
-            await vm.SelectRepositoryAsync(HomeViewModel.ScratchRepoPath);
-            await vm.ChooseHarnessAsync("pi");
+            var empty = await vm.ListRepositoriesAsync();
+            await Assert.That(empty.Count).IsEqualTo(1);
+            await Assert.That(empty[0].RepoPath).IsEqualTo(HomeViewModel.ScratchRepoPath);
+
             daemon.Agents.AddOrUpdate(Agent("x", "/repo/b"));
+            var withRepo = await vm.ListRepositoriesAsync();
 
+            await Assert.That(withRepo.Any(r => r.RepoPath.Length == 0)).IsFalse();
+            await Assert.That(withRepo.Single(r => r.RepoPath == "/repo/b").Selected).IsTrue();
+            await Assert.That(vm.SelectedRepoPath).IsEqualTo("/repo/b");
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Empty_selection_adopts_the_most_recent_known_repository() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            using var tmp = TempDir.WithPathTo("app-state.json", out var path);
+            var daemon = new FakeDaemonClientService();
+            // GetSortedPathsAsync is last-used first — index 0 is the most recent.
+            using var vm = new HomeViewModel(
+                daemon, new AppStateStore(path), new RecordingLaunchClient(),
+                Known("/repo/newer", "/repo/older"));
+
+            await vm.EnsureDefaultRepositoryAsync();
+
+            await Assert.That(vm.SelectedRepoPath).IsEqualTo("/repo/newer");
             var repos = await vm.ListRepositoriesAsync();
-
-            await Assert.That(repos[^1].RepoPath).IsEqualTo(HomeViewModel.ScratchRepoPath);
-            await Assert.That(repos[^1].Vendor).IsEqualTo("pi");
-            await Assert.That(repos[^1].Selected).IsTrue();
-            await Assert.That(repos.Count(r => r.RepoPath.Length == 0)).IsEqualTo(1);
+            await Assert.That(repos.Any(r => r.RepoPath.Length == 0)).IsFalse();
+            await Assert.That(repos.Single(r => r.RepoPath == "/repo/newer").Selected).IsTrue();
         });
     }
 
