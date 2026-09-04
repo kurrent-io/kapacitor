@@ -81,6 +81,22 @@ public static class ToolSummary {
         return sb.ToString();
     }
 
+    /// Short noun for a lone-call card chip — the detail line is not enough when the kind is
+    /// ambiguous (a Task prompt reads like prose without this).
+    public static string ChipLabel(ToolCategory category) => category switch {
+        ToolCategory.Read      => "Read",
+        ToolCategory.Edit      => "Edit",
+        ToolCategory.Command   => "Command",
+        ToolCategory.Search    => "Search",
+        ToolCategory.WebSearch => "Web",
+        ToolCategory.Fetch     => "Fetch",
+        ToolCategory.Skill     => "Skill",
+        ToolCategory.Agent     => "Task",
+        ToolCategory.Plan      => "Plan",
+        ToolCategory.Question  => "Question",
+        _                      => "Tool",
+    };
+
     static bool IsSkillFile(string? path) =>
         path is not null && (path == "SKILL.md" || path.EndsWith("/SKILL.md", StringComparison.Ordinal));
 

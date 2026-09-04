@@ -37,20 +37,20 @@
          terminal keeps its own column, so the size it reports to the PTY is the real center width. -->
     <Grid ColumnDefinitions="*,400">
     <Grid Grid.Column="0" RowDefinitions="56,42,*">
-        <!-- Header: title over repo leaf · spacer · vendor chip with its family badge ·
-             Open-in-web/Stop. Leaving the workspace is the rail's job, not a Back button's. -->
-        <Grid Grid.Row="0" ColumnDefinitions="Auto,*,Auto,Auto,Auto" Margin="20,0,16,0"
+        <!-- Header: identity on the left (title/repo + pty/vendor chip) · spacer · actions.
+             Leaving the workspace is the rail's job, not a Back button's. -->
+        <Grid Grid.Row="0" ColumnDefinitions="Auto,Auto,*,Auto,Auto" Margin="20,0,16,0"
               Background="Transparent" PointerPressed="OnHeaderPointerPressed">
-            <StackPanel Grid.Column="0" Spacing="2" VerticalAlignment="Center">
+            <StackPanel Grid.Column="0" Spacing="2" VerticalAlignment="Center" Margin="0,0,12,0">
                 <TextBlock x:Name="WorkspaceTitle" Text="{Binding Title}" FontWeight="SemiBold" FontSize="14.5"
                            Foreground="{StaticResource KcapTextBrush}" TextTrimming="CharacterEllipsis" />
                 <TextBlock x:Name="WorkspaceRepo" Text="{Binding RepoLabelText}" FontSize="11.5"
                            Foreground="{StaticResource KcapPurpleBrush}" TextTrimming="CharacterEllipsis" />
             </StackPanel>
 
-            <Border Grid.Column="2" Background="{StaticResource KcapSurfaceRaisedBrush}"
+            <Border Grid.Column="1" Background="{StaticResource KcapSurfaceRaisedBrush}"
                     BorderBrush="{StaticResource KcapBorderBrush}" BorderThickness="1" CornerRadius="7"
-                    Padding="10,5" Margin="0,0,10,0" VerticalAlignment="Center">
+                    Padding="10,5" VerticalAlignment="Center">
                 <StackPanel Orientation="Horizontal" Spacing="7">
                     <Border Background="{StaticResource KcapCanvasBrush}" CornerRadius="999" Padding="6,1"
                             VerticalAlignment="Center"

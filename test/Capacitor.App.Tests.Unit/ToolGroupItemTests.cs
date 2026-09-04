@@ -32,7 +32,50 @@ public class ToolGroupItemTests {
             a.Outcome = ToolOutcome.Error;
             await Assert.That(group.LiveCalls).IsEmpty();
             await Assert.That(group.Summary).IsEqualTo("Ran a command, read a file");
+            await Assert.That(group.SummaryLine).IsEqualTo("Ran a command, read a file · Bash");
             await Assert.That(group.HasFailure).IsTrue();
+            await Assert.That(group.ShowsSummaryHeader).IsTrue();
+
+            group.Toggle();
+            await Assert.That(group.SummaryLine).IsEqualTo("Ran a command, read a file");
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task A_lone_settled_call_stays_visible_without_summary_chrome() {
+        await RunOnUiAsync(async () => {
+            var group = new ToolGroupItem();
+            var call = Call("Bash", ToolCategory.Command);
+            group.Add(call);
+            call.Outcome = ToolOutcome.Done;
+
+            await Assert.That(group.HasSummary).IsTrue();
+            await Assert.That(group.ShowsSummaryHeader).IsFalse();
+            await Assert.That(group.ShowsKindChip).IsTrue();
+            await Assert.That(group.KindChip).IsEqualTo("Command");
+            await Assert.That(group.LoneCall).IsSameReferenceAs(call);
+            await Assert.That(call.ShowRowStatus).IsFalse();
+            await Assert.That(group.VisibleCalls).IsEquivalentTo(new[] { call });
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Folded_summary_peeks_the_first_settled_detail_and_caps_long_ones() {
+        await RunOnUiAsync(async () => {
+            var group = new ToolGroupItem();
+            var longDetail = new string('x', 80);
+            var first = new ToolCallItem("Bash", longDetail, ToolCategory.Command);
+            var second = Call("Read", ToolCategory.Read);
+            group.Add(first);
+            group.Add(second);
+            first.Outcome = ToolOutcome.Done;
+            second.Outcome = ToolOutcome.Done;
+
+            await Assert.That(group.SummaryLine).IsEqualTo($"Ran a command, read a file · {new string('x', 55)}…");
+            group.Toggle();
+            await Assert.That(group.SummaryLine).IsEqualTo("Ran a command, read a file");
         });
     }
 
@@ -67,13 +110,27 @@ public class ToolGroupItemTests {
     public async Task A_call_glyph_shows_the_question_mark_only_while_running_and_awaiting() {
         var call = Call("Bash", ToolCategory.Command);
         await Assert.That(call.OutcomeGlyph).IsEqualTo("");
+        await Assert.That(call.IsRunning).IsTrue();
+        await Assert.That(call.HasDetail).IsFalse();
         call.IsAwaitingPermission = true;
         await Assert.That(call.OutcomeGlyph).IsEqualTo("?");
         await Assert.That(call.IsSettled).IsFalse();
+        await Assert.That(call.IsRunning).IsFalse();
         call.Outcome = ToolOutcome.Done;
         await Assert.That(call.OutcomeGlyph).IsEqualTo("✓");
         await Assert.That(call.IsSettled).IsTrue();
+        await Assert.That(call.IsRunning).IsFalse();
         call.IsAwaitingPermission = false;
         await Assert.That(call.OutcomeGlyph).IsEqualTo("✓");
+    }
+
+    [Test]
+    public async Task Line_text_prefers_detail_over_the_raw_tool_name() {
+        var withDetail = new ToolCallItem("Bash", "ls -la", ToolCategory.Command);
+        await Assert.That(withDetail.HasDetail).IsTrue();
+        await Assert.That(withDetail.LineText).IsEqualTo("ls -la");
+        var bare = Call("Bash", ToolCategory.Command);
+        await Assert.That(bare.HasDetail).IsFalse();
+        await Assert.That(bare.LineText).IsEqualTo("Bash");
     }
 }
