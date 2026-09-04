@@ -525,11 +525,11 @@ public class ChatTabViewModelTests {
         });
     }
 
-    /// A withdraw the daemon could not be reached for is not final: the next reconcile retries it,
-    /// and a withdraw in flight is never sent twice.
+    /// A withdraw the daemon could not be reached for is not final: it retries on its own after a
+    /// backoff, with no other event needed, and a withdraw in flight is never sent twice.
     [Test]
     [NotInParallel("AvaloniaSession")]
-    public async Task A_failed_withdraw_is_retried_on_the_next_reconcile_and_never_doubled() {
+    public async Task A_failed_withdraw_retries_on_its_own_after_a_backoff_and_is_never_doubled() {
         await RunOnUiAsync(async () => {
             var h = Claude();
             var path = Tmp.CreateFile("t.jsonl", [ToolCallLine, ToolResultLine]);
@@ -545,9 +545,43 @@ public class ChatTabViewModelTests {
             gate.SetResult(new PermissionResolveOutcome(PermissionResolveKind.TransportFailure, "daemon_unreachable"));
             await WaitUntilAsync(() => h.Chat.WithdrawsInFlightForTesting == 0, what: "the failure reopened it");
             h.Permissions.Queue(PermissionResolveKind.Applied);
-            h.Permissions.Remove("r2");
-            await WaitUntilAsync(() => h.Chat.PendingCards.Count == 0, what: "the retry withdrew it");
+            h.Time.Advance(ChatTabViewModel.WithdrawRetryDelay);
+            await WaitUntilAsync(() => h.Chat.PendingCards.Count == 1, what: "the retry withdrew it");
             await Assert.That(h.Permissions.Withdrawn).IsEquivalentTo(["r1", "r1"]);
+            await h.TeardownAsync();
+        });
+    }
+
+    /// The backoff doubles and stops at the cap; after that only a fresh reconcile retries.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Withdraw_retries_are_capped_and_a_later_reconcile_tries_again() {
+        await RunOnUiAsync(async () => {
+            var h = Claude();
+            var path = Tmp.CreateFile("t.jsonl", [ToolCallLine, ToolResultLine]);
+            await h.PushAsync(Dto(path));
+
+            h.Permissions.Queue(PermissionResolveKind.TransportFailure, "daemon_unreachable");
+            h.Permissions.Add(PermissionEntries.Entry("r1", "a1", toolUseId: "t1"));
+            await WaitUntilAsync(() => h.Chat.WithdrawsInFlightForTesting == 0, what: "the first failure");
+            for (var retry = 1; retry <= ChatTabViewModel.MaxWithdrawRetries; retry++) {
+                h.Permissions.Queue(PermissionResolveKind.TransportFailure, "daemon_unreachable");
+                h.Time.Advance(ChatTabViewModel.WithdrawRetryDelay * (1 << (retry - 1)) - TimeSpan.FromMilliseconds(1));
+                await Task.Delay(20);
+                await Assert.That(h.Permissions.Withdrawn.Count).IsEqualTo(retry);
+                h.Time.Advance(TimeSpan.FromMilliseconds(1));
+                await WaitUntilAsync(() => h.Permissions.Withdrawn.Count == retry + 1, what: $"retry {retry}");
+                await WaitUntilAsync(() => h.Chat.WithdrawsInFlightForTesting == 0, what: $"retry {retry} failed");
+            }
+
+            h.Time.Advance(TimeSpan.FromMinutes(5));
+            await Task.Delay(20);
+            await Assert.That(h.Permissions.Withdrawn.Count).IsEqualTo(ChatTabViewModel.MaxWithdrawRetries + 1);
+
+            h.Permissions.Queue(PermissionResolveKind.Applied);
+            h.Permissions.Add(PermissionEntries.Entry("r2", "a1", toolUseId: "t9"));
+            await WaitUntilAsync(() => h.Chat.PendingCards.Count == 1, what: "the reconcile's retry withdrew it");
+            await Assert.That(h.Permissions.Withdrawn.Count).IsEqualTo(ChatTabViewModel.MaxWithdrawRetries + 2);
             await h.TeardownAsync();
         });
     }

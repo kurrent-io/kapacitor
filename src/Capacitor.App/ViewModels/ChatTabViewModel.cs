@@ -27,6 +27,9 @@ public enum ChatTabPhase { Waiting, Reading, Missing, Unavailable }
 /// completes under a stale generation and is discarded.
 public sealed class ChatTabViewModel : ReactiveObject {
     internal static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(500);
+    /// First retry gap after a failed withdraw; each further one doubles it.
+    internal static readonly TimeSpan WithdrawRetryDelay = TimeSpan.FromSeconds(2);
+    internal const int MaxWithdrawRetries = 3;
 
     readonly string _agentId;
     readonly TerminalTabViewModel _terminal;
@@ -36,12 +39,16 @@ public sealed class ChatTabViewModel : ReactiveObject {
     readonly IPermissionService _permissions;
     readonly CompositeDisposable _disposables = new();
     readonly CancellationTokenSource _lifetime = new();
+    // Read once: the source is disposed at teardown, and a retry waking after that still needs a
+    // token it can ask without an ObjectDisposedException.
+    readonly CancellationToken _lifetimeToken;
     readonly AvaloniaList<ChatItemViewModel> _items = new();
     readonly Dictionary<string, ToolCallItem> _pendingTools = new(StringComparer.Ordinal);
     // Every tool id with a result, not only the running ones: a replayed request can arrive after
     // the transcript's initial load, and then only this set can tell that its tool is done.
     readonly HashSet<string> _settledTools = new(StringComparer.Ordinal);
     readonly HashSet<string> _withdrawing = new(StringComparer.Ordinal);
+    readonly Dictionary<string, int> _withdrawFailures = new(StringComparer.Ordinal);
     readonly ConcurrentDictionary<string, byte> _loggedFailures = new(StringComparer.Ordinal);
     readonly Dictionary<string, PendingPermissionRequest> _requests = new(StringComparer.Ordinal);
     readonly HashSet<ToolCallItem> _marked = new(ReferenceEqualityComparer.Instance);
@@ -172,6 +179,7 @@ public sealed class ChatTabViewModel : ReactiveObject {
         _opener = opener;
         _time = time;
         _permissions = permissions;
+        _lifetimeToken = _lifetime.Token;
         _phase = projection is null ? ChatTabPhase.Unavailable : ChatTabPhase.Waiting;
 
         // ObserveOn BEFORE the binding operator: the cache is mutated on the service's
@@ -211,7 +219,11 @@ public sealed class ChatTabViewModel : ReactiveObject {
                 foreach (var change in changes) {
                     switch (change.Reason) {
                         case ChangeReason.Add or ChangeReason.Update: _requests[change.Key] = change.Current; break;
-                        case ChangeReason.Remove: _requests.Remove(change.Key); break;
+                        case ChangeReason.Remove:
+                            _requests.Remove(change.Key);
+                            _withdrawing.Remove(change.Key);
+                            _withdrawFailures.Remove(change.Key);
+                            break;
                     }
                 }
                 Reconcile();
@@ -415,8 +427,9 @@ public sealed class ChatTabViewModel : ReactiveObject {
 
     /// A pending request whose tool already has a result was answered where the daemon cannot see
     /// (the vendor's own terminal prompt), so this tab is the one party that can retire it. Sent
-    /// once per request; a transport failure reopens it for the next reconcile.
+    /// once per request; a failed send reopens it and retries on a bounded backoff.
     void WithdrawSettled() {
+        if (_lifetimeToken.IsCancellationRequested) return;
         foreach (var request in _requests.Values) {
             if (request.ToolUseId is not { } id || !_settledTools.Contains(id) || !_withdrawing.Add(request.RequestId)) continue;
             _ = WithdrawAsync(request);
@@ -424,14 +437,26 @@ public sealed class ChatTabViewModel : ReactiveObject {
     }
 
     async Task WithdrawAsync(PendingPermissionRequest request) {
+        var id = request.RequestId;
         try {
-            var outcome = await _permissions.WithdrawAsync(request, _lifetime.Token);
-            if (outcome.Kind == PermissionResolveKind.TransportFailure) _withdrawing.Remove(request.RequestId);
-        } catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) {
+            var outcome = await _permissions.WithdrawAsync(request, _lifetimeToken);
+            if (outcome.Kind != PermissionResolveKind.TransportFailure) { _withdrawFailures.Remove(id); return; }
+        } catch (OperationCanceledException) when (_lifetimeToken.IsCancellationRequested) {
+            return;
         } catch (Exception ex) {
-            _withdrawing.Remove(request.RequestId);
             LogOnce($"withdraw: {ex.Message}");
         }
+
+        // The resolve rides a one-shot socket that can fail while the subscription stays healthy,
+        // and an empty poll never reconciles, so the retry has to be this method's own. Past the
+        // cap, the next resubscribe or permission/transcript change is what tries again.
+        _withdrawing.Remove(id);
+        var failures = _withdrawFailures.GetValueOrDefault(id) + 1;
+        _withdrawFailures[id] = failures;
+        if (failures > MaxWithdrawRetries) return;
+        try { await Task.Delay(WithdrawRetryDelay * (1 << (failures - 1)), _time, _lifetimeToken); }
+        catch (OperationCanceledException) { return; }
+        WithdrawSettled();
     }
 
     void LogOnce(string reason) {

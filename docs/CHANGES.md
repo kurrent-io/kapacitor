@@ -509,9 +509,10 @@ the transcript, and a `tool_result` for a pending request's `tool_use_id` is the
 the prompt was answered elsewhere — so the tab sends the resolve frame with decision `withdraw`,
 which the daemon settles as `withdrawn`/`tool_settled` and answers the hook with a deny (an allow
 could only apply to some later call). An older daemon rejects the decision and the app concludes
-the entry locally on that ack, so the card still goes. Sent once per request; a transport failure
-reopens it for the next reconcile, and the resubscribe that follows a daemon reconnect is what
-brings that reconcile.
+the entry locally on that ack, so the card still goes. Sent once per request. A failed send
+reopens it and retries on a bounded doubling backoff of its own, because the resolve rides a
+one-shot socket that can fail while the subscription stays healthy, and an empty transcript poll
+never reconciles; past the cap, the next resubscribe or permission/transcript change tries again.
 
 ## Compact tool calls in the Chat tab
 
