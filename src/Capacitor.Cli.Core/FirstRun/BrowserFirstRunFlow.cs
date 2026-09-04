@@ -131,6 +131,10 @@ public sealed class BrowserFirstRunFlow(
             (reason, token) => RelinquishAsync(serverUrl, flowId, reason, token),
             interruptReason: () => InterruptReason(Volatile.Read(ref settled)));
 
+        // Says this machine is still here on its own timer, so a death that sends nothing — a kill, a
+        // lost network, a shut lid — is still something the browser can see. Disposed with the leg.
+        using var beat = FirstRunHeartbeat.Start(channel, serverUrl, flowId, _clock);
+
         try {
             Volatile.Write(ref settled, await PollAsync(serverUrl, flowId, report, ct));
         } finally {

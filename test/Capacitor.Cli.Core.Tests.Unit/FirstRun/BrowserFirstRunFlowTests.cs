@@ -141,6 +141,20 @@ public class BrowserFirstRunFlowTests {
             return Task.FromResult(new FirstRunRelinquishOutcome(
                 RelinquishStatuses.Count > 0 ? RelinquishStatuses.Dequeue() : 200));
         }
+
+        /// <summary>Counted rather than logged: the beat runs on its own task off the fake clock, so
+        /// putting it in the shared log would interleave it into every ordering assertion in this class
+        /// at a point no test chose.</summary>
+        public int Beats => Volatile.Read(ref _beats);
+
+        int _beats;
+
+        public Task<FirstRunHeartbeatOutcome> HeartbeatAsync(
+                string serverUrl, string flowId, CancellationToken ct) {
+            Interlocked.Increment(ref _beats);
+
+            return Task.FromResult(new FirstRunHeartbeatOutcome(200));
+        }
     }
 
     /// <summary>
@@ -1799,6 +1813,49 @@ public class BrowserFirstRunFlowTests {
         var result = await Run(h);
 
         await Assert.That(result).IsTypeOf<FirstRunFlowResult.Finished>();
+    }
+
+    // ---- saying the machine is still here ----
+
+    /// <summary>
+    /// Why the beat is not derived from the poll. The import blocks the loop for its whole duration —
+    /// deliberately, because two live renderables cannot share a terminal — so liveness read from
+    /// polling would call the machine gone during the one stretch it is working hardest.
+    /// </summary>
+    [Test]
+    public async Task The_beat_goes_on_while_the_import_holds_the_poll() {
+        var h = Build(importing: true);
+        h.Channel.Polls.Enqueue(new(200, ImportAnswered()));
+        h.Channel.Polls.Enqueue(new(200, Done()));
+
+        var before = 0;
+        var during = 0;
+
+        // Runs with the poll loop parked inside the lane, which is the only moment this claim is about.
+        h.Importing!.Advance = () => {
+            before = h.Channel.Beats;
+            during = BeatsWhileBlocked(h, before);
+        };
+
+        await Run(h);
+
+        await Assert.That(during).IsGreaterThan(before)
+                    .Because("the machine fell silent for the whole import, which is what a death looks like");
+    }
+
+    /// <summary>Drives the clock from inside the lane, where the loop cannot, until one more beat lands
+    /// or a real deadline passes. Bounded by wall time rather than by iterations: the beat runs on its
+    /// own task, and a loaded runner can starve a continuation for longer than any fixed budget.</summary>
+    static int BeatsWhileBlocked(Harness h, int from) {
+        var until = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+
+        while (DateTime.UtcNow < until && h.Channel.Beats <= from) {
+            h.Clock.Advance(FirstRunHeartbeat.Interval);
+
+            Thread.Sleep(5);
+        }
+
+        return h.Channel.Beats;
     }
 
     // ---- saying the machine has gone ----

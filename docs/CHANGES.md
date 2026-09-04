@@ -657,3 +657,28 @@ config root's cache directory, so an absent directory after the initialize/tools
 proves it never ran; the tool call that follows then proves on-demand resolution by carrying the
 repo hash. Asserting on the cache file itself would key on the child's own view of its cwd, which
 macOS reports through the resolved `/private` path rather than the one the test handed it.
+
+## The machine beats, so a death that cannot speak is still visible
+
+The browser is told the machine has stopped by a relinquish the leg sends on its way out. That covers
+every exit it can reach, including through `Environment.Exit` once the notice is also sent from
+`AppDomain.ProcessExit` — but it is a statement, so anything that stops the process making statements
+sends nothing at all: a kill, a lost network, a shut lid. The flow's own lifetime was the only backstop,
+and it is twelve hours.
+
+A beat on its own timer turns that silence into something the server can observe.
+
+**It is not driven by the poll, and that is the whole design.** The import runs inline in the poll loop
+and stops polling for its duration, so liveness derived from the poll would declare the machine gone
+during the one stretch it is working hardest. A separate timer measures the process, which is the only
+thing a beat can honestly claim — a wedged leg goes on beating, and nothing here should ever be read as
+progress.
+
+**Nothing inspects the result.** A beat is a network call on a machine whose network may be exactly what
+is failing, so a status code is not read and a throw does not end the loop: a run of failures is the
+signal, and only the server is positioned to read it.
+
+**A beat already in flight is not waited for on the way out.** It was issued while the machine was
+alive, so it reports something that was true, and the relinquish that follows closes the flow whichever
+order the two land in.
+

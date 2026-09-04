@@ -35,6 +35,12 @@ public sealed record FirstRunRelinquishOutcome(int StatusCode) {
     public bool Recorded => StatusCode is >= 200 and < 300;
 }
 
+/// <summary>One beat. Never retried and never inspected for success by the sender: the next beat is
+/// already due, and a run of them failing is precisely what the browser is meant to notice.</summary>
+public sealed record FirstRunHeartbeatOutcome(int StatusCode) {
+    public bool Recorded => StatusCode is >= 200 and < 300;
+}
+
 /// <summary>The flow routes, as a seam: the loop, the backoff and the guards around them are the
 /// part worth testing, and they should not need a socket to exercise.</summary>
 public interface IFirstRunFlowChannel {
@@ -65,6 +71,10 @@ public interface IFirstRunFlowChannel {
     /// will act on. Best effort by design: it is the last thing the leg does.</summary>
     Task<FirstRunRelinquishOutcome> RelinquishAsync(
         string serverUrl, string flowId, string reason, CancellationToken ct);
+
+    /// <summary>Says this machine is still here. Sent on its own timer rather than from the poll, which
+    /// stops for the whole of an import — see <see cref="FirstRunHeartbeat"/>.</summary>
+    Task<FirstRunHeartbeatOutcome> HeartbeatAsync(string serverUrl, string flowId, CancellationToken ct);
 }
 
 /// <summary>
@@ -200,6 +210,22 @@ public sealed class FirstRunFlowClient(HttpClient http) : IFirstRunFlowChannel {
                     $"{Base(serverUrl)}/api/first-run/flows/{Uri.EscapeDataString(flowId)}/relinquish") {
                 Content = new StringContent(payload, Encoding.UTF8, "application/json")
             };
+
+            using var resp = await http.SendAsync(req, ct);
+
+            return new((int)resp.StatusCode);
+        } catch (Exception e) when (IsTransient(e, ct)) {
+            return new(0);
+        }
+    }
+
+    /// <inheritdoc/>
+    public async Task<FirstRunHeartbeatOutcome> HeartbeatAsync(
+            string serverUrl, string flowId, CancellationToken ct) {
+        try {
+            using var req = new HttpRequestMessage(
+                HttpMethod.Post,
+                $"{Base(serverUrl)}/api/first-run/flows/{Uri.EscapeDataString(flowId)}/heartbeat");
 
             using var resp = await http.SendAsync(req, ct);
 
