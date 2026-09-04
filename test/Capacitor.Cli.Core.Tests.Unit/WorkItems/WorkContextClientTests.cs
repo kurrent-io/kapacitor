@@ -32,7 +32,7 @@ public class WorkContextClientTests {
 
     [Test]
     public async Task Assignments_route_strips_dashes_and_parses_the_rows() {
-        using var server = Serve($"/api/work-items/session/{Dashless}", 200, """[{"work_item_id":"w1","label":"AI-1 — t","source":"mcp","confidence":1,"is_primary":true}]""");
+        using var server = Serve($"/api/work-items/session/{Dashless}", 200, """[{"work_item_id":"w1","label":"WK-1 — t","source":"mcp","confidence":1,"is_primary":true}]""");
         using var http = new HttpClient();
 
         var outcome = await new WorkContextClient(http, server.Urls[0] + "/").GetSessionAssignmentsAsync(Dashed, CancellationToken.None);

@@ -388,7 +388,7 @@ public class WorkContextViewModelTests {
     public async Task A_throwing_apply_still_stops_reading_and_lets_teardown_finish() {
         await RunOnUiAsync(async () => {
             var h = new Harness();
-            h.Source.Enqueue(ReadyWith(Row("w1", "AI-1 — t"), Topology(Part("p1", "First", 0)), assignments: [null!]));
+            h.Source.Enqueue(ReadyWith(Row("w1", "WK-1 — t"), Topology(Part("p1", "First", 0)), assignments: [null!]));
 
             await h.PushAsync(Dto());
 
@@ -408,13 +408,13 @@ public class WorkContextViewModelTests {
                 BlockedBy = [new WorkItemRefDto { WorkItemId = "b1", Title = "Pin the helper" }],
                 Cycle = "indeterminate",
             };
-            h.Source.Enqueue(ReadyWith(Row("w1", "AI-2198 — old label"), topology,
-                assignments: [Row("w1", "AI-2198 — old label"), Row("p1", "part", primary: false)]));
+            h.Source.Enqueue(ReadyWith(Row("w1", "WK-2198 — old label"), topology,
+                assignments: [Row("w1", "WK-2198 — old label"), Row("p1", "part", primary: false)]));
 
             await h.PushAsync(Dto());
 
             await Assert.That(h.Vm.Phase).IsEqualTo(WorkContextPhase.Ready);
-            await Assert.That(h.Vm.Key).IsEqualTo("AI-2198");
+            await Assert.That(h.Vm.Key).IsEqualTo("WK-2198");
             await Assert.That(h.Vm.Title).IsEqualTo("Desktop shell: work-context sidebar");
             await Assert.That(h.Vm.PartOfTitle).IsEqualTo("Parent epic");
             await Assert.That(h.Vm.Parts.Select(p => p.Title)).IsEquivalentTo(new[] { "First", "Second" }, TUnit.Assertions.Enums.CollectionOrdering.Matching);
@@ -453,17 +453,17 @@ public class WorkContextViewModelTests {
         await RunOnUiAsync(async () => {
             var h = new Harness();
             h.Source.Enqueue(
-                ReadyWith(Row("w1", "AI-1 — t"), Topology(Part("p1", "First", 0))),
-                ReadyWith(Row("w1", "AI-1 — t"), topology: null, topologyFailed: true),
-                ReadyWith(Row("w9", "AI-9 — other"), topology: null, topologyFailed: true),
-                ReadyWith(Row("w9", "AI-9 — other"), new WorkItemTopologyDto()));
+                ReadyWith(Row("w1", "WK-1 — t"), Topology(Part("p1", "First", 0))),
+                ReadyWith(Row("w1", "WK-1 — t"), topology: null, topologyFailed: true),
+                ReadyWith(Row("w9", "WK-9 — other"), topology: null, topologyFailed: true),
+                ReadyWith(Row("w9", "WK-9 — other"), new WorkItemTopologyDto()));
             await h.PushAsync(Dto());
             await h.TickAsync();
             await Assert.That(h.Vm.Parts.Count).IsEqualTo(1);
             await Assert.That(h.Vm.IsStale).IsTrue();
 
             await h.TickAsync();
-            await Assert.That(h.Vm.Key).IsEqualTo("AI-9");
+            await Assert.That(h.Vm.Key).IsEqualTo("WK-9");
             await Assert.That(h.Vm.Parts).IsEmpty();
             await Assert.That(h.Vm.IsStale).IsTrue();
 
@@ -549,7 +549,7 @@ public class WorkContextViewModelTests {
             foreach (var kind in new[] { WorkContextReadKind.SignedOut, WorkContextReadKind.NotInPlan, WorkContextReadKind.SessionUnknown }) {
                 var h = new Harness();
                 var summary = new SessionSummaryDto { SessionId = SessionA, PullRequests = [Pr("o", "r", 1, null, "One")] };
-                h.Source.Enqueue(ReadyWith(Row("w1", "AI-1 — t"), Topology(Part("p1", "First", 0)), summary), WorkContextRead.Of(kind));
+                h.Source.Enqueue(ReadyWith(Row("w1", "WK-1 — t"), Topology(Part("p1", "First", 0)), summary), WorkContextRead.Of(kind));
                 await h.PushAsync(Dto());
                 await h.TickAsync();
 
@@ -572,7 +572,7 @@ public class WorkContextViewModelTests {
         await RunOnUiAsync(async () => {
             var h = new Harness();
             var summary = new SessionSummaryDto { SessionId = SessionA, PullRequests = [Pr("o", "r", 1, null, "One")] };
-            h.Source.Enqueue(ReadyWith(Row("w1", "AI-1 — t"), Topology(Part("p1", "First", 0)), summary), ReadyWith(null, summary: summary));
+            h.Source.Enqueue(ReadyWith(Row("w1", "WK-1 — t"), Topology(Part("p1", "First", 0)), summary), ReadyWith(null, summary: summary));
             await h.PushAsync(Dto());
             await h.TickAsync();
 

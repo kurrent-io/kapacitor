@@ -9,13 +9,13 @@ namespace Capacitor.Cli.Core.Tests.Unit.WorkItems;
 public class WorkContextDtoTests {
     [Test]
     public async Task Assignments_deserialize_from_the_server_shape_and_ignore_extra_members() {
-        const string body = """[{"work_item_id":"w1","label":"AI-2198 — Desktop shell: work-context sidebar","source":"mcp","confidence":1.0,"is_primary":true,"future":{"x":1}}]""";
+        const string body = """[{"work_item_id":"w1","label":"WK-2198 — Desktop shell: work-context sidebar","source":"mcp","confidence":1.0,"is_primary":true,"future":{"x":1}}]""";
 
         var rows = JsonSerializer.Deserialize(body, CapacitorJsonContext.Default.ListSessionWorkItemAssignmentDto)!;
 
         await Assert.That(rows).Count().IsEqualTo(1);
         await Assert.That(rows[0].WorkItemId).IsEqualTo("w1");
-        await Assert.That(rows[0].Label).IsEqualTo("AI-2198 — Desktop shell: work-context sidebar");
+        await Assert.That(rows[0].Label).IsEqualTo("WK-2198 — Desktop shell: work-context sidebar");
         await Assert.That(rows[0].Source).IsEqualTo("mcp");
         await Assert.That(rows[0].IsPrimary).IsTrue();
     }

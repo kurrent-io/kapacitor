@@ -30,7 +30,7 @@ public class WorkContextReaderTests {
         }
     }
 
-    static SessionWorkItemAssignmentDto Row(string id, bool primary = false, string label = "AI-1 — Title") =>
+    static SessionWorkItemAssignmentDto Row(string id, bool primary = false, string label = "WK-1 — Title") =>
         new() { WorkItemId = id, Label = label, Source = "mcp", Confidence = 1, IsPrimary = primary };
 
     static WorkContextOutcome<T> PlanGate<T>() where T : class =>
