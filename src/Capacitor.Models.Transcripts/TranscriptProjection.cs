@@ -1,3 +1,5 @@
+using Capacitor.Models.Transcripts.Harness.Claude;
+
 namespace Capacitor.Models.Transcripts;
 
 /// One transcript line in, canonical events out. Stateful only through the context the caller
@@ -11,6 +13,7 @@ public interface ITranscriptProjection {
 /// here, nowhere else.
 public static class TranscriptProjection {
     public static ITranscriptProjection? For(string vendor) => vendor.ToLowerInvariant() switch {
+        "claude" => ClaudeTranscriptEvents.Instance,
         _ => null,
     };
 }
