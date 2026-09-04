@@ -1442,6 +1442,15 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
     /// same as "not found" and draws no alarm on the screen.</summary>
     static readonly TimeSpan LoginShellProbeBudget = TimeSpan.FromSeconds(12);
 
+    /// <summary>
+    /// The profile the import lane runs under. <see cref="ImportCommand"/> reads its base URL from the
+    /// context it is handed, and <c>profiles</c> is resolved at process start, before setup has asked
+    /// for a server — on a first run it names none at all, and the one this run chose is not persisted
+    /// until after this leg returns.
+    /// </summary>
+    internal static ProfileContext ImportContext(ProfileContext profiles, string serverUrl) =>
+        new(profiles.Resolution with { ServerUrl = serverUrl }, profiles.Snapshot);
+
     /// <summary>Creates the first-run flow, opens the browser on it, and polls it as itself, returning
     /// the Agents decision for Step 4 to apply. <b>Nothing is configured here</b> — what crosses is
     /// vendor keys and booleans, and the install runs through the same one place the terminal prompt
@@ -1490,7 +1499,7 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
                     config, HarnessRegistry.FromEnvironment(home),
                     Environment.MachineName, await LoginShellFindsCliAsync());
 
-                importing = new SetupImportLane(config, profiles, home, _paths);
+                importing = new SetupImportLane(config, ImportContext(profiles, serverUrl), home, _paths);
 
                 using var progress = new SpectreFirstRunFlowProgress();
 
