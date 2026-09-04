@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.FirstRun;
 using Capacitor.Cli.Core.Harness;
@@ -1818,44 +1819,49 @@ public class BrowserFirstRunFlowTests {
     // ---- saying the machine is still here ----
 
     /// <summary>
-    /// Why the beat is not derived from the poll. The import blocks the loop for its whole duration —
-    /// deliberately, because two live renderables cannot share a terminal — so liveness read from
-    /// polling would call the machine gone during the one stretch it is working hardest.
+    /// Why the beat is not driven by the poll. The import blocks the loop for its whole duration —
+    /// deliberately, because two live renderables cannot share a terminal — and the loop credits that
+    /// time back to its own deadline, so liveness read from polling would call the machine gone during
+    /// the one stretch it is working hardest.
+    ///
+    /// <para><b>Pinned structurally rather than by observing beats during an import.</b> That test needs
+    /// the beat's continuation to run while the poll thread is parked inside the lane's synchronous
+    /// hook, and a fake clock cannot make it: missed ticks collapse into one catch-up on resume, so the
+    /// count does not follow the advances. Driving it by wall time instead is a race that a loaded
+    /// runner loses. The regression this guards against is someone moving the beat inside the loop,
+    /// and where it starts is exactly what says whether they did.</para>
     /// </summary>
     [Test]
-    public async Task The_beat_goes_on_while_the_import_holds_the_poll() {
-        var h = Build(importing: true);
-        h.Channel.Polls.Enqueue(new(200, ImportAnswered()));
-        h.Channel.Polls.Enqueue(new(200, Done()));
+    public async Task The_beat_starts_outside_the_poll_it_has_to_outlive() {
+        var source = await File.ReadAllTextAsync(FlowSourcePath());
 
-        var before = 0;
-        var during = 0;
+        var started = source.IndexOf("FirstRunHeartbeat.Start(", StringComparison.Ordinal);
+        var polled  = source.IndexOf("await PollAsync(", StringComparison.Ordinal);
 
-        // Runs with the poll loop parked inside the lane, which is the only moment this claim is about.
-        h.Importing!.Advance = () => {
-            before = h.Channel.Beats;
-            during = BeatsWhileBlocked(h, before);
-        };
+        await Assert.That(started).IsGreaterThan(-1).Because("nothing starts the beat at all");
+        await Assert.That(polled).IsGreaterThan(-1).Because("the poll call this is measured against moved");
 
-        await Run(h);
+        await Assert.That(started).IsLessThan(polled)
+                    .Because("a beat started inside the poll stops for the whole of an import, which is "
+                           + "the staleness this design exists to avoid");
 
-        await Assert.That(during).IsGreaterThan(before)
-                    .Because("the machine fell silent for the whole import, which is what a death looks like");
+        // The loop must not reach the beat at all: a beat sent from inside PollAsync would tick only when
+        // the loop does, whatever the ordering above says.
+        var loop = source[polled..];
+
+        await Assert.That(loop).DoesNotContain("HeartbeatAsync")
+                    .Because("the poll loop sends its own beat, so an import silences the machine again");
     }
 
-    /// <summary>Drives the clock from inside the lane, where the loop cannot, until one more beat lands
-    /// or a real deadline passes. Bounded by wall time rather than by iterations: the beat runs on its
-    /// own task, and a loaded runner can starve a continuation for longer than any fixed budget.</summary>
-    static int BeatsWhileBlocked(Harness h, int from) {
-        var until = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+    static string FlowSourcePath([CallerFilePath] string here = "") {
+        var dir = Path.GetDirectoryName(here);
 
-        while (DateTime.UtcNow < until && h.Channel.Beats <= from) {
-            h.Clock.Advance(FirstRunHeartbeat.Interval);
+        while (dir is not null && !File.Exists(Path.Combine(dir, "Capacitor.slnx")))
+            dir = Path.GetDirectoryName(dir);
 
-            Thread.Sleep(5);
-        }
-
-        return h.Channel.Beats;
+        return dir is null
+            ? throw new InvalidOperationException($"Could not locate repo root walking up from {here}")
+            : Path.Combine(dir, "src", "Capacitor.Cli.Core", "FirstRun", "BrowserFirstRunFlow.cs");
     }
 
     // ---- saying the machine has gone ----

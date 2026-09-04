@@ -35,16 +35,22 @@ public sealed class FirstRunHeartbeat : IDisposable {
         new(channel, serverUrl, flowId, clock, interval ?? Interval);
 
     /// <summary>
-    /// Stops scheduling. A beat already in flight is left to land, which is not a race worth closing:
-    /// it was issued while the machine was alive, so it reports something that was true, and a relinquish
-    /// arriving behind it closes the flow regardless — the browser reads a stated ending ahead of an
-    /// inferred one either way. Waiting for it instead would put an await on the leg's way out for a
-    /// difference nothing can observe.
+    /// Stops scheduling, and does not wait. A beat in flight is aborted by the cancel rather than
+    /// finished — nothing is owed to it: the relinquish that follows states the ending, and the browser
+    /// reads a stated ending ahead of an inferred one. Waiting instead would put an await on the leg's
+    /// way out for a difference nothing can observe.
     /// </summary>
     public void Dispose() {
         if (Interlocked.Exchange(ref _stopped, 1) != 0) return;
 
-        _stopping.Cancel();
+        try {
+            _stopping.Cancel();
+        } catch (ObjectDisposedException) {
+            // The loop disposes the source once it ends, and it ends only on this cancel — so this is
+            // unreachable while that holds. Guarded anyway: an await added to the loop that can throw
+            // something other than the cancel would break the ordering, and the cost of finding out
+            // would be this throwing out of the leg's `using` and masking its result.
+        }
 
         // Observed so a fault cannot surface as an unobserved task exception. The loop swallows
         // everything a beat can throw, so there is only ever the cancel we just asked for.

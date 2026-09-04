@@ -678,7 +678,7 @@ progress.
 is failing, so a status code is not read and a throw does not end the loop: a run of failures is the
 signal, and only the server is positioned to read it.
 
-**A beat already in flight is not waited for on the way out.** It was issued while the machine was
-alive, so it reports something that was true, and the relinquish that follows closes the flow whichever
-order the two land in.
+**Stopping does not wait for a beat in flight** — the cancel aborts it. Nothing is owed to it: the
+relinquish that follows states the ending, and the browser reads a stated ending ahead of an inferred
+one.
 
