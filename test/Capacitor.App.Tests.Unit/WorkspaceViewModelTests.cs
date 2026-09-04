@@ -12,7 +12,7 @@ using static Capacitor.App.Tests.Unit.WorkspaceFixtures;
 
 namespace Capacitor.App.Tests.Unit;
 
-/// WorkspaceViewModel's header projections (Title/RepoLabelText/VendorChip/FamilyDot/
+/// WorkspaceViewModel's header projections (Title/RepoLabelText/IdentitySubtitle/
 /// ShowsTerminalTab/NoTerminalNote), SessionEnded, and Stop routing. WorkspaceViewModel always
 /// builds a real TerminalTabViewModel internally, so pushing a matching AgentStatusDto into the
 /// shared daemon.Agents cache also drives Terminal's OWN resolve gate -- which reaches
@@ -35,7 +35,7 @@ public class WorkspaceViewModelTests {
 
     [Test]
     [NotInParallel("AvaloniaSession")]
-    public async Task Title_repo_and_vendor_chip_project_from_the_pushed_dto() {
+    public async Task Title_repo_and_identity_subtitle_project_from_the_pushed_dto() {
         await RunOnUiAsync(async () => {
             var daemon = new FakeDaemonClientService();
             var actions = NewActions(new ScriptedLocalControlOps(), new RecordingNotifier(), new RecordingOpener());
@@ -51,8 +51,7 @@ public class WorkspaceViewModelTests {
 
             await Assert.That(vm.Title).IsEqualTo("myproj");
             await Assert.That(vm.RepoLabelText).IsEqualTo("myproj");
-            await Assert.That(vm.VendorChip).IsEqualTo("claude (sonnet)");
-            await Assert.That(vm.FamilyDot).IsEqualTo("pty");
+            await Assert.That(vm.IdentitySubtitle).IsEqualTo("myproj · pty · claude (sonnet)");
             await Assert.That(vm.ShowsTerminalTab).IsTrue();
             await Assert.That(vm.NoTerminalNote).IsEqualTo("");
         });
@@ -226,6 +225,7 @@ public class WorkspaceViewModelTests {
 
             await Assert.That(vm.Title).IsEqualTo("Review this PR");
             await Assert.That(vm.RepoLabelText).IsEqualTo("myproj / agent-6da2 · borrowed");
+            await Assert.That(vm.IdentitySubtitle).IsEqualTo("myproj / agent-6da2 · borrowed · pty · codex");
             await vm.TeardownAsync();
         });
     }

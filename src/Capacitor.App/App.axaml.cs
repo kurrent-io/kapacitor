@@ -101,6 +101,7 @@ public partial class App : Application {
     // holder on both teardown paths, after _home — never before, or a launch still in flight would
     // lose its transport mid-invoke.
     ServerClients? _serverClients;
+    ServerLaunchClient? _launch;
     TrayViewModel? _trayVm;
     TrayIconManager? _tray;
     // No disposal needed — RefCount tears its Interval down with its last subscriber, and every
@@ -329,6 +330,7 @@ public partial class App : Application {
         var launch = new ServerLaunchClient(_config, profiles);
         var workContext = new ServerWorkContextSource(_config, profiles);
         var serverClients = new ServerClients(launch, workContext);
+        _launch = launch;
         _serverClients = serverClients;
 
         // One attach client per attempt, dialed at the daemon's own control socket; 80x24 is a

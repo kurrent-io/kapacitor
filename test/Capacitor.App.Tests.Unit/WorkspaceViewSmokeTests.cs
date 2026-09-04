@@ -102,7 +102,7 @@ public class WorkspaceViewSmokeTests {
             Dispatcher.UIThread.RunJobs();
 
             var names = new[] {
-                "WorkspaceTitle", "WorkspaceRepo", "WorkspaceVendorChip", "ChatTabButton",
+                "WorkspaceTitle", "WorkspaceSubtitle", "ChatTabButton",
                 "TerminalTabButton", "NoTerminalNote", "TerminalHost", "TerminalBanners",
                 "DetachButton", "ReattachButton", "SessionEndedNote", "ChatHost", "WorkContextHost",
             };

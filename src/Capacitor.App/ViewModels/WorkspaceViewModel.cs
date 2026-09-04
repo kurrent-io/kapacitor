@@ -33,7 +33,7 @@ public enum WorkspaceTab { Chat, Terminal }
 ///
 /// A removed agent id freezes its LAST known dto rather than blanking the header back to
 /// placeholders -- SessionEnded flips (sticky, mirroring TerminalTabViewModel's own
-/// Exited/Failed stickiness) but Title/RepoLabelText/VendorChip/etc keep identifying the session
+/// Exited/Failed stickiness) but Title/IdentitySubtitle/etc keep identifying the session
 /// that just ended instead of reverting to "— · —".
 public sealed class WorkspaceViewModel : ReactiveObject {
     const string UnresolvedKind = "unresolved";
@@ -46,13 +46,12 @@ public sealed class WorkspaceViewModel : ReactiveObject {
     public string Title => _title.Value;
 
     readonly ObservableAsPropertyHelper<string> _repoLabelText;
+    /// Checkout path only (`repo / worktree`); tests and Stop labels use this without harness meta.
     public string RepoLabelText => _repoLabelText.Value;
 
-    readonly ObservableAsPropertyHelper<string> _vendorChip;
-    public string VendorChip => _vendorChip.Value;
-
-    readonly ObservableAsPropertyHelper<string> _familyDot;
-    public string FamilyDot => _familyDot.Value;
+    readonly ObservableAsPropertyHelper<string> _identitySubtitle;
+    /// Quiet meta under the title: checkout · transport · vendor (model).
+    public string IdentitySubtitle => _identitySubtitle.Value;
 
     readonly ObservableAsPropertyHelper<bool> _showsTerminalTab;
     public bool ShowsTerminalTab => _showsTerminalTab.Value;
@@ -127,11 +126,8 @@ public sealed class WorkspaceViewModel : ReactiveObject {
         _repoLabelText = presence.Select(p => CheckoutLabelFor(p.Dto))
             .ToProperty(this, x => x.RepoLabelText, CheckoutLabelFor(null))
             .DisposeWith(_disposables);
-        _vendorChip = presence.Select(p => VendorChipFor(p.Dto))
-            .ToProperty(this, x => x.VendorChip, VendorChipFor(null))
-            .DisposeWith(_disposables);
-        _familyDot = presence.Select(p => p.Dto is null ? "" : HostedHarnessCatalog.EffectiveFamily(p.Dto.HasTerminal, p.Dto.Vendor))
-            .ToProperty(this, x => x.FamilyDot, "")
+        _identitySubtitle = presence.Select(p => IdentitySubtitleFor(p.Dto))
+            .ToProperty(this, x => x.IdentitySubtitle, IdentitySubtitleFor(null))
             .DisposeWith(_disposables);
         _showsTerminalTab = presence.Select(p => p.Dto is not null && HostedHarnessCatalog.ShowsTerminal(p.Dto.HasTerminal, p.Dto.Vendor))
             .ToProperty(this, x => x.ShowsTerminalTab, initialValue: false)
@@ -197,10 +193,20 @@ public sealed class WorkspaceViewModel : ReactiveObject {
 
     static string TitleFor(AgentStatusDto? dto) => dto?.Title ?? RepoLabel.Leaf(dto?.RepoPath);
 
-    static string VendorChipFor(AgentStatusDto? dto) {
+    /// Checkout, then transport family and vendor/model — one scannable meta line under the title.
+    internal static string IdentitySubtitleFor(AgentStatusDto? dto) {
+        var checkout = CheckoutLabelFor(dto);
+        if (dto is null) return checkout;
+        var family = HostedHarnessCatalog.EffectiveFamily(dto.HasTerminal, dto.Vendor);
+        var vendor = VendorLabelFor(dto);
+        return string.IsNullOrEmpty(family)
+            ? $"{checkout} · {vendor}"
+            : $"{checkout} · {family} · {vendor}";
+    }
+
+    static string VendorLabelFor(AgentStatusDto? dto) {
         if (dto is null) return "—";
-        // Empty model is the harness default — the chip names the vendor only; a concrete model
-        // rides beside it. Curated label when known, raw slug otherwise.
+        // Empty model is the harness default — name the vendor only; a concrete model rides beside it.
         if (string.IsNullOrWhiteSpace(dto.Model)) return dto.Vendor;
         return $"{dto.Vendor} ({HostedHarnessCatalog.ModelLabelFor(dto.Vendor, dto.Model)})";
     }
