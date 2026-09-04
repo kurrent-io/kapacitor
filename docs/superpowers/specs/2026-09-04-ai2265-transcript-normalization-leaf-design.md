@@ -224,12 +224,18 @@ it), and any type the build does not know.
   `tool_use` → `AssistantToolCallsGenerated` with one `ToolCallInfo` (`call_id` = `id`,
   `tool_name` = `name`, `arguments` = `input` as a `Struct`; a non-object input is wrapped as
   `{"input": …}`); `thinking` → `AssistantThinkingGenerated` (`content`, `signature`,
-  `encrypted = false`). Usage from `message.usage` rides on the line's first emitted event, and
-  only when it differs from the previous assistant record's usage (the context remembers it and
-  any non-assistant record resets it): `input_tokens`, `output_tokens`, `cache_read_input_tokens`
-  as cached input, `model` from `message.model`, and `cache_creation_input_tokens` as
-  `CacheCreationTokens`. Ids per the identifier rule: the first emitted event keeps the record id
-  and later ones take block sibling ids and carry no usage. Unknown block types emit nothing.
+  `encrypted = false`). Usage from `message.usage` rides on the record's first emitted event:
+  `input_tokens`, `output_tokens`, `cache_read_input_tokens` as cached input, `model` from
+  `message.model`, and `cache_creation_input_tokens` as `CacheCreationTokens`. Whether it rides
+  at all is decided by the context's usage memory, one tuple of input, output, cache-read and
+  cache-creation counts with absent counts as zero, with these transitions, all legacy: an
+  assistant record with a non-empty content array and a `message.usage` compares its tuple to
+  the memory, attaches usage only when the memory is empty or differs, and then stores its tuple,
+  whether or not the record emits anything; an assistant record without `message.usage`, or
+  with no `message`, no `content` or an empty array, leaves the memory untouched and attaches
+  nothing; every other valid record, noise types included, clears it; a rejected line does not
+  touch it. Ids per the identifier rule: the first emitted event keeps the record id and later
+  ones take block sibling ids and carry no usage. Unknown block types emit nothing.
 - `user`, string content → one `UserMessageReceived`, dropped when the text opens with
   `<available-deferred-tools`. Array content, two shapes, decided by whether any `tool_result`
   block is present:
@@ -300,7 +306,9 @@ Keyed on the envelope `type`, then `payload.type`; `RecordTimestamp` from the en
   `AssistantThinkingGenerated` (the first member when all are thinking) and true elsewhere. The
   cluster is every reasoning, assistant text, agent message and tool call since the previous
   finalization; results and the synthesized web-search result are not members; the next member
-  after a finalization opens a new cluster.
+  after a finalization opens a new cluster. The finalized flag flips only when a `UsageApplied`
+  is produced; the three no-output cases leave it as it was, so a valid `token_count` after a
+  usage-less one still applies to the same cluster, as today.
 - `compacted` → `ContextCompactedEvent` (`replacement_history`, `encrypted_content`).
 - Dropped: `world_state`, `inter_agent_communication_metadata`, `sub_agent_activity`,
   `thread_settings_applied`, the `event_msg` form of `agent_message`, and `web_search_end` beyond
@@ -397,7 +405,9 @@ single rules plus a synthetic fixture corpus checked into the repo with golden e
 fixture. The repo is public, so nothing from the server's captured sessions is copied; the
 synthetic fixtures cover each rule that matters: multi-block Claude lines, tool results with image
 blocks, task notifications, sidechain records, an invalid `uuid`, rejected and ignored lines of
-every kind in section 2, Codex clusters straddling a batch boundary, a repeated `token_count`, a
+every kind in section 2, a usage-less assistant record between two with equal usage, an
+assistant record with usage whose only block is unknown, Codex clusters straddling a batch
+boundary, a repeated `token_count`, a usage-less `token_count` followed by a valid one, a
 thinking-only cluster, web-search pairing across batches, exec and patch telemetry in both orders,
 `task_complete` in the same batch and across one, compaction, subagent rollouts. A golden file
 holds every channel of every `ProjectionResult`: events as schema JSON plus id, effective and
@@ -420,14 +430,17 @@ telemetry and its output. Accepted deltas are explicit exemptions, each at field
 everything else stays exact:
 
 - *Multi-block Claude assistant record.* Legacy emits one event from block 0; new emits one per
-  block. Event 0 is identical to legacy's in id, payload and every metadata key, usage included.
-  Events 1..n are new: block sibling ids, no `$usage`, the same `$lineNumber`, `$timestamp` and
-  `$causedBy`.
+  block. Event 0 is identical to legacy's in id, payload and every metadata key, usage included,
+  apart from independently declared extension deltas. Events 1..n are new: block sibling ids, no
+  `$usage`, the same `$lineNumber`, `$timestamp` and `$causedBy`.
 - *Multi-result Claude user record.* Legacy emits the first `tool_result` only; new emits one per
-  result. Result 0 is identical to legacy's; results 1..n are new on block sibling ids with the
-  same metadata.
+  result. Result 0 is identical to legacy's apart from independently declared extension deltas;
+  results 1..n are new on block sibling ids with the same metadata.
 - *`extensions.claude_code.is_sidechain` and `origin_kind`.* Present only on the events section 3
   names; no other field of the slug changes; the server's unpacker ignores them.
+
+Exemptions compose: an event may fall under several at once (a sidechain multi-block record), and
+the comparison applies every exemption whose condition holds before reporting a difference.
 
 Two read-model assertions accompany the first two deltas, because extra canonical events can
 move a read model even when `$usage` does not: for an adapter-only session and for the hybrid
@@ -448,6 +461,11 @@ it. The re-record switch exists to produce a candidate baseline, not to accept o
 `CodexNormalizerTests` and `CodexUsageBackfillTests` are ported rule by rule: projection rules to
 the leaf's tests, metadata and pipeline behaviour to adapter tests. Deleting a legacy normalizer
 waits on that port.
+
+**Clock seam test.** The corpus cannot exercise the adapter's `TimeProvider`, so an adapter test
+feeds a fake one and a timestamp-less line that emits several events: the provider is read once
+per line, that one instant is the payload timestamp of every event the line emits, `$timestamp`
+is absent on all of them, and a second line read from the same provider gets its own instant.
 
 **Hybrid session test.** A Claude session ingested up to a line under the legacy normalizer, then
 continued under the adapter, and then re-imported in full: no duplicate ids, every legacy event
