@@ -258,7 +258,44 @@ public class SessionStartMemoryFoundationTests {
         await provider.GetAsync(new SessionStartMemoryContextRequest(
             "https://example.test/", null, false, TimeSpan.FromSeconds(1), CancellationToken.None));
 
-        await Assert.That(handler.Uri).IsEqualTo("https://example.test/api/memories/index?machine=machine%20tag");
+        await Assert.That(handler.Uri).IsEqualTo("https://example.test/api/memories/index?machine=machine%20tag&include=projects");
+    }
+
+    [Test]
+    public async Task Provider_reads_the_index_in_either_body_shape() {
+        var scope = new FixedScopeResolver("repo", "machine");
+        SessionStartMemoryContextProvider Provider(string body) => new(scope,
+            (_, _) => Task.FromResult(new HttpClient(new StaticHandler(HttpStatusCode.OK, body))));
+        const string entry = "{\"memory_id\":\"1\",\"slug\":\"s\",\"audience\":\"org\",\"description\":\"d\",\"kind\":\"feedback\"}";
+        var request = new SessionStartMemoryContextRequest("https://example", "/repo", false,
+            TimeSpan.FromSeconds(1), CancellationToken.None);
+
+        // An older server ignores include=projects and answers with the bare array it always sent.
+        var bareArray = await Provider($"[{entry}]").GetAsync(request);
+        var withProjects = await Provider(
+            $"{{\"entries\":[{entry}],\"projects\":[{{\"slug\":\"capacitor\",\"name\":\"Kurrent Capacitor\"}}]}}").GetAsync(request);
+        var projectsOnly = await Provider(
+            "{\"entries\":[],\"projects\":[{\"slug\":\"capacitor\",\"name\":\"Kurrent Capacitor\"}]}").GetAsync(request);
+        var neither = await Provider("{\"entries\":[],\"projects\":[]}").GetAsync(request);
+
+        await Assert.That(bareArray.Fragment).Contains("- s: d");
+        await Assert.That(bareArray.Fragment).DoesNotContain("This repo belongs");
+        await Assert.That(withProjects.Fragment).Contains("This repo belongs to project \"capacitor\"");
+        await Assert.That(withProjects.Fragment).Contains("- s: d");
+        await Assert.That(projectsOnly.Disposition).IsEqualTo(SessionStartMemoryDisposition.Ready);
+        await Assert.That(projectsOnly.Fragment).Contains("This repo belongs to project \"capacitor\"");
+        await Assert.That(neither.Disposition).IsEqualTo(SessionStartMemoryDisposition.CompleteWithoutContext);
+    }
+
+    [Test]
+    public async Task Provider_retries_a_body_that_is_neither_shape() {
+        var provider = new SessionStartMemoryContextProvider(new FixedScopeResolver("repo", "machine"),
+            (_, _) => Task.FromResult(new HttpClient(new StaticHandler(HttpStatusCode.OK, "\"not-an-index\""))));
+
+        var result = await provider.GetAsync(new SessionStartMemoryContextRequest("https://example", "/repo", false,
+            TimeSpan.FromSeconds(1), CancellationToken.None));
+
+        await Assert.That(result.Disposition).IsEqualTo(SessionStartMemoryDisposition.RetryableFailure);
     }
 
     [Test]

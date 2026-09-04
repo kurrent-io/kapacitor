@@ -27,6 +27,19 @@ internal sealed record SessionStartMemoryEntry(
     [property: JsonPropertyName("scope_kind")] string? ScopeKind = null,
     [property: JsonPropertyName("project_slug")] string? ProjectSlug = null);
 
+/// <summary>A project the cwd repo is confirmed to belong to: the slug an agent passes on the
+/// place axis of a save, and the human name it is known by.</summary>
+internal sealed record SessionStartMemoryProject(
+    [property: JsonPropertyName("slug")] string? Slug,
+    [property: JsonPropertyName("name")] string? Name);
+
+/// <summary>The <c>/api/memories/index</c> body a server answers with when the request carries
+/// <c>include=projects</c>. Unmapped members are skipped, so a later server may add fields here
+/// without a CLI that predates them dropping the whole fragment.</summary>
+internal sealed record SessionStartMemoryIndexResponse(
+    [property: JsonPropertyName("entries")] SessionStartMemoryEntry[]? Entries,
+    [property: JsonPropertyName("projects")] SessionStartMemoryProject[]? Projects);
+
 internal sealed record SessionStartMemoryContextRequest(
     string BaseUrl,
     string? Cwd,
@@ -83,6 +96,9 @@ internal static class SessionStartMemoryConstants {
     public const int MaxMetadataBytes = 16384;
     public const int MaxResponseBytes = 256 * 1024;
     public const int MaxEntries = 200;
+    // The lead-in competes with the memory list for the same fragment budget, so a repo reported
+    // in an implausible number of projects cannot crowd the memories out.
+    public const int MaxProjects = 8;
     public const int MaxFragmentBytes = 24 * 1024;
     public const int NormalRecordCap = 50_000;
     public const int TotalEntryCap = 55_000;

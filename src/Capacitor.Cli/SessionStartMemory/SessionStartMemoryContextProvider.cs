@@ -45,20 +45,50 @@ internal sealed class SessionStartMemoryContextProvider(
         if (outcome.Body is null)
             return new SessionStartMemoryContextResult(SessionStartMemoryDisposition.RetryableFailure, RetryAfter: outcome.RetryAfter);
 
-        var entries = JsonSerializer.Deserialize(outcome.Body,
-            SessionStartMemoryJsonContext.Default.SessionStartMemoryEntryArray);
-        if (entries is null) return SessionStartMemoryContextResult.Retry;
-        if (entries.Length == 0) return SessionStartMemoryContextResult.Empty;
-        var fragment = MemoryIndexEmitter.BuildFragment(entries);
+        var index = ParseIndex(outcome.Body);
+        if (index is null) return SessionStartMemoryContextResult.Retry;
+        var entries  = index.Entries  ?? [];
+        var projects = index.Projects ?? [];
+        if (entries.Length == 0 && projects.Length == 0) return SessionStartMemoryContextResult.Empty;
+        var fragment = MemoryIndexEmitter.BuildFragment(entries, projects);
         return fragment is null
             ? SessionStartMemoryContextResult.Empty
             : new SessionStartMemoryContextResult(SessionStartMemoryDisposition.Ready, fragment);
     }
 
+    /// <summary>
+    /// Reads the index body in either shape. A server that predates <c>include=projects</c> ignores
+    /// the parameter and answers with the bare entry array; one that honours it answers with an
+    /// object carrying the same entries plus the repo's projects. The shape is decided by sniffing
+    /// the opening token, not by attempting one parse and falling back: a failed deserialize is
+    /// indistinguishable from a corrupt body, which is a retryable failure, and the retry schedule
+    /// has no attempt ceiling — so an old server would be polled indefinitely for an answer it is
+    /// never going to give differently.
+    /// </summary>
+    static SessionStartMemoryIndexResponse? ParseIndex(byte[] body) {
+        var reader = new Utf8JsonReader(body);
+        if (!reader.Read()) return null;
+        return reader.TokenType switch {
+            JsonTokenType.StartArray => JsonSerializer.Deserialize(body,
+                SessionStartMemoryJsonContext.Default.SessionStartMemoryEntryArray) is { } entries
+                    ? new SessionStartMemoryIndexResponse(entries, null)
+                    : null,
+            JsonTokenType.StartObject => JsonSerializer.Deserialize(body,
+                SessionStartMemoryJsonContext.Default.SessionStartMemoryIndexResponse),
+            _ => null
+        };
+    }
+
+    /// <summary>
+    /// <c>include=projects</c> rides every call, with or without a resolved repo: it declares that
+    /// THIS CLI can read the object body, not that a repo is in hand. Making it conditional would
+    /// give the server two shapes to answer one request with.
+    /// </summary>
     internal static string BuildUrl(string baseUrl, SessionStartMemoryScope scope) {
         var query = new List<string>();
         if (scope.RepoHash is not null) query.Add("repo=" + Uri.EscapeDataString(scope.RepoHash));
         if (scope.MachineTag is not null) query.Add("machine=" + Uri.EscapeDataString(scope.MachineTag));
-        return baseUrl.TrimEnd('/') + "/api/memories/index" + (query.Count == 0 ? "" : "?" + string.Join('&', query));
+        query.Add("include=projects");
+        return baseUrl.TrimEnd('/') + "/api/memories/index?" + string.Join('&', query);
     }
 }
