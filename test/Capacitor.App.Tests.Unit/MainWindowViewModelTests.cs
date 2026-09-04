@@ -95,6 +95,17 @@ public class MainWindowViewModelTests {
     }
 
     [Test]
+    [Arguments(null, "")]
+    [Arguments("", "")]
+    [Arguments("   ", "")]
+    [Arguments("default", "")]
+    [Arguments("Default", "")]
+    [Arguments("kurrent", "kurrent")]
+    public async Task ProfileLabelForRail_hides_the_built_in_default(string? profile, string expected) {
+        await Assert.That(MainWindowViewModel.ProfileLabelForRail(profile)).IsEqualTo(expected);
+    }
+
+    [Test]
     [Arguments(AttachState.Connecting, null, "connected", "#FFB300")]
     [Arguments(AttachState.Unreachable, "daemon_unreachable", "connected", "#9E9E9E")]
     [Arguments(AttachState.Unreachable, "daemon_incompatible", "connected", "#E53935")]

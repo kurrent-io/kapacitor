@@ -195,11 +195,14 @@ public sealed class WorkspaceViewModel : ReactiveObject {
         return dto.WorkLocation == WorkLocationText.Borrowed ? $"{label} · borrowed" : label;
     }
 
-    static string TitleFor(AgentStatusDto? dto) => dto?.Title ?? $"{RepoLabel.Leaf(dto?.RepoPath)} · {dto?.Vendor ?? "—"}";
+    static string TitleFor(AgentStatusDto? dto) => dto?.Title ?? RepoLabel.Leaf(dto?.RepoPath);
 
     static string VendorChipFor(AgentStatusDto? dto) {
         if (dto is null) return "—";
-        return dto.Model is null ? dto.Vendor : $"{dto.Vendor} ({dto.Model})";
+        // Empty model is the harness default — the chip names the vendor only; a concrete model
+        // rides beside it. Curated label when known, raw slug otherwise.
+        if (string.IsNullOrWhiteSpace(dto.Model)) return dto.Vendor;
+        return $"{dto.Vendor} ({HostedHarnessCatalog.ModelLabelFor(dto.Vendor, dto.Model)})";
     }
 
     /// Disposes this workspace's own daemon-cache projections, then tears down Chat (if built), the

@@ -54,11 +54,11 @@ public class ChatComposerTests {
 
     [Test]
     [NotInParallel("AvaloniaSession")]
-    public async Task Hint_follows_send_availability_and_the_vendor_label() {
+    public async Task Hint_follows_send_availability() {
         await RunOnUiAsync(async () => {
             var (daemon, _, terminal, chat, client, _) = await BuildAttachedAsync();
             await Assert.That(chat.VendorLabel).IsEqualTo("Claude Code");
-            await Assert.That(chat.ComposerHint).IsEqualTo("Reply to Claude Code · Enter sends · Shift+Enter for a new line");
+            await Assert.That(chat.ComposerHint).IsEqualTo("Enter sends · Shift+Enter for a new line");
 
             client.Result.SetResult(new AttachOutcome.Detached());
             await terminal.CurrentRunForTesting!;
@@ -70,11 +70,11 @@ public class ChatComposerTests {
             await Assert.That(chat.ComposerHint).IsEqualTo("This session has ended");
 
             var attached = TerminalSessionState.Attached(null);
-            await Assert.That(ChatTabViewModel.HintFor(SendAvailability.Transitioning, attached, "Claude Code")).IsEqualTo("Updating the terminal connection…");
-            await Assert.That(ChatTabViewModel.HintFor(SendAvailability.ReadOnly, TerminalSessionState.Attached("review"), "x")).IsEqualTo("Read-only: review");
-            await Assert.That(ChatTabViewModel.HintFor(SendAvailability.Connecting, TerminalSessionState.Connecting, "x")).IsEqualTo("Connecting to the terminal…");
-            await Assert.That(ChatTabViewModel.HintFor(SendAvailability.Ended, TerminalSessionState.SessionEnded, "x")).IsEqualTo("This session has ended");
-            await Assert.That(ChatTabViewModel.HintFor(SendAvailability.NoTerminal, TerminalSessionState.NotFound, "x")).IsEqualTo("No terminal to send to");
+            await Assert.That(ChatTabViewModel.HintFor(SendAvailability.Transitioning, attached)).IsEqualTo("Updating the terminal connection…");
+            await Assert.That(ChatTabViewModel.HintFor(SendAvailability.ReadOnly, TerminalSessionState.Attached("review"))).IsEqualTo("Read-only: review");
+            await Assert.That(ChatTabViewModel.HintFor(SendAvailability.Connecting, TerminalSessionState.Connecting)).IsEqualTo("Connecting to the terminal…");
+            await Assert.That(ChatTabViewModel.HintFor(SendAvailability.Ended, TerminalSessionState.SessionEnded)).IsEqualTo("This session has ended");
+            await Assert.That(ChatTabViewModel.HintFor(SendAvailability.NoTerminal, TerminalSessionState.NotFound)).IsEqualTo("No terminal to send to");
             await chat.TeardownAsync();
         });
     }
@@ -90,7 +90,7 @@ public class ChatComposerTests {
 
             daemon.Agents.AddOrUpdate(Agent("a1", "claude", hasTerminal: true, repoPath: "/repo") with { Status = "Failed" });
             await Assert.That(chat.StatusText).IsEqualTo("Failed");
-            await Assert.That(chat.ModelLabel).IsEqualTo("default");
+            await Assert.That(chat.ModelLabel).IsEqualTo("Default");
             await chat.TeardownAsync();
         });
     }

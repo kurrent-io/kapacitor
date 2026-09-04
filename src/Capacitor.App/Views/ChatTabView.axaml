@@ -201,15 +201,10 @@
                     <TextBlock Text="{Binding ReadOnlyNotice, StringFormat='Read-only: {0}'}"
                                Foreground="{StaticResource KcapWarningBrush}" TextWrapping="Wrap" />
                 </Border>
-                <Grid ColumnDefinitions="*,Auto,Auto,Auto,Auto">
+                <Grid ColumnDefinitions="*,Auto">
                     <TextBlock Text="{Binding ComposerHint}" FontSize="11" Foreground="{StaticResource KcapFaintBrush}"
                                VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
-                    <TextBlock Grid.Column="1" Text="{Binding ModelLabel}" FontSize="11" Foreground="{StaticResource KcapFaintBrush}"
-                               VerticalAlignment="Center" Margin="12,0,0,0" />
-                    <Ellipse Grid.Column="2" Width="7" Height="7" Fill="{Binding StatusDot}" VerticalAlignment="Center" Margin="12,0,6,0" />
-                    <TextBlock Grid.Column="3" Text="{Binding StatusText}" FontSize="11" Foreground="{StaticResource KcapMutedBrush}"
-                               VerticalAlignment="Center" />
-                    <Button x:Name="SendButton" Grid.Column="4" Classes="kcapPrimary" Content="Send" Command="{Binding SendCommand}" Margin="12,0,0,0"
+                    <Button x:Name="SendButton" Grid.Column="1" Classes="kcapPrimary" Content="Send" Command="{Binding SendCommand}" Margin="12,0,0,0"
                             Padding="12,4" FontSize="12" FontWeight="SemiBold" CornerRadius="7"
                             Background="{StaticResource KcapPrimaryBrush}" Foreground="{StaticResource KcapOnPrimaryBrush}"
                             IsVisible="{Binding !IsReadOnlyParticipant}" />

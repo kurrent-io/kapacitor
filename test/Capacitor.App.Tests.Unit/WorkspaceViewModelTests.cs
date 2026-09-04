@@ -49,7 +49,7 @@ public class WorkspaceViewModelTests {
             daemon.Agents.AddOrUpdate(Agent("a1", "claude", hasTerminal: true, repoPath: "/repo/myproj", model: "sonnet"));
             await (vm.Terminal.PendingResolveWorkForTesting ?? Task.CompletedTask);
 
-            await Assert.That(vm.Title).IsEqualTo("myproj · claude");
+            await Assert.That(vm.Title).IsEqualTo("myproj");
             await Assert.That(vm.RepoLabelText).IsEqualTo("myproj");
             await Assert.That(vm.VendorChip).IsEqualTo("claude (sonnet)");
             await Assert.That(vm.FamilyDot).IsEqualTo("pty");
@@ -106,8 +106,8 @@ public class WorkspaceViewModelTests {
 
             await Assert.That(vm.SessionEnded).IsTrue();
             // The header keeps identifying the session that just ended rather than reverting to
-            // "— · —" -- a frozen last-known snapshot, not a blanked one.
-            await Assert.That(vm.Title).IsEqualTo("myproj · claude");
+            // a blanked placeholder -- a frozen last-known snapshot.
+            await Assert.That(vm.Title).IsEqualTo("myproj");
             await Assert.That(vm.ShowsTerminalTab).IsTrue();
         });
     }

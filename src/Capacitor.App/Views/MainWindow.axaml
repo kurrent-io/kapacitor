@@ -60,9 +60,10 @@
                             <Button.Flyout>
                                 <Flyout Placement="BottomEdgeAlignedRight" VerticalOffset="6"
                                         FlyoutPresenterClasses="kcapPanel">
-                                    <!-- Fixed width so star columns never spill into a horizontal scrollbar;
-                                         empty state stays compact instead of stretching to MaxHeight. -->
-                                    <Border Width="520" MaxHeight="400" Padding="16,14">
+                                    <!-- Fixed width + fixed column widths so header and rows share
+                                         one grid; vertical scroll after MaxHeight; horizontal only
+                                         if content truly overflows (presenter H-scroll stays off). -->
+                                    <Border Width="720" MaxHeight="420" Padding="14,12">
                                         <Grid>
                                             <StackPanel IsVisible="{Binding Activity.IsEmpty}"
                                                         Spacing="6" Margin="0,28"
@@ -76,13 +77,13 @@
                                                            TextAlignment="Center" HorizontalAlignment="Center" />
                                             </StackPanel>
 
-                                            <ScrollViewer IsVisible="{Binding !Activity.IsEmpty}"
-                                                          VerticalScrollBarVisibility="Auto"
-                                                          HorizontalScrollBarVisibility="Disabled">
-                                                <StackPanel>
+                                            <DockPanel IsVisible="{Binding !Activity.IsEmpty}">
+                                                <Border DockPanel.Dock="Top"
+                                                        BorderBrush="{StaticResource KcapBorderBrush}"
+                                                        BorderThickness="0,0,0,1" Padding="4,0,4,8" Margin="0,0,0,2">
                                                     <Grid x:Name="ActivityHeader"
-                                                          ColumnDefinitions="1.6*,0.8*,1.3*,0.9*,1.4*,0.9*,1*"
-                                                          Margin="0,0,0,8">
+                                                          ColumnDefinitions="118,76,128,78,*,78,96"
+                                                          ColumnSpacing="10">
                                                         <TextBlock Grid.Column="0" Text="Time" FontSize="11" FontWeight="SemiBold"
                                                                    Foreground="{StaticResource KcapMutedBrush}" />
                                                         <TextBlock Grid.Column="1" Text="Outcome" FontSize="11" FontWeight="SemiBold"
@@ -98,40 +99,57 @@
                                                         <TextBlock Grid.Column="6" Text="Source" FontSize="11" FontWeight="SemiBold"
                                                                    Foreground="{StaticResource KcapMutedBrush}" />
                                                     </Grid>
+                                                </Border>
 
-                                                    <ItemsControl x:Name="ActivityItems" ItemsSource="{Binding Activity.Rows}">
+                                                <ScrollViewer VerticalScrollBarVisibility="Auto"
+                                                              HorizontalScrollBarVisibility="Auto">
+                                                    <ItemsControl x:Name="ActivityItems" ItemsSource="{Binding Activity.Rows}"
+                                                                  HorizontalAlignment="Stretch">
+                                                        <!-- ContentPresenter defaults to Left; without Stretch each row
+                                                             sizes to its text and columns drift off the header. -->
+                                                        <ItemsControl.Styles>
+                                                            <Style Selector="ItemsControl > ContentPresenter">
+                                                                <Setter Property="HorizontalAlignment" Value="Stretch" />
+                                                            </Style>
+                                                        </ItemsControl.Styles>
                                                         <ItemsControl.ItemTemplate>
                                                             <DataTemplate x:DataType="vm:ActivityRow">
-                                                                <Grid ColumnDefinitions="1.6*,0.8*,1.3*,0.9*,1.4*,0.9*,1*"
-                                                                      Margin="0,3">
-                                                                    <TextBlock Grid.Column="0" Text="{Binding Time}" FontSize="12.5"
-                                                                               Foreground="{StaticResource KcapTextBrush}"
-                                                                               TextTrimming="CharacterEllipsis" />
-                                                                    <TextBlock Grid.Column="1" Text="{Binding Outcome}" FontSize="12.5"
-                                                                               TextTrimming="CharacterEllipsis"
-                                                                               Foreground="{Binding IsAllowed, Converter={x:Static views:OutcomeBrushConverter.Instance}}" />
-                                                                    <TextBlock Grid.Column="2" Text="{Binding Requester}" FontSize="12.5"
-                                                                               Foreground="{StaticResource KcapTextBrush}"
-                                                                               TextTrimming="CharacterEllipsis" />
-                                                                    <TextBlock Grid.Column="3" Text="{Binding KindLabel}" FontSize="12.5"
-                                                                               Foreground="{StaticResource KcapTextBrush}"
-                                                                               TextTrimming="CharacterEllipsis" />
-                                                                    <TextBlock Grid.Column="4" Text="{Binding RepoLeaf}" FontSize="12.5"
-                                                                               Foreground="{StaticResource KcapTextBrush}"
-                                                                               ToolTip.Tip="{Binding RepoFull}"
-                                                                               TextTrimming="CharacterEllipsis" />
-                                                                    <TextBlock Grid.Column="5" Text="{Binding Vendor}" FontSize="12.5"
-                                                                               Foreground="{StaticResource KcapTextBrush}"
-                                                                               TextTrimming="CharacterEllipsis" />
-                                                                    <TextBlock Grid.Column="6" Text="{Binding SourceLabel}" FontSize="12.5"
-                                                                               Foreground="{StaticResource KcapTextBrush}"
-                                                                               TextTrimming="CharacterEllipsis" />
-                                                                </Grid>
+                                                                <Border BorderBrush="{StaticResource KcapBorderBrush}"
+                                                                        BorderThickness="0,0,0,1" Padding="4,8">
+                                                                    <Grid ColumnDefinitions="118,76,128,78,*,78,96"
+                                                                          ColumnSpacing="10">
+                                                                        <TextBlock Grid.Column="0" Text="{Binding Time}" FontSize="12.5"
+                                                                                   Foreground="{StaticResource KcapTextBrush}"
+                                                                                   ToolTip.Tip="{Binding TimeTip}"
+                                                                                   TextTrimming="CharacterEllipsis" />
+                                                                        <TextBlock Grid.Column="1" Text="{Binding Outcome}" FontSize="12.5"
+                                                                                   TextTrimming="CharacterEllipsis"
+                                                                                   Foreground="{Binding IsAllowed, Converter={x:Static views:OutcomeBrushConverter.Instance}}" />
+                                                                        <TextBlock Grid.Column="2" Text="{Binding Requester}" FontSize="12.5"
+                                                                                   Foreground="{StaticResource KcapTextBrush}"
+                                                                                   ToolTip.Tip="{Binding Requester}"
+                                                                                   TextTrimming="CharacterEllipsis" />
+                                                                        <TextBlock Grid.Column="3" Text="{Binding KindLabel}" FontSize="12.5"
+                                                                                   Foreground="{StaticResource KcapTextBrush}"
+                                                                                   TextTrimming="CharacterEllipsis" />
+                                                                        <TextBlock Grid.Column="4" Text="{Binding RepoLeaf}" FontSize="12.5"
+                                                                                   Foreground="{StaticResource KcapTextBrush}"
+                                                                                   ToolTip.Tip="{Binding RepoFull}"
+                                                                                   TextTrimming="CharacterEllipsis" />
+                                                                        <TextBlock Grid.Column="5" Text="{Binding Vendor}" FontSize="12.5"
+                                                                                   Foreground="{StaticResource KcapTextBrush}"
+                                                                                   TextTrimming="CharacterEllipsis" />
+                                                                        <TextBlock Grid.Column="6" Text="{Binding SourceLabel}" FontSize="12.5"
+                                                                                   Foreground="{StaticResource KcapTextBrush}"
+                                                                                   ToolTip.Tip="{Binding SourceLabel}"
+                                                                                   TextTrimming="CharacterEllipsis" />
+                                                                    </Grid>
+                                                                </Border>
                                                             </DataTemplate>
                                                         </ItemsControl.ItemTemplate>
                                                     </ItemsControl>
-                                                </StackPanel>
-                                            </ScrollViewer>
+                                                </ScrollViewer>
+                                            </DockPanel>
                                         </Grid>
                                     </Border>
                                 </Flyout>

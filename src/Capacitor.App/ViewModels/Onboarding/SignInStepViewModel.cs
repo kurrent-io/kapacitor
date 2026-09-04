@@ -428,7 +428,7 @@ public sealed class SignInStepViewModel : ReactiveObject, IWizardStep {
                 SetStatus(
                     CommittedStatus(committed),
                     isError: false,
-                    "You're signed in. Updating the app…");
+                    "You're signed in. Refreshing…");
 
                 break;
             case AuthResult.Cancelled:

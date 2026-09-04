@@ -157,7 +157,8 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     public SessionRailViewModel? Rail { get; }
 
     /// The active profile's name — the tenant slug (profiles are named after it at sign-in).
-    /// "" for a caller without one (tests, pre-onboarding); the footer binding tolerates it.
+    /// "" when absent or when the name is the literal built-in "default" (hiding that segment
+    /// so the rail footer does not read as a second "Default" next to connection state).
     public string TenantName { get; }
 
     /// The launch auto-open's staleness token — see NavigationGate. Read from the SHARED gate, not
@@ -253,7 +254,7 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
         _trackTeardown = trackWorkspaceTeardown ?? RunUntracked;
         _workspaceFactory = workspaceFactory;
         Rail = rail;
-        TenantName = tenantName ?? "";
+        TenantName = ProfileLabelForRail(tenantName);
         CloseWorkspaceCommand = ReactiveCommand.Create(CloseWorkspace);
         ShowHomeCommand = ReactiveCommand.Create(() => { CurrentView = ShellView.Home; });
         ShowSessionsCommand = ReactiveCommand.Create(() => { CurrentView = ShellView.Sessions; });
@@ -458,6 +459,14 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     }
 
     static string Capitalize(string word) => word.Length == 0 ? word : char.ToUpperInvariant(word[0]) + word[1..];
+
+    /// Named profiles stay visible beside Connected; the built-in "default" profile does not —
+    /// that word collides with the model/effort "Default" elsewhere in the chrome.
+    internal static string ProfileLabelForRail(string? profileName) =>
+        string.IsNullOrWhiteSpace(profileName)
+        || string.Equals(profileName, "default", StringComparison.OrdinalIgnoreCase)
+            ? ""
+            : profileName;
 
     // Single word for the merged status line. Local attach State is checked FIRST — the daemon's
     // own upstream Connection word is only meaningful once State is Connected (see the

@@ -288,6 +288,29 @@ public class HomeViewModelTests {
         });
     }
 
+    /// Trailing separators are spelling, not identity — a remembered path and a known/agent path
+    /// that differ only by `/` must stay one menu row.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task The_repository_list_dedups_trailing_separators() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            using var tmp = TempDir.WithPathTo("app-state.json", out var path);
+            var daemon = new FakeDaemonClientService();
+            using var vm = new HomeViewModel(
+                daemon, new AppStateStore(path), new RecordingLaunchClient(),
+                () => Task.FromResult(new[] { "/repo/kcap-cli/" }));
+
+            await vm.SelectRepositoryAsync("/repo/kcap-cli");
+            daemon.Agents.AddOrUpdate(Agent("x", "/repo/kcap-cli/"));
+
+            var repos = (await vm.ListRepositoriesAsync()).Where(r => r.RepoPath.Length > 0).ToList();
+
+            await Assert.That(repos.Count).IsEqualTo(1);
+            await Assert.That(repos[0].RepoPath).IsEqualTo("/repo/kcap-cli");
+            await Assert.That(repos[0].Selected).IsTrue();
+        });
+    }
+
     [Test]
     [NotInParallel("AvaloniaSession")]
     public async Task The_scratch_target_is_always_the_last_repository_entry() {

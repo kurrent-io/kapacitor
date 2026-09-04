@@ -132,8 +132,9 @@ public sealed class ChatTabViewModel : ReactiveObject {
 
     /// The hint is built from the terminal's own availability, so it is true in the windows
     /// where State alone would lie (a reattach or detach under way while State reads Attached).
-    internal static string HintFor(SendAvailability availability, TerminalSessionState state, string vendorLabel) => availability switch {
-        SendAvailability.Ready         => $"Reply to {vendorLabel} · Enter sends · Shift+Enter for a new line",
+    /// Ready omits the harness name — the workspace chip already names it.
+    internal static string HintFor(SendAvailability availability, TerminalSessionState state) => availability switch {
+        SendAvailability.Ready         => "Enter sends · Shift+Enter for a new line",
         SendAvailability.Sending       => "Sending…",
         SendAvailability.Transitioning => "Updating the terminal connection…",
         SendAvailability.ReadOnly      => $"Read-only: {state.Detail}",
@@ -222,10 +223,9 @@ public sealed class ChatTabViewModel : ReactiveObject {
         // goes blank there instead of offering a reply that can never be sent.
         _composerHint = Observable.CombineLatest(
                 terminal.WhenAnyValue(t => t.SendAvailability, t => t.State, (availability, state) => (availability, state)),
-                this.WhenAnyValue(x => x.VendorLabel),
                 this.WhenAnyValue(x => x.IsReadOnlyParticipant),
-                (t, label, readOnly) => readOnly ? "" : HintFor(t.availability, t.state, label))
-            .ToProperty(this, x => x.ComposerHint, HintFor(terminal.SendAvailability, terminal.State, ""))
+                (t, readOnly) => readOnly ? "" : HintFor(t.availability, t.state))
+            .ToProperty(this, x => x.ComposerHint, HintFor(terminal.SendAvailability, terminal.State))
             .DisposeWith(_disposables);
 
         var canSend = Observable.CombineLatest(

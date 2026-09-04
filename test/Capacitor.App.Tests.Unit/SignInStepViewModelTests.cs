@@ -126,7 +126,7 @@ public class SignInStepViewModelTests {
         await Assert.That(satisfied).IsTrue();
         await Assert.That(status).IsEqualTo("Signed in as sam");
         await Assert.That(isError).IsFalse();
-        await Assert.That(detail).IsEqualTo("You're signed in. Updating the app…");
+        await Assert.That(detail).IsEqualTo("You're signed in. Refreshing…");
         await Assert.That(showPrimary).IsFalse();
     }
 

@@ -400,7 +400,9 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
         var seen = new HashSet<string>(PathComparer);
         var paths = new List<string>();
         void Add(string? path) {
-            if (!string.IsNullOrEmpty(path) && seen.Add(path)) paths.Add(path);
+            if (string.IsNullOrEmpty(path)) return;
+            var normalized = PlatformPaths.Normalize(path);
+            if (seen.Add(normalized)) paths.Add(normalized);
         }
 
         foreach (var key in byRepo?.Keys ?? [])
@@ -429,9 +431,9 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
     /// Sets the repository and restores that repository's remembered harness, or DefaultVendor
     /// when none — never the vendor a DIFFERENT repository had selected.
     public async Task SelectRepositoryAsync(string repoPath) {
-        SelectedRepoPath = repoPath;
+        SelectedRepoPath = repoPath.Length == 0 ? ScratchRepoPath : PlatformPaths.Normalize(repoPath);
         var saved = await _state.LoadAsync();
-        SetVendor(Lookup(saved.HarnessByRepo, repoPath) ?? DefaultVendor);
+        SetVendor(Lookup(saved.HarnessByRepo, SelectedRepoPath) ?? DefaultVendor);
     }
 
     /// The one place a vendor change lands, so the model-reset invariant (ids are
@@ -506,16 +508,17 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
     }
 
     /// Replaces any entry whose key matches under PathComparer, so re-choosing a harness for the
-    /// same repository reached under different casing overwrites rather than accumulating a
-    /// second, shadowing entry.
+    /// same repository reached under different casing or a trailing separator overwrites rather
+    /// than accumulating a second, shadowing entry.
     static IReadOnlyDictionary<string, string> WithEntry(IReadOnlyDictionary<string, string>? existing, string key, string value) {
+        var normalized = key.Length == 0 ? key : PlatformPaths.Normalize(key);
         var next = new Dictionary<string, string>();
         if (existing is not null)
             foreach (var entry in existing)
-                if (!PathComparer.Equals(entry.Key, key))
+                if (!PathComparer.Equals(entry.Key, normalized))
                     next[entry.Key] = entry.Value;
 
-        next[key] = value;
+        next[normalized] = value;
         return next;
     }
 }
