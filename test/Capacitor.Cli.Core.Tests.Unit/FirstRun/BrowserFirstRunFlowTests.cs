@@ -1,4 +1,3 @@
-using System.Runtime.CompilerServices;
 using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.FirstRun;
 using Capacitor.Cli.Core.Harness;
@@ -273,18 +272,25 @@ public class BrowserFirstRunFlowTests {
         /// only moves from outside, so a lane that should look slow has to move it itself.</summary>
         public Action? Advance { get; set; }
 
+        /// <summary>Awaited at the start of each half, for a lane that has to PARK rather than jump the
+        /// clock — the poll loop is then genuinely suspended inside it, and Drive goes on pumping.
+        /// Separate from <see cref="Advance"/> because blocking the loop's thread instead would starve
+        /// the very continuation such a test is waiting on.</summary>
+        public Func<Task>? Waits { get; set; }
+
         public List<DateTimeOffset> ScanStamps { get; } = [];
 
-        public Task<ReportFirstRunImportRequest?> DiscoverAsync(
+        public async Task<ReportFirstRunImportRequest?> DiscoverAsync(
                 IReadOnlyList<HarnessId>? vendors, DateTimeOffset asOf, CancellationToken ct) {
             log.Add("scan");
             ScanStamps.Add(asOf);
             Advance?.Invoke();
             Scans.Add(vendors);
 
+            if (Waits is { } wait) await wait();
             if (ScanThrows is { } boom) throw boom;
 
-            return Task.FromResult(Found);
+            return Found;
         }
 
         public List<DateOnly> Dates { get; } = [];
@@ -293,16 +299,17 @@ public class BrowserFirstRunFlowTests {
         /// unaccounted rather than zero.</summary>
         public FirstRunImportTotals? Moved { get; set; } = new(3, 1, 0);
 
-        public Task<FirstRunImportTotals?> ImportAsync(
+        public async Task<FirstRunImportTotals?> ImportAsync(
                 FirstRunImportAnswer answer, DateOnly today, CancellationToken ct) {
             log.Add("import");
             Advance?.Invoke();
             Imports.Add(answer);
             Dates.Add(today);
 
+            if (Waits is { } wait) await wait();
             if (ImportThrows is { } boom) throw boom;
 
-            return Task.FromResult(Moved);
+            return Moved;
         }
 
         public static ReportFirstRunImportRequest Report(int sessions = 12) => new() {
@@ -1824,45 +1831,38 @@ public class BrowserFirstRunFlowTests {
     /// time back to its own deadline, so liveness read from polling would call the machine gone during
     /// the one stretch it is working hardest.
     ///
-    /// <para><b>Pinned structurally rather than by observing beats during an import.</b> That test needs
-    /// the beat's continuation to run while the poll thread is parked inside the lane's synchronous
-    /// hook, and a fake clock cannot make it: missed ticks collapse into one catch-up on resume, so the
-    /// count does not follow the advances. Driving it by wall time instead is a race that a loaded
-    /// runner loses. The regression this guards against is someone moving the beat inside the loop,
-    /// and where it starts is exactly what says whether they did.</para>
+    /// <para>The lane parks in an <c>await</c> rather than blocking a thread, which is what makes this
+    /// deterministic: <c>Drive</c> goes on advancing the fake clock while the poll loop sits inside the
+    /// lane, so the beat's timer fires from the test's own pumping rather than from wall time.</para>
     /// </summary>
     [Test]
-    public async Task The_beat_starts_outside_the_poll_it_has_to_outlive() {
-        var source = await File.ReadAllTextAsync(FlowSourcePath());
+    public async Task The_beat_goes_on_while_the_import_holds_the_poll() {
+        var h = Build(importing: true);
+        h.Channel.Polls.Enqueue(new(200, ImportAnswered()));
+        h.Channel.Polls.Enqueue(new(200, Done()));
 
-        var started = source.IndexOf("FirstRunHeartbeat.Start(", StringComparison.Ordinal);
-        var polled  = source.IndexOf("await PollAsync(", StringComparison.Ordinal);
+        var before = 0;
+        var during = 0;
 
-        await Assert.That(started).IsGreaterThan(-1).Because("nothing starts the beat at all");
-        await Assert.That(polled).IsGreaterThan(-1).Because("the poll call this is measured against moved");
+        // Runs with the poll loop parked inside the lane, which is the only moment this claim is about.
+        h.Importing!.Waits = async () => {
+            before = h.Channel.Beats;
 
-        await Assert.That(started).IsLessThan(polled)
-                    .Because("a beat started inside the poll stops for the whole of an import, which is "
-                           + "the staleness this design exists to avoid");
+            // Bounded so a beat that never comes fails the assertion below instead of hanging.
+            for (var i = 0; i < YieldBudget && h.Channel.Beats <= before; i++) await Task.Yield();
 
-        // The loop must not reach the beat at all: a beat sent from inside PollAsync would tick only when
-        // the loop does, whatever the ordering above says.
-        var loop = source[polled..];
+            during = h.Channel.Beats;
+        };
 
-        await Assert.That(loop).DoesNotContain("HeartbeatAsync")
-                    .Because("the poll loop sends its own beat, so an import silences the machine again");
+        await Run(h);
+
+        await Assert.That(during).IsGreaterThan(before)
+                    .Because("the machine fell silent for the whole import, which is what a death looks like");
     }
 
-    static string FlowSourcePath([CallerFilePath] string here = "") {
-        var dir = Path.GetDirectoryName(here);
-
-        while (dir is not null && !File.Exists(Path.Combine(dir, "Capacitor.slnx")))
-            dir = Path.GetDirectoryName(dir);
-
-        return dir is null
-            ? throw new InvalidOperationException($"Could not locate repo root walking up from {here}")
-            : Path.Combine(dir, "src", "Capacitor.Cli.Core", "FirstRun", "BrowserFirstRunFlow.cs");
-    }
+    /// <summary>Generous: it is only ever exhausted by a beat that is not coming, and each yield is a
+    /// scheduler turn rather than a wait.</summary>
+    const int YieldBudget = 200_000;
 
     // ---- saying the machine has gone ----
 

@@ -31,14 +31,31 @@ public class FirstRunHeartbeatTests {
 
         public Exception? Throws { get; set; }
 
+        /// <summary>Answered to the next beat, then cleared. Models a server that throttles once.</summary>
+        public FirstRunHeartbeatOutcome? Next { get; set; }
+
+        /// <summary>Never completes, so a beat only ends when its own bound cancels it.</summary>
+        public bool BlockForever { get; init; }
+
+        public List<CancellationToken> Tokens { get; } = [];
+
         public void Release() => _gate.TrySetResult();
 
         public async Task<FirstRunHeartbeatOutcome> HeartbeatAsync(
                 string serverUrl, string flowId, CancellationToken ct) {
             Interlocked.Increment(ref _beats);
 
+            lock (Tokens) Tokens.Add(ct);
+
+            if (BlockForever) await Task.Delay(Timeout.Infinite, ct);
             if (Block) await _gate.Task;
             if (Throws is { } boom) throw boom;
+
+            if (Next is { } once) {
+                Next = null;
+
+                return once;
+            }
 
             return new(204);
         }
@@ -116,7 +133,9 @@ public class FirstRunHeartbeatTests {
 
         var beat = FirstRunHeartbeat.Start(channel, Server, Flow, clock, Beat);
 
-        await ReachesAsync(channel, clock, 2);
+        await Assert.That(await ReachesAsync(channel, clock, 2)).IsTrue()
+                    .Because("a beat that never started would make the count below hold trivially");
+
         beat.Dispose();
 
         var settled = channel.Beats;
@@ -161,5 +180,59 @@ public class FirstRunHeartbeatTests {
         beat.Dispose();
 
         await Assert.That(channel.Beats).IsEqualTo(1);
+    }
+
+    /// <summary>
+    /// The client's own HTTP timeout is several intervals, so without a bound of its own one black-holed
+    /// connection — a laptop wake, a NAT rebind, the conditions this feature is for — costs several
+    /// missed beats from a single request, and the machine reads as gone for the whole of it.
+    /// </summary>
+    [Test]
+    public async Task A_beat_is_bounded_by_the_interval() {
+        var channel = new FakeChannel { BlockForever = true };
+        var clock   = new FakeTimeProvider();
+
+        using var beat = FirstRunHeartbeat.Start(channel, Server, Flow, clock, Beat);
+
+        // The first beat is hung; only its own bound can end it, and the bound is on the fake clock.
+        await Assert.That(await ReachesAsync(channel, clock, 2)).IsTrue()
+                    .Because($"a hung beat blocked the loop; it reached {channel.Beats}");
+
+        CancellationToken first;
+
+        lock (channel.Tokens) first = channel.Tokens[0];
+
+        await Assert.That(first.IsCancellationRequested).IsTrue()
+                    .Because("the hung beat was abandoned rather than cancelled, so its request is still open");
+    }
+
+    /// <summary>
+    /// A 429 is an instruction, not a failure, and it is the one status this beat reads. Beating through
+    /// it would spend a throttled tenant's budget on liveness and leave the poll — the half a human is
+    /// waiting on — in penalty.
+    /// </summary>
+    [Test]
+    public async Task A_throttled_beat_goes_quiet_for_as_long_as_it_was_told() {
+        var channel = new FakeChannel { Next = new FirstRunHeartbeatOutcome(429, TimeSpan.FromMinutes(2)) };
+        var clock   = new FakeTimeProvider();
+
+        using var beat = FirstRunHeartbeat.Start(channel, Server, Flow, clock, Beat);
+
+        await Assert.That(channel.Beats).IsEqualTo(1);
+
+        // Well past the interval, nowhere near the delay the server named.
+        for (var i = 0; i < 10; i++) {
+            clock.Advance(Beat);
+
+            await Task.Delay(5);
+        }
+
+        await Assert.That(channel.Beats).IsEqualTo(1)
+                    .Because("the beat kept posting through a throttle it had been given a delay for");
+
+        clock.Advance(TimeSpan.FromMinutes(2));
+
+        await Assert.That(await ReachesAsync(channel, clock, 2)).IsTrue()
+                    .Because("the beat never resumed after the throttle window passed");
     }
 }

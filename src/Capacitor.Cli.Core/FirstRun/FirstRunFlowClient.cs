@@ -35,9 +35,13 @@ public sealed record FirstRunRelinquishOutcome(int StatusCode) {
     public bool Recorded => StatusCode is >= 200 and < 300;
 }
 
-/// <summary>One beat. Never retried and never inspected for success by the sender: the next beat is
-/// already due, and a run of them failing is precisely what the browser is meant to notice.</summary>
-public sealed record FirstRunHeartbeatOutcome(int StatusCode) {
+/// <summary>One beat. Never retried, and success is not inspected: the next beat is already due, and a
+/// run of them failing is precisely what the browser is meant to notice.
+///
+/// <para><paramref name="RetryAfter"/> is the exception, populated only on a 429 and only when the server
+/// sent one. A throttle is an instruction rather than a failure, and beating through it would spend a
+/// tenant's budget on liveness and leave the poll — the interactive half — in penalty.</para></summary>
+public sealed record FirstRunHeartbeatOutcome(int StatusCode, TimeSpan? RetryAfter = null) {
     public bool Recorded => StatusCode is >= 200 and < 300;
 }
 
@@ -229,7 +233,9 @@ public sealed class FirstRunFlowClient(HttpClient http) : IFirstRunFlowChannel {
 
             using var resp = await http.SendAsync(req, ct);
 
-            return new((int)resp.StatusCode);
+            var status = (int)resp.StatusCode;
+
+            return new(status, status is 429 ? RetryAfter(resp) : null);
         } catch (Exception e) when (IsTransient(e, ct)) {
             return new(0);
         }

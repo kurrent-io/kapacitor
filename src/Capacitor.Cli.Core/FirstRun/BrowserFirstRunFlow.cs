@@ -132,12 +132,21 @@ public sealed class BrowserFirstRunFlow(
             interruptReason: () => InterruptReason(Volatile.Read(ref settled)));
 
         // Says this machine is still here on its own timer, so a death that sends nothing — a kill, a
-        // lost network, a shut lid — is still something the browser can see. Disposed with the leg.
+        // lost network, a shut lid — is still something the browser can see.
         using var beat = FirstRunHeartbeat.Start(channel, serverUrl, flowId, _clock);
 
         try {
             Volatile.Write(ref settled, await PollAsync(serverUrl, flowId, report, ct));
         } finally {
+            // Stopped before the notice below, not left to the `using`: a beat scheduled after the
+            // relinquish says this machine is here, having just said it had gone. Synchronous, so it
+            // costs the leg's exit nothing.
+            //
+            // Closes the SCHEDULED beat only. One already in flight, and every beat on the
+            // Environment.Exit path — which runs no `using` at all — can still arrive late, so a
+            // relinquish has to be terminal on the server rather than merely first.
+            beat.Dispose();
+
             progress.WaitEnded();
         }
 

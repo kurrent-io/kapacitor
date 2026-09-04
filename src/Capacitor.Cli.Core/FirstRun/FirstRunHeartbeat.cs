@@ -17,6 +17,11 @@ public sealed class FirstRunHeartbeat : IDisposable {
     /// verdict. Lighter than the 2s poll it runs beside.</summary>
     public static readonly TimeSpan Interval = TimeSpan.FromSeconds(5);
 
+    /// <summary>How long to go quiet on a throttle that names no delay. Well past the staleness window,
+    /// deliberately: a throttled tenant reading as silent is honest — the machine cannot be heard — and
+    /// beating through the refusal to avoid saying so would spend the budget the poll needs.</summary>
+    static readonly TimeSpan ThrottleBackoff = TimeSpan.FromSeconds(60);
+
     readonly CancellationTokenSource _stopping = new();
     readonly Task                    _beating;
 
@@ -64,9 +69,12 @@ public sealed class FirstRunHeartbeat : IDisposable {
 
         using var timer = new PeriodicTimer(interval, clock);
 
+        var quietUntil = DateTimeOffset.MinValue;
+
         try {
             while (!ct.IsCancellationRequested) {
-                await SendOneAsync(channel, serverUrl, flowId, ct);
+                if (clock.GetUtcNow() >= quietUntil)
+                    quietUntil = await SendOneAsync(channel, serverUrl, flowId, clock, interval, ct);
 
                 if (!await timer.WaitForNextTickAsync(ct)) return;
             }
@@ -79,20 +87,34 @@ public sealed class FirstRunHeartbeat : IDisposable {
     }
 
     /// <summary>
-    /// Swallows everything, including a cancel.
+    /// One beat, bounded by the interval, returning the instant to stay quiet until.
     ///
-    /// <para>Unlike every other await in this feature, a cancel is NOT propagated: this runs on a
-    /// detached task, so an escaping exception has no caller to reach and would surface as an unhandled
-    /// one on a background thread. The loop reads the token itself, which is where stopping is decided.
-    /// A status code is not inspected at all — the next beat is already due, and a run of them failing
-    /// is the signal, which only the server is positioned to read.</para>
+    /// <para><b>Bounded, or one black-holed connection costs the client's whole HTTP timeout.</b> That
+    /// timeout is three intervals, so a single wake-from-sleep or NAT rebind — the conditions this
+    /// feature exists for — would produce a gap of several missed beats from one request.</para>
+    ///
+    /// <para><b>Success is not inspected; a throttle is.</b> A failing beat needs no handling, because
+    /// the next is already due and a run of them is the signal. A 429 is an instruction rather than a
+    /// failure, and the poll shares this tenant's budget.</para>
+    ///
+    /// <para>Swallows everything, including a cancel: this runs on a detached task, so an escaping
+    /// exception has no caller to reach. The loop reads the token itself.</para>
     /// </summary>
-    static async Task SendOneAsync(
-            IFirstRunFlowChannel channel, string serverUrl, string flowId, CancellationToken ct) {
+    static async Task<DateTimeOffset> SendOneAsync(
+            IFirstRunFlowChannel channel, string serverUrl, string flowId, TimeProvider clock,
+            TimeSpan interval, CancellationToken ct) {
         try {
-            await channel.HeartbeatAsync(serverUrl, flowId, ct);
+            using var bound   = new CancellationTokenSource(interval, clock);
+            using var either  = CancellationTokenSource.CreateLinkedTokenSource(ct, bound.Token);
+
+            var outcome = await channel.HeartbeatAsync(serverUrl, flowId, either.Token);
+
+            return outcome.StatusCode is 429
+                ? clock.GetUtcNow() + (outcome.RetryAfter ?? ThrottleBackoff)
+                : DateTimeOffset.MinValue;
         } catch (Exception) {
             // Best effort, by construction.
+            return DateTimeOffset.MinValue;
         }
     }
 }
