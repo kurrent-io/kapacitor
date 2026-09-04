@@ -8,6 +8,7 @@ namespace Capacitor.Cli.SessionStartMemory;
     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     WriteIndented = false)]
 [JsonSerializable(typeof(SessionStartMemoryEntry[]))]
+[JsonSerializable(typeof(SessionStartMemoryIndexResponse))]
 [JsonSerializable(typeof(GuidelinesResponse))]
 [JsonSerializable(typeof(SessionStartMemoryStoreRecord))]
 [JsonSerializable(typeof(SessionStartMemoryStoreMetadata))]

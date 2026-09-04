@@ -394,6 +394,29 @@ public class ClaudeHookCommandTests {
     }
 
     [Test, NotInParallel]
+    public async Task session_start_carries_the_projects_lead_in_into_additional_context() {
+        // End of the whole path: the CLI asks for projects, the server answers in the object shape,
+        // and the lead-in reaches the harness envelope. The index is deliberately EMPTY, so the
+        // projects are the only thing keeping the hook from writing nothing at all.
+        using var fx = new Fixture(Config.Root);
+        fx.RespondJson = "{}";
+        fx.MemoryIndexBody = """{"entries":[],"projects":[{"slug":"capacitor","name":"Kurrent Capacitor"}]}""";
+
+        var sid = Guid.NewGuid().ToString("N");
+        var (exit, stdout) = await RunCapturingStdoutAsync(() =>
+            fx.HandleAsync($$"""{"hook_event_name":"SessionStart","session_id":"{{sid}}","cwd":"/tmp","source":"startup"}"""));
+
+        await Assert.That(exit).IsEqualTo(0);
+        var query = fx.MemoryIndexQuery;
+        await Assert.That(query).Contains("include=projects");
+        var ctx = JsonNode.Parse(stdout)!["hookSpecificOutput"]!["additionalContext"]!.GetValue<string>();
+        await Assert.That(ctx).Contains(
+            "This repo belongs to project \"capacitor\" (Kurrent Capacitor). " +
+            "Save learnings that span its repos with project: \"capacitor\".");
+        await Assert.That(ctx).DoesNotContain("## Team memory");
+    }
+
+    [Test, NotInParallel]
     public async Task session_start_with_a_204_memory_index_response_emits_nothing() {
         // The provider special-cases 204 NoContent as CompleteWithoutContext without even
         // reading a body.
@@ -1178,6 +1201,10 @@ public class ClaudeHookCommandTests {
         public bool MemoryIndexRequested    => MemoryIndexRequestCount > 0;
         public int  MemoryIndexRequestCount => _memoryServer.LogEntries
             .Count(e => e.RequestMessage.Path == "/api/memories/index");
+
+        /// <summary>The query string of the last index GET, for a test pinning what the CLI asked for.</summary>
+        public string? MemoryIndexQuery => _memoryServer.LogEntries
+            .LastOrDefault(e => e.RequestMessage.Path == "/api/memories/index")?.RequestMessage.RawQuery;
 
         /// <summary>The resolution the hook reads its per-profile settings through. A test that
         /// needs a setting honoured passes the profile here rather than steering process-global

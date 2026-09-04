@@ -6,6 +6,29 @@ diff. `CLAUDE.md` holds the invariants; `docs/superpowers/specs/` holds the full
 Not release notes. Each entry is written as of the change that produced it and is not revised as the
 code moves on; where an entry disagrees with the code, the code wins.
 
+## The SessionStart index names the repo's projects
+
+An agent can only land a memory at project scope by passing a slug, and nothing in a session told it
+which project the cwd repo is in — so cross-repo learnings went to org, the only cross-repo scope
+reachable without one. The index fragment now opens with a line per project naming that slug.
+
+**The projects ride the index call, negotiated by `include=projects`.** The body was a bare array and
+a CLI that predates this drops the whole fragment when it is not one, so the shape could not simply
+change. A sibling endpoint or a superseding one costs a second round trip inside a hook budget that
+is already tight on Cursor and Claude; a response header cannot carry a non-ASCII project name
+without an encoding nobody else in the wire needs. The parameter costs nothing and degrades in both
+directions: an older server ignores it and answers with the array, a newer one answers with an
+object, and the CLI decides which it got by sniffing the opening token. Sniffing rather than
+attempting the array parse matters — a failed deserialize is indistinguishable from a corrupt body,
+which is retried, and an old server would never answer differently.
+
+**The parameter goes out even with no repo resolved.** It declares that this CLI can read the object
+body, not that a repo is in hand; making it conditional would leave the server answering one request
+with two shapes.
+
+**Projects alone are enough to emit a fragment**, where entries alone are not. A project holding no
+memories yet is exactly the state the agent is being asked to fix, and it cannot without the slug.
+
 ## The flow can enable the daemon as a service
 
 `kcap daemon service ensure` existed with no caller in the product. Making the browser able to ask for it
