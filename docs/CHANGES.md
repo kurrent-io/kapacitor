@@ -711,12 +711,19 @@ the signal, and only the server is positioned to read it. Two statuses are read,
 discoverable by a later beat — a throttle, which is an instruction and would otherwise spend the budget
 the poll needs, and an absent route, which answers the same way for the whole leg.
 
-**A beat is never cancelled, only stopped being waited for.** The beat rides the setup client, whose 401
-handler rotates a single-use refresh token and then persists it, with the rotation itself uncancellable.
-A cancel landing between the two spends the credential server-side and never writes the replacement,
-logging the user out mid-setup. Abandoning the wait costs an overlapping no-op POST; cancelling costs the
-session — and it lets a beat that legitimately needs longer than one interval still land.
+**A beat is never cancelled.** The beat rides the setup client, whose 401 handler rotates a single-use
+refresh token and then persists it, the rotation itself being uncancellable. A cancel landing between the
+two spends the credential server-side and never writes the replacement, logging the user out mid-setup.
+So the stop token is kept off the request entirely: what ends a beat is the client's own timeout, and what
+ends the loop is the token one level up.
 
-**Stopping does not wait for a beat in flight** — the cancel aborts it. Nothing is owed to it: the
-relinquish that follows states the ending, and the browser reads a stated ending ahead of an inferred
+**One beat is in flight at a time, carried across ticks rather than abandoned.** A dropped task's verdict
+is never read, and a throttling or absent-route server is exactly the one whose answer outruns an
+interval — so the two statuses worth reading would be missed precisely when they matter. Issuing a fresh
+beat per tick regardless would also accumulate one open POST per interval against a wedged network, on the
+machine whose network is the failing thing. The cost is that an outstanding beat holds the lane, which is
+why the client that carries it is given a timeout rather than the 100-second default.
+
+**Stopping does not wait for a beat in flight**, and does not cancel it either. Nothing is owed to it:
+the relinquish that follows states the ending, and the browser reads a stated ending ahead of an inferred
 one.

@@ -17,6 +17,11 @@ public sealed class FirstRunHeartbeat : IDisposable {
     /// verdict. Lighter than the 2s poll it runs beside.</summary>
     public static readonly TimeSpan Interval = TimeSpan.FromSeconds(5);
 
+    /// <summary>Consecutive not-found answers before the beat gives up on the route. More than one, so a
+    /// blip cannot be terminal; small, because a route that is genuinely absent answers this way every
+    /// time and beating on is hundreds of authenticated no-ops per run.</summary>
+    const int UnavailableBeforeStopping = 3;
+
     /// <summary>How long to go quiet on a throttle that names no delay.</summary>
     static readonly TimeSpan ThrottleBackoff = TimeSpan.FromSeconds(30);
 
@@ -47,28 +52,31 @@ public sealed class FirstRunHeartbeat : IDisposable {
         new(channel, serverUrl, flowId, clock, interval ?? Interval);
 
     /// <summary>
-    /// Stops scheduling, and does not wait. A beat in flight is aborted by the cancel rather than
-    /// finished — nothing is owed to it: the relinquish that follows states the ending, and the browser
-    /// reads a stated ending ahead of an inferred one. Waiting instead would put an await on the leg's
-    /// way out for a difference nothing can observe.
+    /// Stops scheduling. Nothing is cancelled: the request a beat is sitting in may be recovering a
+    /// credential, and killing it there is what strands a rotated refresh token — see
+    /// <see cref="SendAsync"/>. An outstanding beat is left to finish or to time out on the client's
+    /// own deadline, and a beat that lands late costs nothing a stated ending does not outrank.
     /// </summary>
     public void Dispose() {
         if (Interlocked.Exchange(ref _stopped, 1) != 0) return;
 
-        try {
-            _stopping.Cancel();
-        } catch (ObjectDisposedException) {
-            // The loop disposes the source once it ends, and it ends only on this cancel — so this is
-            // unreachable while that holds. Guarded anyway: an await added to the loop that can throw
-            // something other than the cancel would break the ordering, and the cost of finding out
-            // would be this throwing out of the leg's `using` and masking its result.
-        }
+        _stopping.Cancel();
 
-        // Observed so a fault cannot surface as an unobserved task exception. The loop swallows
-        // everything a beat can throw, so there is only ever the cancel we just asked for.
+        // Observed so a fault cannot surface as an unobserved task exception. Every beat is wrapped
+        // before it is awaited, so there is only ever the cancel we just asked for.
         _ = _beating.ContinueWith(static t => _ = t.Exception, TaskScheduler.Default);
     }
 
+    /// <summary>
+    /// One beat in flight at a time, carried across ticks.
+    ///
+    /// <para><b>Held rather than abandoned</b>, for three reasons that are one change. A dropped task's
+    /// verdict is never read, and a throttling or absent-route server is exactly the one whose answer
+    /// outruns an interval — so the two statuses this reads would be missed precisely when they matter.
+    /// A new beat per tick against a wedged network accumulates one open POST per interval until the
+    /// client's timeout, which on a client that sets none is the 100s default. And the stop token stays
+    /// off the request entirely, which is what keeps a credential recovery intact.</para>
+    /// </summary>
     static async Task BeatAsync(
             IFirstRunFlowChannel channel, string serverUrl, string flowId, TimeProvider clock,
             TimeSpan interval, CancellationTokenSource stopping) {
@@ -76,82 +84,68 @@ public sealed class FirstRunHeartbeat : IDisposable {
 
         using var timer = new PeriodicTimer(interval, clock);
 
-        var quietUntil = DateTimeOffset.MinValue;
+        Task<FirstRunHeartbeatOutcome>? pending = null;
+
+        var quietUntil  = DateTimeOffset.MinValue;
+        var unavailable = 0;
 
         try {
             while (!ct.IsCancellationRequested) {
-                if (clock.GetUtcNow() >= quietUntil) {
-                    var verdict = await SendOneAsync(channel, serverUrl, flowId, clock, interval, ct);
+                if (pending is { IsCompleted: true }) {
+                    var outcome = await pending;
 
-                    // A route this server does not have answers the same way for the rest of the leg, so
-                    // beating on is ~360 authenticated no-ops that can trip the very limiter the throttle
-                    // handling above exists to keep clear. Same oracle the create uses.
-                    if (verdict.Unavailable) return;
+                    pending = null;
 
-                    quietUntil = verdict.QuietUntil;
+                    // Transient rather than terminal on the first refusal: a gateway 405 mid-deploy or a
+                    // proxy rejecting POST on a path it does not know would otherwise silence liveness for
+                    // the rest of the leg while the poll keeps succeeding on the same client — the browser
+                    // inferring the machine has gone from one that is demonstrably still talking to it.
+                    if (outcome.StatusCode is 404 or 405) {
+                        if (++unavailable >= UnavailableBeforeStopping) return;
+                    } else {
+                        unavailable = 0;
+                    }
+
+                    if (outcome.StatusCode is 429) {
+                        var asked = outcome.RetryAfter ?? ThrottleBackoff;
+
+                        quietUntil = clock.GetUtcNow()
+                                   + (asked > MaxThrottleBackoff ? MaxThrottleBackoff : asked);
+                    }
                 }
+
+                if (pending is null && clock.GetUtcNow() >= quietUntil)
+                    pending = SendAsync(channel, serverUrl, flowId);
 
                 if (!await timer.WaitForNextTickAsync(ct)) return;
             }
         } catch (OperationCanceledException) {
-        } finally {
-            // Here rather than in Dispose, which returns while this is still using the token: the loop
-            // ends only on the cancel, so this is provably the last read of it.
-            stopping.Dispose();
+            // The stop. The source is deliberately not disposed here: this loop no longer ends only on
+            // the cancel, so a dispose here could race Dispose's own use of it — and a source with no
+            // timer and no registrations left costs nothing to leave for the collector.
         }
     }
 
-    /// <summary>What one beat leaves behind: when the next may be sent, and whether to send any more.</summary>
-    readonly record struct BeatVerdict(DateTimeOffset QuietUntil, bool Unavailable) {
-        public static readonly BeatVerdict Continue = new(DateTimeOffset.MinValue, false);
-    }
-
     /// <summary>
-    /// One beat. The loop stops WAITING after an interval; it never cancels the request.
+    /// One beat, issued with no cancellation and swallowing everything.
     ///
-    /// <para><b>This must not hard-cancel, and that is the load-bearing rule here.</b> The beat rides the
-    /// setup client, whose 401 handler recovers the credential — and that recovery rotates a single-use
-    /// refresh token before persisting it, with the rotation itself uncancellable. A token tripping
-    /// between the two spends the credential server-side and never writes the replacement, logging the
-    /// user out mid-setup. Abandoning the wait costs an overlapping beat; cancelling costs the session.
-    /// </para>
+    /// <para><b>The token is withheld deliberately, and it is the load-bearing rule here.</b> The beat
+    /// rides the setup client, whose 401 handler recovers the credential: WorkOS rotates a single-use
+    /// refresh token — a call that cannot be cancelled — and the replacement is persisted afterwards
+    /// under whatever token the request carried. A cancel landing between the two spends the credential
+    /// server-side and never writes what replaced it, logging the user out mid-setup. What ends a beat is
+    /// the client's own timeout; what ends the LOOP is the token, one level up.</para>
     ///
-    /// <para>So the bound is on the loop's patience rather than on the request, which also lets a beat
-    /// that legitimately needs longer than one interval — cold TLS after a wake, a tethered link — still
-    /// land, instead of being cancelled just before it would have succeeded.</para>
-    ///
-    /// <para>Success is not inspected. A throttle and an absent route are, because both say something no
-    /// later beat can discover for itself.</para>
+    /// <para>The channel call is invoked inside, not passed in: <see cref="IFirstRunFlowChannel"/> is
+    /// public and nothing obliges an implementation to be <c>async</c>, so a synchronous throw evaluated
+    /// as an argument would escape this and stop the loop for the rest of the leg.</para>
     /// </summary>
-    static async Task<BeatVerdict> SendOneAsync(
-            IFirstRunFlowChannel channel, string serverUrl, string flowId, TimeProvider clock,
-            TimeSpan interval, CancellationToken ct) {
-        var beat = Observed(channel.HeartbeatAsync(serverUrl, flowId, ct));
-
-        var waited = await Task.WhenAny(beat, Task.Delay(interval, clock, ct));
-
-        // Still in flight: leave it running and take the next tick. It will finish or time out on the
-        // client's own deadline, and a beat that lands late is still a beat.
-        if (waited != beat) return BeatVerdict.Continue;
-
-        var outcome = await beat;
-
-        if (outcome.StatusCode is 404 or 405) return new(DateTimeOffset.MinValue, Unavailable: true);
-
-        if (outcome.StatusCode is not 429) return BeatVerdict.Continue;
-
-        var asked = outcome.RetryAfter ?? ThrottleBackoff;
-
-        return new(clock.GetUtcNow() + (asked > MaxThrottleBackoff ? MaxThrottleBackoff : asked), false);
-    }
-
-    /// <summary>Swallows everything a beat can throw, including a cancel: it runs detached, so an
-    /// escaping exception has no caller to reach and a request abandoned by the loop above must not
-    /// surface as an unobserved fault.</summary>
-    static async Task<FirstRunHeartbeatOutcome> Observed(Task<FirstRunHeartbeatOutcome> beat) {
+    static async Task<FirstRunHeartbeatOutcome> SendAsync(
+            IFirstRunFlowChannel channel, string serverUrl, string flowId) {
         try {
-            return await beat;
+            return await channel.HeartbeatAsync(serverUrl, flowId, CancellationToken.None);
         } catch (Exception) {
+            // Best effort, by construction. A status is read for what it says, never for whether it worked.
             return new(0);
         }
     }

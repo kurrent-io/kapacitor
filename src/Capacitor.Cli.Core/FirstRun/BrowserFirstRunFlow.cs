@@ -131,10 +131,13 @@ public sealed class BrowserFirstRunFlow(
         // lost network, a shut lid — is still something the browser can see.
         using var beat = FirstRunHeartbeat.Start(channel, serverUrl, flowId, _clock);
 
-        // Stopped by whichever path sends, INSIDE the send rather than around it — which is what makes
-        // the ordering hold on the interrupt path too. There, Environment.Exit runs no `using` at all,
-        // so a beat scheduled by the timer could otherwise post inside the notice's own budget and tell
-        // the server this machine is here, moments after it said it had gone.
+        // Stopped inside the send rather than around it, which is what makes the ordering hold on the
+        // interrupt path: Environment.Exit runs no `using` at all, so a beat scheduled by the timer could
+        // otherwise post inside the notice's own budget and say this machine is here, moments after it
+        // said it had gone.
+        //
+        // Only the paths that SEND come through here — a notice with nothing to say never invokes this —
+        // so the `finally` below is what covers the rest.
         using var notice = _interrupts.Arm(
             (reason, token) => {
                 beat.Dispose();
@@ -146,6 +149,10 @@ public sealed class BrowserFirstRunFlow(
         try {
             Volatile.Write(ref settled, await PollAsync(serverUrl, flowId, report, ct));
         } finally {
+            // Covers every ending that reaches it, including the ones with nothing to relinquish, so the
+            // timer is not left scheduling through the notice budget and the telemetry flush after it.
+            beat.Dispose();
+
             progress.WaitEnded();
         }
 

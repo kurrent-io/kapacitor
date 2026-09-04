@@ -34,6 +34,9 @@ public class FirstRunHeartbeatTests {
         /// <summary>Answered to the next beat, then cleared. Models a server that throttles once.</summary>
         public FirstRunHeartbeatOutcome? Next { get; set; }
 
+        /// <summary>Answered to every beat. Models a route that is simply not there.</summary>
+        public FirstRunHeartbeatOutcome? Always { get; set; }
+
         /// <summary>Never completes, so a beat only ends when its own bound cancels it.</summary>
         public bool BlockForever { get; init; }
 
@@ -57,7 +60,7 @@ public class FirstRunHeartbeatTests {
                 return once;
             }
 
-            return new(204);
+            return Always ?? new(204);
         }
 
         public Task<FirstRunCreateOutcome> CreateAsync(string s, string f, FirstRunMachineReport r, CancellationToken ct) => throw new NotSupportedException();
@@ -183,30 +186,41 @@ public class FirstRunHeartbeatTests {
     }
 
     /// <summary>
-    /// A beat that hangs must not hold the loop, and must not be cancelled either.
+    /// A hung beat is never cancelled, and never joined by a second.
     ///
     /// <para><b>The no-cancel half is the load-bearing one.</b> The beat rides the setup client, whose
-    /// 401 handler rotates a single-use refresh token and then persists it, with the rotation itself
-    /// uncancellable. A token tripping between the two spends the credential server-side and never
-    /// writes the replacement, logging the user out mid-setup — so the loop abandons the WAIT and leaves
-    /// the request alone.</para>
+    /// 401 handler rotates a single-use refresh token and then persists it, the rotation itself being
+    /// uncancellable. A cancel landing between the two spends the credential server-side and never writes
+    /// the replacement, logging the user out mid-setup — so the stop token is kept off the request
+    /// entirely and the client's own timeout is what ends a beat.</para>
+    ///
+    /// <para>The no-second half is the cost of that: an outstanding beat holds the lane, so a wedged
+    /// network is silent until the request times out rather than piling up one open POST per interval on
+    /// the very machine whose network is failing.</para>
     /// </summary>
     [Test]
-    public async Task A_hung_beat_holds_neither_the_loop_nor_a_cancel() {
+    public async Task A_hung_beat_is_neither_cancelled_nor_joined() {
         var channel = new FakeChannel { BlockForever = true };
         var clock   = new FakeTimeProvider();
 
         using var beat = FirstRunHeartbeat.Start(channel, Server, Flow, clock, Beat);
 
-        await Assert.That(await ReachesAsync(channel, clock, 2)).IsTrue()
-                    .Because($"a hung beat blocked the loop; it reached {channel.Beats}");
+        for (var i = 0; i < 10; i++) {
+            clock.Advance(Beat);
+
+            await Task.Delay(5);
+        }
+
+        await Assert.That(channel.Beats).IsEqualTo(1)
+                    .Because("beats piled up behind a hung one, on the machine whose network is failing");
 
         CancellationToken first;
 
         lock (channel.Tokens) first = channel.Tokens[0];
 
-        await Assert.That(first.IsCancellationRequested).IsFalse()
-                    .Because("the hung request was cancelled, which is what can strand a rotated credential");
+        await Assert.That(first.CanBeCanceled).IsFalse()
+                    .Because("the request was issued with a cancellable token, which is what can strand "
+                           + "a rotated credential when the stop lands mid-recovery");
     }
 
     /// <summary>
@@ -264,21 +278,36 @@ public class FirstRunHeartbeatTests {
     [Test]
     [Arguments(404)]
     [Arguments(405)]
-    public async Task A_missing_route_stops_the_beat(int status) {
-        var channel = new FakeChannel { Next = new FirstRunHeartbeatOutcome(status) };
+    public async Task A_route_that_is_never_there_stops_the_beat(int status) {
+        var channel = new FakeChannel { Always = new FirstRunHeartbeatOutcome(status) };
         var clock   = new FakeTimeProvider();
 
         using var beat = FirstRunHeartbeat.Start(channel, Server, Flow, clock, Beat);
 
-        await Assert.That(channel.Beats).IsEqualTo(1);
-
-        for (var i = 0; i < 10; i++) {
+        for (var i = 0; i < 20; i++) {
             clock.Advance(Beat);
 
             await Task.Delay(5);
         }
 
-        await Assert.That(channel.Beats).IsEqualTo(1)
+        await Assert.That(channel.Beats).IsLessThanOrEqualTo(4)
                     .Because("the beat went on posting to a route the server does not have");
+    }
+
+    /// <summary>
+    /// One refusal is not the route being absent. A gateway 405 during a rolling deploy, or a proxy
+    /// rejecting POST on a path it has not learned, would otherwise silence liveness for the rest of the
+    /// leg while the poll keeps succeeding on the same client — the browser inferring the machine has
+    /// gone from one that is demonstrably still talking to it.
+    /// </summary>
+    [Test]
+    public async Task A_single_not_found_does_not_stop_the_beat() {
+        var channel = new FakeChannel { Next = new FirstRunHeartbeatOutcome(404) };
+        var clock   = new FakeTimeProvider();
+
+        using var beat = FirstRunHeartbeat.Start(channel, Server, Flow, clock, Beat);
+
+        await Assert.That(await ReachesAsync(channel, clock, 4)).IsTrue()
+                    .Because($"a single 404 ended the beat; it reached {channel.Beats}");
     }
 }

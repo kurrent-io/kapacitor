@@ -908,6 +908,11 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
 
                 using var deferred = deferredHttp;
 
+                // The beat holds its lane until a request finishes, so this client's timeout is how long a
+                // wedged connection can silence liveness. Left unset it is the 100s default; matched to the
+                // browser leg's so both halves of the flow answer for silence on the same scale.
+                deferred.Timeout = BrowserFlowHttpTimeout;
+
                 // The status is the point of the factory: it hands back a client either way, and an
                 // expired or missing token leaves one that cannot poll. Checked rather than assumed, or
                 // the silent path is exactly the one above with a better-looking constructor.
