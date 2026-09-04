@@ -376,7 +376,7 @@ public class WorkContextViewModelTests {
             SessionWorkItemAssignmentDto? primary, WorkItemTopologyDto? topology = null, SessionSummaryDto? summary = null,
             bool topologyFailed = false, bool summaryFailed = false, IReadOnlyList<SessionWorkItemAssignmentDto>? assignments = null) =>
         new(WorkContextReadKind.Ready, assignments ?? (primary is null ? [] : [primary]), primary, topology,
-            summary ?? new SessionSummaryDto { SessionId = SessionA }, topologyFailed, summaryFailed, null);
+            summary ?? (summaryFailed ? null : new SessionSummaryDto { SessionId = SessionA }), topologyFailed, summaryFailed, null);
 
     static WorkItemTopologyDto Topology(params WorkItemTopologyPartDto[] parts) => new() {
         Parts = [.. parts],

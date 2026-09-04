@@ -31,9 +31,6 @@ public sealed class WorkContextLinkViewModel {
         Title   = title;
         Url     = url;
         CanOpen = LinkPolicy.IsOpenable(url);
-        OpenCommand = ReactiveCommand.Create(() => {
-            try { opener.Open(url!); }
-            catch (Exception ex) { Console.Error.WriteLine($"kcap: open link failed: {ex.Message}"); }
-        }, Observable.Return(CanOpen));
+        OpenCommand = ReactiveCommand.Create(() => LinkPolicy.Open(opener, url), Observable.Return(CanOpen));
     }
 }

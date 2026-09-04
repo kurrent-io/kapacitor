@@ -52,12 +52,15 @@ public sealed partial class WorkContextViewModel {
     public ReactiveCommand<Unit, Unit> ToggleSessionCommand { get; private set; } = null!;
 
     void InitializeProjections() {
-        TogglePartsCommand   = ReactiveCommand.Create(() => { PartsExpanded = !PartsExpanded; });
-        TogglePeopleCommand  = ReactiveCommand.Create(() => { PeopleExpanded = !PeopleExpanded; });
-        ToggleSessionCommand = ReactiveCommand.Create(() => { SessionExpanded = !SessionExpanded; });
-        _disposables.Add(TogglePartsCommand);
-        _disposables.Add(TogglePeopleCommand);
-        _disposables.Add(ToggleSessionCommand);
+        TogglePartsCommand   = Toggle(() => PartsExpanded = !PartsExpanded);
+        TogglePeopleCommand  = Toggle(() => PeopleExpanded = !PeopleExpanded);
+        ToggleSessionCommand = Toggle(() => SessionExpanded = !SessionExpanded);
+    }
+
+    ReactiveCommand<Unit, Unit> Toggle(Action flip) {
+        var command = ReactiveCommand.Create(flip);
+        _disposables.Add(command);
+        return command;
     }
 
     void UpdateRequester(AgentStatusDto dto, string vendorLabel) {
@@ -124,12 +127,12 @@ public sealed partial class WorkContextViewModel {
     void ApplyTopology(WorkItemTopologyDto topology, IReadOnlyList<SessionWorkItemAssignmentDto> assignments) {
         var attached = new HashSet<string>(assignments.Select(a => a.WorkItemId), StringComparer.Ordinal);
         PartOfTitle = topology.PartOf?.Title;
-        _parts.Clear();
-        _parts.AddRange(topology.Parts
+        var parts = topology.Parts
             .OrderBy(p => p.Ordinal)
-            .Select(p => new WorkContextPartViewModel(p.Title, attached.Contains(p.WorkItemId) ? WorkContextPartMark.ThisSession : WorkContextPartMark.Unknown)));
-        _blockedBy.Clear();
-        _blockedBy.AddRange(topology.BlockedBy.Select(b => b.Title));
+            .Select(p => new WorkContextPartViewModel(p.Title, attached.Contains(p.WorkItemId) ? WorkContextPartMark.ThisSession : WorkContextPartMark.Unknown))
+            .ToList();
+        Replace(_parts, parts, p => (p.Title, p.Mark));
+        Replace(_blockedBy, topology.BlockedBy.Select(b => b.Title).ToList(), b => b);
         CycleNote = topology.Cycle switch {
             "cyclic"        => "Dependencies form a cycle",
             "indeterminate" => "Dependencies could not be fully resolved",
@@ -148,8 +151,15 @@ public sealed partial class WorkContextViewModel {
         if (summary.PrNumber is { } number && !summary.PullRequests.Any(pr => SamePullRequest(pr, summary, number)))
             cards.Add(Link(number, summary.PrTitle, summary.PrUrl));
 
-        _links.Clear();
-        _links.AddRange(cards);
+        Replace(_links, cards, l => (l.Key, l.Title, l.Url));
+    }
+
+    /// A poll that returns the same rows leaves the bound list alone, so the ItemsControl keeps its
+    /// containers instead of rebuilding them every 30 seconds.
+    static void Replace<T, TKey>(AvaloniaList<T> target, List<T> incoming, Func<T, TKey> key) {
+        if (target.Select(key).SequenceEqual(incoming.Select(key))) return;
+        target.Clear();
+        target.AddRange(incoming);
     }
 
     WorkContextLinkViewModel Link(int number, string? title, string? url) =>

@@ -111,12 +111,20 @@ public sealed class ServerWorkContextSource : IWorkContextSource, IAsyncDisposab
     }
 
     void Release(ClientLease lease) {
-        bool dispose = false;
+        bool dispose;
         lock (_lock) {
             lease.Borrowers--;
-            if (lease.Retired && lease.Borrowers == 0 && !lease.Disposed) { lease.Disposed = true; dispose = true; }
+            dispose = lease.Retired && ClaimDisposal(lease);
         }
         if (dispose) lease.Client.Dispose();
+    }
+
+    /// Decided under the lock; the caller disposes outside it. True exactly once per lease, and
+    /// only once nobody borrows it.
+    static bool ClaimDisposal(ClientLease lease) {
+        if (lease.Borrowers != 0 || lease.Disposed) return false;
+        lease.Disposed = true;
+        return true;
     }
 
     public async ValueTask DisposeAsync() {
@@ -135,10 +143,10 @@ public sealed class ServerWorkContextSource : IWorkContextSource, IAsyncDisposab
         catch (Exception) { /* each read reported its own outcome; only the drain matters here */ }
 
         if (lease is not null) {
-            bool dispose = false;
+            bool dispose;
             lock (_lock) {
                 lease.Retired = true;
-                if (lease.Borrowers == 0 && !lease.Disposed) { lease.Disposed = true; dispose = true; }
+                dispose = ClaimDisposal(lease);
             }
             if (dispose) lease.Client.Dispose();
         }

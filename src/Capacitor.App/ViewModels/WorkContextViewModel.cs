@@ -1,4 +1,5 @@
 using System.Reactive;
+using System.Reactive.Concurrency;
 using System.Reactive.Disposables;
 using System.Reactive.Disposables.Fluent;
 using System.Reactive.Linq;
@@ -125,12 +126,7 @@ public sealed partial class WorkContextViewModel : ReactiveObject {
             .ObserveOn(RxSchedulers.MainThreadScheduler)
             .Subscribe(_ => OnSignInCompleted())
             .DisposeWith(_disposables);
-        _timer = time.CreateTimer(_ => RunOnUi(OnTick), null, PollInterval, PollInterval);
-    }
-
-    static void RunOnUi(Action action) {
-        if (Dispatcher.UIThread.CheckAccess()) action();
-        else Dispatcher.UIThread.Post(action);
+        _timer = time.CreateTimer(_ => RxSchedulers.MainThreadScheduler.Schedule(OnTick), null, PollInterval, PollInterval);
     }
 
     void OnDto(AgentStatusDto? dto) {
@@ -226,21 +222,9 @@ public sealed partial class WorkContextViewModel : ReactiveObject {
     /// Applies one read for the current lease. Section-level merging lives in the projections half.
     void Apply(WorkContextRead read) {
         switch (read.Kind) {
-            case WorkContextReadKind.SignedOut:
-                ClearServerProjections();
-                Phase = WorkContextPhase.SignedOut;
-                IsStale = false;
-                return;
-            case WorkContextReadKind.NotInPlan:
-                ClearServerProjections();
-                Phase = WorkContextPhase.NotInPlan;
-                IsStale = false;
-                return;
-            case WorkContextReadKind.SessionUnknown:
-                ClearServerProjections();
-                Phase = WorkContextPhase.SessionUnknown;
-                IsStale = false;
-                return;
+            case WorkContextReadKind.SignedOut:      ApplyTerminal(WorkContextPhase.SignedOut);      return;
+            case WorkContextReadKind.NotInPlan:      ApplyTerminal(WorkContextPhase.NotInPlan);      return;
+            case WorkContextReadKind.SessionUnknown: ApplyTerminal(WorkContextPhase.SessionUnknown); return;
             case WorkContextReadKind.Unreachable:
                 if (Phase is WorkContextPhase.Ready or WorkContextPhase.NoWorkItem) IsStale = true;
                 else Phase = WorkContextPhase.Unreachable;
@@ -252,6 +236,13 @@ public sealed partial class WorkContextViewModel : ReactiveObject {
                 Phase = WorkContextPhase.Unreachable;
                 return;
         }
+    }
+
+    /// The server has just said the viewer may not have this data, so nothing of it stays visible.
+    void ApplyTerminal(WorkContextPhase phase) {
+        ClearServerProjections();
+        Phase = phase;
+        IsStale = false;
     }
 
     public async Task TeardownAsync() {
