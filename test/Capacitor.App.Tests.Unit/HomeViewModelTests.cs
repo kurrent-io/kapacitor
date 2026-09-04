@@ -548,6 +548,29 @@ public class HomeViewModelTests {
 
     [Test]
     [NotInParallel("AvaloniaSession")]
+    public async Task After_sign_in_a_disconnected_server_shows_finishing_not_sign_in_again() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            using var tmp = TempDir.WithPathTo("app-state.json", out var path);
+            var daemon = new FakeDaemonClientService();
+            using var vm = new HomeViewModel(daemon, new AppStateStore(path), new RecordingLaunchClient(), Known());
+
+            daemon.SnapshotsSubject.OnNext(FakeDaemonClientService.Snap(connection: "disconnected"));
+            daemon.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, null));
+            await Assert.That(vm.SignInVisible).IsTrue();
+            await Assert.That(vm.ConnectionNotice).IsEqualTo(HomeViewModel.ServerLostNotice);
+
+            vm.NotifySignInCompleted();
+            await Assert.That(vm.SignInVisible).IsFalse();
+            await Assert.That(vm.ConnectionNotice).IsEqualTo(HomeViewModel.FinishingSignInNotice);
+
+            daemon.SnapshotsSubject.OnNext(FakeDaemonClientService.Snap(connection: "connected"));
+            await Assert.That(vm.SignInVisible).IsFalse();
+            await Assert.That(vm.ConnectionNotice).IsNull();
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
     public async Task A_successful_start_clears_the_goal_and_any_previous_error() {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             using var tmp = TempDir.WithPathTo("app-state.json", out var path);

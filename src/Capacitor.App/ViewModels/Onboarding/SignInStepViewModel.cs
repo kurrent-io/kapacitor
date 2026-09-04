@@ -103,9 +103,11 @@ public sealed class SignInStepViewModel : ReactiveObject, IWizardStep {
             Append(line);
         };
         bridges.Progress.ErrorReceived += line => {
-            _lastReport  = line;
-            StatusDetail = line;
-            Append(line);
+            // Headline + StatusDetail carry the failure. Do not also Append — that duplicated the
+            // same line under the progress log.
+            var detail = FormatErrorDetail(line);
+            _lastReport  = detail;
+            StatusDetail = detail;
         };
         bridges.Progress.BrowserOpened      += url => {
             BrowserUrl = url;
@@ -146,7 +148,7 @@ public sealed class SignInStepViewModel : ReactiveObject, IWizardStep {
             ConfirmVisible = true;
         }, () => ConfirmVisible = false, ct);
         provisioner.PollProgress = (attempt, max) =>
-            _post(() => ProvisioningProgress = $"Setting up your workspace — this can take a few minutes… ({attempt}/{max})");
+            _post(() => ProvisioningProgress = $"Setting up your workspace. This can take a few minutes… ({attempt}/{max})");
 
         SignInCommand = ReactiveCommand.CreateFromTask(SignInAsync);
         CancelCommand = ReactiveCommand.Create(() => _attempt?.Cancel());
@@ -217,10 +219,16 @@ public sealed class SignInStepViewModel : ReactiveObject, IWizardStep {
 
     public bool StatusIsError {
         get => _statusIsError;
-        private set => this.RaiseAndSetIfChanged(ref _statusIsError, value);
+        private set {
+            this.RaiseAndSetIfChanged(ref _statusIsError, value);
+            this.RaisePropertyChanged(nameof(PrimaryActionLabel));
+        }
     }
 
-    /// The last error line the façade rendered — the detail behind the generic failure headline.
+    /// "Try again" after a failure so the primary action is not another "Sign in" next to the title.
+    public string PrimaryActionLabel => StatusIsError ? "Try again" : "Sign in";
+
+    /// The last error line the façade rendered. Detail behind the generic failure headline.
     public string? StatusDetail {
         get => _statusDetail;
         private set => this.RaiseAndSetIfChanged(ref _statusDetail, value);
@@ -231,6 +239,7 @@ public sealed class SignInStepViewModel : ReactiveObject, IWizardStep {
         private set {
             this.RaiseAndSetIfChanged(ref _busy, value);
             this.RaisePropertyChanged(nameof(Idle));
+            this.RaisePropertyChanged(nameof(ShowPrimaryAction));
         }
     }
 
@@ -238,8 +247,14 @@ public sealed class SignInStepViewModel : ReactiveObject, IWizardStep {
 
     public bool Satisfied {
         get => _satisfied;
-        private set => this.RaiseAndSetIfChanged(ref _satisfied, value);
+        private set {
+            this.RaiseAndSetIfChanged(ref _satisfied, value);
+            this.RaisePropertyChanged(nameof(ShowPrimaryAction));
+        }
     }
+
+    /// Hidden once sign-in committed — the status line is the success state, not another Sign in.
+    public bool ShowPrimaryAction => Idle && !Satisfied;
 
     public string? DeviceCode {
         get => _deviceCode;
@@ -374,7 +389,7 @@ public sealed class SignInStepViewModel : ReactiveObject, IWizardStep {
         SetStatus(
             "Waiting for your browser…",
             isError: false,
-            "Complete authorization there, then return here — this window updates on its own.");
+            "Complete authorization there, then return here. This window updates on its own.");
 
         AuthAttempt attempt;
 
@@ -382,7 +397,7 @@ public sealed class SignInStepViewModel : ReactiveObject, IWizardStep {
             attempt = _service.Begin(intent);
         } catch (InvalidOperationException) {
             Busy = false;
-            SetStatus("Finishing the previous attempt — try again in a moment.", isError: false);
+            SetStatus("Finishing the previous attempt. Try again in a moment.", isError: false);
 
             return;
         }
@@ -410,7 +425,10 @@ public sealed class SignInStepViewModel : ReactiveObject, IWizardStep {
         switch (result) {
             case AuthResult.Committed committed:
                 Satisfied = true;
-                SetStatus(CommittedStatus(committed), isError: false);
+                SetStatus(
+                    CommittedStatus(committed),
+                    isError: false,
+                    "You're signed in. Updating the app…");
 
                 break;
             case AuthResult.Cancelled:
@@ -516,7 +534,7 @@ public sealed class SignInStepViewModel : ReactiveObject, IWizardStep {
     void SetStatus(string text, bool isError, string? detail = null) {
         Status        = text;
         StatusIsError = isError;
-        StatusDetail  = detail;
+        StatusDetail  = detail is null ? null : FormatErrorDetail(detail);
     }
 
     void Append(string line) {
@@ -540,5 +558,16 @@ public sealed class SignInStepViewModel : ReactiveObject, IWizardStep {
         var note = code.IndexOf("  (copied", StringComparison.Ordinal);
 
         return note < 0 ? code.Trim() : code[..note].Trim();
+    }
+
+    /// Progress sink lines often start with "Error: "; the failure headline already says that.
+    internal static string FormatErrorDetail(string line) {
+        const string prefix = "Error: ";
+        var text = line.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+            ? line[prefix.Length..].TrimStart()
+            : line.Trim();
+        if (text.Length == 0) return text;
+
+        return char.ToUpperInvariant(text[0]) + text[1..];
     }
 }

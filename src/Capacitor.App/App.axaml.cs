@@ -386,7 +386,7 @@ public partial class App : Application {
         // Reachable in the carve-out arm (gate Incomplete after an abandoned wizard), where the
         // rail can show disconnected with no server to re-auth against.
         if (profiles?.Resolution.ServerUrl is not { } serverUrl || !OnboardingGate.ValidServerUrl(serverUrl)) {
-            notifier.Notify("No server is configured — run kcap setup first.");
+            notifier.Notify("No server is configured. Run kcap setup first.");
             return;
         }
 
@@ -399,10 +399,11 @@ public partial class App : Application {
             WizardComposition.NewOperation);
         var window = new SignInWindow { DataContext = graph.SignIn };
 
-        // A committed sign-in closes the dialog itself; Closed below is the ONE finish path, so
-        // both the auto-close and the user's own close cancel/quiesce identically.
+        // Hold the dialog on success so "Signed in…" is readable, refresh app state in parallel,
+        // then close. Closed below is still the ONE finish path for cancel/quiesce.
         void OnSignInChanged(object? _, PropertyChangedEventArgs e) {
-            if (e.PropertyName == nameof(SignInStepViewModel.Satisfied) && graph.SignIn.Satisfied) window.Close();
+            if (e.PropertyName == nameof(SignInStepViewModel.Satisfied) && graph.SignIn.Satisfied)
+                _ = CloseSignInAfterSuccessAsync(window);
         }
 
         graph.SignIn.PropertyChanged += OnSignInChanged;
@@ -416,15 +417,37 @@ public partial class App : Application {
         window.Show();
     }
 
+    /// How long a successful re-auth keeps the dialog open so the success line is not a flash.
+    internal static readonly TimeSpan SignInSuccessHold = TimeSpan.FromMilliseconds(1600);
+
+    async Task CloseSignInAfterSuccessAsync(Window window) {
+        var refresh = RefreshAfterReauthAsync();
+        try {
+            await Task.WhenAll(refresh, Task.Delay(SignInSuccessHold)).ConfigureAwait(true);
+        } catch (Exception ex) {
+            Console.Error.WriteLine($"kcap: post-sign-in refresh failed: {ex.Message}");
+        }
+
+        if (ReferenceEquals(_signInWindow, window)) window.Close();
+    }
+
+    /// Clears the launcher's expired/disconnected sign-in banner path, drops a stale launch hub,
+    /// nudges work-context refresh, and kicks attach so snapshots catch up sooner after new tokens land.
+    async Task RefreshAfterReauthAsync() {
+        _home?.NotifySignInCompleted();
+        _serverClients?.NotifySignInCompleted();
+        if (_launch is not null) await _launch.InvalidateAsync().ConfigureAwait(true);
+        if (_service is not null) await _service.RestartLoopAsync().ConfigureAwait(true);
+    }
+
     /// Fire-and-forget from the dialog's Closed handler — nothing may block the UI close. The
     /// quiesce is what stops a still-running attempt from committing after the window is gone.
     async Task FinishSignInAsync(ReauthGraph graph) {
         try {
             await graph.CloseAsync(CancellationToken.None);
-            if (graph.SignIn.Satisfied) {
-                _home?.NotifySignInCompleted();
-                _serverClients?.NotifySignInCompleted();
-            }
+            // Success path already refreshed before close; call again so a manual close after
+            // Satisfied still clears the banner if the hold was interrupted.
+            if (graph.SignIn.Satisfied) await RefreshAfterReauthAsync();
         } catch (Exception ex) {
             Console.Error.WriteLine($"kcap: sign-in dialog teardown failed: {ex.Message}");
         }

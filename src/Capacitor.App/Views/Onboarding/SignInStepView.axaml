@@ -2,6 +2,7 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:auth="clr-namespace:Capacitor.Cli.Core.Auth;assembly=Capacitor.Cli.Core"
              xmlns:vm="clr-namespace:Capacitor.App.ViewModels.Onboarding"
+             xmlns:views="clr-namespace:Capacitor.App.Views"
              x:Class="Capacitor.App.Views.Onboarding.SignInStepView"
              x:DataType="vm:SignInStepViewModel">
     <!-- Shared between the onboarding wizard's Sign-in step and the steady-state re-auth dialog
@@ -26,11 +27,12 @@
     </UserControl.Styles>
 
     <DockPanel>
-        <StackPanel DockPanel.Dock="Top" Spacing="10" Margin="0,0,0,20">
-            <TextBlock Text="Sign in" FontSize="22" FontWeight="SemiBold"
-                       Foreground="{StaticResource KcapTextBrush}" />
+        <StackPanel DockPanel.Dock="Top" Spacing="8" Margin="0,0,0,20">
+            <!-- No page title here: the wizard step chrome and SignInWindow title already name
+                 the surface. Status is the first thing the user needs. -->
             <TextBlock x:Name="SignInStatusText" Text="{Binding Status}" TextWrapping="Wrap"
-                       FontSize="14" LineHeight="22" Foreground="{StaticResource KcapMutedBrush}"
+                       FontSize="18" FontWeight="SemiBold" LineHeight="26"
+                       Foreground="{StaticResource KcapTextBrush}"
                        Classes.failed="{Binding StatusIsError}">
                 <TextBlock.Styles>
                     <!-- Only a failure is coloured: a cancelled sign-in is not an error. -->
@@ -40,7 +42,7 @@
                 </TextBlock.Styles>
             </TextBlock>
             <TextBlock x:Name="SignInDetailText" Text="{Binding StatusDetail}" TextWrapping="Wrap"
-                       FontSize="12.5" LineHeight="20" Foreground="{StaticResource KcapFaintBrush}"
+                       FontSize="13.5" LineHeight="21" Foreground="{StaticResource KcapMutedBrush}"
                        IsVisible="{Binding StatusDetail, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
         </StackPanel>
 
@@ -81,9 +83,11 @@
             </StackPanel>
         </Border>
 
-        <!-- Progress log: quiet trailing detail above the browser card. -->
+        <!-- Progress log: quiet trailing detail above the browser card. Hidden when empty so a
+             failure does not leave a second copy of the same error under the actions. -->
         <ScrollViewer DockPanel.Dock="Bottom" Margin="0,16,0,0" MaxHeight="88"
-                      VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                      VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+                      IsVisible="{Binding Log.Count, Converter={x:Static views:CountIsNotZeroConverter.Instance}}">
             <ItemsControl x:Name="SignInLog" ItemsSource="{Binding Log}">
                 <ItemsControl.ItemTemplate>
                     <DataTemplate x:DataType="x:String">
@@ -98,8 +102,9 @@
         <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
             <StackPanel Spacing="16">
                 <StackPanel Orientation="Horizontal" Spacing="10">
-                    <Button x:Name="SignInButton" Classes="kcapPrimary" Content="Sign in"
+                    <Button x:Name="SignInButton" Classes="kcapPrimary" Content="{Binding PrimaryActionLabel}"
                             Command="{Binding SignInCommand}" IsEnabled="{Binding Idle}"
+                            IsVisible="{Binding ShowPrimaryAction}"
                             Background="{StaticResource KcapPrimaryBrush}" Foreground="{StaticResource KcapOnPrimaryBrush}"
                             FontWeight="SemiBold" CornerRadius="8" Padding="18,9"
                             FontSize="13.5" />

@@ -39,9 +39,20 @@ public sealed class RepositoryLabelConverter : IValueConverter {
 public sealed class CountIsZeroConverter : IValueConverter {
     public static readonly CountIsZeroConverter Instance = new();
 
-    public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture) =>
-        value is int count && count == 0;
+    public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture) =>
+        value is int n && n == 0;
 
-    public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) =>
+    public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) =>
+        throw new NotSupportedException();
+}
+
+/// Inverse of CountIsZeroConverter — progress logs and similar, visible only while there is content.
+public sealed class CountIsNotZeroConverter : IValueConverter {
+    public static readonly CountIsNotZeroConverter Instance = new();
+
+    public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture) =>
+        value is int n && n != 0;
+
+    public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) =>
         throw new NotSupportedException();
 }

@@ -3,6 +3,8 @@ using System.Collections.Specialized;
 using System.Reactive.Linq;
 using Avalonia.Automation;
 using Avalonia.Controls;
+using Avalonia.Headless;
+using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
@@ -26,9 +28,12 @@ public class HomeViewSmokeTests {
 
     sealed class RecordingLaunchClient : ILaunchClient {
         public LaunchOutcome Next = new(true, LaunchedId, null);
+        public int StartCount;
 
-        public Task<LaunchOutcome> StartAsync(LaunchRequest request, CancellationToken ct) =>
-            Task.FromResult(Next);
+        public Task<LaunchOutcome> StartAsync(LaunchRequest request, CancellationToken ct) {
+            StartCount++;
+            return Task.FromResult(Next);
+        }
     }
 
     static (HomeView View, HomeViewModel Vm, FakeDaemonClientService Service, RecordingLaunchClient Launch, TempDir Tmp) Build() {
@@ -226,6 +231,81 @@ public class HomeViewSmokeTests {
 
         await Assert.That(enabledBefore).IsFalse();
         await Assert.That(enabledAfter).IsTrue();
+    }
+
+    /// Enter in the goal box starts the same way as the Start button — tunnel KeyDown, so the
+    /// TextBox cannot swallow the key before Start sees it.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Enter_in_the_goal_box_starts_when_Start_can_run() {
+        var (goalAfter, startCount) = await AvaloniaSession.DispatchAsync(async () => {
+            var (_, vm, _, launch, tmp) = Build();
+            using var _tmp = tmp;
+            var window = new Window { Content = new LauncherPaneView { DataContext = vm }, Width = 900, Height = 600 };
+            window.Show();
+            Dispatcher.UIThread.RunJobs();
+
+            await vm.SelectRepositoryAsync("/repos/kcap-cli");
+            Dispatcher.UIThread.RunJobs();
+
+            var goal = Find<TextBox>(window, "GoalInput")!;
+            goal.Focus();
+            Dispatcher.UIThread.RunJobs();
+            window.KeyTextInput("ship it");
+            Dispatcher.UIThread.RunJobs();
+            await Assert.That(goal.Text).IsEqualTo("ship it");
+
+            window.KeyPressQwerty(PhysicalKey.Enter, RawInputModifiers.None);
+            Dispatcher.UIThread.RunJobs();
+            for (var i = 0; i < 50 && launch.StartCount == 0; i++) {
+                await Task.Delay(10);
+                Dispatcher.UIThread.RunJobs();
+            }
+
+            var after = vm.Goal;
+            var count = launch.StartCount;
+
+            window.Close();
+            Dispatcher.UIThread.RunJobs();
+            vm.Dispose();
+            return (after, count);
+        });
+
+        await Assert.That(startCount).IsEqualTo(1);
+        await Assert.That(goalAfter).IsEqualTo("");
+    }
+
+    /// Without a repository, Enter is consumed and starts nothing — same gate as the Start button.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Enter_without_a_repository_does_not_start() {
+        var (goalAfter, startCount) = await AvaloniaSession.DispatchAsync(() => {
+            var (_, vm, _, launch, tmp) = Build();
+            using var _tmp = tmp;
+            var window = new Window { Content = new LauncherPaneView { DataContext = vm }, Width = 900, Height = 600 };
+            window.Show();
+            Dispatcher.UIThread.RunJobs();
+
+            var goal = Find<TextBox>(window, "GoalInput")!;
+            goal.Focus();
+            Dispatcher.UIThread.RunJobs();
+            window.KeyTextInput("ship it");
+            Dispatcher.UIThread.RunJobs();
+
+            window.KeyPressQwerty(PhysicalKey.Enter, RawInputModifiers.None);
+            Dispatcher.UIThread.RunJobs();
+
+            var after = goal.Text;
+            var count = launch.StartCount;
+
+            window.Close();
+            Dispatcher.UIThread.RunJobs();
+            vm.Dispose();
+            return (after, count);
+        });
+
+        await Assert.That(startCount).IsEqualTo(0);
+        await Assert.That(goalAfter).IsEqualTo("ship it");
     }
 
     [Test]

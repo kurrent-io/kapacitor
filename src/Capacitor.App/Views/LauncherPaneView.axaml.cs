@@ -1,7 +1,10 @@
 using System.Globalization;
+using System.Reactive.Linq;
+using System.Windows.Input;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Data.Converters;
+using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Media;
 using Avalonia.Platform.Storage;
@@ -13,7 +16,24 @@ namespace Capacitor.App.Views;
 /// The launcher pane: DataContext is supplied externally (a plainly-constructed HomeViewModel),
 /// same contract as HomeView — this view never builds its own ViewModel.
 public partial class LauncherPaneView : UserControl {
-    public LauncherPaneView() => InitializeComponent();
+    public LauncherPaneView() {
+        InitializeComponent();
+        // Tunnel, not bubble: TextBox can still mark Enter handled on the bubble route even when
+        // AcceptsReturn is false, so Start must see the key on the way down.
+        GoalInput.AddHandler(KeyDownEvent, OnGoalKeyDown, RoutingStrategies.Tunnel);
+    }
+
+    /// Bare Enter starts a session when Start can run; otherwise the key is consumed so it does
+    /// not leave a stray newline. Mirrors the Start button: connection readiness from CanExecute,
+    /// repository from SelectedRepoPath (the button's IsEnabled binding).
+    void OnGoalKeyDown(object? sender, KeyEventArgs e) {
+        if (e.Key != Key.Enter) return;
+        e.Handled = true;
+        if (DataContext is not HomeViewModel vm) return;
+        if (string.IsNullOrEmpty(vm.SelectedRepoPath)) return;
+        if (!((ICommand)vm.StartCommand).CanExecute(null)) return;
+        vm.StartCommand.Execute().Subscribe();
+    }
 
     // Repository picker: one flyout item per ListRepositoriesAsync entry — leaf name over full
     // path, remembered-harness pill on the right, per the settled design. The scratch entry and

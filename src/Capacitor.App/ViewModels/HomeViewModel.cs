@@ -50,6 +50,8 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
     public const string UnusableIdMessage = "Launched, but the session id was unusable. Open it from the session list.";
 
     internal const string ConnectingNotice     = "Connecting to the server…";
+    internal const string FinishingSignInNotice =
+        "Finishing sign-in. Reconnecting to the server…";
     internal const string DaemonDownNotice     =
         "The daemon isn't running. Start it to launch sessions. If it should already be up, press Retry.";
     internal const string DaemonIncompatibleNotice =
@@ -128,6 +130,9 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
     /// property read via WhenAnyValue) so the ctor can compose it — see SessionRailViewModel's
     /// _selectedAgentIdChanges for why WhenAnyValue is avoided in constructors here.
     readonly BehaviorSubject<bool> _signInRequired = new(false);
+    /// True after a successful re-auth until the daemon reports server-connected (or goes down).
+    /// Keeps the banner from still asking to Sign in while the daemon catches up.
+    readonly BehaviorSubject<bool> _awaitingServerAfterSignIn = new(false);
     readonly Action? _requestSignIn;
 
     readonly ObservableAsPropertyHelper<string?> _connectionNotice;
@@ -254,12 +259,16 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
                 .ObserveOn(RxSchedulers.MainThreadScheduler));
 
         var signInState = availability
-            .CombineLatest(_signInRequired, (a, expired) => (Availability: a, Expired: expired))
+            .CombineLatest(
+                _signInRequired,
+                _awaitingServerAfterSignIn,
+                (a, expired, awaiting) => (Availability: a, Expired: expired, Awaiting: awaiting))
             .ObserveOn(RxSchedulers.MainThreadScheduler);
         var notices = daemon.Status
             .CombineLatest(
                 daemon.Snapshots.Select(s => s.Daemon.Connection).StartWith(""),
                 _signInRequired,
+                _awaitingServerAfterSignIn,
                 NoticeFor)
             .ObserveOn(RxSchedulers.MainThreadScheduler);
         _connectionNotice = notices
@@ -270,8 +279,13 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
             .ToProperty(this, x => x.ConnectionBannerVisible, initialValue: false)
             .DisposeWith(_disposables);
         _signInVisible = signInState
-            .Select(t => t.Expired || t.Availability == LaunchAvailability.ServerDisconnected)
+            .Select(t => !t.Awaiting && (t.Expired || t.Availability == LaunchAvailability.ServerDisconnected))
             .ToProperty(this, x => x.SignInVisible, initialValue: false)
+            .DisposeWith(_disposables);
+
+        availability
+            .Where(a => a is LaunchAvailability.Ready or LaunchAvailability.DaemonUnavailable)
+            .Subscribe(_ => _awaitingServerAfterSignIn.OnNext(false))
             .DisposeWith(_disposables);
 
         _startButtonTip = _selectedRepoPathChanges
@@ -307,9 +321,12 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
             .DisposeWith(_disposables);
     }
 
-    /// The re-auth dialog's success lands here (App wires it): the expired flag lifts without
-    /// waiting for the next launch attempt to re-prove it.
-    public void NotifySignInCompleted() => _signInRequired.OnNext(false);
+    /// The re-auth dialog's success lands here (App wires it): clears the expired flag and holds a
+    /// finishing notice until the daemon reports the server is connected again.
+    public void NotifySignInCompleted() {
+        _signInRequired.OnNext(false);
+        _awaitingServerAfterSignIn.OnNext(true);
+    }
 
     /// Local attach state is checked FIRST — the upstream word is only meaningful once the attach
     /// is Connected (a stale retained snapshot might carry any word). Unknown upstream words read
@@ -324,12 +341,16 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
         },
     };
 
-    internal static string? NoticeFor(AttachStatus status, string daemonConnection, bool signInExpired) {
+    internal static string? NoticeFor(
+            AttachStatus status, string daemonConnection, bool signInExpired, bool awaitingServer = false) {
         if (signInExpired) return SignInExpiredNotice;
         if (status.State == AttachState.Unreachable) {
             return status.Reason == IncompatibleReason ? DaemonIncompatibleNotice : DaemonDownNotice;
         }
-        return AvailabilityFor(status, daemonConnection) switch {
+        var availability = AvailabilityFor(status, daemonConnection);
+        if (awaitingServer && availability is LaunchAvailability.ServerDisconnected or LaunchAvailability.Pending)
+            return FinishingSignInNotice;
+        return availability switch {
             LaunchAvailability.Ready             => null,
             LaunchAvailability.Pending           => ConnectingNotice,
             LaunchAvailability.DaemonUnavailable => DaemonDownNotice,
