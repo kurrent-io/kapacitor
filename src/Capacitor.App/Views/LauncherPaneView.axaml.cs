@@ -17,58 +17,81 @@ public partial class LauncherPaneView : UserControl {
 
     // Repository picker: one flyout item per ListRepositoriesAsync entry — leaf name over full
     // path, remembered-harness pill on the right, per the settled design. The scratch entry and
-    // the folder-picker affordance sit last, each behind a separator.
+    // the folder-picker affordance sit last, each behind a separator. Built as a kcapPanel Flyout
+    // (same shape as the agent picker) rather than MenuFlyout — Fluent's radio MenuItem chrome
+    // fights the dark palette.
     async void OnRepositoryChipClick(object? sender, RoutedEventArgs e) {
         if (DataContext is not HomeViewModel vm || sender is not Control anchor) return;
 
-        var flyout = new MenuFlyout();
-        foreach (var option in await vm.ListRepositoriesAsync()) {
-            if (option.RepoPath.Length == 0) flyout.Items.Add(new Separator());
-            flyout.Items.Add(RepositoryItem(vm, option));
-        }
-        flyout.Items.Add(new Separator());
+        var muted = Brush("KcapMutedBrush");
+        var rows = new StackPanel { Spacing = 2, Margin = new Thickness(6) };
 
-        var add = new MenuItem { Header = "Add repository…" };
-        add.Click += async (_, _) => await AddRepositoryAsync(vm);
-        flyout.Items.Add(add);
+        var flyout = PanelFlyout(rows, minWidth: 300);
+        foreach (var option in await vm.ListRepositoriesAsync()) {
+            // Scratch ("No repository") is listed after real repos — the separator is only the
+            // break between those two groups, never a stray rule above the first row.
+            if (option.RepoPath.Length == 0 && rows.Children.Count > 0)
+                rows.Children.Add(ChoiceSeparator());
+            rows.Children.Add(RepositoryRow(vm, option, muted, flyout));
+        }
+        rows.Children.Add(ChoiceSeparator());
+        rows.Children.Add(ChoiceRow("Add repository…", selected: false, () => {
+            flyout.Hide();
+            _ = AddRepositoryAsync(vm);
+        }));
 
         flyout.ShowAt(anchor);
     }
 
-    MenuItem RepositoryItem(HomeViewModel vm, RepositoryOption option) {
+    Button RepositoryRow(HomeViewModel vm, RepositoryOption option, IBrush muted, Flyout flyout) {
         var isScratch = option.RepoPath.Length == 0;
-        var muted = (IBrush)this.FindResource("KcapMutedBrush")!;
-
-        var left = new StackPanel { Spacing = 2, VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center };
-        left.Children.Add(new TextBlock {
+        var title = new TextBlock {
             Text = isScratch ? "No repository" : RepoLabel.Leaf(option.RepoPath),
-        });
-        if (!isScratch)
-            left.Children.Add(new TextBlock { Text = option.RepoPath, FontSize = 10.5, Foreground = muted });
+            FontSize = 13.5,
+            FontWeight = option.Selected ? FontWeight.SemiBold : FontWeight.Normal,
+            Foreground = Brush("KcapTextBrush"),
+            VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center,
+        };
 
+        // Pill sits on the title row only (not vertically centered on title+path), so every
+        // repo's badge lines up with "No repository"'s badge.
         var pill = new Border {
-            Background = (IBrush)this.FindResource("KcapSurfaceRaisedBrush")!,
-            CornerRadius = new CornerRadius(999), Padding = new Thickness(7, 2),
-            Margin = new Thickness(12, 0, 0, 0), VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center,
+            Background = Brush("KcapMutedBrush"), CornerRadius = new CornerRadius(999),
+            Padding = new Thickness(8, 3), Margin = new Thickness(12, 0, 0, 0),
+            VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center,
             Child = new TextBlock {
                 Text = HostedHarnessCatalog.LabelFor(vm.Harnesses, option.Vendor),
-                FontSize = 10, Foreground = muted,
+                FontSize = 11, FontWeight = FontWeight.SemiBold,
+                Foreground = Brush("KcapOnPrimaryBrush"),
             },
         };
 
-        var header = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), MinWidth = 260 };
-        header.Children.Add(left);
-        Grid.SetColumn(pill, 1);
-        header.Children.Add(pill);
-
-        var item = new MenuItem {
-            Header = header,
-            ToggleType = MenuItemToggleType.Radio,
-            IsChecked = option.Selected,
+        var grid = new Grid {
+            ColumnDefinitions = new ColumnDefinitions("*,Auto"),
+            RowDefinitions = new RowDefinitions("Auto,Auto"),
+            MinWidth = 260,
+            // Stretch so the * column eats leftover width and the pill stays right-aligned
+            // across one-line and two-line rows alike.
+            HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Stretch,
         };
-        var path = option.RepoPath;
-        item.Click += async (_, _) => await vm.SelectRepositoryAsync(path);
-        return item;
+        grid.Children.Add(title);
+        Grid.SetColumn(pill, 1);
+        grid.Children.Add(pill);
+
+        if (!isScratch) {
+            var path = new TextBlock {
+                Text = option.RepoPath, FontSize = 10.5, Foreground = muted,
+                Margin = new Thickness(0, 2, 0, 0),
+            };
+            Grid.SetRow(path, 1);
+            grid.Children.Add(path);
+        }
+
+        var repoPath = option.RepoPath;
+        return ChoiceButton(grid, () => {
+            flyout.Hide();
+            _ = vm.SelectRepositoryAsync(repoPath);
+        });
     }
 
     // "Add one" via a native folder picker — SelectRepositoryAsync then treats the choice like
@@ -88,24 +111,24 @@ public partial class LauncherPaneView : UserControl {
 
     // Effort picker over HostedHarnessCatalog.EffortLadder; Default hands the choice back to the
     // harness. A wrong value for a given vendor surfaces as that session's own launch error, same
-    // as the CLI's --effort.
+    // as the CLI's --effort. Separator after Default matches Permissions (base vs escalations).
     void OnEffortChipClick(object? sender, RoutedEventArgs e) {
         if (DataContext is not HomeViewModel vm || sender is not Control anchor) return;
 
-        var flyout = new MenuFlyout();
-        var byDefault = new MenuItem {
-            Header = "Default", ToggleType = MenuItemToggleType.Radio, IsChecked = vm.SelectedEffort is null,
-        };
-        byDefault.Click += (_, _) => vm.SelectedEffort = null;
-        flyout.Items.Add(byDefault);
-        flyout.Items.Add(new Separator());
+        var rows = new StackPanel { Spacing = 2, Margin = new Thickness(6) };
+        var flyout = PanelFlyout(rows, minWidth: 180);
+
+        rows.Children.Add(ChoiceRow(HostedHarnessCatalog.EffortDefaultLabel, vm.SelectedEffort is null, () => {
+            vm.SelectedEffort = null;
+            flyout.Hide();
+        }));
+        rows.Children.Add(ChoiceSeparator());
         foreach (var effort in HostedHarnessCatalog.EffortLadder) {
-            var item = new MenuItem {
-                Header = effort, ToggleType = MenuItemToggleType.Radio, IsChecked = vm.SelectedEffort == effort,
-            };
             var value = effort;
-            item.Click += (_, _) => vm.SelectedEffort = value;
-            flyout.Items.Add(item);
+            rows.Children.Add(ChoiceRow(HostedHarnessCatalog.EffortLabelFor(value), vm.SelectedEffort == effort, () => {
+                vm.SelectedEffort = value;
+                flyout.Hide();
+            }));
         }
         flyout.ShowAt(anchor);
     }
@@ -113,18 +136,66 @@ public partial class LauncherPaneView : UserControl {
     void OnPermissionChipClick(object? sender, RoutedEventArgs e) {
         if (DataContext is not HomeViewModel vm || sender is not Control anchor) return;
 
-        var flyout = new MenuFlyout();
+        var rows = new StackPanel { Spacing = 2, Margin = new Thickness(6) };
+        var flyout = PanelFlyout(rows, minWidth: 200);
+
+        // Manual first (omit-from-wire default), then separator, then escalations — same shape as Effort.
         foreach (var mode in HostedHarnessCatalog.PermissionModes) {
-            var item = new MenuItem {
-                Header = mode.Label, ToggleType = MenuItemToggleType.Radio,
-                IsChecked = string.Equals(vm.SelectedPermissionMode, mode.Token, StringComparison.Ordinal),
-            };
+            if (rows.Children.Count == 1)
+                rows.Children.Add(ChoiceSeparator());
+
             var token = mode.Token;
-            item.Click += (_, _) => vm.SelectedPermissionMode = token;
-            flyout.Items.Add(item);
+            var selected = string.Equals(vm.SelectedPermissionMode, token, StringComparison.Ordinal);
+            rows.Children.Add(ChoiceRow(mode.Label, selected, () => {
+                vm.SelectedPermissionMode = token;
+                flyout.Hide();
+            }));
         }
         flyout.ShowAt(anchor);
     }
+
+    // Shared chip-picker chrome: kcapPanel Flyout + ghost rows; selection is weight, not green.
+    static Flyout PanelFlyout(Control content, double minWidth) {
+        var host = new Border { Child = content, MinWidth = minWidth };
+        var flyout = new Flyout {
+            Placement = PlacementMode.Bottom, Content = host,
+            // A few pixels of air between the chip and the panel — flush looks glued on.
+            VerticalOffset = 6,
+        };
+        flyout.FlyoutPresenterClasses.Add("kcapPanel");
+        return flyout;
+    }
+
+    Button ChoiceRow(string label, bool selected, Action pick) {
+        var body = new TextBlock {
+            Text = label, FontSize = 13.5,
+            FontWeight = selected ? FontWeight.SemiBold : FontWeight.Normal,
+            Foreground = Brush("KcapTextBrush"),
+        };
+        return ChoiceButton(body, pick);
+    }
+
+    static Button ChoiceButton(object content, Action pick) {
+        var row = new Button {
+            Content = content,
+            HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Stretch,
+            // Stretch: left-aligned content stays content-sized and never pushes a trailing pill
+            // to the row's right edge (repo list badges).
+            HorizontalContentAlignment = Avalonia.Layout.HorizontalAlignment.Stretch,
+            Background = Brushes.Transparent, BorderThickness = new Thickness(0),
+            CornerRadius = new CornerRadius(8), Padding = new Thickness(10, 8),
+        };
+        row.Classes.Add("kcapGhost");
+        row.Click += (_, _) => pick();
+        return row;
+    }
+
+    Border ChoiceSeparator() => new() {
+        Height = 1, Margin = new Thickness(8, 4),
+        Background = Brush("KcapBorderBrush"),
+    };
+
+    IBrush Brush(string key) => (IBrush)this.FindResource(key)!;
 
     /// The vendor's mark at a given size: the brand path when VendorIcons carries one, the tinted
     /// monogram otherwise (both from HostedHarnessCatalog.TileFor). UI-thread only (constructs
@@ -155,7 +226,7 @@ public partial class LauncherPaneView : UserControl {
         var text = (IBrush)this.FindResource("KcapTextBrush")!;
         var muted = (IBrush)this.FindResource("KcapMutedBrush")!;
         var faint = (IBrush)this.FindResource("KcapFaintBrush")!;
-        var accent = (IBrush)this.FindResource("KcapAccentBrush")!;
+        var success = (IBrush)this.FindResource("KcapSuccessBrush")!;
         var raised = (IBrush)this.FindResource("KcapSurfaceRaisedBrush")!;
         var border = (IBrush)this.FindResource("KcapBorderBrush")!;
 
@@ -196,7 +267,9 @@ public partial class LauncherPaneView : UserControl {
         Grid.SetColumn(right, 1);
         root.Children.Add(right);
 
-        var flyout = new Flyout { Placement = PlacementMode.Bottom, Content = root };
+        var flyout = new Flyout {
+            Placement = PlacementMode.Bottom, Content = root, VerticalOffset = 6,
+        };
         flyout.FlyoutPresenterClasses.Add("kcapPanel");
 
         async void Pick(string vendor, string slug) {
@@ -216,7 +289,7 @@ public partial class LauncherPaneView : UserControl {
             var body = new StackPanel();
             body.Children.Add(new TextBlock {
                 Text = label, FontSize = 13.5, FontWeight = FontWeight.SemiBold,
-                Foreground = selected ? accent : enabled ? text : faint,
+                Foreground = selected ? success : enabled ? text : faint,
             });
             body.Children.Add(sub);
 
@@ -227,6 +300,7 @@ public partial class LauncherPaneView : UserControl {
                 Background = Brushes.Transparent, BorderThickness = new Thickness(0),
                 CornerRadius = new CornerRadius(8), Padding = new Thickness(10, 7),
             };
+            row.Classes.Add("kcapGhost");
             row.Click += (_, _) => pick();
             return row;
         }
@@ -293,6 +367,7 @@ public partial class LauncherPaneView : UserControl {
                     CornerRadius = new CornerRadius(9),
                     Opacity = option.Available ? 1 : 0.4,
                 };
+                tile.Classes.Add(active ? "kcapChip" : "kcapGhost");
                 ToolTip.SetTip(tile, $"{option.Label} — {HostedHarnessCatalog.DescriptionFor(option)}");
                 tile.Click += (_, _) => {
                     currentTab = vendor;
@@ -304,8 +379,6 @@ public partial class LauncherPaneView : UserControl {
         }
 
         searchBox.TextChanged += (_, _) => RebuildRows();
-        searchBox.GotFocus += (_, _) => underline.Background = accent;
-        searchBox.LostFocus += (_, _) => underline.Background = border;
         RebuildTabs();
         RebuildRows();
         flyout.ShowAt(anchor);
@@ -328,7 +401,7 @@ public sealed class VendorGlyphConverter : IValueConverter {
 }
 
 /// AgentChip's label: "Claude · Fable 5" — vendor label plus the model's curated label (raw slug
-/// when uncurated, "default" for the "" sentinel).
+/// when uncurated, "Default" for the "" sentinel). Same "left · right" shape as Effort/Permissions.
 public sealed class AgentChipTextConverter : IMultiValueConverter {
     public static readonly AgentChipTextConverter Instance = new();
 
@@ -338,22 +411,27 @@ public sealed class AgentChipTextConverter : IMultiValueConverter {
             : "";
 }
 
-/// EffortChip's label: the chosen rung, or the default wording for null.
+/// EffortChip's label: always "Effort · …" — Default when null, otherwise the chosen rung's
+/// sentence-case label. Keeps the category visible after a pick.
 public sealed class EffortChipTextConverter : IValueConverter {
     public static readonly EffortChipTextConverter Instance = new();
 
     public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture) =>
-        value is string { Length: > 0 } effort ? $"Effort: {effort}" : "Default effort";
+        $"Effort · {HostedHarnessCatalog.EffortLabelFor(value as string)}";
 
     public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) =>
         throw new NotSupportedException();
 }
 
+/// PermissionChip's label: always "Permissions · …" so a bare "Manual" is not mistaken for an
+/// effort or harness setting.
 public sealed class PermissionChipTextConverter : IValueConverter {
     public static readonly PermissionChipTextConverter Instance = new();
 
     public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture) =>
-        value is string token ? HostedHarnessCatalog.PermissionModeLabelFor(token) : "";
+        value is string token
+            ? $"Permissions · {HostedHarnessCatalog.PermissionModeLabelFor(token)}"
+            : "Permissions · Manual";
 
     public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) =>
         throw new NotSupportedException();

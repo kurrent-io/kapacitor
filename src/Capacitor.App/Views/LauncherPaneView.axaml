@@ -6,93 +6,105 @@
              x:DataType="vm:HomeViewModel">
     <!-- The Sessions surface's empty state: launching IS the pane, T3-style — a headline naming
          the selected repository over one big composer. DataContext is a HomeViewModel supplied
-         externally (MainWindow binds Home), same contract as HomeView. -->
-    <StackPanel VerticalAlignment="Center" HorizontalAlignment="Stretch" MaxWidth="680"
-                Spacing="20" Margin="24,0">
-        <TextBlock FontSize="26" FontWeight="SemiBold" Foreground="{StaticResource KcapTextBrush}"
-                   HorizontalAlignment="Center" TextWrapping="Wrap" TextAlignment="Center"
-                   Text="{Binding SelectedRepoPath, Converter={x:Static views:LauncherHeadlineConverter.Instance}}" />
-
-        <Border Background="{StaticResource KcapSurfaceBrush}" BorderBrush="{StaticResource KcapBorderBrush}"
-                BorderThickness="1" CornerRadius="12" Padding="14">
-            <StackPanel Spacing="12">
-                <TextBox x:Name="GoalInput" Classes="kcapEmbedded" Text="{Binding Goal}"
-                         PlaceholderText="What should we build? Type a goal or paste an issue, PR, or work-item URL…"
-                         Background="Transparent" Foreground="{StaticResource KcapTextBrush}"
-                         BorderThickness="0" MinHeight="72" TextWrapping="Wrap" FontSize="14"
-                         VerticalContentAlignment="Top" AcceptsReturn="False" />
-
-                <Grid ColumnDefinitions="*,Auto">
-                    <WrapPanel ItemSpacing="8" LineSpacing="8" VerticalAlignment="Center">
-                        <Button x:Name="RepositoryChip" Click="OnRepositoryChipClick"
-                                Background="{StaticResource KcapSurfaceRaisedBrush}" BorderBrush="{StaticResource KcapBorderBrush}"
-                                Foreground="{StaticResource KcapTextBrush}" CornerRadius="999" Padding="11,5"
-                                Content="{Binding SelectedRepoPath, Converter={x:Static views:RepositoryLabelConverter.Instance}}"
-                                ToolTip.Tip="{Binding SelectedRepoPath}" />
-
-                        <!-- One picker for harness AND model (T3-style): searchable, grouped by
-                             vendor, with a per-vendor default row and a typed-custom escape hatch —
-                             built per open in code-behind, like the repository picker. -->
-                        <Button x:Name="AgentChip" Click="OnAgentChipClick"
-                                Background="{StaticResource KcapSurfaceRaisedBrush}" BorderBrush="{StaticResource KcapBorderBrush}"
-                                Foreground="{StaticResource KcapTextBrush}" CornerRadius="999" Padding="11,5"
-                                ToolTip.Tip="Harness and model">
-                            <StackPanel Orientation="Horizontal" Spacing="7">
-                                <ContentControl VerticalAlignment="Center"
-                                                Content="{Binding SelectedVendor, Converter={x:Static views:VendorGlyphConverter.Instance}, ConverterParameter=13}" />
-                                <TextBlock VerticalAlignment="Center">
-                                    <TextBlock.Text>
-                                        <MultiBinding Converter="{x:Static views:AgentChipTextConverter.Instance}">
-                                            <Binding Path="Harnesses" />
-                                            <Binding Path="SelectedVendor" />
-                                            <Binding Path="SelectedModel" />
-                                        </MultiBinding>
-                                    </TextBlock.Text>
-                                </TextBlock>
-                            </StackPanel>
-                        </Button>
-
-                        <Button x:Name="EffortChip" Click="OnEffortChipClick"
-                                Background="{StaticResource KcapSurfaceRaisedBrush}" BorderBrush="{StaticResource KcapBorderBrush}"
-                                Foreground="{StaticResource KcapTextBrush}" CornerRadius="999" Padding="11,5"
-                                Content="{Binding SelectedEffort, Converter={x:Static views:EffortChipTextConverter.Instance}}"
-                                ToolTip.Tip="Reasoning effort — Default lets the harness decide" />
-
-                        <Button x:Name="PermissionChip" Click="OnPermissionChipClick"
-                                Background="{StaticResource KcapSurfaceRaisedBrush}" BorderBrush="{StaticResource KcapBorderBrush}"
-                                Foreground="{StaticResource KcapTextBrush}" CornerRadius="999" Padding="11,5"
-                                Content="{Binding SelectedPermissionMode, Converter={x:Static views:PermissionChipTextConverter.Instance}}"
-                                IsVisible="{Binding SelectedVendor, Converter={x:Static views:PermissionChipVisibleConverter.Instance}}"
-                                ToolTip.Tip="Permission mode — how much Claude asks before acting" />
-                    </WrapPanel>
-
-                    <Button Grid.Column="1" x:Name="StartButton" Command="{Binding StartCommand}"
-                            Background="{StaticResource KcapAccentBrush}" Width="36" Height="36" CornerRadius="18"
-                            Padding="0" Margin="12,0,0,0" VerticalAlignment="Bottom"
-                            HorizontalContentAlignment="Center" VerticalContentAlignment="Center"
-                            ToolTip.Tip="Start" AutomationProperties.Name="Start"
-                            IsEnabled="{Binding SelectedRepoPath, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
-                        <Path Data="M8,13.5 L8,3 M3.5,7.5 L8,3 L12.5,7.5" Stroke="#07120E" StrokeThickness="2"
-                              StrokeLineCap="Round" StrokeJoin="Round" Width="16" Height="16" />
-                    </Button>
-                </Grid>
-
-                <TextBlock x:Name="StartErrorText" Text="{Binding StartError}" Foreground="{StaticResource KcapDangerBrush}"
-                           TextWrapping="Wrap"
-                           IsVisible="{Binding StartError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
-
-                <StackPanel Orientation="Horizontal" Spacing="10"
-                            IsVisible="{Binding ConnectionNotice, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
-                    <TextBlock x:Name="ConnectionNoticeText" Text="{Binding ConnectionNotice}"
-                               Foreground="{StaticResource KcapMutedBrush}" TextWrapping="Wrap"
-                               VerticalAlignment="Center"
-                               IsVisible="{Binding ConnectionNotice, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
-                    <Button x:Name="HomeSignInButton" Content="Sign in" Command="{Binding SignInCommand}"
-                            Background="{StaticResource KcapAccentBrush}" Foreground="#07120E" FontWeight="SemiBold"
-                            CornerRadius="7" Padding="12,5"
-                            IsVisible="{Binding SignInVisible}" />
-                </StackPanel>
-            </StackPanel>
+         externally (MainWindow binds Home), same contract as HomeView. Connection / sign-in
+         status sits ABOVE the composer card as chrome, not inside the goal field. -->
+    <DockPanel Margin="24,0">
+        <Border DockPanel.Dock="Top" Margin="0,0,0,16" Padding="14,10" CornerRadius="10"
+                HorizontalAlignment="Stretch" MaxWidth="680"
+                Background="{StaticResource KcapWarningDimBrush}"
+                BorderBrush="{StaticResource KcapWarningBrush}" BorderThickness="1"
+                IsVisible="{Binding ConnectionNotice, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
+            <Grid ColumnDefinitions="*,Auto">
+                <TextBlock x:Name="ConnectionNoticeText" Text="{Binding ConnectionNotice}"
+                           Foreground="{StaticResource KcapWarningBrush}" FontSize="13"
+                           TextWrapping="Wrap" VerticalAlignment="Center" />
+                <Button Grid.Column="1" x:Name="HomeSignInButton" Classes="kcapPrimary"
+                        Content="Sign in" Command="{Binding SignInCommand}"
+                        Background="{StaticResource KcapPrimaryBrush}" Foreground="{StaticResource KcapOnPrimaryBrush}"
+                        FontWeight="SemiBold" CornerRadius="7" Padding="14,6" Margin="16,0,0,0"
+                        VerticalAlignment="Center"
+                        IsVisible="{Binding SignInVisible}" />
+            </Grid>
         </Border>
-    </StackPanel>
+
+        <StackPanel VerticalAlignment="Center" HorizontalAlignment="Stretch" MaxWidth="680"
+                    Spacing="20">
+            <TextBlock FontSize="26" FontWeight="SemiBold" Foreground="{StaticResource KcapTextBrush}"
+                       HorizontalAlignment="Center" TextWrapping="Wrap" TextAlignment="Center"
+                       Text="{Binding SelectedRepoPath, Converter={x:Static views:LauncherHeadlineConverter.Instance}}" />
+
+            <Border Background="{StaticResource KcapSurfaceBrush}" BorderBrush="{StaticResource KcapBorderBrush}"
+                    BorderThickness="1" CornerRadius="12" Padding="14">
+                <StackPanel Spacing="12">
+                    <TextBox x:Name="GoalInput" Classes="kcapEmbedded" Text="{Binding Goal}"
+                             PlaceholderText="What should we build? Type a goal or paste an issue, PR, or work-item URL…"
+                             Background="Transparent" Foreground="{StaticResource KcapTextBrush}"
+                             BorderThickness="0" MinHeight="72" TextWrapping="Wrap" FontSize="14"
+                             VerticalContentAlignment="Top" AcceptsReturn="False" />
+
+                    <Grid ColumnDefinitions="*,Auto">
+                        <WrapPanel ItemSpacing="8" LineSpacing="8" VerticalAlignment="Center">
+                            <Button x:Name="RepositoryChip" Classes="kcapChip" Click="OnRepositoryChipClick"
+                                    Background="{StaticResource KcapSurfaceRaisedBrush}" BorderBrush="{StaticResource KcapBorderBrush}"
+                                    Foreground="{StaticResource KcapTextBrush}" CornerRadius="999" Padding="11,5"
+                                    Content="{Binding SelectedRepoPath, Converter={x:Static views:RepositoryLabelConverter.Instance}}"
+                                    ToolTip.Tip="Repository for the new session" />
+
+                            <!-- One picker for harness AND model (T3-style): searchable, grouped by
+                                 vendor, with a per-vendor default row and a typed-custom escape hatch —
+                                 built per open in code-behind, like the repository picker. -->
+                            <Button x:Name="AgentChip" Classes="kcapChip" Click="OnAgentChipClick"
+                                    Background="{StaticResource KcapSurfaceRaisedBrush}" BorderBrush="{StaticResource KcapBorderBrush}"
+                                    Foreground="{StaticResource KcapTextBrush}" CornerRadius="999" Padding="11,5"
+                                    ToolTip.Tip="Harness and model">
+                                <StackPanel Orientation="Horizontal" Spacing="7">
+                                    <ContentControl VerticalAlignment="Center"
+                                                    Content="{Binding SelectedVendor, Converter={x:Static views:VendorGlyphConverter.Instance}, ConverterParameter=13}" />
+                                    <TextBlock VerticalAlignment="Center">
+                                        <TextBlock.Text>
+                                            <MultiBinding Converter="{x:Static views:AgentChipTextConverter.Instance}">
+                                                <Binding Path="Harnesses" />
+                                                <Binding Path="SelectedVendor" />
+                                                <Binding Path="SelectedModel" />
+                                            </MultiBinding>
+                                        </TextBlock.Text>
+                                    </TextBlock>
+                                </StackPanel>
+                            </Button>
+
+                            <Button x:Name="EffortChip" Classes="kcapChip" Click="OnEffortChipClick"
+                                    Background="{StaticResource KcapSurfaceRaisedBrush}" BorderBrush="{StaticResource KcapBorderBrush}"
+                                    Foreground="{StaticResource KcapTextBrush}" CornerRadius="999" Padding="11,5"
+                                    Content="{Binding SelectedEffort, Converter={x:Static views:EffortChipTextConverter.Instance}}"
+                                    ToolTip.Tip="Reasoning effort — Default lets the harness decide" />
+
+                            <Button x:Name="PermissionChip" Classes="kcapChip" Click="OnPermissionChipClick"
+                                    Background="{StaticResource KcapSurfaceRaisedBrush}" BorderBrush="{StaticResource KcapBorderBrush}"
+                                    Foreground="{StaticResource KcapTextBrush}" CornerRadius="999" Padding="11,5"
+                                    Content="{Binding SelectedPermissionMode, Converter={x:Static views:PermissionChipTextConverter.Instance}}"
+                                    IsVisible="{Binding SelectedVendor, Converter={x:Static views:PermissionChipVisibleConverter.Instance}}"
+                                    ToolTip.Tip="Permission mode — how much Claude asks before acting" />
+                        </WrapPanel>
+
+                        <Button Grid.Column="1" x:Name="StartButton" Classes="kcapPrimary" Command="{Binding StartCommand}"
+                                Background="{StaticResource KcapPrimaryBrush}" Width="36" Height="36" CornerRadius="18"
+                                Padding="0" Margin="12,0,0,0" VerticalAlignment="Bottom"
+                                HorizontalContentAlignment="Center" VerticalContentAlignment="Center"
+                                ToolTip.Tip="{Binding StartButtonTip}"
+                                ToolTip.ShowOnDisabled="True"
+                                AutomationProperties.Name="Start"
+                                IsEnabled="{Binding SelectedRepoPath, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
+                            <Path Data="M8,13.5 L8,3 M3.5,7.5 L8,3 L12.5,7.5"
+                                  Stroke="{StaticResource KcapOnPrimaryBrush}" StrokeThickness="2"
+                                  StrokeLineCap="Round" StrokeJoin="Round" Width="16" Height="16" />
+                        </Button>
+                    </Grid>
+
+                    <TextBlock x:Name="StartErrorText" Text="{Binding StartError}" Foreground="{StaticResource KcapDangerBrush}"
+                               TextWrapping="Wrap"
+                               IsVisible="{Binding StartError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                </StackPanel>
+            </Border>
+        </StackPanel>
+    </DockPanel>
 </UserControl>

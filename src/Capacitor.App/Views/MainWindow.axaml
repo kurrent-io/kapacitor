@@ -51,10 +51,10 @@
                         <StackPanel Spacing="10">
                             <StackPanel Spacing="8">
                                 <StackPanel Orientation="Horizontal" Spacing="8">
-                                    <Button x:Name="StartButton" Content="Start daemon" Command="{Binding StartDaemonCommand}" IsVisible="{Binding StartVisible}"
-                                            Background="{StaticResource KcapAccentBrush}" Foreground="#07120E" FontWeight="SemiBold"
+                                    <Button x:Name="StartButton" Classes="kcapPrimary" Content="Start daemon" Command="{Binding StartDaemonCommand}" IsVisible="{Binding StartVisible}"
+                                            Background="{StaticResource KcapPrimaryBrush}" Foreground="{StaticResource KcapOnPrimaryBrush}" FontWeight="SemiBold"
                                             CornerRadius="7" Padding="13,6" />
-                                    <Button x:Name="RetryButton" Content="Retry" Command="{Binding RetryCommand}" IsVisible="{Binding RetryVisible}"
+                                    <Button x:Name="RetryButton" Classes="kcapChip" Content="Retry" Command="{Binding RetryCommand}" IsVisible="{Binding RetryVisible}"
                                             Background="{StaticResource KcapSurfaceRaisedBrush}" BorderBrush="{StaticResource KcapBorderBrush}"
                                             Foreground="{StaticResource KcapTextBrush}" CornerRadius="7" Padding="13,6" />
                                 </StackPanel>
@@ -71,46 +71,80 @@
                         <!-- The consent-decision feed, as a transient panel off this chip rather
                              than a section in the page flow. Opened/Closed drive the polling gate
                              in code-behind, and opening a workspace closes it. -->
-                        <Button Grid.Column="1" x:Name="ActivityButton" VerticalAlignment="Top"
+                        <Button Grid.Column="1" x:Name="ActivityButton" Classes="kcapChip" VerticalAlignment="Top"
                                 Background="{StaticResource KcapSurfaceRaisedBrush}"
                                 BorderBrush="{StaticResource KcapBorderBrush}" CornerRadius="7" Padding="12,6">
                             <TextBlock Text="Activity" FontSize="12.5" FontWeight="SemiBold"
                                        Foreground="{StaticResource KcapMutedBrush}" VerticalAlignment="Center" />
                             <Button.Flyout>
-                                <Flyout Placement="BottomEdgeAlignedRight">
-                                    <Border Background="{StaticResource KcapSurfaceBrush}" MinWidth="480" MaxWidth="840"
-                                            MaxHeight="440" Padding="14">
-                                        <Grid RowDefinitions="Auto,*">
-                                            <TextBlock x:Name="ActivityEmptyText" Text="No decisions yet"
-                                                       Foreground="{StaticResource KcapFaintBrush}"
-                                                       IsVisible="{Binding Activity.IsEmpty}" HorizontalAlignment="Center" Margin="0,10" />
+                                <Flyout Placement="BottomEdgeAlignedRight" VerticalOffset="6"
+                                        FlyoutPresenterClasses="kcapPanel">
+                                    <!-- Fixed width so star columns never spill into a horizontal scrollbar;
+                                         empty state stays compact instead of stretching to MaxHeight. -->
+                                    <Border Width="520" MaxHeight="400" Padding="16,14">
+                                        <Grid>
+                                            <StackPanel IsVisible="{Binding Activity.IsEmpty}"
+                                                        Spacing="6" Margin="0,28"
+                                                        HorizontalAlignment="Center" VerticalAlignment="Center">
+                                                <TextBlock x:Name="ActivityEmptyText" Text="No decisions yet"
+                                                           Foreground="{StaticResource KcapMutedBrush}"
+                                                           FontSize="13.5" HorizontalAlignment="Center" />
+                                                <TextBlock Text="Allow and deny choices from consent prompts show up here."
+                                                           Foreground="{StaticResource KcapFaintBrush}"
+                                                           FontSize="12" TextWrapping="Wrap" MaxWidth="300"
+                                                           TextAlignment="Center" HorizontalAlignment="Center" />
+                                            </StackPanel>
 
-                                            <ScrollViewer Grid.Row="1"
-                                                          VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto">
+                                            <ScrollViewer IsVisible="{Binding !Activity.IsEmpty}"
+                                                          VerticalScrollBarVisibility="Auto"
+                                                          HorizontalScrollBarVisibility="Disabled">
                                                 <StackPanel>
-                                                    <Grid x:Name="ActivityHeader" ColumnDefinitions="150,70,120,90,140,90,110" Margin="0,0,0,4"
-                                                          IsVisible="{Binding !Activity.IsEmpty}">
-                                                        <TextBlock Grid.Column="0" Text="Time" FontWeight="Bold" Opacity="0.7" />
-                                                        <TextBlock Grid.Column="1" Text="Outcome" FontWeight="Bold" Opacity="0.7" />
-                                                        <TextBlock Grid.Column="2" Text="Requester" FontWeight="Bold" Opacity="0.7" />
-                                                        <TextBlock Grid.Column="3" Text="Kind" FontWeight="Bold" Opacity="0.7" />
-                                                        <TextBlock Grid.Column="4" Text="Repo" FontWeight="Bold" Opacity="0.7" />
-                                                        <TextBlock Grid.Column="5" Text="Vendor" FontWeight="Bold" Opacity="0.7" />
-                                                        <TextBlock Grid.Column="6" Text="Source" FontWeight="Bold" Opacity="0.7" />
+                                                    <Grid x:Name="ActivityHeader"
+                                                          ColumnDefinitions="1.6*,0.8*,1.3*,0.9*,1.4*,0.9*,1*"
+                                                          Margin="0,0,0,8">
+                                                        <TextBlock Grid.Column="0" Text="Time" FontSize="11" FontWeight="SemiBold"
+                                                                   Foreground="{StaticResource KcapMutedBrush}" />
+                                                        <TextBlock Grid.Column="1" Text="Outcome" FontSize="11" FontWeight="SemiBold"
+                                                                   Foreground="{StaticResource KcapMutedBrush}" />
+                                                        <TextBlock Grid.Column="2" Text="Requester" FontSize="11" FontWeight="SemiBold"
+                                                                   Foreground="{StaticResource KcapMutedBrush}" />
+                                                        <TextBlock Grid.Column="3" Text="Kind" FontSize="11" FontWeight="SemiBold"
+                                                                   Foreground="{StaticResource KcapMutedBrush}" />
+                                                        <TextBlock Grid.Column="4" Text="Repo" FontSize="11" FontWeight="SemiBold"
+                                                                   Foreground="{StaticResource KcapMutedBrush}" />
+                                                        <TextBlock Grid.Column="5" Text="Vendor" FontSize="11" FontWeight="SemiBold"
+                                                                   Foreground="{StaticResource KcapMutedBrush}" />
+                                                        <TextBlock Grid.Column="6" Text="Source" FontSize="11" FontWeight="SemiBold"
+                                                                   Foreground="{StaticResource KcapMutedBrush}" />
                                                     </Grid>
 
                                                     <ItemsControl x:Name="ActivityItems" ItemsSource="{Binding Activity.Rows}">
                                                         <ItemsControl.ItemTemplate>
                                                             <DataTemplate x:DataType="vm:ActivityRow">
-                                                                <Grid ColumnDefinitions="150,70,120,90,140,90,110" Margin="0,2">
-                                                                    <TextBlock Grid.Column="0" Text="{Binding Time}" TextTrimming="CharacterEllipsis" />
-                                                                    <TextBlock Grid.Column="1" Text="{Binding Outcome}" TextTrimming="CharacterEllipsis"
+                                                                <Grid ColumnDefinitions="1.6*,0.8*,1.3*,0.9*,1.4*,0.9*,1*"
+                                                                      Margin="0,3">
+                                                                    <TextBlock Grid.Column="0" Text="{Binding Time}" FontSize="12.5"
+                                                                               Foreground="{StaticResource KcapTextBrush}"
+                                                                               TextTrimming="CharacterEllipsis" />
+                                                                    <TextBlock Grid.Column="1" Text="{Binding Outcome}" FontSize="12.5"
+                                                                               TextTrimming="CharacterEllipsis"
                                                                                Foreground="{Binding IsAllowed, Converter={x:Static views:OutcomeBrushConverter.Instance}}" />
-                                                                    <TextBlock Grid.Column="2" Text="{Binding Requester}" TextTrimming="CharacterEllipsis" />
-                                                                    <TextBlock Grid.Column="3" Text="{Binding KindLabel}" TextTrimming="CharacterEllipsis" />
-                                                                    <TextBlock Grid.Column="4" Text="{Binding RepoLeaf}" ToolTip.Tip="{Binding RepoFull}" TextTrimming="CharacterEllipsis" />
-                                                                    <TextBlock Grid.Column="5" Text="{Binding Vendor}" TextTrimming="CharacterEllipsis" />
-                                                                    <TextBlock Grid.Column="6" Text="{Binding SourceLabel}" TextTrimming="CharacterEllipsis" />
+                                                                    <TextBlock Grid.Column="2" Text="{Binding Requester}" FontSize="12.5"
+                                                                               Foreground="{StaticResource KcapTextBrush}"
+                                                                               TextTrimming="CharacterEllipsis" />
+                                                                    <TextBlock Grid.Column="3" Text="{Binding KindLabel}" FontSize="12.5"
+                                                                               Foreground="{StaticResource KcapTextBrush}"
+                                                                               TextTrimming="CharacterEllipsis" />
+                                                                    <TextBlock Grid.Column="4" Text="{Binding RepoLeaf}" FontSize="12.5"
+                                                                               Foreground="{StaticResource KcapTextBrush}"
+                                                                               ToolTip.Tip="{Binding RepoFull}"
+                                                                               TextTrimming="CharacterEllipsis" />
+                                                                    <TextBlock Grid.Column="5" Text="{Binding Vendor}" FontSize="12.5"
+                                                                               Foreground="{StaticResource KcapTextBrush}"
+                                                                               TextTrimming="CharacterEllipsis" />
+                                                                    <TextBlock Grid.Column="6" Text="{Binding SourceLabel}" FontSize="12.5"
+                                                                               Foreground="{StaticResource KcapTextBrush}"
+                                                                               TextTrimming="CharacterEllipsis" />
                                                                 </Grid>
                                                             </DataTemplate>
                                                         </ItemsControl.ItemTemplate>

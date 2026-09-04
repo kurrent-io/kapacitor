@@ -90,7 +90,7 @@
                     <ItemsControl ItemsSource="{Binding PendingCards}">
                         <ItemsControl.DataTemplates>
                             <DataTemplate x:DataType="vm:PermissionCardViewModel">
-                                <Border Background="{StaticResource KcapSurfaceRaisedBrush}" BorderBrush="{StaticResource KcapAccentBrush}"
+                                <Border Background="{StaticResource KcapSurfaceRaisedBrush}" BorderBrush="{StaticResource KcapSuccessBrush}"
                                         BorderThickness="1" CornerRadius="10" Padding="13,10" Margin="0,0,0,6">
                                     <StackPanel Spacing="6">
                                         <TextBlock Text="{Binding ToolName}" FontWeight="SemiBold" FontSize="13" Foreground="{StaticResource KcapTextBrush}" />
@@ -103,17 +103,17 @@
                                             <Button Content="Allow always" Command="{Binding AllowAlwaysCommand}" IsVisible="{Binding ShowsAllowAlways}"
                                                     Background="Transparent" BorderBrush="Transparent" Foreground="{StaticResource KcapMutedBrush}" Padding="10,4" FontSize="12" CornerRadius="7" />
                                             <Button Content="Allow" Command="{Binding AllowCommand}" Padding="12,4" FontSize="12" FontWeight="SemiBold" CornerRadius="7"
-                                                    Background="{StaticResource KcapAccentBrush}" Foreground="#07120E" />
+                                                    Background="{StaticResource KcapPrimaryBrush}" Foreground="{StaticResource KcapOnPrimaryBrush}" />
                                         </StackPanel>
                                     </StackPanel>
                                 </Border>
                             </DataTemplate>
                             <DataTemplate x:DataType="vm:QuestionCardViewModel">
-                                <Border Background="{StaticResource KcapSurfaceRaisedBrush}" BorderBrush="{StaticResource KcapAccentBrush}"
+                                <Border Background="{StaticResource KcapSurfaceRaisedBrush}" BorderBrush="{StaticResource KcapSuccessBrush}"
                                         BorderThickness="1" CornerRadius="10" Padding="13,10" Margin="0,0,0,6">
                                     <Border.Styles>
                                         <Style Selector="Button.selected">
-                                            <Setter Property="BorderBrush" Value="{StaticResource KcapAccentBrush}" />
+                                            <Setter Property="BorderBrush" Value="{StaticResource KcapSuccessBrush}" />
                                         </Style>
                                     </Border.Styles>
                                     <StackPanel Spacing="8" IsEnabled="{Binding !IsBusy}">
@@ -160,7 +160,7 @@
                                                             <Button DockPanel.Dock="Right" Content="Answer" Command="{Binding EnterCommand}"
                                                                     IsVisible="{Binding ShowsOtherAnswer}" Margin="6,0,0,0"
                                                                     Padding="10,4" FontSize="12" CornerRadius="7"
-                                                                    Background="{StaticResource KcapAccentBrush}" Foreground="#07120E" />
+                                                                    Background="{StaticResource KcapPrimaryBrush}" Foreground="{StaticResource KcapOnPrimaryBrush}" />
                                                             <TextBox Text="{Binding OtherText}" PlaceholderText="Other…" MaxLength="{Binding MaxOtherLength}"
                                                                      AcceptsReturn="False" FontSize="12" MinHeight="30">
                                                                 <TextBox.KeyBindings>
@@ -176,7 +176,7 @@
                                                    IsVisible="{Binding ErrorText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
                                         <Button Content="Submit" Command="{Binding SubmitCommand}" IsVisible="{Binding ShowsSubmit}"
                                                 HorizontalAlignment="Right" Padding="12,4" FontSize="12" FontWeight="SemiBold" CornerRadius="7"
-                                                Background="{StaticResource KcapAccentBrush}" Foreground="#07120E" />
+                                                Background="{StaticResource KcapPrimaryBrush}" Foreground="{StaticResource KcapOnPrimaryBrush}" />
                                     </StackPanel>
                                 </Border>
                             </DataTemplate>
@@ -209,9 +209,9 @@
                     <Ellipse Grid.Column="2" Width="7" Height="7" Fill="{Binding StatusDot}" VerticalAlignment="Center" Margin="12,0,6,0" />
                     <TextBlock Grid.Column="3" Text="{Binding StatusText}" FontSize="11" Foreground="{StaticResource KcapMutedBrush}"
                                VerticalAlignment="Center" />
-                    <Button x:Name="SendButton" Grid.Column="4" Content="Send" Command="{Binding SendCommand}" Margin="12,0,0,0"
+                    <Button x:Name="SendButton" Grid.Column="4" Classes="kcapPrimary" Content="Send" Command="{Binding SendCommand}" Margin="12,0,0,0"
                             Padding="12,4" FontSize="12" FontWeight="SemiBold" CornerRadius="7"
-                            Background="{StaticResource KcapAccentBrush}" Foreground="#07120E"
+                            Background="{StaticResource KcapPrimaryBrush}" Foreground="{StaticResource KcapOnPrimaryBrush}"
                             IsVisible="{Binding !IsReadOnlyParticipant}" />
                 </Grid>
             </StackPanel>

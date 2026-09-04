@@ -64,9 +64,15 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
     readonly CompositeDisposable _disposables = new();
 
     string _selectedRepoPath = ScratchRepoPath;
+    // Subject (not WhenAnyValue) so the ctor can compose StartButtonTip — same reason as
+    // _signInRequired above.
+    readonly BehaviorSubject<string> _selectedRepoPathChanges = new(ScratchRepoPath);
     public string SelectedRepoPath {
         get => _selectedRepoPath;
-        set => this.RaiseAndSetIfChanged(ref _selectedRepoPath, value);
+        set {
+            this.RaiseAndSetIfChanged(ref _selectedRepoPath, value);
+            _selectedRepoPathChanges.OnNext(value);
+        }
     }
 
     string _selectedVendor = DefaultVendor;
@@ -126,6 +132,11 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
 
     readonly ObservableAsPropertyHelper<bool> _signInVisible;
     public bool SignInVisible => _signInVisible.Value;
+
+    readonly ObservableAsPropertyHelper<string> _startButtonTip;
+    /// Hover tip for Start: names the gate that keeps it disabled (no repo, or ConnectionNotice),
+    /// else plain "Start". Bound with ToolTip.ShowOnDisabled so a disabled button still explains.
+    public string StartButtonTip => _startButtonTip.Value;
 
     public ReactiveCommand<Unit, Unit> SignInCommand { get; }
 
@@ -227,6 +238,11 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
             .ToProperty(this, x => x.SignInVisible, initialValue: false)
             .DisposeWith(_disposables);
 
+        _startButtonTip = _selectedRepoPathChanges
+            .CombineLatest(signInState.Select(t => NoticeFor(t.Availability, t.Expired)), TipFor)
+            .ToProperty(this, x => x.StartButtonTip, TipFor(SelectedRepoPath, ConnectingNotice))
+            .DisposeWith(_disposables);
+
         SignInCommand = ReactiveCommand.Create(() => { _requestSignIn?.Invoke(); });
     }
 
@@ -255,6 +271,11 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
             LaunchAvailability.DaemonUnavailable => DaemonDownNotice,
             _                                    => ServerLostNotice,
         };
+
+    /// Repo gate first (IsEnabled), then the connection/sign-in notice StartCommand also gates on.
+    internal static string TipFor(string? repoPath, string? connectionNotice) =>
+        string.IsNullOrEmpty(repoPath) ? "Select a repository to start"
+        : connectionNotice ?? "Start";
 
     // Constructor-scoped (like TrayViewModel/ActivityViewModel), not WhenActivated — the OAPH and
     // the Agents subscription above run for this object's whole lifetime, not a window's.

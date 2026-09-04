@@ -95,11 +95,13 @@ public class HomeViewSmokeTests {
 
             var notice = Find<TextBlock>(window, "ConnectionNoticeText")!;
             var signIn = Find<Button>(window, "HomeSignInButton")!;
-            var before = (notice.IsVisible, signIn.IsVisible);
+            // The banner Border owns visibility; the text/button stay in the tree.
+            var banner = notice.FindAncestorOfType<Border>()!;
+            var before = (banner.IsVisible, signIn.IsVisible);
 
             service.SnapshotsSubject.OnNext(FakeDaemonClientService.Snap(connection: "disconnected"));
             Dispatcher.UIThread.RunJobs();
-            var after = (notice.IsVisible, notice.Text, signIn.IsVisible);
+            var after = (banner.IsVisible, notice.Text, signIn.IsVisible);
 
             window.Close();
             Dispatcher.UIThread.RunJobs();
@@ -162,6 +164,37 @@ public class HomeViewSmokeTests {
         });
 
         await Assert.That(name).IsEqualTo("Start");
+    }
+
+    /// Disabled Start still exposes why — hover tips are suppressed on disabled controls unless
+    /// ShowOnDisabled is set, and the tip text must name the missing repository gate.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task StartButton_tooltip_explains_disabled_without_repository() {
+        var (tipBefore, tipAfter, showOnDisabled) = await AvaloniaSession.DispatchAsync(async () => {
+            var (_, vm, _, _, tmp) = Build();
+            using var _tmp = tmp;
+            var window = new Window { Content = new LauncherPaneView { DataContext = vm } };
+            window.Show();
+            Dispatcher.UIThread.RunJobs();
+
+            var startButton = Find<Button>(window, "StartButton")!;
+            var before = ToolTip.GetTip(startButton) as string;
+            var show = ToolTip.GetShowOnDisabled(startButton);
+
+            await vm.SelectRepositoryAsync("/repos/kcap-cli");
+            Dispatcher.UIThread.RunJobs();
+            var after = ToolTip.GetTip(startButton) as string;
+
+            window.Close();
+            Dispatcher.UIThread.RunJobs();
+            vm.Dispose();
+            return (before, after, show);
+        });
+
+        await Assert.That(showOnDisabled).IsTrue();
+        await Assert.That(tipBefore).IsEqualTo("Select a repository to start");
+        await Assert.That(tipAfter).IsEqualTo("Start");
     }
 
     [Test]

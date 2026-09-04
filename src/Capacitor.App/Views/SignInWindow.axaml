@@ -6,8 +6,11 @@
         x:DataType="vm:SignInStepViewModel"
         Title="Sign in"
         Icon="avares://Kurrent Capacitor/Assets/kcap-icon.png"
-        Width="560" Height="420">
+        Width="480" Height="560"
+        MinWidth="420" MinHeight="480"
+        Background="{StaticResource KcapCanvasBrush}"
+        CanResize="False">
     <!-- The steady-state re-auth dialog: the wizard's sign-in step view over a ReauthComposition
          graph pinned to the configured server. App owns opening/closing it. -->
-    <onboarding:SignInStepView Margin="16" />
+    <onboarding:SignInStepView Margin="32,28" />
 </Window>

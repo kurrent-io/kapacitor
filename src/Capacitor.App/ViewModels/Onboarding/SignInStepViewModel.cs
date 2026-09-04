@@ -109,7 +109,10 @@ public sealed class SignInStepViewModel : ReactiveObject, IWizardStep {
         };
         bridges.Progress.BrowserOpened      += url => {
             BrowserUrl = url;
-            Append($"Opening your browser. If it doesn't open, visit: {url}");
+            // StatusDetail survives here: SetStatus only clears it on the next non-error headline.
+            StatusDetail = "Finish authorization in the browser, then return here. This window updates when you're done.";
+            WaitingText  = "Waiting for you to authorize…";
+            Append("Opened the sign-in page in your browser.");
         };
         bridges.Progress.DeviceCodeReceived += (code, verificationUri, prefilled) => {
             DeviceCode      = StripClipboardNote(code);
@@ -324,7 +327,7 @@ public sealed class SignInStepViewModel : ReactiveObject, IWizardStep {
     }
 
     public Task OnEnterAsync(CancellationToken ct) {
-        if (!Satisfied && !Busy) SetStatus(ReadyStatus(), isError: false);
+        if (!Satisfied && !Busy) SetStatus(ReadyStatus(), isError: false, ReadyDetail());
 
         return Task.CompletedTask;
     }
@@ -368,7 +371,10 @@ public sealed class SignInStepViewModel : ReactiveObject, IWizardStep {
         ResetForRun(intent);
         Busy = true;
         // Before Begin: a synchronously-rendered error must not have its detail wiped by this.
-        SetStatus("Signing in…", isError: false);
+        SetStatus(
+            "Waiting for your browser…",
+            isError: false,
+            "Complete authorization there, then return here — this window updates on its own.");
 
         AuthAttempt attempt;
 
@@ -420,17 +426,13 @@ public sealed class SignInStepViewModel : ReactiveObject, IWizardStep {
             // Provisioning outran its poll window. Sign-in itself succeeded and the workspace is on its
             // way, so headlining a failure here would tell the user something untrue.
             case AuthResult.Failed { Reason: AuthFailureReason.ProvisioningInProgress } pending:
-                SetStatus(pending.Message, isError: false);
-                // The headline is the fact; the sink's line is what to do about it, and SetStatus
-                // drops the detail on a non-error.
-                StatusDetail ??= _lastReport;
+                SetStatus(pending.Message, isError: false, _lastReport);
 
                 break;
-            // Already rendered through the sink; the last reported line stands in when none was an error.
+            // Already rendered through the sink; prefer the last reported line over in-flight
+            // guidance (StatusDetail holds browser-wait copy until an ErrorReceived overwrites it).
             default:
-                Status        = "Sign-in failed.";
-                StatusIsError = true;
-                StatusDetail ??= _lastReport;
+                SetStatus("Sign-in failed.", isError: true, _lastReport ?? StatusDetail);
 
                 break;
         }
@@ -442,12 +444,23 @@ public sealed class SignInStepViewModel : ReactiveObject, IWizardStep {
             : committed.Username is { Length: > 0 } username ? $"Signed in as {username}" : "Signed in.";
 
     string ReadyStatus() => _connect.Intent switch {
-        ConnectIntent.Paste paste       => $"Ready to sign in to {paste.ServerInput}.",
+        // Destination only — the window title already says "Sign in"; detail explains what happens.
+        ConnectIntent.Paste paste       => paste.ServerInput,
         ConnectIntent.Discover discover => discover.Provider == AuthProvider.WorkOS
-            ? "Ready to find your workspaces with single sign-on."
-            : "Ready to find your workspaces with GitHub.",
-        ConnectIntent.Create => "Ready to create a workspace.",
-        _                    => "Choose how to connect on the Connect step."
+            ? "Find your workspaces with single sign-on"
+            : "Find your workspaces with GitHub",
+        ConnectIntent.Create => "Create a workspace",
+        _                    => "Choose how to connect on the Connect step.",
+    };
+
+    string ReadyDetail() => _connect.Intent switch {
+        ConnectIntent.Paste =>
+            "Opens your browser to authorize this machine and stores a token for launching hosted agents.",
+        ConnectIntent.Discover =>
+            "Opens your browser, then lists the workspaces your account can access.",
+        ConnectIntent.Create =>
+            "Walks you through setup, then authorizes this machine for the new workspace.",
+        _ => "Pick a connection option on the Connect step, then come back here.",
     };
 
     async Task SurfaceQuarantineAsync() {
@@ -500,10 +513,10 @@ public sealed class SignInStepViewModel : ReactiveObject, IWizardStep {
         ConfirmVisible       = false;
     }
 
-    void SetStatus(string text, bool isError) {
+    void SetStatus(string text, bool isError, string? detail = null) {
         Status        = text;
         StatusIsError = isError;
-        StatusDetail  = isError ? StatusDetail : null;
+        StatusDetail  = detail;
     }
 
     void Append(string line) {

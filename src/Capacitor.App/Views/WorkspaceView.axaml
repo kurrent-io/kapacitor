@@ -20,6 +20,17 @@
             <Setter Property="Foreground" Value="{StaticResource KcapTextBrush}" />
             <Setter Property="FontWeight" Value="SemiBold" />
         </Style>
+        <!-- Fluent hover paints PART_ContentPresenter; keep tab chrome on our tokens. -->
+        <Style Selector="Button.tab:pointerover /template/ ContentPresenter#PART_ContentPresenter,
+                         Button.tab:pressed /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="{StaticResource KcapSurfaceRaisedBrush}" />
+            <Setter Property="Foreground" Value="{StaticResource KcapTextBrush}" />
+        </Style>
+        <Style Selector="Button.tab.active:pointerover /template/ ContentPresenter#PART_ContentPresenter,
+                         Button.tab.active:pressed /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="{StaticResource KcapSurfaceRaisedBrush}" />
+            <Setter Property="Foreground" Value="{StaticResource KcapTextBrush}" />
+        </Style>
     </UserControl.Styles>
 
     <!-- Two columns: the workspace proper, and the work-context pane at its fixed width. The
@@ -91,7 +102,7 @@
                                        Opacity="{Binding IsTerminalActive, Converter={x:Static views:BoolToOpacityConverter.Instance}}"
                                        AutomationProperties.IsOffscreenBehavior="{Binding IsTerminalActive, Converter={x:Static views:OffscreenWhenInactiveConverter.Instance}}"
                                        FontFamily="Menlo,Monaco,Consolas,Cascadia Mono,DejaVu Sans Mono,monospace"
-                                       CaretBrush="{StaticResource KcapAccentBrush}"
+                                       CaretBrush="{StaticResource KcapTextBrush}"
                                        Model="{Binding Terminal.Surface, Converter={x:Static views:TerminalSurfaceModelConverter.Instance}}" />
 
             <!-- A session with no tabs at all has no Terminal tab to activate, and these banners
@@ -132,7 +143,7 @@
                         <TextBlock Text="{Binding Terminal.State, Converter={x:Static views:TerminalDetachedOrFailedMessageConverter.Instance}}"
                                    Foreground="{StaticResource KcapTextBrush}" HorizontalAlignment="Center" TextWrapping="Wrap" MaxWidth="380" />
                         <Button x:Name="ReattachButton" Content="Reattach" Command="{Binding Terminal.ReattachCommand}"
-                                HorizontalAlignment="Center" Background="{StaticResource KcapAccentBrush}" Foreground="#07120E"
+                                HorizontalAlignment="Center" Background="{StaticResource KcapPrimaryBrush}" Foreground="{StaticResource KcapOnPrimaryBrush}"
                                 FontWeight="SemiBold" Padding="16,5" />
                     </StackPanel>
                 </Border>

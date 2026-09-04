@@ -61,7 +61,7 @@ public sealed class ToolOutcomeBrushConverter : IValueConverter {
     public static readonly ToolOutcomeBrushConverter Instance = new();
 
     public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture) =>
-        Avalonia.Application.Current?.FindResource(value is true ? "KcapDangerBrush" : "KcapAccentBrush");
+        Avalonia.Application.Current?.FindResource(value is true ? "KcapDangerBrush" : "KcapSuccessBrush");
 
     public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) =>
         throw new NotSupportedException();

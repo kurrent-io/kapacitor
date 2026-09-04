@@ -101,6 +101,6 @@ public class ReauthCompositionTests {
         });
 
         await Assert.That(buttonFound).IsTrue();
-        await Assert.That(status).IsEqualTo($"Ready to sign in to {ServerUrl}.");
+        await Assert.That(status).IsEqualTo(ServerUrl);
     }
 }

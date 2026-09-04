@@ -9,6 +9,7 @@ riderModule.iml
 .worktrees/
 logs/
 .publish/
+.dev/
 **/.DS_Store
 .superpowers/
 **/data/capacitor.db

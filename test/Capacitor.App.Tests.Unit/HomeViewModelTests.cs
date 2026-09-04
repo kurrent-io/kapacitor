@@ -481,12 +481,15 @@ public class HomeViewModelTests {
             using var vm = new HomeViewModel(daemon, new AppStateStore(path), new RecordingLaunchClient(), Known());
 
             Connect(daemon);
+            await vm.SelectRepositoryAsync("/repo/a");
             await Assert.That(vm.ConnectionNotice).IsNull();
             await Assert.That(vm.SignInVisible).IsFalse();
+            await Assert.That(vm.StartButtonTip).IsEqualTo("Start");
 
             daemon.SnapshotsSubject.OnNext(FakeDaemonClientService.Snap(connection: "disconnected"));
             await Assert.That(vm.ConnectionNotice).IsEqualTo(HomeViewModel.ServerLostNotice);
             await Assert.That(vm.SignInVisible).IsTrue();
+            await Assert.That(vm.StartButtonTip).IsEqualTo(HomeViewModel.ServerLostNotice);
 
             // Transient by definition — the retry resolves it or lands on "disconnected".
             daemon.SnapshotsSubject.OnNext(FakeDaemonClientService.Snap(connection: "reconnecting"));

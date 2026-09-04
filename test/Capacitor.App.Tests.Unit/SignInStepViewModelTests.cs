@@ -763,7 +763,7 @@ public class SignInStepViewModelTests {
 
         await Assert.That(connectBox).IsNotNull();
         await Assert.That(signInButton).IsNotNull();
-        await Assert.That(signInStatus).IsEqualTo("Ready to find your workspaces with GitHub.");
+        await Assert.That(signInStatus).IsEqualTo("Find your workspaces with GitHub");
     }
 
     [Test]

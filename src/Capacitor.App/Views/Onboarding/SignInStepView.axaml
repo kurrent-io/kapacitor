@@ -6,125 +6,271 @@
              x:DataType="vm:SignInStepViewModel">
     <!-- Shared between the onboarding wizard's Sign-in step and the steady-state re-auth dialog
          (SignInWindow) — one rendering of SignInStepViewModel, so the two can never drift. -->
-    <Grid RowDefinitions="Auto,Auto,Auto,Auto,*">
-        <StackPanel Grid.Row="0" Spacing="4">
+    <UserControl.Styles>
+        <Style Selector="TextBox.kcapField">
+            <Setter Property="Background" Value="{StaticResource KcapSurfaceRaisedBrush}" />
+            <Setter Property="Foreground" Value="{StaticResource KcapTextBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource KcapBorderBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="8" />
+            <Setter Property="Padding" Value="12,9" />
+            <Setter Property="PlaceholderForeground" Value="{StaticResource KcapMutedBrush}" />
+        </Style>
+        <Style Selector="ListBox.kcapList">
+            <Setter Property="Background" Value="{StaticResource KcapSurfaceRaisedBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource KcapBorderBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="8" />
+            <Setter Property="Foreground" Value="{StaticResource KcapTextBrush}" />
+        </Style>
+    </UserControl.Styles>
+
+    <DockPanel>
+        <StackPanel DockPanel.Dock="Top" Spacing="10" Margin="0,0,0,20">
+            <TextBlock Text="Sign in" FontSize="22" FontWeight="SemiBold"
+                       Foreground="{StaticResource KcapTextBrush}" />
             <TextBlock x:Name="SignInStatusText" Text="{Binding Status}" TextWrapping="Wrap"
+                       FontSize="14" LineHeight="22" Foreground="{StaticResource KcapMutedBrush}"
                        Classes.failed="{Binding StatusIsError}">
                 <TextBlock.Styles>
                     <!-- Only a failure is coloured: a cancelled sign-in is not an error. -->
                     <Style Selector="TextBlock.failed">
-                        <Setter Property="Foreground" Value="#E53935" />
+                        <Setter Property="Foreground" Value="{StaticResource KcapDangerBrush}" />
                     </Style>
                 </TextBlock.Styles>
             </TextBlock>
-            <TextBlock x:Name="SignInDetailText" Text="{Binding StatusDetail}" TextWrapping="Wrap" Opacity="0.7"
+            <TextBlock x:Name="SignInDetailText" Text="{Binding StatusDetail}" TextWrapping="Wrap"
+                       FontSize="12.5" LineHeight="20" Foreground="{StaticResource KcapFaintBrush}"
                        IsVisible="{Binding StatusDetail, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
         </StackPanel>
 
-        <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="8" Margin="0,10,0,0">
-            <Button x:Name="SignInButton" Content="Sign in" Command="{Binding SignInCommand}"
-                    IsEnabled="{Binding Idle}" />
-            <Button x:Name="CancelSignInButton" Content="Cancel" Command="{Binding CancelCommand}"
-                    IsVisible="{Binding Busy}" />
-        </StackPanel>
-
-        <StackPanel Grid.Row="2" Spacing="6" Margin="0,10,0,0">
-            <Button x:Name="OpenSignInUrlButton" Content="Open the sign-in page"
-                    Command="{Binding OpenSignInUrlCommand}"
-                    IsVisible="{Binding BrowserUrl, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
-
-            <StackPanel Spacing="4"
-                        IsVisible="{Binding DeviceCode, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
-                <TextBlock Text="Enter this code to finish signing in:" />
-                <TextBlock x:Name="DeviceCodeText" Text="{Binding DeviceCode}" FontSize="22" FontWeight="Bold" />
-                <Button x:Name="OpenVerificationUriButton" Content="{Binding VerificationUri}"
-                        Command="{Binding OpenVerificationUriCommand}" />
-            </StackPanel>
-
-            <TextBlock x:Name="WaitingText" Text="{Binding WaitingText}" Opacity="0.7"
-                       IsVisible="{Binding WaitingText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
-            <TextBlock x:Name="ProvisioningText" Text="{Binding ProvisioningProgress}" TextWrapping="Wrap"
-                       IsVisible="{Binding ProvisioningProgress, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
-        </StackPanel>
-
-        <StackPanel Grid.Row="3" Spacing="8" Margin="0,10,0,0">
-            <StackPanel Spacing="6" IsVisible="{Binding TenantPickerVisible}">
-                <TextBlock Text="Which workspace would you like to use?" />
-                <ListBox x:Name="TenantList" MaxHeight="120" ItemsSource="{Binding Tenants}"
-                         SelectedItem="{Binding SelectedTenant, Mode=TwoWay}">
-                    <ListBox.ItemTemplate>
-                        <DataTemplate x:DataType="auth:DiscoveredTenant">
-                            <TextBlock Text="{Binding Origin}" TextTrimming="CharacterEllipsis" />
-                        </DataTemplate>
-                    </ListBox.ItemTemplate>
-                </ListBox>
+        <!-- Browser fallback lives at the foot: open + selectable URL, not buried in the log. -->
+        <Border DockPanel.Dock="Bottom" Margin="0,16,0,0"
+                Background="{StaticResource KcapSurfaceBrush}"
+                BorderBrush="{StaticResource KcapBorderBrush}" BorderThickness="1"
+                CornerRadius="12" Padding="16,14"
+                IsVisible="{Binding BrowserUrl, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
+            <StackPanel Spacing="10">
+                <TextBlock Text="Finish in your browser"
+                           FontSize="13.5" FontWeight="SemiBold"
+                           Foreground="{StaticResource KcapTextBrush}" />
+                <TextBlock x:Name="WaitingText" Text="{Binding WaitingText}" TextWrapping="Wrap"
+                           FontSize="12.5" Foreground="{StaticResource KcapMutedBrush}"
+                           IsVisible="{Binding WaitingText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                <TextBlock Text="If a browser window didn't open, use the link below."
+                           TextWrapping="Wrap" FontSize="12"
+                           Foreground="{StaticResource KcapFaintBrush}" />
+                <SelectableTextBlock x:Name="SignInBrowserUrlText" Text="{Binding BrowserUrl}"
+                                     TextWrapping="Wrap" FontSize="11.5"
+                                     Foreground="{StaticResource KcapTextBrush}" />
                 <StackPanel Orientation="Horizontal" Spacing="8">
-                    <Button x:Name="ConfirmTenantButton" Content="Use this workspace"
-                            Command="{Binding ConfirmTenantCommand}" />
-                    <Button x:Name="CancelTenantButton" Content="Back" Command="{Binding CancelTenantCommand}" />
+                    <Button x:Name="OpenSignInUrlButton" Classes="kcapChip"
+                            Content="Open the sign-in page"
+                            Command="{Binding OpenSignInUrlCommand}"
+                            Background="{StaticResource KcapSurfaceRaisedBrush}"
+                            BorderBrush="{StaticResource KcapBorderBrush}"
+                            Foreground="{StaticResource KcapTextBrush}"
+                            CornerRadius="8" Padding="14,8" FontSize="13" />
+                    <Button x:Name="CopySignInUrlButton" Classes="kcapChip"
+                            Content="Copy link" Click="OnCopySignInUrlClick"
+                            Background="{StaticResource KcapSurfaceRaisedBrush}"
+                            BorderBrush="{StaticResource KcapBorderBrush}"
+                            Foreground="{StaticResource KcapTextBrush}"
+                            CornerRadius="8" Padding="14,8" FontSize="13" />
                 </StackPanel>
             </StackPanel>
+        </Border>
 
-            <StackPanel Spacing="6" IsVisible="{Binding ModeChoiceVisible}">
-                <TextBlock Text="No workspace was found for your account. How would you like to continue?"
-                           TextWrapping="Wrap" />
-                <StackPanel Orientation="Horizontal" Spacing="8">
-                    <Button x:Name="CreateWorkspaceButton" Content="Create a workspace"
-                            Command="{Binding CreateWorkspaceCommand}" />
-                    <TextBox x:Name="ExistingWorkspaceBox" Width="180" PlaceholderText="acme"
-                             Text="{Binding ExistingWorkspaceInput, Mode=TwoWay}" />
-                    <Button x:Name="UseExistingWorkspaceButton" Content="I already have one"
-                            Command="{Binding UseExistingWorkspaceCommand}" />
-                    <Button x:Name="CancelWorkspaceButton" Content="Cancel"
-                            Command="{Binding CancelWorkspaceCommand}" />
-                </StackPanel>
-            </StackPanel>
-
-            <StackPanel Spacing="6" IsVisible="{Binding OrgNamePromptVisible}">
-                <TextBlock Text="Organization name" />
-                <StackPanel Orientation="Horizontal" Spacing="8">
-                    <TextBox x:Name="OrgNameBox" Width="220" Text="{Binding OrgName, Mode=TwoWay}" />
-                    <Button x:Name="SubmitOrgNameButton" Content="Continue" Command="{Binding SubmitOrgNameCommand}" />
-                    <Button x:Name="CancelOrgNameButton" Content="Cancel" Command="{Binding CancelOrgNameCommand}" />
-                </StackPanel>
-            </StackPanel>
-
-            <StackPanel Spacing="6" IsVisible="{Binding SlugPromptVisible}">
-                <TextBlock Text="Workspace address" />
-                <StackPanel Orientation="Horizontal" Spacing="8">
-                    <TextBox x:Name="SlugBox" Width="220" Text="{Binding Slug, Mode=TwoWay}" />
-                    <TextBlock Text=".kcap.ai" VerticalAlignment="Center" Opacity="0.7" />
-                    <Button x:Name="SubmitSlugButton" Content="Continue" Command="{Binding SubmitSlugCommand}" />
-                    <Button x:Name="CancelSlugButton" Content="Cancel" Command="{Binding CancelSlugCommand}" />
-                </StackPanel>
-                <TextBlock x:Name="SlugErrorText" Text="{Binding SlugError}" TextWrapping="Wrap" Foreground="#E53935"
-                           IsVisible="{Binding SlugError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
-            </StackPanel>
-
-            <StackPanel Spacing="6" IsVisible="{Binding ConfirmVisible}">
-                <TextBlock x:Name="ConfirmCreateText" Text="{Binding ConfirmText}" TextWrapping="Wrap" />
-                <StackPanel Orientation="Horizontal" Spacing="8">
-                    <Button x:Name="ConfirmCreateButton" Content="Create" Command="{Binding ConfirmCreateCommand}" />
-                    <Button x:Name="DeclineCreateButton" Content="Not now" Command="{Binding DeclineCreateCommand}" />
-                </StackPanel>
-            </StackPanel>
-
-            <StackPanel Spacing="6"
-                        IsVisible="{Binding QuarantineNotice, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
-                <TextBlock x:Name="QuarantineNoticeText" Text="{Binding QuarantineNotice}" TextWrapping="Wrap" />
-                <Button x:Name="AcknowledgeQuarantineButton" Content="Acknowledge"
-                        Command="{Binding AcknowledgeQuarantineCommand}" HorizontalAlignment="Left" />
-            </StackPanel>
-        </StackPanel>
-
-        <ScrollViewer Grid.Row="4" Margin="0,10,0,0" VerticalScrollBarVisibility="Auto">
+        <!-- Progress log: quiet trailing detail above the browser card. -->
+        <ScrollViewer DockPanel.Dock="Bottom" Margin="0,16,0,0" MaxHeight="88"
+                      VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
             <ItemsControl x:Name="SignInLog" ItemsSource="{Binding Log}">
                 <ItemsControl.ItemTemplate>
                     <DataTemplate x:DataType="x:String">
-                        <TextBlock Text="{Binding}" FontSize="12" Opacity="0.7" TextWrapping="Wrap" />
+                        <TextBlock Text="{Binding}" FontSize="11.5"
+                                   Foreground="{StaticResource KcapFaintBrush}" TextWrapping="Wrap"
+                                   Margin="0,2" />
                     </DataTemplate>
                 </ItemsControl.ItemTemplate>
             </ItemsControl>
         </ScrollViewer>
-    </Grid>
+
+        <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+            <StackPanel Spacing="16">
+                <StackPanel Orientation="Horizontal" Spacing="10">
+                    <Button x:Name="SignInButton" Classes="kcapPrimary" Content="Sign in"
+                            Command="{Binding SignInCommand}" IsEnabled="{Binding Idle}"
+                            Background="{StaticResource KcapPrimaryBrush}" Foreground="{StaticResource KcapOnPrimaryBrush}"
+                            FontWeight="SemiBold" CornerRadius="8" Padding="18,9"
+                            FontSize="13.5" />
+                    <Button x:Name="CancelSignInButton" Classes="kcapChip" Content="Cancel"
+                            Command="{Binding CancelCommand}" IsVisible="{Binding Busy}"
+                            Background="{StaticResource KcapSurfaceRaisedBrush}"
+                            BorderBrush="{StaticResource KcapBorderBrush}"
+                            Foreground="{StaticResource KcapTextBrush}"
+                            CornerRadius="8" Padding="16,9" FontSize="13.5" />
+                </StackPanel>
+
+                <StackPanel Spacing="10">
+                    <Border Background="{StaticResource KcapSurfaceBrush}"
+                            BorderBrush="{StaticResource KcapBorderBrush}" BorderThickness="1"
+                            CornerRadius="12" Padding="16,14"
+                            IsVisible="{Binding DeviceCode, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
+                        <StackPanel Spacing="10">
+                            <TextBlock Text="Enter this code to finish signing in"
+                                       Foreground="{StaticResource KcapMutedBrush}" FontSize="12.5" />
+                            <TextBlock x:Name="DeviceCodeText" Text="{Binding DeviceCode}"
+                                       FontSize="28" FontWeight="Bold" LetterSpacing="2"
+                                       Foreground="{StaticResource KcapTextBrush}" />
+                            <Button x:Name="OpenVerificationUriButton" Classes="kcapChip"
+                                    Content="{Binding VerificationUri}"
+                                    Command="{Binding OpenVerificationUriCommand}"
+                                    Background="{StaticResource KcapSurfaceRaisedBrush}"
+                                    BorderBrush="{StaticResource KcapBorderBrush}"
+                                    Foreground="{StaticResource KcapTextBrush}"
+                                    CornerRadius="8" Padding="12,7" HorizontalAlignment="Left"
+                                    FontSize="12" />
+                        </StackPanel>
+                    </Border>
+
+                    <TextBlock x:Name="ProvisioningText" Text="{Binding ProvisioningProgress}"
+                               TextWrapping="Wrap" Foreground="{StaticResource KcapMutedBrush}" FontSize="12.5"
+                               IsVisible="{Binding ProvisioningProgress, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                </StackPanel>
+
+                <StackPanel Spacing="12">
+                    <StackPanel Spacing="10" IsVisible="{Binding TenantPickerVisible}">
+                        <TextBlock Text="Which workspace would you like to use?"
+                                   Foreground="{StaticResource KcapTextBrush}" FontSize="13.5" />
+                        <ListBox x:Name="TenantList" Classes="kcapList" MaxHeight="140"
+                                 ItemsSource="{Binding Tenants}"
+                                 SelectedItem="{Binding SelectedTenant, Mode=TwoWay}">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate x:DataType="auth:DiscoveredTenant">
+                                    <TextBlock Text="{Binding Origin}" TextTrimming="CharacterEllipsis"
+                                               Foreground="{StaticResource KcapTextBrush}" Margin="4,6" />
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <Button x:Name="ConfirmTenantButton" Classes="kcapPrimary"
+                                    Content="Use this workspace"
+                                    Command="{Binding ConfirmTenantCommand}"
+                                    Background="{StaticResource KcapPrimaryBrush}" Foreground="{StaticResource KcapOnPrimaryBrush}"
+                                    FontWeight="SemiBold" CornerRadius="8" Padding="14,8" />
+                            <Button x:Name="CancelTenantButton" Classes="kcapChip" Content="Back"
+                                    Command="{Binding CancelTenantCommand}"
+                                    Background="{StaticResource KcapSurfaceRaisedBrush}"
+                                    BorderBrush="{StaticResource KcapBorderBrush}"
+                                    Foreground="{StaticResource KcapTextBrush}"
+                                    CornerRadius="8" Padding="14,8" />
+                        </StackPanel>
+                    </StackPanel>
+
+                    <StackPanel Spacing="10" IsVisible="{Binding ModeChoiceVisible}">
+                        <TextBlock Text="No workspace was found for your account. How would you like to continue?"
+                                   TextWrapping="Wrap" Foreground="{StaticResource KcapTextBrush}" FontSize="13.5" />
+                        <StackPanel Spacing="8">
+                            <Button x:Name="CreateWorkspaceButton" Classes="kcapPrimary"
+                                    Content="Create a workspace"
+                                    Command="{Binding CreateWorkspaceCommand}"
+                                    Background="{StaticResource KcapPrimaryBrush}" Foreground="{StaticResource KcapOnPrimaryBrush}"
+                                    FontWeight="SemiBold" CornerRadius="8" Padding="14,8"
+                                    HorizontalAlignment="Left" />
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <TextBox x:Name="ExistingWorkspaceBox" Classes="kcapField" Width="180"
+                                         PlaceholderText="acme"
+                                         Text="{Binding ExistingWorkspaceInput, Mode=TwoWay}" />
+                                <Button x:Name="UseExistingWorkspaceButton" Classes="kcapChip"
+                                        Content="I already have one"
+                                        Command="{Binding UseExistingWorkspaceCommand}"
+                                        Background="{StaticResource KcapSurfaceRaisedBrush}"
+                                        BorderBrush="{StaticResource KcapBorderBrush}"
+                                        Foreground="{StaticResource KcapTextBrush}"
+                                        CornerRadius="8" Padding="14,8" />
+                            </StackPanel>
+                            <Button x:Name="CancelWorkspaceButton" Classes="kcapChip" Content="Cancel"
+                                    Command="{Binding CancelWorkspaceCommand}"
+                                    Background="{StaticResource KcapSurfaceRaisedBrush}"
+                                    BorderBrush="{StaticResource KcapBorderBrush}"
+                                    Foreground="{StaticResource KcapTextBrush}"
+                                    CornerRadius="8" Padding="14,8" HorizontalAlignment="Left" />
+                        </StackPanel>
+                    </StackPanel>
+
+                    <StackPanel Spacing="8" IsVisible="{Binding OrgNamePromptVisible}">
+                        <TextBlock Text="Organization name" Foreground="{StaticResource KcapMutedBrush}"
+                                   FontSize="12.5" />
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <TextBox x:Name="OrgNameBox" Classes="kcapField" Width="240"
+                                     Text="{Binding OrgName, Mode=TwoWay}" />
+                            <Button x:Name="SubmitOrgNameButton" Classes="kcapPrimary" Content="Continue"
+                                    Command="{Binding SubmitOrgNameCommand}"
+                                    Background="{StaticResource KcapPrimaryBrush}" Foreground="{StaticResource KcapOnPrimaryBrush}"
+                                    FontWeight="SemiBold" CornerRadius="8" Padding="14,8" />
+                            <Button x:Name="CancelOrgNameButton" Classes="kcapChip" Content="Cancel"
+                                    Command="{Binding CancelOrgNameCommand}"
+                                    Background="{StaticResource KcapSurfaceRaisedBrush}"
+                                    BorderBrush="{StaticResource KcapBorderBrush}"
+                                    Foreground="{StaticResource KcapTextBrush}"
+                                    CornerRadius="8" Padding="14,8" />
+                        </StackPanel>
+                    </StackPanel>
+
+                    <StackPanel Spacing="8" IsVisible="{Binding SlugPromptVisible}">
+                        <TextBlock Text="Workspace address" Foreground="{StaticResource KcapMutedBrush}"
+                                   FontSize="12.5" />
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <TextBox x:Name="SlugBox" Classes="kcapField" Width="200"
+                                     Text="{Binding Slug, Mode=TwoWay}" />
+                            <TextBlock Text=".kcap.ai" VerticalAlignment="Center"
+                                       Foreground="{StaticResource KcapFaintBrush}" />
+                            <Button x:Name="SubmitSlugButton" Classes="kcapPrimary" Content="Continue"
+                                    Command="{Binding SubmitSlugCommand}"
+                                    Background="{StaticResource KcapPrimaryBrush}" Foreground="{StaticResource KcapOnPrimaryBrush}"
+                                    FontWeight="SemiBold" CornerRadius="8" Padding="14,8" />
+                            <Button x:Name="CancelSlugButton" Classes="kcapChip" Content="Cancel"
+                                    Command="{Binding CancelSlugCommand}"
+                                    Background="{StaticResource KcapSurfaceRaisedBrush}"
+                                    BorderBrush="{StaticResource KcapBorderBrush}"
+                                    Foreground="{StaticResource KcapTextBrush}"
+                                    CornerRadius="8" Padding="14,8" />
+                        </StackPanel>
+                        <TextBlock x:Name="SlugErrorText" Text="{Binding SlugError}" TextWrapping="Wrap"
+                                   Foreground="{StaticResource KcapDangerBrush}" FontSize="12.5"
+                                   IsVisible="{Binding SlugError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                    </StackPanel>
+
+                    <StackPanel Spacing="10" IsVisible="{Binding ConfirmVisible}">
+                        <TextBlock x:Name="ConfirmCreateText" Text="{Binding ConfirmText}" TextWrapping="Wrap"
+                                   Foreground="{StaticResource KcapTextBrush}" FontSize="13.5" />
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <Button x:Name="ConfirmCreateButton" Classes="kcapPrimary" Content="Create"
+                                    Command="{Binding ConfirmCreateCommand}"
+                                    Background="{StaticResource KcapPrimaryBrush}" Foreground="{StaticResource KcapOnPrimaryBrush}"
+                                    FontWeight="SemiBold" CornerRadius="8" Padding="14,8" />
+                            <Button x:Name="DeclineCreateButton" Classes="kcapChip" Content="Not now"
+                                    Command="{Binding DeclineCreateCommand}"
+                                    Background="{StaticResource KcapSurfaceRaisedBrush}"
+                                    BorderBrush="{StaticResource KcapBorderBrush}"
+                                    Foreground="{StaticResource KcapTextBrush}"
+                                    CornerRadius="8" Padding="14,8" />
+                        </StackPanel>
+                    </StackPanel>
+
+                    <StackPanel Spacing="10"
+                                IsVisible="{Binding QuarantineNotice, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
+                        <TextBlock x:Name="QuarantineNoticeText" Text="{Binding QuarantineNotice}"
+                                   TextWrapping="Wrap" Foreground="{StaticResource KcapWarningBrush}" />
+                        <Button x:Name="AcknowledgeQuarantineButton" Classes="kcapPrimary"
+                                Content="Acknowledge"
+                                Command="{Binding AcknowledgeQuarantineCommand}"
+                                Background="{StaticResource KcapPrimaryBrush}" Foreground="{StaticResource KcapOnPrimaryBrush}"
+                                FontWeight="SemiBold" CornerRadius="8" Padding="14,8"
+                                HorizontalAlignment="Left" />
+                    </StackPanel>
+                </StackPanel>
+            </StackPanel>
+        </ScrollViewer>
+    </DockPanel>
 </UserControl>
