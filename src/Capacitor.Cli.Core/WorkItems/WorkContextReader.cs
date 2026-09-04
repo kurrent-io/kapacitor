@@ -21,44 +21,49 @@ public sealed record WorkContextRead(
 public static class WorkContextReader {
     public const string PlanGateError = "work_items_not_in_plan";
 
-    /// Assignments and summary run concurrently and are both awaited before anything is
-    /// classified. A final 401 anywhere signs the read out: the retry handler has already spent
-    /// the refresh, and only that outcome makes the source drop its client.
+    /// Assignments and summary run concurrently; the topology follows the assignments alone, so it
+    /// overlaps the summary rather than queueing behind it. Every call started is awaited before
+    /// anything is classified. A final 401 anywhere signs the read out: the retry handler has
+    /// already spent the refresh, and only that outcome makes the source drop its client.
     public static async Task<WorkContextRead> ReadAsync(IWorkContextChannel channel, string sessionId, CancellationToken ct) {
-        var assignmentsTask = channel.GetSessionAssignmentsAsync(sessionId, ct);
-        var summaryTask     = channel.GetSessionSummaryAsync(sessionId, ct);
-        await Task.WhenAll(assignmentsTask, summaryTask).ConfigureAwait(false);
-        var assignments = assignmentsTask.Result;
-        var summary     = summaryTask.Result;
+        var summaryTask = channel.GetSessionSummaryAsync(sessionId, ct);
+        var assignments = await channel.GetSessionAssignmentsAsync(sessionId, ct).ConfigureAwait(false);
 
-        if (assignments.StatusCode == 401 || summary.StatusCode == 401) return WorkContextRead.Of(WorkContextReadKind.SignedOut);
+        var rows    = assignments.Succeeded ? assignments.Body! : [];
+        var primary = rows.FirstOrDefault(r => r.IsPrimary) ?? rows.FirstOrDefault();
+        var topologyTask = primary is null ? null : channel.GetTopologyAsync(primary.WorkItemId, ct);
+
+        var summary = await summaryTask.ConfigureAwait(false);
+        var topology = topologyTask is null ? null : await topologyTask.ConfigureAwait(false);
+
+        if (assignments.StatusCode == 401 || summary.StatusCode == 401 || topology?.StatusCode == 401)
+            return WorkContextRead.Of(WorkContextReadKind.SignedOut);
 
         switch (assignments) {
             case { Succeeded: true }: break;
             case { StatusCode: >= 200 and < 300 }: return WorkContextRead.Of(WorkContextReadKind.Unreachable, "malformed response");
             case { StatusCode: 404 }: return WorkContextRead.Of(WorkContextReadKind.SessionUnknown);
-            case { StatusCode: 403, Error: { Error: PlanGateError } gate }: return WorkContextRead.Of(WorkContextReadKind.NotInPlan, gate.Message);
-            default: return WorkContextRead.Of(WorkContextReadKind.Unreachable, StatusDetail(assignments.StatusCode));
+            default:
+                return PlanGated(assignments) ?? WorkContextRead.Of(WorkContextReadKind.Unreachable, StatusDetail(assignments.StatusCode));
         }
 
-        var rows    = assignments.Body!;
-        var primary = rows.FirstOrDefault(r => r.IsPrimary) ?? rows.FirstOrDefault();
-
-        WorkItemTopologyDto? topology = null;
-        var topologyFailed = false;
-        if (primary is not null) {
-            var outcome = await channel.GetTopologyAsync(primary.WorkItemId, ct).ConfigureAwait(false);
-            if (outcome.StatusCode == 401) return WorkContextRead.Of(WorkContextReadKind.SignedOut);
-            if (outcome is { StatusCode: 403, Error: { Error: PlanGateError } gate }) return WorkContextRead.Of(WorkContextReadKind.NotInPlan, gate.Message);
-            if (outcome.Succeeded) topology = outcome.Body;
-            else topologyFailed = true;
-        }
+        if (topology is not null && PlanGated(topology) is { } gated) return gated;
 
         return new WorkContextRead(
-            WorkContextReadKind.Ready, rows, primary, topology,
+            WorkContextReadKind.Ready, rows, primary,
+            topology is { Succeeded: true } ? topology.Body : null,
             summary.Succeeded ? summary.Body : null,
-            topologyFailed, !summary.Succeeded, null);
+            TopologyFailed: topology is { Succeeded: false },
+            SummaryFailed: !summary.Succeeded,
+            Detail: null);
     }
+
+    /// Both work-item routes share the plan gate, and a plan change between the two calls must not
+    /// leave the pane ready on retained data.
+    static WorkContextRead? PlanGated<T>(WorkContextOutcome<T> outcome) where T : class =>
+        outcome is { StatusCode: 403, Error: { Error: PlanGateError } gate }
+            ? WorkContextRead.Of(WorkContextReadKind.NotInPlan, gate.Message)
+            : null;
 
     static string StatusDetail(int status) => status == 0 ? "no response" : $"status {status}";
 }
