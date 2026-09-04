@@ -1,4 +1,5 @@
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.FirstRun;
 using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Harness.Claude;
@@ -412,5 +413,34 @@ public class SetupImportLaneTests {
             CancellationToken.None);
 
         await Assert.That(totals).IsNotNull();
+    }
+
+    /// <summary>
+    /// The lane imports through <see cref="ImportCommand"/>, which takes its base URL from the context
+    /// it is handed — so the one this run resolved has to reach it. The leg's own context is the
+    /// snapshot from before Step 1, and on a first run that names no server at all: `setup` is exempt
+    /// from the entry gate that refuses an unconfigured command, so nothing downstream would catch it.
+    /// </summary>
+    [Test]
+    public async Task The_import_context_names_the_server_this_run_resolved() {
+        var beforeSetup = new ProfileContext(new(null, "default", null, null), new ProfileConfig());
+
+        var forImport = SetupCommand.ImportContext(beforeSetup, "https://tenant.kcap.ai");
+
+        await Assert.That(forImport.Resolution.ServerUrl).IsEqualTo("https://tenant.kcap.ai");
+    }
+
+    /// <summary>Only the server moves: the profile the run is configuring still decides everything the
+    /// import reads off it, visibility included.</summary>
+    [Test]
+    public async Task The_import_context_keeps_the_rest_of_the_resolution() {
+        var profile     = new Profile { ServerUrl = "https://stale.kcap.ai", DefaultVisibility = "org_public" };
+        var beforeSetup = new ProfileContext(new("https://stale.kcap.ai", "work", profile, null), new ProfileConfig());
+
+        var forImport = SetupCommand.ImportContext(beforeSetup, "https://tenant.kcap.ai");
+
+        await Assert.That(forImport.Resolution.ProfileName).IsEqualTo("work");
+        await Assert.That(forImport.Resolution.Profile).IsSameReferenceAs(profile);
+        await Assert.That(forImport.Snapshot).IsSameReferenceAs(beforeSetup.Snapshot);
     }
 }
