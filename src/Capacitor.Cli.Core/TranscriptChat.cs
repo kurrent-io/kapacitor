@@ -9,7 +9,7 @@ public interface IChatDisplayRules {
 }
 
 /// The chat's view of a transcript: the leaf projection, the envelope mapping, one vendor's rules.
-public sealed class TranscriptChatProjection(global::Capacitor.Models.Transcripts.ITranscriptProjection projection, IChatDisplayRules rules) {
+public sealed class TranscriptChatProjection(ITranscriptProjection projection, IChatDisplayRules rules) {
     public TranscriptContext CreateContext(string sessionId, string? agentId) => projection.CreateContext(sessionId, agentId);
 
     public IReadOnlyList<AcpEventEnvelope> Project(string line, int lineNumber, DateTimeOffset receivedAt, TranscriptContext context) {
@@ -27,7 +27,7 @@ public sealed class TranscriptChatProjection(global::Capacitor.Models.Transcript
 /// are paired with the leaf's projection here, nowhere else.
 public static class TranscriptChat {
     public static TranscriptChatProjection? For(string vendor) =>
-        global::Capacitor.Models.Transcripts.TranscriptProjection.For(vendor) is not { } projection ? null
+        TranscriptProjection.For(vendor) is not { } projection ? null
         : vendor.ToLowerInvariant() switch {
             "claude" => new TranscriptChatProjection(projection, ClaudeChatRules.Instance),
             "codex"  => new TranscriptChatProjection(projection, CodexChatRules.Instance),

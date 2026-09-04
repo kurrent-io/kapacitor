@@ -143,7 +143,7 @@ public sealed class WorkspaceViewModel : ReactiveObject {
             .Where(p => p.Dto is not null && HostedHarnessCatalog.ShowsTerminal(p.Dto.HasTerminal, p.Dto.Vendor))
             .Take(1)
             .Subscribe(p => Chat = new ChatTabViewModel(
-                agentId, daemon, Terminal, TranscriptProjection.For(p.Dto!.Vendor), opener, time, permissions))
+                agentId, daemon, Terminal, TranscriptChat.For(p.Dto!.Vendor), opener, time, permissions))
             .DisposeWith(_disposables);
 
         ShowChatCommand = ReactiveCommand.Create(() => { ActiveTab = WorkspaceTab.Chat; });

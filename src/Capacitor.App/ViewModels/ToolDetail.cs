@@ -1,5 +1,4 @@
 using System.Text.Json;
-using Capacitor.Models.Transcripts;
 
 namespace Capacitor.App.ViewModels;
 
