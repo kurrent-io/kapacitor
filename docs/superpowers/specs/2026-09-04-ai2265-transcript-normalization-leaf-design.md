@@ -89,7 +89,9 @@ Moves in with the first PR:
   reproduces today's chat output, and the existing chat tests pin that.
 - `JsonElementExtensions`, made public.
 
-Moves in from the server, when each vendor reaches parity:
+Copied in from the server as each vendor reaches parity, and adopted by the server only in step
+5 of section 8, once the legacy normalizers are gone; step 4 keeps the server's own types and
+converts, as section 8 spells out:
 
 - The extension records the projections construct: `ClaudeCodeToolResultExtension`,
   `ClaudeCodeUserMessageExtension`, and the Codex session, turn-context, assistant-text,
@@ -97,10 +99,12 @@ Moves in from the server, when each vendor reaches parity:
   `Struct` packing. The server keeps its read-side accessors and unpacking.
 - The two Capacitor-specific Codex events, `CodexUsageBackfilledEvent` and
   `ContextCompactedEvent`, as plain records. The leaf cannot carry the Eventuous `[EventType]`
-  attribute, so the server registers both names in its type map beside the schema registrations.
-  `ContextCompactedEvent.ReplacementHistory` is a `JsonElement`; the projection parses each line
-  into a `JsonDocument` it disposes, so the element it stores must be a `Clone()`.
-- `ExtractedAttachment`, as `TranscriptAttachment`; the server's record is deleted.
+  attribute, so when the server adopts them it registers both names in its type map beside the
+  schema registrations and deletes its attributed records in the same change, so every persisted
+  event name has exactly one CLR type at every step. `ContextCompactedEvent.ReplacementHistory`
+  is a `JsonElement`; the projection parses each line into a `JsonDocument` it disposes, so the
+  element it stores must be a `Clone()`.
+- `ExtractedAttachment`, as `TranscriptAttachment`; the server's record is deleted on adoption.
 
 Core references the leaf and keeps `AcpEventEnvelope`, `AcpEventKind` and the wire-compat tests
 unchanged. The CLI repo's `Directory.Packages.props` pins `Kurrent.Agent.Schema` at the server's
@@ -323,15 +327,20 @@ batch. The Claude context keeps only the previous usage, across batches.
 
 `ProjectionNormalizer : ITranscriptNormalizer` in `Sessions/Canonical/`, constructed with a vendor
 key, its leaf projection and a `TimeProvider` (`TimeProvider.System` in production), registered
-once per vendor in place of the two deleted classes; the other seven registrations are untouched. `ITranscriptNormalizer` gains `string Vendor { get; }` so
-the pipeline keys the Claude `ai-title` side-channel on the vendor instead of on a class it no
-longer has.
+once per vendor in place of the two deleted classes; the other seven registrations keep their
+classes. `ITranscriptNormalizer` gains `string Vendor { get; }` so the pipeline keys the Claude
+`ai-title` side-channel on the vendor instead of on a class it no longer has; each of the seven
+remaining normalizers implements it by returning its own `Vendors` constant, and the existing
+registration test grows an assertion that every keyed registration resolves to a normalizer
+whose `Vendor` equals its key.
 
-`NormalizerContext` loses every Claude and Codex field and gains: the leaf context, created from
-the session and agent ids the pipeline already sets; a per-batch map from event id to the
+`NormalizerContext` gains three slots: the leaf context, nullable and created by the adapter on
+first use from the session and agent ids the pipeline already sets, so a context serving one of
+the seven remaining normalizers never has one; a per-batch map from event id to the
 `NormalizedEvent` the adapter has returned in this batch; and a predicate the writer supplies that
 answers whether an id is already in its dedup set. `ClearTransientBatchState()` clears the map and
-calls `BeginBatch()`.
+calls `BeginBatch()` when a leaf context exists. The Claude and Codex fields the legacy
+normalizers use stay through step 4 and go in step 5 with the classes that read them.
 
 **Phases.** The pipeline normalizes every surviving line of a batch, then writes. Amendments and
 usage stamps are applied during the normalize phase, to `NormalizedEvent`s the adapter still holds,
@@ -473,8 +482,11 @@ unchanged, the new block siblings present only for lines first ingested under th
 line order preserved.
 
 **Pins.** A server test asserts the leaf's event type names equal the Eventuous type-map
-registrations; the envelope wire-compat tests stay; the schema package version is asserted equal in
-both repos; both AOT binaries publish with zero IL warnings after the package lands.
+registrations and that each persisted event name maps to exactly one CLR type; the registration
+test asserts all nine vendor keys resolve to a normalizer whose `Vendor` matches, and that
+clearing a batch on a context with no leaf slot is a no-op for that slot; the envelope
+wire-compat tests stay; the schema package version is asserted equal in both repos; both AOT
+binaries publish with zero IL warnings after the package lands.
 
 ## 8. Delivery, immutable history, and the skew rule
 
@@ -487,9 +499,15 @@ CLI's main.
 2. CLI: Claude to parity. 3. CLI: Codex to parity, with amendments and the two moved records. Each
    with the leaf's fixtures and golden files.
 4. Server: submodule bump, the adapter registered for both keys, the parity suite green against
-   the legacy normalizers, golden files recorded.
-5. Server: delete both legacy normalizers and their context fields, port the remaining tests, the
-   parity suite now against golden files.
+   the legacy normalizers, golden files recorded. The legacy normalizers stay as they are, so this
+   step is a bridge: the server keeps its attributed `CodexUsageBackfilledEvent` and
+   `ContextCompactedEvent` records and its `ExtractedAttachment`, `NormalizedEvent` is
+   unchanged, and the adapter converts the leaf's two records and its attachments into the
+   server's types field for field. Nothing is registered twice, the legacy path compiles
+   untouched, and the v1 baseline it records is unaffected by the adapter's presence.
+5. Server: delete both legacy normalizers and their context fields, adopt the leaf's two records
+   (type-map registrations replace the attributed classes) and `TranscriptAttachment`, drop the
+   adapter's conversions, port the remaining tests, the parity suite now against golden files.
 
 **Immutable history.** A persisted event is never rewritten. A projection change takes effect
 for lines the server first ingests after the deploy that carries it; a session ingested before is
