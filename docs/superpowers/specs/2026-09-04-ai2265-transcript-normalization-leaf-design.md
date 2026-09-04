@@ -89,22 +89,27 @@ Moves in with the first PR:
   reproduces today's chat output, and the existing chat tests pin that.
 - `JsonElementExtensions`, made public.
 
-Copied in from the server as each vendor reaches parity, and adopted by the server only in step
-5 of section 8, once the legacy normalizers are gone; step 4 keeps the server's own types and
-converts, as section 8 spells out:
+Copied in from the server as each vendor reaches parity. The server adopts a copied type only
+when the last legacy normalizer that produces it is gone; until then the adapter converts the
+leaf's type into the server's, field for field, and the server's type stays as it is:
 
 - The extension records the projections construct: `ClaudeCodeToolResultExtension`,
   `ClaudeCodeUserMessageExtension`, and the Codex session, turn-context, assistant-text,
   agent-message, tool-call, exec-result, patch-result and turn-timing records, with their
   `Struct` packing. The server keeps its read-side accessors and unpacking.
 - The two Capacitor-specific Codex events, `CodexUsageBackfilledEvent` and
-  `ContextCompactedEvent`, as plain records. The leaf cannot carry the Eventuous `[EventType]`
-  attribute, so when the server adopts them it registers both names in its type map beside the
-  schema registrations and deletes its attributed records in the same change, so every persisted
-  event name has exactly one CLR type at every step. `ContextCompactedEvent.ReplacementHistory`
+  `ContextCompactedEvent`, as plain records with the same JSON property names. The leaf cannot
+  carry the Eventuous `[EventType]` attribute, so when the server adopts one it registers the
+  name in its type map beside the schema registrations and deletes its attributed record in the
+  same change, so every persisted event name has exactly one CLR type at every step, and its read
+  models switch to the leaf's type then. `CodexUsageBackfilledEvent` has one legacy producer,
+  Codex, so it is adopted in step 5; `ContextCompactedEvent` is also produced by the Pi
+  normalizer, so it is adopted with Pi's migration. `ContextCompactedEvent.ReplacementHistory`
   is a `JsonElement`; the projection parses each line into a `JsonDocument` it disposes, so the
   element it stores must be a `Clone()`.
-- `ExtractedAttachment`, as `TranscriptAttachment`; the server's record is deleted on adoption.
+- `ExtractedAttachment`, as `TranscriptAttachment`. The Copilot normalizer also produces it, so
+  the server's record and `NormalizedEvent` stay unchanged until Copilot's migration, and the
+  adapter converts until then.
 
 Core references the leaf and keeps `AcpEventEnvelope`, `AcpEventKind` and the wire-compat tests
 unchanged. The CLI repo's `Directory.Packages.props` pins `Kurrent.Agent.Schema` at the server's
@@ -329,10 +334,11 @@ batch. The Claude context keeps only the previous usage, across batches.
 key, its leaf projection and a `TimeProvider` (`TimeProvider.System` in production), registered
 once per vendor in place of the two deleted classes; the other seven registrations keep their
 classes. `ITranscriptNormalizer` gains `string Vendor { get; }` so the pipeline keys the Claude
-`ai-title` side-channel on the vendor instead of on a class it no longer has; each of the seven
-remaining normalizers implements it by returning its own `Vendors` constant, and the existing
-registration test grows an assertion that every keyed registration resolves to a normalizer
-whose `Vendor` equals its key.
+`ai-title` side-channel on the vendor instead of on a class it no longer has; every existing
+normalizer, the two legacy Claude and Codex classes retained through step 4 included, implements
+it by returning its own `Vendors` constant, a one-member addition that changes nothing they emit,
+and the existing registration test grows an assertion that every keyed registration resolves to
+a normalizer whose `Vendor` equals its key.
 
 `NormalizerContext` gains three slots: the leaf context, nullable and created by the adapter on
 first use from the session and agent ids the pipeline already sets, so a context serving one of
@@ -499,15 +505,17 @@ CLI's main.
 2. CLI: Claude to parity. 3. CLI: Codex to parity, with amendments and the two moved records. Each
    with the leaf's fixtures and golden files.
 4. Server: submodule bump, the adapter registered for both keys, the parity suite green against
-   the legacy normalizers, golden files recorded. The legacy normalizers stay as they are, so this
-   step is a bridge: the server keeps its attributed `CodexUsageBackfilledEvent` and
-   `ContextCompactedEvent` records and its `ExtractedAttachment`, `NormalizedEvent` is
-   unchanged, and the adapter converts the leaf's two records and its attachments into the
-   server's types field for field. Nothing is registered twice, the legacy path compiles
-   untouched, and the v1 baseline it records is unaffected by the adapter's presence.
-5. Server: delete both legacy normalizers and their context fields, adopt the leaf's two records
-   (type-map registrations replace the attributed classes) and `TranscriptAttachment`, drop the
-   adapter's conversions, port the remaining tests, the parity suite now against golden files.
+   the legacy normalizers, golden files recorded. The legacy normalizers keep their behaviour and
+   gain only the `Vendor` member, so this step is a bridge: the server keeps its attributed
+   `CodexUsageBackfilledEvent` and `ContextCompactedEvent` records and its `ExtractedAttachment`,
+   `NormalizedEvent` is unchanged, and the adapter converts the leaf's two records and its
+   attachments into the server's types field for field. Nothing is registered twice, and the v1
+   baseline the legacy path records is unaffected by the adapter's presence.
+5. Server: delete both legacy normalizers and their context fields, adopt the leaf's
+   `CodexUsageBackfilledEvent` (a type-map registration replaces the attributed class, read models
+   switch type) and drop that one conversion, port the remaining tests, the parity suite now
+   against golden files. `ContextCompactedEvent` and `ExtractedAttachment` keep their conversions
+   until Pi's and Copilot's migrations, per section 1.
 
 **Immutable history.** A persisted event is never rewritten. A projection change takes effect
 for lines the server first ingests after the deploy that carries it; a session ingested before is
