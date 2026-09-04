@@ -494,6 +494,14 @@ what bounds the outgoing resolve frame by arithmetic. An unparseable or oversize
 back to the permission card (Allow = let the TUI ask) with "Allow always" hidden for the
 question tool.
 
+**A series is walked one question at a time**, the way Claude Code's own TUI does it: a step chip
+per question plus a closing Review step, a single-select pick advances, Enter on an answered
+question advances, and only the Review step — every answer listed, each row a way back to its
+question — submits. A lone question keeps its Submit inline and the fast path (one single-select
+question with options) still submits on the pick. Option chrome lives in class styles only: a
+local `Background`/`BorderBrush` on the button outranks the `selected` style and leaves it inert,
+which is what made a pick look like nothing had happened.
+
 ## Compact tool calls in the Chat tab
 
 **AI-2418** (spec: `docs/superpowers/specs/2026-09-02-ai2418-compact-tool-calls-design.md`) folds a

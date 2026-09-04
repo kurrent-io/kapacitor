@@ -2,6 +2,7 @@ using System.Reactive.Linq;
 using System.Reactive.Threading.Tasks;
 using Capacitor.App.Services;
 using Capacitor.App.ViewModels;
+using TUnit.Assertions.Enums;
 using static Capacitor.App.Tests.Unit.WorkspaceFixtures;
 
 namespace Capacitor.App.Tests.Unit;
@@ -9,7 +10,8 @@ namespace Capacitor.App.Tests.Unit;
 public class QuestionCardViewModelTests {
     const string SingleSelect = """{"questions":[{"question":"Pick","header":"Choice","options":[{"label":"A","description":"first"},{"label":"B"}]}]}""";
     const string FreeTextOnly = """{"questions":[{"question":"Say"}]}""";
-    const string MultiAndSingle = """{"questions":[{"question":"Pick","options":[{"label":"A"},{"label":"B"}]},{"question":"Tags","multiSelect":true,"options":[{"label":"X"},{"label":"Y"}]}]}""";
+    const string MultiAndSingle = """{"questions":[{"question":"Pick","header":"Choice","options":[{"label":"A"},{"label":"B"}]},{"question":"Tags","multiSelect":true,"options":[{"label":"X"},{"label":"Y"}]}]}""";
+    const string TwoFreeText = """{"questions":[{"question":"Say"},{"question":"More"}]}""";
 
     static (FakePermissionService Svc, QuestionCardViewModel Card) Make(string input, string requestId = "q1") {
         var svc = new FakePermissionService();
@@ -26,6 +28,8 @@ public class QuestionCardViewModelTests {
             using (svc) using (card) {
                 await Assert.That(card.IsFastPath).IsTrue();
                 await Assert.That(card.ShowsSubmit).IsFalse();
+                await Assert.That(card.ShowsSteps).IsFalse();
+                await Assert.That(card.Questions[0].ShowsHeader).IsTrue();
                 svc.Queue(PermissionResolveKind.Applied);
                 await card.Questions[0].Options[1].PickCommand.Execute().ToTask();
                 await Assert.That(svc.Answered[0].Answers[0].SelectedLabels).IsEquivalentTo(["B"]);
@@ -60,6 +64,7 @@ public class QuestionCardViewModelTests {
             using (svc) using (card) {
                 await Assert.That(card.IsFastPath).IsFalse();
                 await Assert.That(card.ShowsSubmit).IsTrue();
+                await Assert.That(card.ShowsSteps).IsFalse();
                 card.Questions[0].OtherText = "   ";
                 await Assert.That(card.Questions[0].IsAnswered).IsFalse();
                 await Assert.That(card.Questions[0].ShowsOtherAnswer).IsFalse();
@@ -70,24 +75,145 @@ public class QuestionCardViewModelTests {
         });
     }
 
+    /// A lone question that is not the fast path keeps its Submit inline: Enter on an answered
+    /// question submits, and there is no review step to walk to.
     [Test]
     [NotInParallel("AvaloniaSession")]
-    public async Task Submit_gates_on_every_question_and_sends_all_answers() {
+    public async Task A_lone_free_text_question_submits_on_enter() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var (svc, card) = Make(FreeTextOnly);
+            using (svc) using (card) {
+                await card.Questions[0].EnterCommand.Execute().ToTask();
+                await Assert.That(svc.Answered).IsEmpty();
+                card.Questions[0].OtherText = "hello";
+                svc.Queue(PermissionResolveKind.Applied);
+                await card.Questions[0].EnterCommand.Execute().ToTask();
+                await Assert.That(svc.Answered[0].Answers[0].OtherText).IsEqualTo("hello");
+            }
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task A_series_shows_one_question_at_a_time_and_a_single_select_pick_advances() {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var (svc, card) = Make(MultiAndSingle);
             using (svc) using (card) {
-                await Assert.That(await card.SubmitCommand.CanExecute.FirstAsync()).IsFalse();
+                await Assert.That(card.ShowsSteps).IsTrue();
+                await Assert.That(card.Steps.Select(s => s.Title)).IsEquivalentTo(["Choice", "Question 2", "Review"], CollectionOrdering.Matching);
+                await Assert.That(card.Steps[2].IsReview).IsTrue();
+                await Assert.That(card.CurrentIndex).IsEqualTo(0);
+                await Assert.That(card.CurrentQuestion).IsSameReferenceAs(card.Questions[0]);
+                await Assert.That(card.Questions[0].ShowsHeader).IsFalse();
+                await Assert.That(card.Steps[0].IsCurrent).IsTrue();
+                await Assert.That(card.StepLabel).IsEqualTo("Question 1 of 2");
+                await Assert.That(card.NextLabel).IsEqualTo("Next");
+                await Assert.That(card.ShowsSubmit).IsFalse();
+                await Assert.That(await card.BackCommand.CanExecute.FirstAsync()).IsFalse();
+                await Assert.That(await card.NextCommand.CanExecute.FirstAsync()).IsFalse();
+
+                await card.Questions[0].Options[0].PickCommand.Execute().ToTask();
+                await Assert.That(card.CurrentIndex).IsEqualTo(1);
+                await Assert.That(card.CurrentQuestion).IsSameReferenceAs(card.Questions[1]);
+                await Assert.That(card.Steps[0].IsAnswered).IsTrue();
+                await Assert.That(card.Steps[0].IsCurrent).IsFalse();
+                await Assert.That(card.Steps[1].IsCurrent).IsTrue();
+                await Assert.That(card.StepLabel).IsEqualTo("Question 2 of 2");
+                await Assert.That(card.NextLabel).IsEqualTo("Review");
+                await Assert.That(await card.BackCommand.CanExecute.FirstAsync()).IsTrue();
+                await Assert.That(await card.NextCommand.CanExecute.FirstAsync()).IsFalse();
+
+                // A multi-select pick only toggles; Next opens up once it is answered.
+                await card.Questions[1].Options[0].PickCommand.Execute().ToTask();
+                await Assert.That(card.CurrentIndex).IsEqualTo(1);
+                await Assert.That(await card.NextCommand.CanExecute.FirstAsync()).IsTrue();
+                await card.Questions[1].Options[0].PickCommand.Execute().ToTask();
+                await Assert.That(card.Questions[1].IsAnswered).IsFalse();
+                await Assert.That(await card.NextCommand.CanExecute.FirstAsync()).IsFalse();
+
+                await card.BackCommand.Execute().ToTask();
+                await Assert.That(card.CurrentIndex).IsEqualTo(0);
+                await Assert.That(svc.Answered).IsEmpty();
+            }
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task The_review_step_lists_every_answer_and_only_it_submits() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var (svc, card) = Make(MultiAndSingle);
+            using (svc) using (card) {
                 card.Questions[0].Options[0].IsSelected = true;
-                await Assert.That(await card.SubmitCommand.CanExecute.FirstAsync()).IsFalse();
                 card.Questions[1].Options[0].IsSelected = true;
                 card.Questions[1].Options[1].IsSelected = true;
+                card.Questions[1].OtherText = "and mine";
+                // Everything is answered, but the card is still on a question.
+                await Assert.That(await card.SubmitCommand.CanExecute.FirstAsync()).IsFalse();
+
+                await card.Steps[2].GoCommand.Execute().ToTask();
+                await Assert.That(card.IsOnReview).IsTrue();
+                await Assert.That(card.CurrentQuestion).IsNull();
+                await Assert.That(card.ShowsSubmit).IsTrue();
+                await Assert.That(card.ShowsNext).IsFalse();
+                await Assert.That(card.StepLabel).IsEqualTo("Review your answers");
+                await Assert.That(card.Questions[0].AnswerSummary).IsEqualTo("A");
+                await Assert.That(card.Questions[1].AnswerSummary).IsEqualTo("X, Y, and mine");
                 await Assert.That(await card.SubmitCommand.CanExecute.FirstAsync()).IsTrue();
+
+                // Editing from the review returns to that question; Submit closes again.
+                await card.Questions[1].EditCommand.Execute().ToTask();
+                await Assert.That(card.CurrentIndex).IsEqualTo(1);
+                await Assert.That(await card.SubmitCommand.CanExecute.FirstAsync()).IsFalse();
+                await card.NextCommand.Execute().ToTask();
+                await Assert.That(card.IsOnReview).IsTrue();
 
                 svc.Queue(PermissionResolveKind.Applied);
                 await card.SubmitCommand.Execute().ToTask();
                 var answers = svc.Answered[0].Answers;
                 await Assert.That(answers[0].SelectedLabels).IsEquivalentTo(["A"]);
                 await Assert.That(answers[1].SelectedLabels).IsEquivalentTo(["X", "Y"]);
+                await Assert.That(answers[1].OtherText).IsEqualTo("and mine");
+            }
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task An_unanswered_question_leaves_the_review_unsubmittable_and_its_summary_empty() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var (svc, card) = Make(MultiAndSingle);
+            using (svc) using (card) {
+                card.Questions[0].Options[1].IsSelected = true;
+                await card.Steps[2].GoCommand.Execute().ToTask();
+                await Assert.That(card.IsOnReview).IsTrue();
+                await Assert.That(card.Questions[1].IsAnswered).IsFalse();
+                await Assert.That(card.Questions[1].AnswerSummary).IsEqualTo("");
+                await Assert.That(card.Steps[1].IsAnswered).IsFalse();
+                await Assert.That(await card.SubmitCommand.CanExecute.FirstAsync()).IsFalse();
+            }
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Enter_on_an_answered_question_advances_and_the_last_leads_to_the_review() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var (svc, card) = Make(TwoFreeText);
+            using (svc) using (card) {
+                await card.Questions[0].EnterCommand.Execute().ToTask();
+                await Assert.That(card.CurrentIndex).IsEqualTo(0);
+                card.Questions[0].OtherText = "hi";
+                await card.Questions[0].EnterCommand.Execute().ToTask();
+                await Assert.That(card.CurrentIndex).IsEqualTo(1);
+                card.Questions[1].OtherText = "yo";
+                await card.Questions[1].EnterCommand.Execute().ToTask();
+                await Assert.That(card.IsOnReview).IsTrue();
+                await Assert.That(svc.Answered).IsEmpty();
+
+                svc.Queue(PermissionResolveKind.Applied);
+                await card.SubmitCommand.Execute().ToTask();
+                await Assert.That(svc.Answered[0].Answers.Select(a => a.OtherText ?? "")).IsEquivalentTo(["hi", "yo"], CollectionOrdering.Matching);
             }
         });
     }

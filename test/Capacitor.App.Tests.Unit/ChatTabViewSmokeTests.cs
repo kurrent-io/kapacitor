@@ -796,4 +796,76 @@ public class ChatTabViewSmokeTests {
             await Assert.That(host.View.GetVisualDescendants().OfType<TextBlock>().Any(t => t.Text == "Pick")).IsTrue();
         });
     }
+    static Button Option(Host host, string label) => host.View.GetVisualDescendants().OfType<Button>()
+        .Single(b => b.Classes.Contains("option") && b.DataContext is QuestionOptionViewModel { Label: var l } && l == label);
+    static List<Button> Steps(Host host) => host.View.GetVisualDescendants().OfType<Button>().Where(b => b.Classes.Contains("step")).ToList();
+    static bool Shows(Host host, string text) => host.View.GetVisualDescendants().OfType<TextBlock>().Any(t => t.Text == text && t.IsEffectivelyVisible);
+
+    /// The picked option must read as picked: its border and fill come from the selected class
+    /// style, which a local brush on the button would silently outrank. A multi-select question
+    /// is used so the click toggles in place rather than advancing or submitting.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task A_picked_option_paints_the_accent_border_and_a_second_click_clears_it() {
+        await RunOnUiAsync(async () => {
+            var host = new Host();
+            host.Permissions.Add(PermissionEntries.Question("q1",
+                toolInputJson: """{"questions":[{"question":"Tags","multiSelect":true,"options":[{"label":"X"},{"label":"Y"}]}]}"""));
+            host.Settle();
+            var accent = (IBrush)Application.Current!.FindResource("KcapSuccessBrush")!;
+            var option = Option(host, "X");
+            await Assert.That(option.BorderBrush).IsNotSameReferenceAs(accent);
+
+            Click(host, option);
+            await WaitUntilAsync(() => option.Classes.Contains("selected"), what: "the selected class");
+            host.Settle();
+            await Assert.That(option.BorderBrush).IsSameReferenceAs(accent);
+            await Assert.That(option.Background).IsSameReferenceAs((IBrush)Application.Current!.FindResource("KcapSuccessDimBrush")!);
+            await Assert.That(Option(host, "Y").BorderBrush).IsNotSameReferenceAs(accent);
+
+            Click(host, option);
+            await WaitUntilAsync(() => !option.Classes.Contains("selected"), what: "cleared");
+            host.Settle();
+            await Assert.That(option.BorderBrush).IsNotSameReferenceAs(accent);
+            await host.CloseAsync();
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task A_series_renders_one_question_with_step_chips_and_ends_on_a_review() {
+        await RunOnUiAsync(async () => {
+            var host = new Host();
+            host.Permissions.Add(PermissionEntries.Question("q1",
+                toolInputJson: """{"questions":[{"question":"Pick","header":"Choice","options":[{"label":"A"},{"label":"B"}]},{"question":"Tags","multiSelect":true,"options":[{"label":"X"},{"label":"Y"}]}]}"""));
+            host.Settle();
+            var card = (QuestionCardViewModel)host.Chat.PendingCards.Single();
+            await Assert.That(Shows(host, "Pick")).IsTrue();
+            await Assert.That(Shows(host, "Tags")).IsFalse();
+            var chips = Steps(host);
+            await Assert.That(chips.Select(c => ((QuestionStepViewModel)c.DataContext!).Title)).IsEquivalentTo(["Choice", "Question 2", "Review"], CollectionOrdering.Matching);
+            await Assert.That(chips[0].Classes.Contains("current")).IsTrue();
+            await Assert.That(host.View.GetVisualDescendants().OfType<Button>().Any(b => b.Content as string == "Submit" && b.IsEffectivelyVisible)).IsFalse();
+
+            Click(host, Option(host, "A"));
+            await WaitUntilAsync(() => card.CurrentIndex == 1, what: "advanced to the second question");
+            host.Settle();
+            await Assert.That(Shows(host, "Tags")).IsTrue();
+            await Assert.That(Shows(host, "Pick")).IsFalse();
+            chips = Steps(host);
+            await Assert.That(chips[0].Classes.Contains("answered")).IsTrue();
+            await Assert.That(chips[1].Classes.Contains("current")).IsTrue();
+
+            Click(host, chips[2]);
+            await WaitUntilAsync(() => card.IsOnReview, what: "the review step");
+            host.Settle();
+            await Assert.That(Shows(host, "Review your answers")).IsTrue();
+            await Assert.That(Shows(host, "A")).IsTrue();
+            await Assert.That(Shows(host, "Not answered")).IsTrue();
+            var submit = host.View.GetVisualDescendants().OfType<Button>().Single(b => b.Content as string == "Submit");
+            await Assert.That(submit.IsEffectivelyVisible).IsTrue();
+            await Assert.That(submit.IsEffectivelyEnabled).IsFalse();
+            await host.CloseAsync();
+        });
+    }
 }
