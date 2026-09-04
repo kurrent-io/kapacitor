@@ -369,6 +369,25 @@ public class MainWindowViewModelTests {
 
     [Test]
     [NotInParallel("AvaloniaSession")]
+    public async Task Already_running_reconnect_status_clears_when_attach_stays_unreachable() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var service = new FakeDaemonClientService();
+            var lifecycleStatus = new Subject<string?>();
+            var vm = new MainWindowViewModel(
+                service, CancellationToken.None, TestActivity.New(),
+                lifecycleStatus: lifecycleStatus);
+            using var activation = vm.Activator.Activate();
+
+            lifecycleStatus.OnNext(DaemonLifecycleController.AlreadyRunningReconnectStatus);
+            await Assert.That(vm.StartMessage).IsEqualTo(DaemonLifecycleController.AlreadyRunningReconnectStatus);
+
+            service.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "daemon_unreachable", null));
+            await Assert.That(vm.StartMessage).IsEqualTo(MainWindowViewModel.ReconnectFailedMessage);
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
     public async Task Lifecycle_attention_also_lands_on_the_start_message_lane() {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var service = new FakeDaemonClientService();

@@ -17,8 +17,8 @@ public sealed class UppercaseConverter : IValueConverter {
         throw new NotSupportedException();
 }
 
-/// Activity row outcome badge (spec §7): the same Connected/Disrupted greens and reds as the
-/// status dots, so "allowed" matches a live session indicator rather than a darker Material green.
+/// Activity row outcome badge: the same Connected/Disrupted greens and reds as the status dots,
+/// so "allowed" matches a live session indicator rather than a darker Material green.
 /// ActivityRow stays a plain record (no Avalonia types) — color lives here for the same
 /// UI-thread-affinity reason MainWindowViewModel.DotBrush documents.
 public sealed class OutcomeBrushConverter : IValueConverter {

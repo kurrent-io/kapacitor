@@ -94,10 +94,11 @@
         <ScrollViewer VerticalScrollBarVisibility="Auto">
             <StackPanel Margin="16,18,16,18" Spacing="0">
 
-                <!-- Header: eyebrow + Refresh, shared mid-line (the icon button is taller than the type). -->
-                <Grid ColumnDefinitions="*,Auto" MinHeight="30">
-                    <TextBlock Grid.Column="0" Text="ABOUT THIS WORK" Classes="eyebrow" Background="Transparent"
-                               VerticalAlignment="Center" PointerPressed="OnHeaderPointerPressed" />
+                <!-- Header: full-width drag chrome; refresh stays a button (handler skips Buttons). -->
+                <Grid ColumnDefinitions="*,Auto" MinHeight="30" Background="Transparent"
+                      PointerPressed="OnHeaderPointerPressed">
+                    <TextBlock Grid.Column="0" Text="ABOUT THIS WORK" Classes="eyebrow"
+                               VerticalAlignment="Center" />
                     <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
                         <Ellipse x:Name="StaleDot" Width="6" Height="6" Fill="{StaticResource KcapWarningBrush}"
                                  IsVisible="{Binding IsStale}" ToolTip.Tip="Last refresh failed; showing the previous result"

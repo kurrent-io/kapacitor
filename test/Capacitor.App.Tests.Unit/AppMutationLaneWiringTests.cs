@@ -199,6 +199,21 @@ public class AppMutationLaneWiringTests {
     }
 
     [Test]
+    [Arguments("running_without_daemon_pid")]
+    [Arguments("daemon_running_outside_service")]
+    public async Task AttentionRepair_uses_human_copy_for_service_ownership_tokens(string token) {
+        var surface = new FakeLifecycleSurface();
+        var envelope = Envelope(new MutationOutcome.AttentionRepair(token));
+
+        await AppUnderTest.PresentOutcomeAsync(
+            surface, envelope, NeverRunMutation, FixedTerminalPath("/usr/bin"), () => null, CancellationToken.None);
+
+        await Assert.That(surface.AttentionMessages.Count).IsEqualTo(1);
+        await Assert.That(surface.AttentionMessages[0]).IsEqualTo(AppUnderTest.AttentionCopyFor(token)!);
+        await Assert.That(surface.AttentionMessages[0]).DoesNotContain(token);
+    }
+
+    [Test]
     public async Task Unknown_attention_token_is_acked_but_not_shown_in_the_banner() {
         var surface = new FakeLifecycleSurface();
         var presented = false;

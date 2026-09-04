@@ -110,8 +110,18 @@ public partial class LauncherPaneView : UserControl {
         var repoPath = option.RepoPath;
         return ChoiceButton(grid, () => {
             flyout.Hide();
-            _ = vm.SelectRepositoryAsync(repoPath);
+            _ = SelectRepositoryObservedAsync(vm, repoPath);
         });
+    }
+
+    // ChoiceButton's click is sync; keep flyout-close immediate and observe the async load so a
+    // failed state read is not an unobserved task.
+    static async Task SelectRepositoryObservedAsync(HomeViewModel vm, string repoPath) {
+        try {
+            await vm.SelectRepositoryAsync(repoPath);
+        } catch (Exception ex) {
+            Console.Error.WriteLine($"kcap: select repository failed: {ex}");
+        }
     }
 
     // "Add one" via a native folder picker — SelectRepositoryAsync then treats the choice like

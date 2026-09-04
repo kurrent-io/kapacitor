@@ -382,16 +382,6 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
         };
     }
 
-    /// Back-compat for callers that already classified availability.
-    internal static string? NoticeFor(LaunchAvailability availability, bool signInExpired) =>
-        signInExpired ? SignInExpiredNotice
-        : availability switch {
-            LaunchAvailability.Ready             => null,
-            LaunchAvailability.Pending           => ConnectingNotice,
-            LaunchAvailability.DaemonUnavailable => DaemonDownNotice,
-            _                                    => ServerLostNotice,
-        };
-
     /// Repo gate first (IsEnabled), then the connection/sign-in notice StartCommand also gates on.
     internal static string TipFor(string? repoPath, string? connectionNotice) =>
         string.IsNullOrEmpty(repoPath) ? "Select a repository to start"
@@ -464,6 +454,8 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
     public async Task EnsureDefaultRepositoryAsync() {
         if (SelectedRepoPath.Length > 0) return;
         if (await PreferRecentRepositoryAsync() is not { Length: > 0 } recent) return;
+        // PreferRecent can await file I/O — a pick made while that ran must win.
+        if (SelectedRepoPath.Length > 0) return;
         await SelectRepositoryAsync(recent);
     }
 

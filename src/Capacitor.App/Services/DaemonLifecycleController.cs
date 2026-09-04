@@ -49,6 +49,11 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
     internal const string TakeoverDisclosure =
         "This replaces the existing daemon service and re-captures its settings; a failed replacement leaves it uninstalled rather than restored.";
 
+    /// Status when Start finds a live service and only kicks reattach. MainWindow replaces this
+    /// (and its own Retry reconnect copy) if attach lands Unreachable again.
+    internal const string AlreadyRunningReconnectStatus =
+        "Daemon service is already running. Reconnecting…";
+
     internal static readonly TimeSpan TxnActiveRequeryDelay = TimeSpan.FromSeconds(2);
 
     readonly IDaemonClientService _client;
@@ -663,7 +668,7 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
                 }
 
                 if (state == ServiceState.Running) {
-                    _surface.Status("Daemon service is already running. Reconnecting…");
+                    _surface.Status(AlreadyRunningReconnectStatus);
                     _ = _client.RestartLoopAsync();
                     return;
                 }

@@ -45,7 +45,11 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     internal const string ReconnectFailedMessage =
         "Could not reconnect. If the daemon isn't running, press Start daemon.";
 
-    // StatusColors (shared with TrayIconRenderer's tray-icon overlay, spec §4) is hex-only
+    internal static bool IsInFlightReconnectMessage(string? message) =>
+        message == ReconnectingMessage
+        || message == DaemonLifecycleController.AlreadyRunningReconnectStatus;
+
+    // StatusColors (shared with TrayIconRenderer's tray-icon overlay) is hex-only
     // constants (plain strings, not Brush instances). A Brush is an AvaloniaObject with UI-thread
     // affinity enforced the moment the renderer references it; caching one as a shared
     // `static readonly` field would tie its affinity to whichever thread happens to trigger this
@@ -364,11 +368,12 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
                 .Subscribe(_ => StartMessage = null)
                 .DisposeWith(disposables);
 
-            // Retry only kicks reattach. If we land Unreachable again while still showing the
-            // in-flight reconnect copy, replace it so the click does not leave a forever-pending line.
+            // Reconnect / already-running kicks only reattach. If we land Unreachable again while
+            // still showing an in-flight reconnect copy, replace it so the banner does not claim
+            // reconnect forever.
             status.Where(s => s.State == AttachState.Unreachable)
                 .Subscribe(_ => {
-                    if (StartMessage == ReconnectingMessage)
+                    if (IsInFlightReconnectMessage(StartMessage))
                         StartMessage = ReconnectFailedMessage;
                 })
                 .DisposeWith(disposables);

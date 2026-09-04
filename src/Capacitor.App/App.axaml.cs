@@ -1039,6 +1039,12 @@ public partial class App : Application {
         "stale_txn_marker"
             => "A previous daemon setup didn't finish. Press Start daemon to try again.",
 
+        "running_without_daemon_pid"
+            => "The daemon service is loaded but no process is attached. Press Start daemon to repair.",
+
+        "daemon_running_outside_service"
+            => "A daemon is running outside the service. Press Start daemon to repair.",
+
         "ownership_mismatch" or "ownership_unknown" or "instance_pid_mismatch"
             or "instance_changed_during_classification" or "unreachable_with_recorded_owner"
             => "Another daemon may already be running for this name. Stop it, then press Start daemon.",

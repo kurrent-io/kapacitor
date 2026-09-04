@@ -354,6 +354,29 @@ public class HomeViewModelTests {
 
     [Test]
     [NotInParallel("AvaloniaSession")]
+    public async Task EnsureDefault_does_not_overwrite_a_pick_made_during_discovery() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            using var tmp = TempDir.WithPathTo("app-state.json", out var path);
+            var daemon = new FakeDaemonClientService();
+            var release = new TaskCompletionSource();
+            using var vm = new HomeViewModel(
+                daemon, new AppStateStore(path), new RecordingLaunchClient(),
+                async () => {
+                    await release.Task;
+                    return ["/repo/default"];
+                });
+
+            var ensure = vm.EnsureDefaultRepositoryAsync();
+            await vm.SelectRepositoryAsync("/repo/user-picked");
+            release.SetResult();
+            await ensure;
+
+            await Assert.That(vm.SelectedRepoPath).IsEqualTo("/repo/user-picked");
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
     public async Task An_agent_without_a_repository_contributes_no_entry() {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             using var tmp = TempDir.WithPathTo("app-state.json", out var path);
