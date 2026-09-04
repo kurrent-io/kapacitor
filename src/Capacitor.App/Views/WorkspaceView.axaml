@@ -22,7 +22,10 @@
         </Style>
     </UserControl.Styles>
 
-    <Grid RowDefinitions="56,42,*">
+    <!-- Two columns: the workspace proper, and the work-context pane at its fixed width. The
+         terminal keeps its own column, so the size it reports to the PTY is the real center width. -->
+    <Grid ColumnDefinitions="*,400">
+    <Grid Grid.Column="0" RowDefinitions="56,42,*">
         <!-- Header: title over repo leaf · spacer · vendor chip with its family badge ·
              Open-in-web/Stop. Leaving the workspace is the rail's job, not a Back button's. -->
         <Grid Grid.Row="0" ColumnDefinitions="Auto,*,Auto,Auto,Auto" Margin="20,0,16,0"
@@ -171,5 +174,7 @@
                 </views:ChatTabView.IsVisible>
             </views:ChatTabView>
         </Grid>
+    </Grid>
+    <views:WorkContextView x:Name="WorkContextHost" Grid.Column="1" DataContext="{Binding WorkContext}" />
     </Grid>
 </UserControl>

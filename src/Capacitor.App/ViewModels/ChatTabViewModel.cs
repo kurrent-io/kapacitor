@@ -238,11 +238,7 @@ public sealed class ChatTabViewModel : ReactiveObject {
         }, canSend);
         _disposables.Add(SendCommand);
 
-        OpenLinkCommand = ReactiveCommand.Create<string>(url => {
-            if (!LinkPolicy.IsOpenable(url)) return;
-            try { _opener.Open(url); }
-            catch (Exception ex) { Console.Error.WriteLine($"kcap: open link failed: {ex.Message}"); }
-        });
+        OpenLinkCommand = ReactiveCommand.Create<string>(url => LinkPolicy.Open(_opener, url));
         _disposables.Add(OpenLinkCommand);
     }
 

@@ -73,6 +73,10 @@ public sealed class WorkspaceViewModel : ReactiveObject {
         private set => this.RaiseAndSetIfChanged(ref _chat, value);
     }
 
+    /// The right pane. Fed by the same presence stream as the header, so the daemon cache has one
+    /// subscription per workspace, not two.
+    public WorkContextViewModel WorkContext { get; }
+
     WorkspaceTab _activeTab = WorkspaceTab.Chat;
     public WorkspaceTab ActiveTab {
         get => _activeTab;
@@ -101,7 +105,8 @@ public sealed class WorkspaceViewModel : ReactiveObject {
     public WorkspaceViewModel(
             string agentId, IDaemonClientService daemon, AgentActionService actions,
             TerminalAttachClientFactory factory, Func<ITerminalSurface> surfaceFactory, TimeProvider time,
-            IUrlOpener opener, IPermissionService permissions) {
+            IUrlOpener opener, IPermissionService permissions, IWorkContextSource workContext,
+            Action? requestSignIn = null, IObservable<Unit>? signInCompleted = null) {
         AgentId = agentId;
         Terminal = new TerminalTabViewModel(agentId, daemon, factory, surfaceFactory, time);
 
@@ -111,6 +116,8 @@ public sealed class WorkspaceViewModel : ReactiveObject {
             .Scan(new AgentPresence(null, false), Accumulate)
             .Replay(1)
             .RefCount();
+
+        WorkContext = new WorkContextViewModel(presence.Select(p => p.Dto), workContext, time, opener, requestSignIn, signInCompleted);
 
         presence.Select(p => p.Dto).Subscribe(dto => _latestDto = dto).DisposeWith(_disposables);
 
@@ -195,11 +202,12 @@ public sealed class WorkspaceViewModel : ReactiveObject {
         return dto.Model is null ? dto.Vendor : $"{dto.Vendor} ({dto.Model})";
     }
 
-    /// Disposes this workspace's own daemon-cache projections, then tears down Chat (if built)
-    /// before Terminal -- the caller that closes a workspace tab calls this once.
+    /// Disposes this workspace's own daemon-cache projections, then tears down Chat (if built), the
+    /// work-context pane, and Terminal last -- the caller that closes a workspace tab calls this once.
     public async Task TeardownAsync() {
         _disposables.Dispose();
         if (Chat is { } chat) await chat.TeardownAsync();
+        await WorkContext.TeardownAsync();
         await Terminal.TeardownAsync();
     }
 }

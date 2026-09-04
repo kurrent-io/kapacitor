@@ -96,11 +96,11 @@ public partial class App : Application {
     // this field never needs a second construction path or a signature change to
     // BuildAndShowMainWindow either.
     SessionRailViewModel? _rail;
-    // Home's launch transport, held here because it is the one graph object that outlives a
-    // window rebuild (MainWindowCoordinator can build a second window over the same client) and
-    // owns a live HubConnection. Disposed after _home on both teardown paths — never before, or a
-    // launch still in flight would lose its transport mid-invoke.
-    ServerLaunchClient? _launch;
+    // The server-side clients that outlive a window rebuild (MainWindowCoordinator can build a
+    // second window over the same launch client) and own live transports. Torn down through one
+    // holder on both teardown paths, after _home — never before, or a launch still in flight would
+    // lose its transport mid-invoke.
+    ServerClients? _serverClients;
     TrayViewModel? _trayVm;
     TrayIconManager? _tray;
     // No disposal needed — RefCount tears its Interval down with its last subscriber, and every
@@ -206,7 +206,7 @@ public partial class App : Application {
             await _workspaceTeardown.DrainAsync();
             await HandleStartupFailureAsync(
                 desktop, ex, _service, _shutdown, [_tray, _trayVm, _promptCoordinator, _consent, _permissions, _activity, _home, _rail, _pause], _lifecycle, _lane);
-            await DisposeLaunchClientAsync(); // after _home above — its only caller
+            await DisposeServerClientsAsync(); // after _home above
             // all already disposed above — never let a later OnShutdownRequested (e.g. Cmd+Q
             // while the error window is up) dispose any of them a second time
             _service = null;
@@ -323,17 +323,22 @@ public partial class App : Application {
             Notifier = notifier,
         });
 
-        // One launch client for the app, not one per window the coordinator builds — each carries
-        // its own HubConnection, and only a held instance can be disposed at teardown.
+        // One launch client and one work-context source for the app, not one per window the
+        // coordinator builds — each owns a live transport, and only a held instance can be
+        // disposed at teardown.
         var launch = new ServerLaunchClient(_config, profiles);
-        _launch = launch;
+        var workContext = new ServerWorkContextSource(_config, profiles);
+        var serverClients = new ServerClients(launch, workContext);
+        _serverClients = serverClients;
 
         // One attach client per attempt, dialed at the daemon's own control socket; 80x24 is a
         // placeholder only — TerminalControl resizes its model to the real pane the moment it is
         // attached to the visual tree (WorkspaceView's own header comment).
         var attachFactory = CoreTerminalAttachClient.Factory(() => _daemonStore.SocketPath(service.DaemonName));
+        Action requestSignIn = () => OpenSignInDialog(profiles, notifier);
         WorkspaceViewModel BuildWorkspace(string agentId) => new(
-            agentId, service, actions, attachFactory, () => new XtermTerminalSurface(80, 24, PtyDumpPath), TimeProvider.System, opener, permissions);
+            agentId, service, actions, attachFactory, () => new XtermTerminalSurface(80, 24, PtyDumpPath), TimeProvider.System, opener, permissions,
+            workContext, requestSignIn: requestSignIn, signInCompleted: serverClients.SignInCompleted);
 
         _coordinator = new MainWindowCoordinator(
             () => BuildAndShowMainWindow(
@@ -341,7 +346,7 @@ public partial class App : Application {
                 lifecycleStatus, launch, _navigation, _workspaceTeardown.Track, BuildWorkspace,
                 // The tenant slug the rail footer shows — profiles are named after it at sign-in.
                 tenantName: profiles?.Resolution?.ProfileName, agentsWithPending: permissions.AgentsWithPending,
-                requestSignIn: () => OpenSignInDialog(profiles, notifier)),
+                requestSignIn: requestSignIn),
             // Both close paths release the workspace: hide-to-tray keeps the window (and its
             // attach) alive, a real close discards the window the next Show() would rebuild.
             releaseWorkspace: window => (window.DataContext as MainWindowViewModel)?.CloseWorkspace());
@@ -415,7 +420,10 @@ public partial class App : Application {
     async Task FinishSignInAsync(ReauthGraph graph) {
         try {
             await graph.CloseAsync(CancellationToken.None);
-            if (graph.SignIn.Satisfied) _home?.NotifySignInCompleted();
+            if (graph.SignIn.Satisfied) {
+                _home?.NotifySignInCompleted();
+                _serverClients?.NotifySignInCompleted();
+            }
         } catch (Exception ex) {
             Console.Error.WriteLine($"kcap: sign-in dialog teardown failed: {ex.Message}");
         }
@@ -1211,11 +1219,11 @@ public partial class App : Application {
     }
 
     // Runs after the UI disposables (DisposeUiThenConfirmShutdownAsync), so _home is already gone
-    // when its launch client is torn down here. _lifecycle then goes first (guarded, so a throw
+    // when its server clients are torn down here. _lifecycle then goes first (guarded, so a throw
     // never skips _service's disposal); the lane goes LAST — its substrate must outlive any caller
     // still awaiting RunAsync.
     async ValueTask DisposeLifecycleAndServiceAsync() {
-        await DisposeLaunchClientAsync().ConfigureAwait(false);
+        await DisposeServerClientsAsync().ConfigureAwait(false);
         if (_lifecycle is not null) {
             try {
                 await _lifecycle.DisposeAsync().ConfigureAwait(false);
@@ -1233,17 +1241,11 @@ public partial class App : Application {
         }
     }
 
-    // Idempotent (both teardown paths can reach it) and guarded for the same reason DisposeAll is:
-    // a failing hub disposal must never skip the disposals that follow.
-    async ValueTask DisposeLaunchClientAsync() {
-        if (_launch is null) return;
-
-        try {
-            await _launch.DisposeAsync().ConfigureAwait(false);
-        } catch (Exception ex) {
-            Console.Error.WriteLine($"kcap app failed to dispose the launch client during teardown: {ex}");
-        }
-        _launch = null;
+    // Reached from both teardown paths; the holder memoizes the cleanup, so a second call awaits
+    // the first rather than disposing anything again.
+    async ValueTask DisposeServerClientsAsync() {
+        if (_serverClients is null) return;
+        await _serverClients.DisposeAsync().ConfigureAwait(false);
     }
 
     /// <summary>Quiesces shutdown in two phases: sign-in and import finish uncapped so an in-progress commit isn't torn down, then lifecycle/lane quiesce under the cap.</summary>
