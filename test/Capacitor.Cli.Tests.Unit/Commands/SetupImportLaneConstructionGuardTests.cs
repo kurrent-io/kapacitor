@@ -5,10 +5,10 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 
 /// <summary>
 /// <see cref="SetupImportLane"/> imports through <c>ImportCommand</c>, which takes its base URL from
-/// the <c>ProfileContext</c> it is handed and from nowhere else. The browser leg's own context is the
-/// snapshot resolved before Step 1, so on a first run it names no server — and <c>setup</c> is exempt
-/// from the entry gate that refuses an unconfigured command, so an unusable URL is caught by nothing
-/// until it reaches the client factory.
+/// the <c>ProfileContext</c> it is handed and from nowhere else. The browser leg's own context is
+/// resolved at process start, before setup has asked for a server, so on a first run it names none —
+/// and <c>setup</c> is exempt from the entry gate that refuses an unconfigured command, so an unusable
+/// URL is caught by nothing until it reaches the client factory.
 ///
 /// <para>A guard rather than a unit test because the defect is in WHICH context the call site passes,
 /// and the call site sits inside an authenticated leg that a unit test cannot reach. Pinning

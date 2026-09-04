@@ -1444,9 +1444,9 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
 
     /// <summary>
     /// The profile the import lane runs under. <see cref="ImportCommand"/> reads its base URL from the
-    /// context it is handed, and <c>profiles</c> is the snapshot resolved before Step 1 — on a first run
-    /// that names no server at all, and the one this run chose is not persisted until after this leg
-    /// returns.
+    /// context it is handed, and <c>profiles</c> is resolved at process start, before setup has asked
+    /// for a server — on a first run it names none at all, and the one this run chose is not persisted
+    /// until after this leg returns.
     /// </summary>
     internal static ProfileContext ImportContext(ProfileContext profiles, string serverUrl) =>
         new(profiles.Resolution with { ServerUrl = serverUrl }, profiles.Snapshot);

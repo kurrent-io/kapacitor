@@ -417,9 +417,9 @@ public class SetupImportLaneTests {
 
     /// <summary>
     /// The lane imports through <see cref="ImportCommand"/>, which takes its base URL from the context
-    /// it is handed — so the one this run resolved has to reach it. The leg's own context is the
-    /// snapshot from before Step 1, and on a first run that names no server at all: `setup` is exempt
-    /// from the entry gate that refuses an unconfigured command, so nothing downstream would catch it.
+    /// it is handed — so the one this run resolved has to reach it. The leg's own context is resolved at
+    /// process start, before setup has asked for a server, and on a first run it names none: `setup` is
+    /// exempt from the entry gate that refuses an unconfigured command, so nothing downstream catches it.
     /// </summary>
     [Test]
     public async Task The_import_context_names_the_server_this_run_resolved() {
