@@ -73,8 +73,15 @@ internal sealed class SessionStartMemoryContextProvider(
                 SessionStartMemoryJsonContext.Default.SessionStartMemoryEntryArray) is { } entries
                     ? new SessionStartMemoryIndexResponse(entries, null)
                     : null,
+            // An object carrying neither member is not an empty index, it is not an index at all:
+            // treating it as one would report a successful empty fetch and SPEND the once-per-session
+            // lease, so no later callback of that session ever asks again. Empty arrays are a real
+            // answer and stay distinct from absent ones.
             JsonTokenType.StartObject => JsonSerializer.Deserialize(body,
-                SessionStartMemoryJsonContext.Default.SessionStartMemoryIndexResponse),
+                SessionStartMemoryJsonContext.Default.SessionStartMemoryIndexResponse) is { } response &&
+                (response.Entries is not null || response.Projects is not null)
+                    ? response
+                    : null,
             _ => null
         };
     }

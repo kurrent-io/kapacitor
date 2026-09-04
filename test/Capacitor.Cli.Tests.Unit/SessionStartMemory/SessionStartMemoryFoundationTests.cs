@@ -288,14 +288,36 @@ public class SessionStartMemoryFoundationTests {
     }
 
     [Test]
-    public async Task Provider_retries_a_body_that_is_neither_shape() {
+    [Arguments("\"not-an-index\"")]
+    [Arguments("{}")]
+    [Arguments("{\"entries\":null,\"projects\":null}")]
+    [Arguments("{\"unrelated\":1}")]
+    public async Task Provider_retries_a_body_that_is_not_an_index(string body) {
+        // An object carrying neither member must stay retryable rather than read as an empty index:
+        // Empty completes the once-per-session lease, so a session would never ask again.
         var provider = new SessionStartMemoryContextProvider(new FixedScopeResolver("repo", "machine"),
-            (_, _) => Task.FromResult(new HttpClient(new StaticHandler(HttpStatusCode.OK, "\"not-an-index\""))));
+            (_, _) => Task.FromResult(new HttpClient(new StaticHandler(HttpStatusCode.OK, body))));
 
         var result = await provider.GetAsync(new SessionStartMemoryContextRequest("https://example", "/repo", false,
             TimeSpan.FromSeconds(1), CancellationToken.None));
 
         await Assert.That(result.Disposition).IsEqualTo(SessionStartMemoryDisposition.RetryableFailure);
+    }
+
+    [Test]
+    [Arguments("{\"entries\":[],\"projects\":[]}")]
+    [Arguments("{\"entries\":[]}")]
+    [Arguments("[]")]
+    public async Task Provider_completes_a_genuinely_empty_index(string body) {
+        // The mirror of the case above: a present-but-empty array IS an answer, and completing the
+        // lease on it is what stops a session re-fetching an index the server says is empty.
+        var provider = new SessionStartMemoryContextProvider(new FixedScopeResolver("repo", "machine"),
+            (_, _) => Task.FromResult(new HttpClient(new StaticHandler(HttpStatusCode.OK, body))));
+
+        var result = await provider.GetAsync(new SessionStartMemoryContextRequest("https://example", "/repo", false,
+            TimeSpan.FromSeconds(1), CancellationToken.None));
+
+        await Assert.That(result.Disposition).IsEqualTo(SessionStartMemoryDisposition.CompleteWithoutContext);
     }
 
     [Test]
