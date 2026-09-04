@@ -250,7 +250,12 @@ public class MainWindowViewModelTests {
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "daemon_incompatible", null));
 
             await Assert.That(vm.Reason).IsNotNull();
-            await Assert.That(vm.Reason!).Contains("app and daemon are incompatible — make sure both are up to date");
+            await Assert.That(vm.Reason!).Contains("App and daemon are incompatible");
+            await Assert.That(vm.Reason!).Contains("Retry");
+            await Assert.That(vm.Reason!).DoesNotContain("daemon_incompatible");
+            await Assert.That(vm.RecoveryVisible).IsTrue();
+            await Assert.That(vm.StartVisible).IsFalse();
+            await Assert.That(vm.RetryVisible).IsTrue();
             await Assert.That(startCanExecute).IsFalse();
             await Assert.That(retryCanExecute).IsTrue();
         });
@@ -266,23 +271,28 @@ public class MainWindowViewModelTests {
             using var activation = vm.Activator.Activate();
 
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "daemon_unreachable", null));
+            await Assert.That(vm.Reason).IsEqualTo(MainWindowViewModel.UnreachableMessage);
+            await Assert.That(vm.Reason!).DoesNotContain("daemon_unreachable");
+            await Assert.That(vm.RecoveryVisible).IsTrue();
 
             service.StartBehavior = _ => Task.FromResult(new StartDaemonResult(false, "boom: could not bind socket"));
             await vm.StartDaemonCommand.Execute().ToTask();
             await Assert.That(vm.StartMessage).IsEqualTo("boom: could not bind socket");
+            await Assert.That(vm.RecoveryVisible).IsTrue();
 
-            // A new attempt clears the previous failure message SYNCHRONOUSLY, before the
-            // attempt's own async work resolves — proven here by asserting it's already null
-            // while the gated fake is still pending.
+            // A new attempt replaces the previous failure with StartingMessage SYNCHRONOUSLY,
+            // before the attempt's own async work resolves — proven here while the gated fake
+            // is still pending.
             var gate = new TaskCompletionSource();
             service.StartBehavior = async _ => {
                 await gate.Task;
                 return new StartDaemonResult(true, null);
             };
             var execute = vm.StartDaemonCommand.Execute().ToTask();
-            await Assert.That(vm.StartMessage).IsNull();
+            await Assert.That(vm.StartMessage).IsEqualTo(MainWindowViewModel.StartingMessage);
             gate.SetResult();
             await execute;
+            await Assert.That(vm.StartMessage).IsEqualTo("Daemon start requested. Waiting to connect…");
 
             // A transition to Connected clears it too.
             service.StartBehavior = _ => Task.FromResult(new StartDaemonResult(false, "second failure"));
@@ -316,7 +326,50 @@ public class MainWindowViewModelTests {
         });
     }
 
-    // spec §4.4: StartDaemonCommand is repointed to the service-aware
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Retry_sets_reconnecting_then_settles_if_still_unreachable() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var service = new FakeDaemonClientService();
+            var vm = new MainWindowViewModel(service, CancellationToken.None, TestActivity.New());
+            using var activation = vm.Activator.Activate();
+
+            service.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "daemon_unreachable", null));
+            await Assert.That(vm.StartMessage).IsNull();
+
+            var execute = vm.RetryCommand.Execute().ToTask();
+            await Assert.That(vm.StartMessage).IsEqualTo(MainWindowViewModel.ReconnectingMessage);
+            await execute;
+
+            // Still unreachable after the reattach kick: replace the in-flight copy.
+            service.StatusSubject.OnNext(new AttachStatus(AttachState.Connecting, null, null));
+            await Assert.That(vm.StartMessage).IsEqualTo(MainWindowViewModel.ReconnectingMessage);
+
+            service.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "daemon_unreachable", null));
+            await Assert.That(vm.StartMessage).IsEqualTo(MainWindowViewModel.ReconnectFailedMessage);
+
+            service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, null));
+            await Assert.That(vm.StartMessage).IsNull();
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Lifecycle_attention_also_lands_on_the_start_message_lane() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var service = new FakeDaemonClientService();
+            var lifecycleAttention = new Subject<string?>();
+            var vm = new MainWindowViewModel(
+                service, CancellationToken.None, TestActivity.New(),
+                lifecycleAttention: lifecycleAttention);
+            using var activation = vm.Activator.Activate();
+
+            lifecycleAttention.OnNext("A daemon mutation needs attention (verify_viability).");
+            await Assert.That(vm.StartMessage).IsEqualTo("A daemon mutation needs attention (verify_viability).");
+        });
+    }
+
+    // StartDaemonCommand is repointed to the service-aware
     // DaemonLifecycleController.StartActionAsync when the composition root supplies one — the
     // plain detached StartDaemonAsync is a fallback for callers with no live controller, not the
     // production path.

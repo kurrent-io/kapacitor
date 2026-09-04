@@ -1,6 +1,7 @@
 using System.Reactive;
 using System.Reactive.Disposables.Fluent;
 using System.Reactive.Linq;
+using System.Reactive.Subjects;
 using Avalonia.Media;
 using Capacitor.App.Services;
 using ReactiveUI;
@@ -26,10 +27,22 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     const string IncompatibleReason = "daemon_incompatible";
     const string UnreachableReason  = "daemon_unreachable";
 
-    // Neutral wording (spec §5): §4.2's incompatibility classification is a broad heuristic —
-    // an unexpected frame can equally mean the APP is the older side — so the UI must not
-    // prescribe an upgrade direction.
-    const string SkewMessage = "app and daemon are incompatible — make sure both are up to date";
+    // Neutral wording: incompatibility classification is a broad heuristic — an unexpected frame
+    // can equally mean the APP is the older side — so the UI must not prescribe an upgrade direction.
+    // User-facing copy lives on HomeViewModel (launcher banner); Reason mirrors it for tests/tray.
+
+    /// User-facing copy when the daemon isn't attached. Never the wire token (daemon_unreachable).
+    internal static string UnreachableMessage => HomeViewModel.DaemonDownNotice;
+
+    /// Shown the moment Start daemon is pressed, before the lifecycle/CLI work returns, so a
+    /// click is never silent even when the start action itself has nothing further to say.
+    internal const string StartingMessage = "Starting the daemon…";
+
+    /// Shown the moment Retry is pressed. Cleared on Connected; replaced if attach stays unreachable.
+    internal const string ReconnectingMessage = "Reconnecting…";
+
+    internal const string ReconnectFailedMessage =
+        "Could not reconnect. If the daemon isn't running, press Start daemon.";
 
     // StatusColors (shared with TrayIconRenderer's tray-icon overlay, spec §4) is hex-only
     // constants (plain strings, not Brush instances). A Brush is an AvaloniaObject with UI-thread
@@ -86,11 +99,17 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     ObservableAsPropertyHelper<AttachState>? _state;
     public AttachState State => _state?.Value ?? AttachState.Connecting;
 
-    // Display text for why we're not connected: the raw wire reason for daemon_unreachable, but
-    // the NEUTRAL skew message (never an upgrade-direction verdict) for daemon_incompatible; null
-    // outside Unreachable.
+    // Display text for why we're not connected: friendly copy only — never a raw wire token
+    // like daemon_unreachable. Null outside Unreachable.
     ObservableAsPropertyHelper<string?>? _reason;
     public string? Reason => _reason?.Value;
+
+    readonly BehaviorSubject<string?> _startMessageChanges = new(null);
+    readonly ObservableAsPropertyHelper<bool> _recoveryVisible;
+    /// Recovery chrome (banner + Start/Retry): Unreachable attach, or a failed start message still
+    /// on screen — so the user always has a next step, not a dead end.
+    public bool RecoveryVisible => _recoveryVisible.Value;
+
 
     /// The Activity feed (spec §7) — constructed once at the composition root, same instance the
     /// prompt window's onConcluded callback nudges, so this is a plain ctor-injected reference,
@@ -154,7 +173,10 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     // Connected (spec §5); set only when a start attempt actually fails.
     public string? StartMessage {
         get => _startMessage;
-        private set => this.RaiseAndSetIfChanged(ref _startMessage, value);
+        private set {
+            this.RaiseAndSetIfChanged(ref _startMessage, value);
+            _startMessageChanges.OnNext(value);
+        }
     }
 
     public ReactiveCommand<Unit, Unit> StartDaemonCommand { get; }
@@ -185,14 +207,19 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     /// behavior verbatim.
     /// </param>
     /// <param name="lifecycleStatus">
-    /// spec §6: ILifecycleSurface.Status one-liners (e.g. "daemon started, app not yet
+    /// ILifecycleSurface.Status one-liners (e.g. "daemon started, app not yet
     /// attached — retrying", a coded transaction failure) ride the SAME start-message lane
     /// RunStartAsync already uses — one place near the Start button for "why isn't this working",
     /// cleared by the identical Connected-transition rule below. Null (most existing tests, and
     /// any caller without a live lifecycle controller) means this lane never receives anything.
     /// </param>
+    /// <param name="lifecycleAttention">
+    /// ILifecycleSurface.Attention lines (mutation failures presented by the outcome consumer).
+    /// Same StartMessage lane as lifecycleStatus — otherwise a Start daemon click that fails in
+    /// the mutation lane only updates the menu-bar icon and the banner stays mute.
+    /// </param>
     /// <param name="navigation">
-    /// The composition root's app-lifetime NavigationGate (spec §3). Null builds a private one, so
+    /// The composition root's app-lifetime NavigationGate. Null builds a private one, so
     /// a caller with no navigation of its own (most existing tests) still gets a working VM — but
     /// only a SHARED gate makes the shutdown latch reach a window built after shutdown began.
     /// </param>
@@ -217,7 +244,7 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
             IObservable<string?>? lifecycleStatus = null, TimeProvider? time = null, HomeViewModel? home = null,
             NavigationGate? navigation = null, Action<Func<Task>>? trackWorkspaceTeardown = null,
             Func<string, WorkspaceViewModel>? workspaceFactory = null, SessionRailViewModel? rail = null,
-            string? tenantName = null) {
+            string? tenantName = null, IObservable<string?>? lifecycleAttention = null) {
         _service = service;
         _time = time ?? TimeProvider.System;
         Activity = activity;
@@ -251,8 +278,9 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
             .ObserveOn(RxSchedulers.MainThreadScheduler);
 
         var start = startAction ?? RunStartAsync;
-        StartDaemonCommand = ReactiveCommand.CreateFromTask(() => start(shutdownToken), canStart);
-        RetryCommand        = ReactiveCommand.CreateFromTask(service.RestartLoopAsync, canRetry);
+        StartDaemonCommand = ReactiveCommand.CreateFromTask(
+            () => InvokeStartAsync(start, shutdownToken), canStart);
+        RetryCommand = ReactiveCommand.CreateFromTask(InvokeRetryAsync, canRetry);
 
         // Independent subscriptions to the SAME canStart/canRetry state predicates the commands
         // above were built from (service.Status is hot/multicast, so a second subscriber replays
@@ -261,6 +289,19 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
         // behavior. Ctor-scoped for the same reason as the commands themselves.
         _startVisible = canStart.ToProperty(this, x => x.StartVisible, initialValue: false);
         _retryVisible = canRetry.ToProperty(this, x => x.RetryVisible, initialValue: false);
+        _recoveryVisible = service.Status
+            .CombineLatest(_startMessageChanges, (s, msg) =>
+                s.State == AttachState.Unreachable || !string.IsNullOrEmpty(msg))
+            .ObserveOn(RxSchedulers.MainThreadScheduler)
+            .ToProperty(this, x => x.RecoveryVisible, initialValue: false);
+
+        // Launcher banner owns the chrome; share the same Start/Retry commands and start-message
+        // lane so the pane never drifts from what MainWindow already drives.
+        var daemonRetryVisible = service.Status
+            .Select(s => s.State == AttachState.Unreachable)
+            .ObserveOn(RxSchedulers.MainThreadScheduler);
+        home?.AttachDaemonRecovery(
+            StartDaemonCommand, RetryCommand, canStart, daemonRetryVisible, _startMessageChanges);
 
         this.WhenActivated(disposables => {
             var status    = service.Status.ObserveOn(RxSchedulers.MainThreadScheduler);
@@ -320,10 +361,25 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
                 .Subscribe(_ => StartMessage = null)
                 .DisposeWith(disposables);
 
-            lifecycleStatus?.ObserveOn(RxSchedulers.MainThreadScheduler)
-                .Where(msg => msg is not null)
-                .Subscribe(msg => StartMessage = msg)
+            // Retry only kicks reattach. If we land Unreachable again while still showing the
+            // in-flight reconnect copy, replace it so the click does not leave a forever-pending line.
+            status.Where(s => s.State == AttachState.Unreachable)
+                .Subscribe(_ => {
+                    if (StartMessage == ReconnectingMessage)
+                        StartMessage = ReconnectFailedMessage;
+                })
                 .DisposeWith(disposables);
+
+            // Status (start-action one-liners) and Attention (mutation-outcome presentation) both
+            // land on StartMessage so the launcher banner is never mute after a Start daemon click.
+            void BindStartMessage(IObservable<string?>? source) =>
+                source?.ObserveOn(RxSchedulers.MainThreadScheduler)
+                    .Where(msg => msg is not null)
+                    .Subscribe(msg => StartMessage = msg)
+                    .DisposeWith(disposables);
+
+            BindStartMessage(lifecycleStatus);
+            BindStartMessage(lifecycleAttention);
         });
     }
 
@@ -388,8 +444,8 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     }
 
     static string? ReasonText(AttachStatus status) => status.State switch {
-        AttachState.Unreachable when status.Reason == IncompatibleReason => SkewMessage,
-        AttachState.Unreachable => status.Reason,
+        AttachState.Unreachable when status.Reason == IncompatibleReason => HomeViewModel.DaemonIncompatibleNotice,
+        AttachState.Unreachable => HomeViewModel.DaemonDownNotice,
         _ => null,
     };
 
@@ -431,15 +487,25 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
         };
     }
 
+    async Task InvokeStartAsync(Func<CancellationToken, Task> start, CancellationToken ct) {
+        StartMessage = StartingMessage;
+        await start(ct);
+    }
+
+    async Task InvokeRetryAsync() {
+        StartMessage = ReconnectingMessage;
+        await _service.RestartLoopAsync();
+    }
+
     async Task RunStartAsync(CancellationToken ct) {
-        StartMessage = null; // clear on every new attempt
         try {
             var result = await _service.StartDaemonAsync(ct);
             if (!result.Ok) StartMessage = result.Message;
+            else StartMessage = "Daemon start requested. Waiting to connect…";
         } catch (OperationCanceledException) {
             // App is quitting: OnShutdownRequested cancelled `ct` while this start was still in
-            // flight, and StartDaemonAsync deliberately rethrows OCE for exactly that case (spec
-            // §5 — ct abandons the WAIT, not the started daemon). Nothing subscribes to
+            // flight, and StartDaemonAsync deliberately rethrows OCE for exactly that case —
+            // ct abandons the WAIT, not the started daemon. Nothing subscribes to
             // StartDaemonCommand.ThrownExceptions, so letting this escape would have ReactiveUI's
             // default handler reschedule an UnhandledErrorException onto the still-alive
             // dispatcher. The app is exiting — there is nothing left to render.

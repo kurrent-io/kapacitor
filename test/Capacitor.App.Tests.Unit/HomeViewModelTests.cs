@@ -509,6 +509,7 @@ public class HomeViewModelTests {
             daemon.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "not running", null));
 
             await Assert.That(vm.ConnectionNotice).IsEqualTo(HomeViewModel.DaemonDownNotice);
+            await Assert.That(vm.ConnectionBannerVisible).IsTrue();
             await Assert.That(vm.SignInVisible).IsFalse();
             await Assert.That(await vm.StartCommand.CanExecute.FirstAsync()).IsFalse();
         });

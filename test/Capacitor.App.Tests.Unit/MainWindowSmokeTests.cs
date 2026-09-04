@@ -19,6 +19,11 @@ namespace Capacitor.App.Tests.Unit;
 /// that the VM's properties hold the right values (MainWindowViewModelTests already covers
 /// that in isolation).
 public class MainWindowSmokeTests {
+    sealed class NeverLaunchClient : ILaunchClient {
+        public Task<LaunchOutcome> StartAsync(LaunchRequest request, CancellationToken ct) =>
+            Task.FromResult(new LaunchOutcome(false, null, "unexpected launch"));
+    }
+
     // Real AppNotifier (not RecordingNotifier) — the production notifier is fine here; most of
     // these tests don't exercise the toast overlay at all (window.Notifier is left unset), and
     // the one that does (below) needs a real IObservable<string> to subscribe through.
@@ -193,45 +198,50 @@ public class MainWindowSmokeTests {
         await Assert.That(completed).IsTrue();
     }
 
-    /// StartMessageText/ReasonText must not reserve dead space when there is nothing to say
-    /// (spec: "collapse when empty"): both start out empty (Connecting, no failed attempt yet),
-    /// then Reason appears on Unreachable and StartMessage appears once a start attempt fails.
+    /// ConnectionNotice / DaemonStartMessage must not reserve dead space when there is nothing
+    /// to say: both start out empty (Connecting, no failed attempt yet), then the notice appears
+    /// on Unreachable and the start-message appears once a start attempt fails.
     [Test]
     [NotInParallel("AvaloniaSession")]
     public async Task StartMessage_and_reason_text_collapse_when_empty_and_appear_once_set() {
-        var (reasonInitially, startMessageInitially, reasonWhileUnreachable, startMessageAfterFailure) =
+        var (noticeInitially, startMessageInitially, noticeWhileUnreachable, startMessageAfterFailure) =
             await AvaloniaSession.DispatchAsync(async () => {
+                using var tmp = TempDir.WithPathTo("app-state.json", out var path);
                 var service = new FakeDaemonClientService();
-                var (actions, _) = NewActions(service);
-                var vm = new MainWindowViewModel(service, CancellationToken.None, TestActivity.New());
+                var home = new HomeViewModel(
+                    service, new AppStateStore(path), new NeverLaunchClient(),
+                    () => Task.FromResult(Array.Empty<string>()));
+                var vm = new MainWindowViewModel(service, CancellationToken.None, TestActivity.New(), home: home);
                 var window = new MainWindow { DataContext = vm };
                 window.Show();
                 Dispatcher.UIThread.RunJobs();
 
                 TextBlock Find(string name) =>
                     window.GetVisualDescendants().OfType<TextBlock>().First(t => t.Name == name);
+                Border NoticeBanner() => Find("ConnectionNoticeText").FindAncestorOfType<Border>()!;
 
-                var reasonInit = Find("ReasonText").IsVisible;
-                var startMessageInit = Find("StartMessageText").IsVisible;
+                var noticeInit = NoticeBanner().IsVisible;
+                var startMessageInit = Find("DaemonStartMessageText").IsVisible;
 
                 service.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "daemon_unreachable", null));
                 Dispatcher.UIThread.RunJobs();
-                var reasonUnreachable = Find("ReasonText").IsVisible;
+                var noticeUnreachable = NoticeBanner().IsVisible;
 
                 service.StartBehavior = _ => Task.FromResult(new StartDaemonResult(false, "boom: could not bind socket"));
                 await vm.StartDaemonCommand.Execute().ToTask();
                 Dispatcher.UIThread.RunJobs();
-                var startMessageAfter = Find("StartMessageText").IsVisible;
+                var startMessageAfter = Find("DaemonStartMessageText").IsVisible;
 
                 window.Close();
                 Dispatcher.UIThread.RunJobs();
+                home.Dispose();
 
-                return (reasonInit, startMessageInit, reasonUnreachable, startMessageAfter);
+                return (noticeInit, startMessageInit, noticeUnreachable, startMessageAfter);
             });
 
-        await Assert.That(reasonInitially).IsFalse();
+        await Assert.That(noticeInitially).IsTrue(); // Connecting… still has a notice
         await Assert.That(startMessageInitially).IsFalse();
-        await Assert.That(reasonWhileUnreachable).IsTrue();
+        await Assert.That(noticeWhileUnreachable).IsTrue();
         await Assert.That(startMessageAfterFailure).IsTrue();
     }
 

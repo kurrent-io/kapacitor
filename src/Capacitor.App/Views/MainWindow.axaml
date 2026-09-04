@@ -8,7 +8,7 @@
                      x:DataType="vm:MainWindowViewModel"
                      Title="Kurrent Capacitor Desktop"
                      Icon="avares://Kurrent Capacitor/Assets/kcap-icon.png"
-                     Width="1200" MinWidth="1200" Height="760"
+                     Width="1200" MinWidth="1200" Height="760" MinHeight="560"
                      Background="{StaticResource KcapCanvasBrush}"
                      ExtendClientAreaToDecorationsHint="True">
     <!-- The window lives on the Sessions surface (spec §3, revised): rail | workspace, where the
@@ -42,39 +42,20 @@
             <Panel Grid.Column="1">
                 <!-- The launcher pane: daemon status top-left, Activity top-right, the composer
                      centered. Visible exactly while no workspace is open. -->
-                <Grid x:Name="LauncherPane" RowDefinitions="Auto,*" Margin="24,12,24,24"
+                <Grid x:Name="LauncherPane" RowDefinitions="Auto,*" Margin="24,20,24,24"
                       IsVisible="{Binding CurrentWorkspace, Converter={x:Static ObjectConverters.IsNull}}">
                     <Grid Grid.Row="0" ColumnDefinitions="*,Auto" Background="Transparent"
                           PointerPressed="OnChromePointerPressed">
-                        <!-- Daemon identity lives in the rail footer (and its tooltip) now; only
-                             the recovery affordances remain here, each self-hiding while healthy. -->
-                        <StackPanel Spacing="10">
-                            <StackPanel Spacing="8">
-                                <StackPanel Orientation="Horizontal" Spacing="8">
-                                    <Button x:Name="StartButton" Classes="kcapPrimary" Content="Start daemon" Command="{Binding StartDaemonCommand}" IsVisible="{Binding StartVisible}"
-                                            Background="{StaticResource KcapPrimaryBrush}" Foreground="{StaticResource KcapOnPrimaryBrush}" FontWeight="SemiBold"
-                                            CornerRadius="7" Padding="13,6" />
-                                    <Button x:Name="RetryButton" Classes="kcapChip" Content="Retry" Command="{Binding RetryCommand}" IsVisible="{Binding RetryVisible}"
-                                            Background="{StaticResource KcapSurfaceRaisedBrush}" BorderBrush="{StaticResource KcapBorderBrush}"
-                                            Foreground="{StaticResource KcapTextBrush}" CornerRadius="7" Padding="13,6" />
-                                </StackPanel>
-
-                                <TextBlock x:Name="StartMessageText" Text="{Binding StartMessage}"
-                                           Foreground="{StaticResource KcapDangerBrush}" FontSize="12"
-                                           IsVisible="{Binding StartMessage, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
-                                <TextBlock x:Name="ReasonText" Text="{Binding Reason}"
-                                           Foreground="{StaticResource KcapWarningBrush}" FontSize="12"
-                                           IsVisible="{Binding Reason, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
-                            </StackPanel>
-                        </StackPanel>
+                        <!-- Daemon recovery sits in LauncherPaneView's connection banner (same
+                             place as sign-in), not here in the chrome. -->
 
                         <!-- The consent-decision feed, as a transient panel off this chip rather
                              than a section in the page flow. Opened/Closed drive the polling gate
                              in code-behind, and opening a workspace closes it. -->
                         <Button Grid.Column="1" x:Name="ActivityButton" Classes="kcapChip" VerticalAlignment="Top"
+                                HorizontalAlignment="Right"
                                 Background="{StaticResource KcapSurfaceRaisedBrush}"
-                                BorderBrush="{StaticResource KcapBorderBrush}" CornerRadius="7" Padding="12,6">
-                            <TextBlock Text="Activity" FontSize="12.5" FontWeight="SemiBold"
+                                BorderBrush="{StaticResource KcapBorderBrush}" CornerRadius="7" Padding="12,6">                            <TextBlock Text="Activity" FontSize="12.5" FontWeight="SemiBold"
                                        Foreground="{StaticResource KcapMutedBrush}" VerticalAlignment="Center" />
                             <Button.Flyout>
                                 <Flyout Placement="BottomEdgeAlignedRight" VerticalOffset="6"
