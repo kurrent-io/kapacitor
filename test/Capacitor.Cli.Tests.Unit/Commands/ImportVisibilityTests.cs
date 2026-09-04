@@ -1399,14 +1399,17 @@ public class ImportVisibilityTests : IDisposable {
     // written to that test's writer instead of ours, and our buffer holds only whatever some other
     // test wrote to stderr in the meantime (an unrelated login-flow error was the observed symptom).
     [Test, NotInParallel]
-    public async Task HandleImport_autoSkipExclusions_completes_without_prompting_and_logs_auto_skip() {
+    [Arguments(false, "  Auto-skipping")]
+    [Arguments(true, "    Auto-skipping")]
+    public async Task HandleImport_autoSkipExclusions_completes_without_prompting_and_logs_auto_skip(
+            bool nested, string expected) {
         // Excluded PATH (not repo) so no real git repo needs to be spun up — PathExclusion.IsExcluded
         // is a plain prefix check. The profile carrying the exclusion arrives as the import's own
         // resolution, so nothing process-global has to be steered.
-        var excludedDir = Path.Combine(_tempDir, "excluded-proj");
+        var excludedDir = Path.Combine(_tempDir, $"excluded-proj-{nested}");
         Directory.CreateDirectory(excludedDir);
 
-        var projectsDir = Path.Combine(_tempDir, "claude-projects-autoskip");
+        var projectsDir = Path.Combine(_tempDir, $"claude-projects-autoskip-{nested}");
         var cwdDir      = Path.Combine(projectsDir, "-excluded-proj");
         Directory.CreateDirectory(cwdDir);
         // Serialize the cwd so a Windows path's backslashes are JSON-escaped — a raw interpolation
@@ -1437,7 +1440,8 @@ public class ImportVisibilityTests : IDisposable {
             sources: [new ClaudeImportSource(Config.Root, projectsDir)],
             scope: new ImportScope.All(),
             skipConfirmation: true,
-            autoSkipExclusions: true
+            autoSkipExclusions: true,
+            nested: nested
         );
 
         var winner    = await Task.WhenAny(task, Task.Delay(TimeSpan.FromSeconds(15)));
@@ -1447,7 +1451,11 @@ public class ImportVisibilityTests : IDisposable {
         exitCode = await task;
 
         await Assert.That(exitCode).IsEqualTo(0);
-        await Assert.That(capture.GetCapturedError()).Contains("Auto-skipping");
+        var notice = capture.GetCapturedError()
+                            .Split('\n')
+                            .First(l => l.Contains("Auto-skipping", StringComparison.Ordinal));
+
+        await Assert.That(notice).StartsWith(expected);
 
         // Never actually asked the user to include the excluded path.
         await Assert.That(capture.GetCapturedError()).DoesNotContain("Include");

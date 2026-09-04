@@ -28,13 +28,19 @@ using Profile = Capacitor.Cli.Core.Config.Profile;
 
 namespace Capacitor.Cli.Commands;
 
-/// <summary>Setup's step-scoped rendering of façade output: every non-flush line is two-space indented, and setup still owns the guidance tail.</summary>
+/// <summary>Setup's step-scoped rendering of façade output: setup owns the guidance tail, while the
+/// indent belongs to the renderer underneath — most of the auth copy is composed in there, so shifting
+/// it from out here would move the lines this class is handed and leave the rest at column 0.</summary>
 sealed class SetupAuthProgress(IAuthProgress inner) : IAuthProgress {
-    internal const string UnreachableGuidance = "  Retry later, or pass --server-url <url>.";
+    /// <summary>What a line of setup's own output is shifted by, and what its façade renderer is built
+    /// with, so the two halves of a step land on one margin.</summary>
+    internal const string StepIndent = "  ";
 
-    public void Notice(string message) => inner.Notice(Indent(message));
+    internal const string UnreachableGuidance = "Retry later, or pass --server-url <url>.";
 
-    public void Error(string message) => inner.Error(Indent(message));
+    public void Notice(string message) => inner.Notice(message);
+
+    public void Error(string message) => inner.Error(message);
 
     public void BrowserOpening(string url) => inner.BrowserOpening(url);
 
@@ -49,7 +55,7 @@ sealed class SetupAuthProgress(IAuthProgress inner) : IAuthProgress {
 
     // Blank separators and already-indented copy (the device-flow numbered list) pass through as-is.
     internal static string Indent(string message) =>
-        string.IsNullOrWhiteSpace(message) || message.StartsWith(' ') ? message : $"  {message}";
+        string.IsNullOrWhiteSpace(message) || message.StartsWith(' ') ? message : StepIndent + message;
 }
 
 /// <summary>The browser leg's rendering, at setup's two-space indent. The URL is printed whether or not
@@ -74,7 +80,6 @@ sealed class SpectreFirstRunFlowProgress(IKeyWatcher? keys = null) : IFirstRunFl
     public void Opening(string setupUrl) {
         AnsiConsole.MarkupLine(SetupAuthProgress.Indent("Opening your browser to finish setup."));
         AnsiConsole.MarkupLine(SetupAuthProgress.Indent($"[dim]If it didn't open:[/]  {Markup.Escape(setupUrl)}"));
-        AnsiConsole.WriteLine();
 
         Refresh();
     }
@@ -245,7 +250,10 @@ sealed class SetupImportLane(
             discoverOnly: true,
             discoverJson: true,
             windowsAsOf:  asOf,
-            onDiscovered: result => found = result);
+            onDiscovered: result => found = result,
+            // Inert while the discovery call stays quiet, and the reason this is set anyway: un-quieting
+            // it would otherwise draw step-weight rules in the middle of the browser leg's own copy.
+            nested:       true);
 
         if (exit != 0 || found is null) return null;
 
@@ -301,7 +309,8 @@ sealed class SetupImportLane(
             // What makes the shared stop honest, since the profile default cannot reach the class the
             // visibility predicate admits unconditionally.
             shareWithOrg:       pass.Level is FirstRunImportLevel.Shared,
-            onFinished:         o => outcome = o);
+            onFinished:         o => outcome = o,
+            nested:             true);
 
         return outcome;
     }
@@ -976,34 +985,34 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
         }
 
         if (finalTokens is not null) {
-            grid.AddRow("[bold]Auth[/]", Markup.Escape($"{finalTokens.GitHubUsername} ({finalTokens.Provider})"));
+            grid.AddRow("[bold]Auth[/]", Markup.Escape(finalTokens.GitHubUsername ?? "?"));
         }
 
         grid.AddRow("[bold]Config[/]", Markup.Escape(AppConfig.GetConfigPath(config)));
 
-        AnsiConsole.Write(grid);
+        AnsiConsole.Write(new Padder(grid).Padding(2, 0, 0, 0));
 
         // hooks only load at coding-agent session start. The common case is a user
         // running `kcap setup` from inside an already-running session, which won't stream
         // live until it restarts — so tell them, but only when something was actually
         // installed (no point promising recording we never wired up).
         var restartTip = LiveRecordingRestartTip(installResult);
-        if (restartTip is not null) AnsiConsole.MarkupLine($"\n{restartTip}");
+        if (restartTip is not null) AnsiConsole.MarkupLine($"\n  {restartTip}");
 
         // Setup itself is user-scope and works fine outside a repo, but sessions recorded
         // from non-repo directories have no owner/repo/branch/PR enrichment (see
         // RepositoryDetection.DetectRepositoryAsync), which weakens grouping in the UI.
         if (gitRoot is null) {
             AnsiConsole.MarkupLine(
-                $"\n[yellow]Tip:[/] you ran setup outside a git working tree ([dim]{Markup.Escape(Environment.CurrentDirectory)}[/]).");
+                $"\n  [yellow]Tip:[/] you ran setup outside a git working tree ([dim]{Markup.Escape(Environment.CurrentDirectory)}[/]).");
             AnsiConsole.MarkupLine(
-                "  Hooks fire from any directory, but sessions recorded outside a repo won't include owner/repo/branch context.");
+                "    Hooks fire from any directory, but sessions recorded outside a repo won't include owner/repo/branch context.");
             AnsiConsole.MarkupLine(
-                "  [dim]cd[/] into your project before recording to capture full session context.");
+                "    [dim]cd[/] into your project before recording to capture full session context.");
         }
 
-        AnsiConsole.MarkupLine("\n[dim]Optional:[/] start the daemon with [cyan]kcap daemon start -d[/]");
-        AnsiConsole.MarkupLine("[dim]Optional:[/] import past sessions with [cyan]kcap import --org[/]");
+        AnsiConsole.MarkupLine("\n  [dim]Optional:[/] start the daemon with [cyan]kcap daemon start -d[/]");
+        AnsiConsole.MarkupLine("  [dim]Optional:[/] import past sessions with [cyan]kcap import --org[/]");
 
         WriteNextSteps(ShouldOfferGuidedTour(detectedSummary is not null, claudeSettingsPath, stepPaths));
 
@@ -1236,7 +1245,8 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
             needOrgPick:             false,
             storedOrg:               null,
             autoSkipExclusions:      inv.AutoSkipExclusions,
-            defaultVisibility:       inv.DefaultVisibility);
+            defaultVisibility:       inv.DefaultVisibility,
+            nested:                  true);
 
     /// <summary>
     /// Every import source, one per catalogue vendor.
@@ -1294,7 +1304,7 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
 
         try {
             var provider = await HttpClientExtensions.DiscoverProviderAsync(serverUrl, config, profiles);
-            AnsiConsole.MarkupLine($"  [green]✓[/] Reachable · auth provider: [cyan]{Markup.Escape(provider)}[/]");
+            AnsiConsole.MarkupLine("  [green]✓[/] Reachable");
 
             return (serverUrl, provider);
         } catch (Exception ex) {
@@ -1306,7 +1316,7 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
     /// <summary>Test seam: overrides façade construction for Step 1/2. Reset to null in a finally block.</summary>
     internal static Func<ITenantProvisioner?, OnboardingFacade>? FacadeOverride;
 
-    internal static readonly SetupAuthProgress StepProgress = new(ConsoleAuthProgress.Instance);
+    internal static readonly SetupAuthProgress StepProgress = new(new ConsoleAuthProgress(SetupAuthProgress.StepIndent));
 
     OnboardingFacade NewFacade(
             ITenantProvisioner? provisioner, ITenantPicker? picker = null, RequestedWorkspace? requested = null) =>
@@ -1359,9 +1369,13 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
     internal async Task<int> RunLoginStepAsync(
             bool loginComplete, string provider, string serverUrl, bool forceDevice, string activeProfile) {
         if (loginComplete) {
-            var cfgAfter = await AppConfig.LoadProfileConfig(config);
-            var tokens   = await new TokenStore(config).LoadAsync(cfgAfter.ActiveProfile);
-            AnsiConsole.MarkupLine($"  [green]✓[/] Logged in as [cyan]{Markup.Escape(tokens?.GitHubUsername ?? "?")}[/]");
+            // Discovery's WorkOS leg reports the sign-in itself, naming the workspace it picked. Every
+            // other provider's discovery reports a tenant count and no identity, so this is its only one.
+            if (provider != AuthProvider.WorkOS) {
+                var cfgAfter = await AppConfig.LoadProfileConfig(config);
+                var tokens   = await new TokenStore(config).LoadAsync(cfgAfter.ActiveProfile);
+                AnsiConsole.MarkupLine($"  [green]✓[/] Logged in as [cyan]{Markup.Escape(tokens?.GitHubUsername ?? "?")}[/]");
+            }
 
             return 0;
         }
@@ -1376,13 +1390,12 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
         }
 
         if (provider == AuthProvider.None) {
-            // The façade's ConsoleAuthProgress already printed the "no authentication configured" notice.
+            // The façade already printed the "no authentication configured" notice through this sink.
             return 0;
         }
 
-        var loggedInTokens = await new TokenStore(config).LoadAsync(activeProfile);
-        await Console.Out.WriteLineAsync($"  ✓ Logged in as {loggedInTokens?.GitHubUsername}");
-
+        // The façade's notice is the shared report: `kcap login` and the desktop wizard render from it
+        // too, so setup restating it is the half to drop rather than suppress.
         return 0;
     }
 

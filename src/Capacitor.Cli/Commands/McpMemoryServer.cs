@@ -18,9 +18,9 @@ sealed class McpMemoryServer(ConfigRoot config, ProfileContext profiles) {
     public async Task<int> RunAsync() {
         var baseUrl = profiles.Resolution.ServerUrl!;
 
-        var cwdRepoHash = await ResolveCwdRepoHashAsync();
-        var machineId   = await ResolveMachineIdAsync();
-        var tools       = BuildToolsList();
+        var repository = new CwdRepository(config, Directory.GetCurrentDirectory());
+        var machineId  = await ResolveMachineIdAsync();
+        var tools      = BuildToolsList();
 
         // MCP servers are long-lived and denylisted under the top-level "mcp" command
         // (CommandEvents.Denylisted) — re-initialise under the reportable pseudo-command
@@ -34,13 +34,14 @@ sealed class McpMemoryServer(ConfigRoot config, ProfileContext profiles) {
         // or stderr). Used to fail gracefully instead of hard-exiting mid-request (below).
         var urlOk = HttpClientExtensions.IsAcceptableUrl(baseUrl);
 
-        // The authenticated client is created on the first tools/call, not at startup:
-        // kcap-memory auto-registers, so Claude Code spawns `kcap mcp memory` for every
-        // session — deferring keeps startup local-only (no GET /auth/config, token load, or
-        // stderr) for sessions that never invoke a tool. Created on demand into a nullable field
-        // (rather than a Lazy<Task>) so a transient creation failure leaves it null and the next
-        // call retries, instead of a faulted task sticking for the rest of the session. Safe
-        // without locking: the stdio loop handles one request at a time.
+        // The authenticated client and the cwd repository are resolved on the first tools/call,
+        // not at startup: kcap-memory auto-registers, so Claude Code spawns `kcap mcp memory`
+        // for every session — deferring keeps startup local-only (no GET /auth/config, token load,
+        // repo detection, or stderr) for sessions that never invoke a tool. The client is created
+        // on demand into a nullable field (rather than a Lazy<Task>) so a transient creation
+        // failure leaves it null and the next call retries, instead of a faulted task sticking for
+        // the rest of the session. Safe without locking: the stdio loop handles one request at a
+        // time.
         HttpClient? client = null;
 
         // Guarded tool dispatch: never let the stdio JSON-RPC loop die on one bad request. An
@@ -54,7 +55,7 @@ sealed class McpMemoryServer(ConfigRoot config, ProfileContext profiles) {
 
             try {
                 client ??= await HttpClientExtensions.CreateAuthenticatedClientAsync(config, profiles, baseUrl, autoRetryUnauthorized: false);
-                return await HandleToolCallAsync(callId, callRequest, client, baseUrl, cwdRepoHash, machineId);
+                return await HandleToolCallAsync(callId, callRequest, client, baseUrl, await repository.GetHashAsync(), machineId);
             } catch (Exception ex) {
                 // Unexpected: log the detail to stderr (not to the client, which could leak local
                 // paths from IO errors) and return a generic tool error, keeping the loop alive.
@@ -124,19 +125,6 @@ sealed class McpMemoryServer(ConfigRoot config, ProfileContext profiles) {
         }
 
         return 0;
-    }
-
-    async Task<string?> ResolveCwdRepoHashAsync() {
-        try {
-            var cwd      = Directory.GetCurrentDirectory();
-            var repoInfo = await RepositoryDetection.DetectRepositoryAsync(config, cwd);
-
-            if (repoInfo?.Owner is null || repoInfo.RepoName is null) return null;
-
-            return RepoHashHelper.ComputeRepoHash(repoInfo.Owner, repoInfo.RepoName);
-        } catch {
-            return null;
-        }
     }
 
     async Task<string?> ResolveMachineIdAsync() {
@@ -282,13 +270,18 @@ sealed class McpMemoryServer(ConfigRoot config, ProfileContext profiles) {
 
         var global          = args?["global"]?.GetValue<bool>() == true;
         var machineSpecific = args?["machine_specific"]?.GetValue<bool>() == true;
+        var project         = args?["project"]?.GetValue<string>();
 
-        // Fail closed rather than silently broadening scope: a null cwdRepoHash with global not
-        // explicitly requested would otherwise be sent to the server as repo_hash: null, which the
-        // server treats as a GLOBAL (all-repos) memory. Likewise a null machineId with
-        // machine_specific: true would otherwise save an untagged (visible-to-everyone) memory.
-        if (!global && cwdRepoHash is null)
-            throw new ArgumentException("Cannot resolve the current repository — run from a git checkout or pass global: true for a repo-independent memory.");
+        // A present-but-blank slug is malformed, not omitted: falling back to the repo or org home
+        // would silently widen where the memory surfaces.
+        if (project is not null && string.IsNullOrWhiteSpace(project))
+            throw new ArgumentException("project must be a project slug when supplied.");
+
+        // Fail closed rather than silently broadening scope: the server reads repo_hash: null as an
+        // org-wide memory, so a null cwdRepoHash needs an explicit home (project or global). Likewise a
+        // null machineId with machine_specific: true would save an untagged (visible-to-everyone) memory.
+        if (project is null && !global && cwdRepoHash is null)
+            throw new ArgumentException("Cannot resolve the current repository — run from a git checkout, or pass project: \"<slug>\" for a project-scoped memory or global: true for a repo-independent one.");
 
         if (machineSpecific && machineId is null)
             throw new ArgumentException("Machine id unavailable — cannot save a machine-specific memory on this host.");
@@ -300,8 +293,12 @@ sealed class McpMemoryServer(ConfigRoot config, ProfileContext profiles) {
             ["content"]           = Req("content"),
             ["kind"]              = Req("kind"),
             ["team"]              = args?["team"]?.GetValue<string>(),
-            // audience 'project' target — the people axis, distinct from rescope's place-axis project.
+            // audience 'project' target — the people axis, distinct from the place-axis 'project' below.
             ["audience_project"]  = args?["audience_project"]?.GetValue<string>(),
+            // The place axis: a project home wins over the repo. The repo hash still rides along because a
+            // server that does not know project homes ignores the field and reads a null hash as org-wide;
+            // with the hash it lands the memory at the repo, narrower than asked rather than wider.
+            ["project"]           = project,
             ["repo_hash"]         = global ? null : cwdRepoHash,
             ["machine_tag"]       = machineSpecific ? machineId : null,
             ["machine_context"]   = machineId,
@@ -417,16 +414,17 @@ sealed class McpMemoryServer(ConfigRoot config, ProfileContext profiles) {
                 ["id_or_slug"] = new("string", "Memory id (32 hex) or slug.")
             }, ["id_or_slug"])),
         new("save_memory",
-            "Save a durable learning to the server. audience: 'user' (private), 'team', 'org' (everyone), or 'project' (that project's members can see + edit — pass audience_project). Saves are repo-scoped by default (to the cwd's git checkout); if the current repo can't be resolved, pass global: true for a repo-independent memory, or the save fails. Prefer update_memory when the result reports a nearDuplicate.",
+            "Save a durable learning to the server. Two orthogonal axes. PEOPLE (audience — who can see + edit): 'user' (private), 'team', 'org' (everyone), or 'project' (that project's members — pass audience_project). PLACE (where it surfaces): the cwd's repo by default; a project with project: '<slug>' (surfaces across that project's repos — use it for learnings that span repos instead of saving them org-wide); or the whole org with global: true. project wins over the repo. If the current repo can't be resolved, pass project or global: true, or the save fails. Prefer update_memory when the result reports a nearDuplicate.",
             new("object", new() {
                 ["audience"]         = new("string", "user | team | org | project"),
-                ["slug"]             = new("string", "kebab-case identifier, unique within the audience+repo pool"),
+                ["slug"]             = new("string", "kebab-case identifier, unique within the audience+place pool"),
                 ["description"]      = new("string", "One-line summary (max 300 chars)"),
                 ["content"]          = new("string", "Full memory body (max 64 KiB)"),
                 ["kind"]             = new("string", "preference | feedback | project | reference"),
                 ["team"]             = new("string", "Team name or id — required for audience 'team' if you are in several teams"),
-                ["audience_project"] = new("string", "Project slug — required for audience 'project'; that project's members become editors (you must be a member)"),
-                ["global"]           = new("boolean", "true = not tied to the current repo (required if not run from a git checkout; default: scoped to cwd repo)"),
+                ["audience_project"] = new("string", "Project slug — the PEOPLE axis: required for audience 'project'; that project's members become editors (you must be a member). Distinct from 'project' below"),
+                ["project"]          = new("string", "Project slug — the PLACE axis: homes the memory at that project so it surfaces across the project's repos (wins over the cwd repo; no membership needed). Distinct from 'audience_project' above"),
+                ["global"]           = new("boolean", "true = org-wide, not tied to the current repo (required if not run from a git checkout and no project is given; default: scoped to cwd repo)"),
                 ["machine_specific"] = new("boolean", "true = only relevant on this machine (user audience only)")
             }, ["audience", "slug", "description", "content", "kind"])),
         new("update_memory",

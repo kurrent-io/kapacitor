@@ -620,6 +620,44 @@ one-time bypass consent dialog, and the multi-CR spray would answer either. The 
 every vendor but Claude, the mode is session-scoped like the effort, and the harness picker no
 longer offers "Remember" — a chosen harness is always persisted for the repository.
 
+## A 401 spools
+
+Every hook path classed an HTTP 401 with the payload-rejecting 4xxs and dropped the event, so a
+credential rejected mid-session lost the lifecycle event that hit it: `kcap login` resumed recording
+from the next event, but a dropped session-start left the session without a server-side record and a
+dropped session-end left it stuck active. A 401 is now retryable, alongside 5xx, 408 and 429.
+
+**The classification is one helper, not eight copies.** The live posts (Claude's three bounded arms,
+`AgentHookPoster.PostOrSpoolAsync` for the other vendors) and the drain posters (`LifecycleSpoolDrain`,
+Claude's and Cursor's inline replays) each restated the rule, and Cursor showed why that cannot hold:
+its live post already spooled any non-2xx, so a 401'd entry survived to the next drain and was dropped
+there — a visible loss turned into a delayed silent one. Spooling at the live post is only safe once
+every drain agrees, so both sides read `HookSpool.IsRetryable`.
+
+**Retention is the spool's own.** A backlog that can only land after a human logs in is bounded the
+way an outage backlog is: the per-session byte cap and the 30-day reap. The pre-flight auth check
+still skips the drain while the token store knows the credential is dead, so a spooled 401 costs
+nothing until the login, and the drain that follows the login replays the backlog in order. On the
+vendor path a server 401 is now `Spooled` rather than `Failed` — the hook exits 0, as Claude's already
+did, and the stderr line still names `kcap login`.
+
+## Repo-aware MCP servers: the working directory's repository
+
+Every kcap MCP server is spawned at session start by each harness that registers it, so its startup
+path runs once per server per session whether or not a tool is ever called. The sessions, memory,
+analytics and flows servers resolved the working directory's repository there with pull-request
+detection on — a live `gh pr view` / `glab` round-trip that is roughly the whole startup on a GitHub
+checkout (about 0.8 s per server) for a value none of them reads: they scope requests by owner and
+name only. `CwdRepository` resolves on the first tool call that asks, once per process, with PR
+detection off. **A null answer is cached too**: outside a checkout the answer does not change for
+the life of the process, and re-probing on every call would spawn git for nothing.
+
+**The integration pin is indirect by design.** Detection is the only startup-time writer under the
+config root's cache directory, so an absent directory after the initialize/tools-list handshake
+proves it never ran; the tool call that follows then proves on-demand resolution by carrying the
+repo hash. Asserting on the cache file itself would key on the child's own view of its cwd, which
+macOS reports through the resolved `/private` path rather than the one the test handed it.
+
 ## Desktop shell: the work-context sidebar
 
 **AI-2198** (spec: `docs/superpowers/specs/2026-09-03-ai2198-work-context-sidebar-design.md`) adds the

@@ -42,7 +42,8 @@ public interface IFirstRunImportLane {
     /// <para>Null is not <c>(0,0,0)</c>, and the difference is the point: the sessions that pass was
     /// uploading are unaccounted, and there is no way to say "some unknown number failed" in three
     /// counts. Reporting the surviving pass's figures alone would state a clean import over a run that
-    /// lost one, so the caller sends nothing and the screen keeps saying it cannot tell.</para>
+    /// lost one, so the caller reports <see cref="FirstRunImportOutcomeReasons.RunFailed"/> on three
+    /// zeroes instead.</para>
     /// </returns>
     Task<FirstRunImportTotals?> ImportAsync(FirstRunImportAnswer answer, DateOnly today, CancellationToken ct);
 }

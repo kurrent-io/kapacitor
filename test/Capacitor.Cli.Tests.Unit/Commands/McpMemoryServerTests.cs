@@ -92,6 +92,48 @@ public class McpMemoryServerTests {
     }
 
     [Test]
+    public async Task Save_body_carries_project_and_keeps_repo_hash_as_fallback() {
+        // A server that does not know project homes ignores the field and reads a null repo hash as
+        // org-wide, so the hash rides along: there the memory lands at the repo, narrower than asked.
+        var body = McpMemoryServer.BuildSaveBody(
+            Args("""{"audience":"org","slug":"s","description":"d","content":"c","kind":"project","project":"capacitor"}"""),
+            "abc123", "mach-1");
+
+        await Assert.That(body["project"]!.GetValue<string>()).IsEqualTo("capacitor");
+        await Assert.That(body["repo_hash"]!.GetValue<string>()).IsEqualTo("abc123");
+    }
+
+    [Test]
+    public async Task Save_body_with_project_needs_no_repo_context() {
+        var body = McpMemoryServer.BuildSaveBody(
+            Args("""{"audience":"org","slug":"s","description":"d","content":"c","kind":"project","project":"capacitor"}"""),
+            null, "mach-1");
+
+        await Assert.That(body["project"]!.GetValue<string>()).IsEqualTo("capacitor");
+        await Assert.That(body["repo_hash"]).IsNull();
+    }
+
+    [Test]
+    public async Task Save_body_rejects_blank_project() {
+        // A present-but-blank slug is malformed, not omitted: falling back to the repo or org home would
+        // silently widen where the memory surfaces.
+        var args = Args("""{"audience":"org","slug":"s","description":"d","content":"c","kind":"project","project":"   "}""");
+
+        await Assert.That(() => McpMemoryServer.BuildSaveBody(args, "abc123", "mach-1"))
+            .Throws<ArgumentException>();
+    }
+
+    [Test]
+    public async Task Save_body_keeps_place_project_and_audience_project_apart() {
+        var body = McpMemoryServer.BuildSaveBody(
+            Args("""{"audience":"project","slug":"s","description":"d","content":"c","kind":"project","audience_project":"people","project":"place"}"""),
+            "abc123", "mach-1");
+
+        await Assert.That(body["audience_project"]!.GetValue<string>()).IsEqualTo("people");
+        await Assert.That(body["project"]!.GetValue<string>()).IsEqualTo("place");
+    }
+
+    [Test]
     public async Task Get_url_escapes_slug_and_carries_context() {
         var url = McpMemoryServer.BuildGetUrl("http://x", Args("""{"id_or_slug":"my-slug"}"""), "abc123", "mach-1");
 
@@ -144,5 +186,14 @@ public class McpMemoryServerTests {
 
         await Assert.That(tools.Length).IsEqualTo(6);
         await Assert.That(tools.Select(t => t.Name).ToArray()).Contains("save_memory");
+    }
+
+    [Test]
+    public async Task Save_tool_schema_exposes_place_project_beside_audience_project() {
+        var save = McpMemoryServer.BuildToolsList().Single(t => t.Name == "save_memory");
+
+        await Assert.That(save.InputSchema.Properties.Keys).Contains("project");
+        await Assert.That(save.InputSchema.Properties.Keys).Contains("audience_project");
+        await Assert.That(save.InputSchema.Required).DoesNotContain("project");
     }
 }

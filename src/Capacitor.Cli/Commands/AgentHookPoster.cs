@@ -27,8 +27,8 @@ internal enum HookPostOutcome {
     /// </summary>
     Failed,
 
-    /// <summary>The POST could not be delivered now (auth lapsed or a transient/unreachable failure) so
-    /// the payload was durably spooled for a later drain pass. NOT delivered — but the caller should still
+    /// <summary>The POST could not be delivered now (auth lapsed, a server 401, or a transient/unreachable
+    /// failure) so the payload was durably spooled for a later drain pass. NOT delivered — but the caller should still
     /// proceed to spawn the watcher (spawn-before-post): capture must not depend on lifecycle delivery.</summary>
     Spooled,
 
@@ -66,8 +66,7 @@ internal sealed class AgentHookPoster(ConfigRoot config, ProfileContext profiles
 
     /// <summary>Auth has genuinely lapsed → any POST would 401. <c>Ok</c> and <c>NoAuthRequired</c> are usable.</summary>
     // Anything that isn't a usable client is a lapse. WrongServer especially: the client carries no
-    // bearer, so posting anyway earns a 401 that the spool would classify as permanent and DROP —
-    // discarding lifecycle/transcript data over a fixable profile mismatch.
+    // bearer, so posting anyway would only earn a 401 for a fixable profile mismatch.
     public static bool IsAuthLapsed(AuthStatus status) =>
         status is AuthStatus.Expired or AuthStatus.NotAuthenticated or AuthStatus.WrongServer;
 
@@ -216,9 +215,8 @@ internal sealed class AgentHookPoster(ConfigRoot config, ProfileContext profiles
     /// on the same gate. This is the Kiro-side analogue of the event-type gate applied to Copilot,
     /// whose per-turn <c>agentStop</c>/<c>notification</c> events skip this call entirely.</para>
     ///
-    /// <para><b>Skips on auth lapse.</b> A POST with no bearer token would 401, and
-    /// <see cref="LifecycleSpoolDrain"/>'s production poster treats a non-timeout/non-5xx status as a
-    /// permanent drop — which would silently discard the very backlog this protects.</para>
+    /// <para><b>Skips on auth lapse.</b> Every POST would 401 and stop the pass at its first entry,
+    /// so the budget is better left to the vendor's own hook; the backlog waits for the login.</para>
     ///
     /// <para><b>Fresh client (review #3 — documented deviation).</b> The brief's Step 3
     /// suggested reusing the vendor's authenticated client, but the drain runs at the top of the
@@ -326,14 +324,15 @@ internal sealed class AgentHookPoster(ConfigRoot config, ProfileContext profiles
 
                 var code = (int)resp.StatusCode;
 
-                // Transient (server down / rate-limit) → spool for retry; a permanent 4xx is a real failure.
-                if (code is >= 500 or 408 or 429) {
-                    return SpoolOrSkip(spool, sessionId, route, body, agentTag);
+                // Before the spool decision, so a 401 still names its fix: an outage spools silently,
+                // but a rejected credential needs the user, and stderr is the only channel here.
+                if (code == 401 || !HookSpool.IsRetryable(code)) {
+                    Console.Error.WriteLine(AuthRejectionNotice.VendorStderrLine(agentTag, endpoint, code));
                 }
 
-                Console.Error.WriteLine(AuthRejectionNotice.VendorStderrLine(agentTag, endpoint, code));
-
-                return HookPostOutcome.Failed;
+                return HookSpool.IsRetryable(code)
+                    ? SpoolOrSkip(spool, sessionId, route, body, agentTag)
+                    : HookPostOutcome.Failed;
             } catch (HttpRequestException) {
                 // Unreachable after retries → transient; spool for a later drain rather than lose it.
                 return SpoolOrSkip(spool, sessionId, route, body, agentTag);

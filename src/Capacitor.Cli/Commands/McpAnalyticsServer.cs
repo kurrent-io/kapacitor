@@ -35,8 +35,8 @@ sealed class McpAnalyticsServer(ConfigRoot config, ProfileContext profiles) {
     public async Task<int> RunAsync() {
         var baseUrl = profiles.Resolution.ServerUrl!;
 
-        var cwdRepoHash = await ResolveCwdRepoHashAsync();
-        var tools       = BuildToolsList();
+        var repository = new CwdRepository(config, Directory.GetCurrentDirectory());
+        var tools      = BuildToolsList();
 
         // MCP servers are long-lived and denylisted under the top-level "mcp" command
         // (CommandEvents.Denylisted) — re-initialise under the reportable pseudo-command
@@ -48,8 +48,8 @@ sealed class McpAnalyticsServer(ConfigRoot config, ProfileContext profiles) {
 
         var urlOk = HttpClientExtensions.IsAcceptableUrl(baseUrl);
 
-        // Deferred authenticated client: auto-registered and spawned every session, so startup
-        // stays local-only until a tool is invoked. See McpMemoryServer for the
+        // Deferred authenticated client and cwd repository: auto-registered and spawned every
+        // session, so startup stays local-only until a tool is invoked. See McpMemoryServer for the
         // nullable-field-not-Lazy rationale.
         HttpClient? client = null;
 
@@ -59,7 +59,7 @@ sealed class McpAnalyticsServer(ConfigRoot config, ProfileContext profiles) {
 
             try {
                 client ??= await HttpClientExtensions.CreateAuthenticatedClientAsync(config, profiles, baseUrl, autoRetryUnauthorized: false);
-                return await HandleToolCallAsync(callId, callRequest, client, baseUrl, cwdRepoHash);
+                return await HandleToolCallAsync(callId, callRequest, client, baseUrl, await repository.GetHashAsync());
             } catch (Exception ex) {
                 await Console.Error.WriteLineAsync($"kcap mcp analytics: unexpected error handling tools/call: {ex}");
                 return BuildToolResult(callId, "Error: internal error handling the request.", isError: true);
@@ -126,19 +126,6 @@ sealed class McpAnalyticsServer(ConfigRoot config, ProfileContext profiles) {
         }
 
         return 0;
-    }
-
-    async Task<string?> ResolveCwdRepoHashAsync() {
-        try {
-            var cwd      = Directory.GetCurrentDirectory();
-            var repoInfo = await RepositoryDetection.DetectRepositoryAsync(config, cwd);
-
-            if (repoInfo?.Owner is null || repoInfo.RepoName is null) return null;
-
-            return RepoHashHelper.ComputeRepoHash(repoInfo.Owner, repoInfo.RepoName);
-        } catch {
-            return null;
-        }
     }
 
     const string ServerInstructions =

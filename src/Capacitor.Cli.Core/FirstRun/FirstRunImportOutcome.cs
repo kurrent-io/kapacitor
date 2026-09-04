@@ -1,12 +1,13 @@
 namespace Capacitor.Cli.Core.FirstRun;
 
 /// <summary>
-/// Why an import moved nothing, as a coded token. Three zeroes are also what a clean run over an
-/// already-loaded history looks like, so this is what separates a refusal from a no-op.
+/// Why an import reported no figures, as a coded token. Three zeroes are also what a clean run over an
+/// already-loaded history looks like, so this is what separates a coded ending from a no-op — and
+/// <see cref="RunFailed"/> from the two that really did leave the history alone.
 ///
-/// <para><b>The server's closed set, spelled once.</b> It rejects a token it does not know and rejects
-/// any token at all on an outcome that moved something, so a second spelling here is a silent wire
-/// break rather than a rejected field.</para>
+/// <para><b>The server's closed set, spelled once.</b> It rejects a token it does not know, and any
+/// token that arrives on non-zero counts, so a second spelling here is a silent wire break rather than
+/// a rejected field.</para>
 /// </summary>
 public static class FirstRunImportOutcomeReasons {
     /// <summary>Repositories were chosen and no vendor on this machine could be read for them. The one
@@ -19,7 +20,13 @@ public static class FirstRunImportOutcomeReasons {
     /// polling again.</summary>
     public const string DecisionUnreadable = "decision_unreadable";
 
-    public static readonly IReadOnlyList<string> All = [NoReadableAgents, DecisionUnreadable];
+    /// <summary>A pass was lost, so the run's counts are unaccounted. <b>A failure, where the other two
+    /// are refusals</b>: sessions may well have landed, and the three zeroes are the wire's requirement
+    /// rather than a claim the history was left alone — a surviving pass's figures on their own would
+    /// read as a clean import.</summary>
+    public const string RunFailed = "run_failed";
+
+    public static readonly IReadOnlyList<string> All = [NoReadableAgents, DecisionUnreadable, RunFailed];
 
     public static bool IsKnown(string? reason) =>
         reason is not null && All.Contains(reason, StringComparer.Ordinal);

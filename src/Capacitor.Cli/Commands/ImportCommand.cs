@@ -33,22 +33,55 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
         /// </summary>
         public bool Quiet { get; init; }
 
+        /// <summary>This run is a step inside setup, which has already drawn the rule its sections sit
+        /// under — so each one is subordinate to that rule rather than a sibling of it. A full-width rule
+        /// per section is right only where the run is itself the command.</summary>
+        public bool Nested { get; init; }
+
+        /// <summary>
+        /// Where a line of this run's own output starts. <b>Column 0 belongs to headings</b>, and only a
+        /// heading that is a rule sits there — everything a section contains is indented under it.
+        ///
+        /// <para>Renderables need it as a <see cref="Padder"/> rather than as text: a grid or a table
+        /// ignores leading spaces and would otherwise draw against the margin while the prose beside it
+        /// is indented.</para>
+        /// </summary>
+        int Detail => Nested ? 4 : 2;
+
+        /// <summary>The same step as <see cref="Detail"/>, for the callers that prefix text rather than
+        /// pad a renderable.</summary>
+        public string Indented => new(' ', Detail);
+
         public void Line(string plain, string? markup = null) {
             if (Quiet) return;
 
-            if (Tty) AnsiConsole.MarkupLine(markup ?? Markup.Escape(plain));
-            else Console.WriteLine(plain);
+            if (Tty) AnsiConsole.MarkupLine(Indented + (markup ?? Markup.Escape(plain)));
+            else Console.WriteLine(Indented + plain);
+        }
+
+        /// <summary>
+        /// Every section label, so a nested run cannot end up subordinating its phases and then closing
+        /// with a full-width rule of its own.
+        ///
+        /// <para>Plain text keeps a blank line above the label. A <see cref="Rule"/> carries its own
+        /// break and weight distinguishes a nested label, but neither is available with output
+        /// redirected, where the blank line is the only thing separating a section from the last one's
+        /// rows.</para>
+        /// </summary>
+        void Heading(string title, string colour) {
+            if (Tty) {
+                if (Nested) AnsiConsole.MarkupLine($"  [dim]{Markup.Escape(title)}[/]");
+                else AnsiConsole.Write(new Rule($"[{colour}]{Markup.Escape(title)}[/]").LeftJustified());
+            } else {
+                Console.WriteLine();
+                Console.WriteLine(Nested ? $"  -- {title} --" : $"== {title} ==");
+            }
         }
 
         public void BeginPhase(string title) {
             if (Quiet) return;
 
-            if (Tty) {
-                AnsiConsole.Write(new Rule($"[yellow]{Markup.Escape(title)}[/]").LeftJustified());
-            } else {
-                Console.WriteLine();
-                Console.WriteLine($"== {title} ==");
-            }
+            Heading(title, "yellow");
         }
 
         public void WritePlanGrid(
@@ -57,7 +90,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
             ) {
             if (Tty) {
                 if (bySource is { Count: > 1 }) {
-                    AnsiConsole.Write(new Rule("[yellow]By source[/]").LeftJustified());
+                    Heading("By source", "yellow");
 
                     var sub = new Grid()
                         .AddColumn()
@@ -92,7 +125,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
                         );
                     }
 
-                    AnsiConsole.Write(sub);
+                    AnsiConsole.Write(new Padder(sub).Padding(Detail, 0, 0, 0));
                 }
 
                 var grid = new Grid().AddColumn().AddColumn();
@@ -102,32 +135,31 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
                 grid.AddRow("[bold]Too short[/]", c.TooShort.ToString());
                 grid.AddRow("[bold]Excluded[/]", c.Excluded.ToString());
                 if (c.ProbeError > 0) grid.AddRow("[bold]Probe errors[/]", $"[red]{c.ProbeError}[/]");
-                AnsiConsole.Write(grid);
+                AnsiConsole.Write(new Padder(grid).Padding(Detail, 0, 0, 0));
             } else {
                 if (bySource is { Count: > 1 }) {
-                    Console.WriteLine();
-                    Console.WriteLine("== By source ==");
+                    Heading("By source", "yellow");
 
                     foreach (var kv in bySource.OrderBy(x => x.Key, StringComparer.Ordinal)) {
                         var sc = kv.Value;
-                        Console.WriteLine($"  [{kv.Key}]");
-                        Console.WriteLine($"    New               {sc.New}");
-                        Console.WriteLine($"    Resumable         {sc.Partial}");
-                        Console.WriteLine($"    Already loaded    {sc.AlreadyLoaded}");
-                        Console.WriteLine($"    Too short         {sc.TooShort}");
-                        Console.WriteLine($"    Excluded          {sc.Excluded}");
-                        if (sc.ProbeError > 0) Console.WriteLine($"    Probe errors      {sc.ProbeError}");
+                        Console.WriteLine($"{Indented}[{kv.Key}]");
+                        Console.WriteLine($"{Indented}  New               {sc.New}");
+                        Console.WriteLine($"{Indented}  Resumable         {sc.Partial}");
+                        Console.WriteLine($"{Indented}  Already loaded    {sc.AlreadyLoaded}");
+                        Console.WriteLine($"{Indented}  Too short         {sc.TooShort}");
+                        Console.WriteLine($"{Indented}  Excluded          {sc.Excluded}");
+                        if (sc.ProbeError > 0) Console.WriteLine($"{Indented}  Probe errors      {sc.ProbeError}");
                     }
 
                     Console.WriteLine();
                 }
 
-                Console.WriteLine($"  New               {c.New}");
-                Console.WriteLine($"  Resumable         {c.Partial}");
-                Console.WriteLine($"  Already loaded    {c.AlreadyLoaded}");
-                Console.WriteLine($"  Too short         {c.TooShort}");
-                Console.WriteLine($"  Excluded          {c.Excluded}");
-                if (c.ProbeError > 0) Console.WriteLine($"  Probe errors      {c.ProbeError}");
+                Console.WriteLine($"{Indented}New               {c.New}");
+                Console.WriteLine($"{Indented}Resumable         {c.Partial}");
+                Console.WriteLine($"{Indented}Already loaded    {c.AlreadyLoaded}");
+                Console.WriteLine($"{Indented}Too short         {c.TooShort}");
+                Console.WriteLine($"{Indented}Excluded          {c.Excluded}");
+                if (c.ProbeError > 0) Console.WriteLine($"{Indented}Probe errors      {c.ProbeError}");
             }
         }
 
@@ -140,15 +172,16 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
             var failureNote = $"{f.Failed} didn't land. Re-run to retry them — anything already imported isn't sent again.";
 
             if (Tty) {
-                AnsiConsole.Write(new Rule("[green]Done[/]").LeftJustified());
+                Heading("Done", "green");
 
                 // Three buckets, not one: import knows the difference and a single number would hide it.
                 AnsiConsole.MarkupLine(
-                    $"[green]{f.Imported}[/] imported · {f.Skipped} skipped · "
+                    Indented
+                  + $"[green]{f.Imported}[/] imported · {f.Skipped} skipped · "
                   + (f.Failed > 0 ? $"[red]{f.Failed}[/] failed" : "0 failed"));
 
                 if (bySource is { Count: > 1 }) {
-                    AnsiConsole.Write(new Rule("[green]By source[/]").LeftJustified());
+                    Heading("By source", "green");
 
                     var sub = new Grid()
                         .AddColumn()
@@ -186,7 +219,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
                         );
                     }
 
-                    AnsiConsole.Write(sub);
+                    AnsiConsole.Write(new Padder(sub).Padding(Detail, 0, 0, 0));
                 }
 
                 var grid = new Grid().AddColumn().AddColumn();
@@ -209,55 +242,53 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
                         grid.AddRow("[bold]Summaries[/]", $"{f.SummariesGenerated} generated, {f.SummariesFailed} failed");
                 }
 
-                AnsiConsole.Write(grid);
+                AnsiConsole.Write(new Padder(grid).Padding(Detail, 0, 0, 0));
 
-                if (f.Failed > 0) AnsiConsole.MarkupLine($"[dim]{failureNote}[/]");
+                if (f.Failed > 0) AnsiConsole.MarkupLine($"{Indented}[dim]{failureNote}[/]");
             } else {
-                Console.WriteLine();
-                Console.WriteLine("== Done ==");
-                Console.WriteLine($"  {f.Imported} imported · {f.Skipped} skipped · {f.Failed} failed");
+                Heading("Done", "green");
+                Console.WriteLine($"{Indented}{f.Imported} imported · {f.Skipped} skipped · {f.Failed} failed");
 
                 if (bySource is { Count: > 1 }) {
-                    Console.WriteLine();
-                    Console.WriteLine("== By source ==");
+                    Heading("By source", "green");
 
                     foreach (var kv in bySource.OrderBy(x => x.Key, StringComparer.Ordinal)) {
                         var sf = kv.Value;
-                        Console.WriteLine($"  [{kv.Key}]");
-                        Console.WriteLine($"    Loaded              {sf.Loaded}");
-                        Console.WriteLine($"    Resumed             {sf.Resumed}");
-                        Console.WriteLine($"    Already loaded      {sf.AlreadyLoaded}");
-                        if (sf.TooShort   > 0) Console.WriteLine($"    Too short           {sf.TooShort}");
-                        if (sf.Excluded   > 0) Console.WriteLine($"    Excluded            {sf.Excluded}");
-                        if (sf.ProbeError > 0) Console.WriteLine($"    Probe errors        {sf.ProbeError}");
-                        if (sf.Errored    > 0) Console.WriteLine($"    Errored             {sf.Errored}");
+                        Console.WriteLine($"{Indented}[{kv.Key}]");
+                        Console.WriteLine($"{Indented}  Loaded              {sf.Loaded}");
+                        Console.WriteLine($"{Indented}  Resumed             {sf.Resumed}");
+                        Console.WriteLine($"{Indented}  Already loaded      {sf.AlreadyLoaded}");
+                        if (sf.TooShort   > 0) Console.WriteLine($"{Indented}  Too short           {sf.TooShort}");
+                        if (sf.Excluded   > 0) Console.WriteLine($"{Indented}  Excluded            {sf.Excluded}");
+                        if (sf.ProbeError > 0) Console.WriteLine($"{Indented}  Probe errors        {sf.ProbeError}");
+                        if (sf.Errored    > 0) Console.WriteLine($"{Indented}  Errored             {sf.Errored}");
                     }
 
                     Console.WriteLine();
                 }
 
-                Console.WriteLine($"  Loaded              {f.Loaded}");
-                Console.WriteLine($"  Resumed             {f.Resumed}");
-                Console.WriteLine($"  Already loaded      {f.AlreadyLoaded}");
-                if (f.TooShort   > 0) Console.WriteLine($"  Too short           {f.TooShort}");
-                if (f.Excluded   > 0) Console.WriteLine($"  Excluded            {f.Excluded}");
-                if (f.ProbeError > 0) Console.WriteLine($"  Probe errors        {f.ProbeError}");
-                if (f.Errored    > 0) Console.WriteLine($"  Errored             {f.Errored}");
+                Console.WriteLine($"{Indented}Loaded              {f.Loaded}");
+                Console.WriteLine($"{Indented}Resumed             {f.Resumed}");
+                Console.WriteLine($"{Indented}Already loaded      {f.AlreadyLoaded}");
+                if (f.TooShort   > 0) Console.WriteLine($"{Indented}Too short           {f.TooShort}");
+                if (f.Excluded   > 0) Console.WriteLine($"{Indented}Excluded            {f.Excluded}");
+                if (f.ProbeError > 0) Console.WriteLine($"{Indented}Probe errors        {f.ProbeError}");
+                if (f.Errored    > 0) Console.WriteLine($"{Indented}Errored             {f.Errored}");
 
                 if (f.RanBackground) {
                     if (f.RequestedTitles)
-                        Console.WriteLine($"  Titles              {f.TitlesGenerated} generated, {f.TitlesSkipped} skipped, {f.TitlesFailed} failed");
+                        Console.WriteLine($"{Indented}Titles              {f.TitlesGenerated} generated, {f.TitlesSkipped} skipped, {f.TitlesFailed} failed");
 
                     if (f.RequestedSummaries)
-                        Console.WriteLine($"  Summaries           {f.SummariesGenerated} generated, {f.SummariesFailed} failed");
+                        Console.WriteLine($"{Indented}Summaries           {f.SummariesGenerated} generated, {f.SummariesFailed} failed");
                 }
 
-                if (f.Failed > 0) Console.WriteLine($"  {failureNote}");
+                if (f.Failed > 0) Console.WriteLine($"{Indented}{failureNote}");
             }
         }
 
-        public static ImportDisplay Create(bool quiet = false) =>
-            new() { Tty = !quiet && !Console.IsOutputRedirected, Quiet = quiet };
+        public static ImportDisplay Create(bool quiet = false, bool nested = false) =>
+            new() { Tty = !quiet && !Console.IsOutputRedirected, Quiet = quiet, Nested = nested };
     }
 
     internal enum ClassificationStatus {
@@ -712,7 +743,8 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
             bool                          discoverJson            = false,
             DateTimeOffset?               windowsAsOf             = null,
             Action<ImportRunOutcome>?     onFinished              = null,
-            Action<ImportDiscoveryResult>? onDiscovered           = null
+            Action<ImportDiscoveryResult>? onDiscovered           = null,
+            bool                          nested                  = false
         ) {
         // A caller that wants the figures rather than the rendering says so by handing one over; the
         // console is the default consumer, not the only one.
@@ -725,7 +757,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
         using var httpClient = discoverOnly
             ? new HttpClient()
             : await HttpClientExtensions.CreateAuthenticatedClientAsync(config, profiles, baseUrl);
-        var       display    = ImportDisplay.Create(quiet: discoverJson);
+        var       display    = ImportDisplay.Create(quiet: discoverJson, nested: nested);
 
         // --- Sources ---
         // Back-compat: a null caller (legacy or test) means "Claude only". Once
@@ -1049,7 +1081,8 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
                 totalAfterScope,
                 sampleRepos,
                 visibilityDesc,
-                skipConfirmation
+                skipConfirmation,
+                display.Indented
             )) {
             await Console.Error.WriteLineAsync("Import cancelled.");
 
@@ -1079,7 +1112,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
                 .AutoClear(true)
                 .Columns(new TaskDescriptionColumn(), new ProgressBarColumn(), new PercentageColumn())
                 .StartAsync(async ctx => {
-                        var bar = ctx.AddTask("[yellow]Probing[/]", maxValue: totalAfterScope);
+                        var bar = ctx.AddTask($"{display.Indented}[yellow]Probing[/]", maxValue: totalAfterScope);
 
                         var probeTasks = sources.Select(async (s, idx) => {
                                     var slice = filteredPerSource[idx];
@@ -1182,7 +1215,8 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
                     .Distinct()
                     .Count();
                 var totalGroups = excludedByRepo.Count + excludedByPath.Count;
-                await Console.Error.WriteLineAsync($"Auto-skipping {distinctSessions} session(s) from {totalGroups} excluded source(s) (non-interactive).");
+                await Console.Error.WriteLineAsync(
+                    $"{display.Indented}Auto-skipping {distinctSessions} session(s) from {totalGroups} excluded source(s) (non-interactive).");
             }
 
             for (var i = 0; i < classifications.Count; i++) {
@@ -1451,7 +1485,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
             if (existing.Count > 0) {
                 display.BeginPhase("Making existing sessions private");
 
-                var unprivatized = await SetVisibilityNoneForAll(httpClient, baseUrl, existing);
+                var unprivatized = await SetVisibilityNoneForAll(httpClient, baseUrl, existing, display.Indented);
 
                 if (unprivatized.Count > 0) {
                     var blocked = unprivatized.ToHashSet(StringComparer.Ordinal);
@@ -1468,7 +1502,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
 
                     foreach (var sessionId in blocked) {
                         await Console.Error.WriteLineAsync(
-                            $"  ! skipping {sessionId}: could not make it private first, and importing "
+                            $"{display.Indented}! skipping {sessionId}: could not make it private first, and importing "
                           + "into it would publish new content to the audience it already has");
                     }
                 }
@@ -1502,11 +1536,11 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
                 var r = default(ImportChainsResult);
 
                 await AnsiConsole.Progress()
-                    .AutoClear(false)
+                    .AutoClear(true)
                     .HideCompleted(false)
                     .Columns(new TaskDescriptionColumn(), new ProgressBarColumn(), new PercentageColumn())
                     .StartAsync(async ctx => {
-                            var bar = ctx.AddTask("[green]Importing[/]", maxValue: chains.Sum(c => c.Count));
+                            var bar = ctx.AddTask($"{display.Indented}[green]Importing[/]", maxValue: chains.Sum(c => c.Count));
 
                             // Four progress tasks rendered as live "slot rows" beneath the
                             // main bar — one per worker. Each fills as its session's transcript
@@ -1517,7 +1551,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
                             var slots = new ProgressTask[ImportWorkerCount];
 
                             for (var i = 0; i < ImportWorkerCount; i++) {
-                                slots[i]                 = ctx.AddTask($"  Slot {i + 1} — idle", maxValue: 1);
+                                slots[i]                 = ctx.AddTask($"{display.Indented}  Slot {i + 1} — idle", maxValue: 1);
                                 slots[i].IsIndeterminate = false;
                             }
 
@@ -1561,7 +1595,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
                                     // Subagent lines don't advance the parent bar; show a stripe
                                     // and swap the description while the subagent streams.
                                     slots[slot].IsIndeterminate = true;
-                                    slots[slot].Description     = $"  [bold]Slot {slot + 1}[/] — [dim]↳[/] subagent [cyan]{Markup.Escape(aid)}[/] (parent {Markup.Escape(sid)})";
+                                    slots[slot].Description     = $"{display.Indented}  [bold]Slot {slot + 1}[/] — [dim]↳[/] subagent [cyan]{Markup.Escape(aid)}[/] (parent {Markup.Escape(sid)})";
                                 },
                                 OnSubagentFinished = (slot, _, _, _) => {
                                     // Revert to the parent's "Loading" description and resume the
@@ -1590,19 +1624,20 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
                                     IdleSlot(slot);
                                     // Errors print to scrollback above the live region —
                                     // Spectre.Console.Progress flushes prior writes.
-                                    AnsiConsole.MarkupLine(FormatSkippedReasonMarkup(sid, reason));
+                                    AnsiConsole.MarkupLine(display.Indented + FormatSkippedReasonMarkup(sid, reason));
                                 },
                             };
 
                             r = await ImportChainsAsync(httpClient, baseUrl, chains, wrappedEvents, CancellationToken.None, sessionCwds, chainDefaultVisibility);
 
-                            // After the await, all workers have drained; mark every slot idle.
+                            // Insurance, not presentation: the frame is erased on the way out, and an
+                            // erase that ever fails should strand idle rows rather than a session name.
                             for (var i = 0; i < ImportWorkerCount; i++) IdleSlot(i);
 
                             return;
 
                             void IdleSlot(int slot) {
-                                slots[slot].Description     = $"  Slot {slot + 1} — idle";
+                                slots[slot].Description     = $"{display.Indented}  Slot {slot + 1} — idle";
                                 slots[slot].IsIndeterminate = false;
                                 slots[slot].Value           = 0;
                                 slots[slot].MaxValue        = 1;
@@ -1611,8 +1646,8 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
                                 currentVerb[slot]           = "";
                             }
 
-                            static string LoadingDesc(int slot, string sid, string verb) =>
-                                $"  [bold]Slot {slot + 1}[/] — Loading [cyan]{Markup.Escape(sid)}[/] ({verb})";
+                            string LoadingDesc(int slot, string sid, string verb) =>
+                                $"{display.Indented}  [bold]Slot {slot + 1}[/] — Loading [cyan]{Markup.Escape(sid)}[/] ({verb})";
                         }
                     );
                 importResult = r!;
@@ -1716,7 +1751,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
                     .HideCompleted(false)
                     .Columns(new TaskDescriptionColumn(), new ProgressBarColumn(), new PercentageColumn())
                     .StartAsync(async ctx => {
-                            var bar = ctx.AddTask("[green]Importing[/]", maxValue: routed.Count);
+                            var bar = ctx.AddTask($"{display.Indented}[green]Importing[/]", maxValue: routed.Count);
 
                             await Parallel.ForEachAsync(
                                 routed,
@@ -1728,19 +1763,19 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
                                         case ImportOutcome.Loaded:
                                         case ImportOutcome.Resumed:
                                             AnsiConsole.MarkupLine(
-                                                $"[green]✓[/] Loading [cyan]{Markup.Escape(c.SessionId)}[/] ({c.Vendor.VendorId})"
+                                                $"{display.Indented}[green]✓[/] Loading [cyan]{Markup.Escape(c.SessionId)}[/] ({c.Vendor.VendorId})"
                                             );
 
                                             break;
                                         case ImportOutcome.Skipped:
                                             AnsiConsole.MarkupLine(
-                                                $"[yellow]~[/] Skipping [cyan]{Markup.Escape(c.SessionId)}[/] (already current)"
+                                                $"{display.Indented}[yellow]~[/] Skipping [cyan]{Markup.Escape(c.SessionId)}[/] (already current)"
                                             );
 
                                             break;
                                         case ImportOutcome.Failed:
                                             AnsiConsole.MarkupLine(
-                                                $"[red]✗[/] Failed [cyan]{Markup.Escape(c.SessionId)}[/]"
+                                                $"{display.Indented}[red]✗[/] Failed [cyan]{Markup.Escape(c.SessionId)}[/]"
                                             );
 
                                             break;
@@ -1750,13 +1785,13 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
                                             // lifecycle-only repair, etc.), not always "nested
                                             // under parent".
                                             AnsiConsole.MarkupLine(
-                                                $"[grey]·[/] Already loaded [cyan]{Markup.Escape(c.SessionId)}[/] (no new content)"
+                                                $"{display.Indented}[grey]·[/] Already loaded [cyan]{Markup.Escape(c.SessionId)}[/] (no new content)"
                                             );
 
                                             break;
                                         case null:
                                             AnsiConsole.MarkupLine(
-                                                $"[grey]·[/] Refreshed [cyan]{Markup.Escape(c.SessionId)}[/] (repository backfill, already loaded)"
+                                                $"{display.Indented}[grey]·[/] Refreshed [cyan]{Markup.Escape(c.SessionId)}[/] (repository backfill, already loaded)"
                                             );
 
                                             break;
@@ -1828,8 +1863,17 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
                 display.BeginPhase(forcePrivate
                     ? "Marking imported sessions private"
                     : "Sharing imported sessions with your workspace");
-                visibilityFailures += (await SetVisibilityForAll(
-                    httpClient, baseUrl, [.. touched], explicitVisibility)).Count;
+
+                var lost = await SetVisibilityForAll(
+                    httpClient, baseUrl, [.. touched], explicitVisibility, display.Indented);
+
+                visibilityFailures += lost.Count;
+
+                // The per-session writes only speak up for a failure, so without this the heading
+                // above renders as a section with nothing in it.
+                display.Line(lost.Count == 0
+                    ? $"{touched.Count} session{(touched.Count == 1 ? "" : "s")} updated"
+                    : $"{touched.Count - lost.Count} of {touched.Count} updated, {lost.Count} failed");
             }
         }
 
@@ -1845,8 +1889,8 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
                     .HideCompleted(false)
                     .Columns(new TaskDescriptionColumn(), new ProgressBarColumn(), new PercentageColumn())
                     .StartAsync(async ctx => {
-                            var titleTask   = titleTaskCount   > 0 ? ctx.AddTask("[cyan]Titles[/]", maxValue: titleTaskCount) : null;
-                            var summaryTask = summaryTaskCount > 0 ? ctx.AddTask("[cyan]Summaries[/]", maxValue: summaryTaskCount) : null;
+                            var titleTask   = titleTaskCount   > 0 ? ctx.AddTask($"{display.Indented}[cyan]Titles[/]", maxValue: titleTaskCount) : null;
+                            var summaryTask = summaryTaskCount > 0 ? ctx.AddTask($"{display.Indented}[cyan]Summaries[/]", maxValue: summaryTaskCount) : null;
                             var seenT       = 0;
                             var seenS       = 0;
 
@@ -1858,14 +1902,14 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
 
                                 for (var i = seenT; i < tList.Count; i++) {
                                     var (sid, reason) = tList[i];
-                                    AnsiConsole.MarkupLine($"  [red]✗[/] title failed for [cyan]{Markup.Escape(sid)}[/]: {Markup.Escape(reason)}");
+                                    AnsiConsole.MarkupLine($"{display.Indented}[red]✗[/] title failed for [cyan]{Markup.Escape(sid)}[/]: {Markup.Escape(reason)}");
                                 }
 
                                 seenT = tList.Count;
 
                                 for (var i = seenS; i < sList.Count; i++) {
                                     var (sid, reason) = sList[i];
-                                    AnsiConsole.MarkupLine($"  [red]✗[/] summary failed for [cyan]{Markup.Escape(sid)}[/]: {Markup.Escape(reason)}");
+                                    AnsiConsole.MarkupLine($"{display.Indented}[red]✗[/] summary failed for [cyan]{Markup.Escape(sid)}[/]: {Markup.Escape(reason)}");
                                 }
 
                                 seenS = sList.Count;
@@ -3227,8 +3271,9 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
     internal static Task<IReadOnlyList<string>> SetVisibilityNoneForAll(
             HttpClient            httpClient,
             string                baseUrl,
-            IReadOnlyList<string> sessionIds
-        ) => SetVisibilityForAll(httpClient, baseUrl, sessionIds, "none");
+            IReadOnlyList<string> sessionIds,
+            string                indent = ""
+        ) => SetVisibilityForAll(httpClient, baseUrl, sessionIds, "none", indent);
 
     /// <summary>
     /// Failures are logged inline (one line per session) but never throw — the import already
@@ -3241,7 +3286,8 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
             HttpClient            httpClient,
             string                baseUrl,
             IReadOnlyList<string> sessionIds,
-            string                visibility
+            string                visibility,
+            string                indent = ""
         ) {
         var lost = new List<string>();
 
@@ -3260,14 +3306,14 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
                     lost.Add(sessionId);
 
                     await Console.Error.WriteLineAsync(
-                        $"  ! visibility={visibility} failed for {sessionId}: HTTP {(int)resp.StatusCode}"
+                        $"{indent}! visibility={visibility} failed for {sessionId}: HTTP {(int)resp.StatusCode}"
                     );
                 }
             } catch (Exception ex) {
                 lost.Add(sessionId);
 
                 await Console.Error.WriteLineAsync(
-                    $"  ! visibility={visibility} failed for {sessionId}: {ex.Message}"
+                    $"{indent}! visibility={visibility} failed for {sessionId}: {ex.Message}"
                 );
             }
         }

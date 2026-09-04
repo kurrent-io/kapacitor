@@ -8,8 +8,8 @@ namespace Capacitor.Cli.Core;
 /// <summary>Result of a single spooled-entry replay attempt.</summary>
 public enum DrainOutcome {
     Delivered,    // POST succeeded — advance past the entry
-    Drop,         // permanent failure (4xx except 408/429) — discard, do not retry
-    TransientStop // server down/timeout/budget — stop draining, keep the remainder
+    Drop,         // the payload itself was rejected (HookSpool.IsRetryable is false) — discard, do not retry
+    TransientStop // server down/timeout/budget/credential lapse — stop draining, keep the remainder
 }
 
 /// <summary>
@@ -27,6 +27,22 @@ public enum DrainOutcome {
 /// </summary>
 public sealed partial class HookSpool(string spoolDir, int capBytes = HookSpool.DefaultCapBytes) {
     public const int DefaultCapBytes = 1_048_576; // 1 MB per session file
+
+    /// <summary>
+    /// Whether a lifecycle POST answered with <paramref name="statusCode"/> is kept for a later
+    /// drain. The one rule every live post and every drain poster shares, so no vendor can spool a
+    /// status the drain then drops. A 401 is retryable: it is a lapsed credential, which
+    /// <c>kcap login</c> repairs, so the payload has to outlive the lapse — a dropped session-start
+    /// leaves the session without a server-side record, a dropped session-end leaves it stuck
+    /// active. Every other 4xx rejects the payload itself, and a replay would be rejected the same
+    /// way. Retention while a lapse lasts is the spool's own: the per-session byte cap and the
+    /// 30-day reap.
+    /// </summary>
+    public static bool IsRetryable(int statusCode) => statusCode is >= 500 or 408 or 429 or 401;
+
+    /// <summary>The drain outcome for a non-success status: retryable stops the pass, anything else drops the entry.</summary>
+    public static DrainOutcome OutcomeOf(int statusCode) =>
+        IsRetryable(statusCode) ? DrainOutcome.TransientStop : DrainOutcome.Drop;
 
     // The subdirectory name belongs to the spool, not to ConfigRoot: a root that enumerated its
     // tenants' directories would change every time one of them gained a file.

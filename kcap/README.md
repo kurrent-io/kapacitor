@@ -39,7 +39,7 @@ Search, save, and update durable team memories — preferences, feedback, projec
 |------|-------------|
 | `search_memories` | Hybrid semantic + keyword search over memories visible to you |
 | `get_memory` | Fetch a memory's full content by id or slug |
-| `save_memory` | Save a new memory (`audience`, `slug`, `description`, `content`, `kind`); scoped to the cwd repo unless `global: true` |
+| `save_memory` | Save a new memory (`audience`, `slug`, `description`, `content`, `kind`); scoped to the cwd repo unless `project: <slug>` (a project's repos) or `global: true` (org-wide) |
 | `update_memory` | Update an existing memory's description/content/kind |
 | `rescope_memory` | Change a memory's audience (e.g. promote user → team/org) |
 | `archive_memory` | Soft-delete a memory |

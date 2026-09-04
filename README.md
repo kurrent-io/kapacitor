@@ -139,9 +139,10 @@ server rejects it, or if the token was issued by a different server than the pro
 usable offline. If the server rejects your token while a session is running, Claude Code's hook
 says so as an in-session notice — `[kcap] The server rejected your credentials (HTTP 401) —
 session recording is paused. Run 'kcap login' to resume.` — instead of surfacing an opaque hook
-error, so you no longer have to run `kcap whoami` to work out why recording stopped. Other agents'
-hooks print the same advice to stderr instead of an in-session notice, since not every agent
-surfaces hook output in its UI. `kcap status` prints its own
+error, so you no longer have to run `kcap whoami` to work out why recording stopped. The lifecycle
+event that hit the rejection is not lost: it is spooled like an outage and re-sent on the next hook
+once you have logged in. Other agents' hooks print the same advice to stderr instead of an
+in-session notice, since not every agent surfaces hook output in its UI. `kcap status` prints its own
 **Version** line — the installed CLI version, with an inline `(update available: …)` annotation
 when a newer one is out (capped at your connected server's version, marked `(…, server version)` when
 your tenant trails npm) — see [`kcap update`](#other-commands) for the full opt-out story.
@@ -244,7 +245,7 @@ The `kcap mcp analytics` stdio server lets agents answer analytics questions abo
 Once set up, Capacitor runs silently in the background. Every Claude Code (and Codex CLI, if you installed those hooks) session is captured automatically:
 
 - **Session lifecycle** — start, end, interruptions, context compaction
-- **Durable lifecycle delivery** — if the server is briefly unreachable when a `SessionStart`/`SessionEnd` hook (or a per-subagent `SubagentStop` carrying an `agent_id`) fires (for example during a deploy), the event is spooled to `~/.config/kcap/spool/` and automatically re-sent on the next hook, so sessions don't get stuck "active", lose their start record, or leave subagents stuck "running". No action needed; stale spool entries are reaped after 30 days.
+- **Durable lifecycle delivery** — if the server is briefly unreachable when a `SessionStart`/`SessionEnd` hook (or a per-subagent `SubagentStop` carrying an `agent_id`) fires (for example during a deploy), or rejects your credentials (HTTP 401), the event is spooled to `~/.config/kcap/spool/` and automatically re-sent on the next hook — after `kcap login`, for a rejected credential — so sessions don't get stuck "active", lose their start record, or leave subagents stuck "running". No action needed beyond logging back in; stale spool entries are reaped after 30 days.
 - **Transcript data** — streamed in real time via a background watcher process over SignalR
 - **Subagent activity** — full tree of spawned subagents with their own transcripts
 - **Tool usage** — every tool call with timing and results
@@ -635,7 +636,7 @@ It provides six tools:
 
 - **`search_memories`** — hybrid semantic + keyword search over memories visible to you (your own, your teams', and org-wide). Agents are told to call this before saving a new memory.
 - **`get_memory`** — fetch a memory's full content by id or slug.
-- **`save_memory`** — save a new memory with an `audience` (`user`, `team`, `org`, or `project`), `slug`, `description`, `content`, and `kind`. For `audience: "project"` pass `audience_project: <slug>` — that project's members can then see and edit it (you must be a member). Scoped to the current repo by default; pass `global: true` to save it repo-independent, or `machine_specific: true` (user audience only) to tag it to this machine.
+- **`save_memory`** — save a new memory with an `audience` (`user`, `team`, `org`, or `project`), `slug`, `description`, `content`, and `kind`. For `audience: "project"` pass `audience_project: <slug>` — that project's members can then see and edit it (you must be a member). Where it lives is a separate axis: the current repo by default; a **project** with `project: <slug>` (it then surfaces across that project's repos — the right home for a learning that spans repos, instead of saving it org-wide); or the whole org with `global: true`. `project` wins over the repo, and like `rescope_memory`'s `project` it sets the place, not the people. Pass `machine_specific: true` (user audience only) to tag a memory to this machine.
 - **`update_memory`** — update an existing memory's description, content, and/or kind.
 - **`rescope_memory`** — change a memory's **audience** (who can see + edit it — promote a personal memory to the team, the org, or a **project's members** with `audience: "project"` + `audience_project: <slug>`), or move its home **context** to a project with `project: <slug>` (where it surfaces). These are orthogonal axes: `audience_project` sets the people, `project` sets the place — a context move is independent of audience and takes precedence over it, so pass `audience` **or** `project` (or both).
 - **`archive_memory`** — soft-delete a memory.
