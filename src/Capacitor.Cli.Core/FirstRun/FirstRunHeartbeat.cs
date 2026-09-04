@@ -65,7 +65,6 @@ public sealed class FirstRunHeartbeat : IDisposable {
                 if (!await timer.WaitForNextTickAsync(ct)) return;
             }
         } catch (OperationCanceledException) {
-            // The stop.
         } finally {
             // Here rather than in Dispose, which returns while this is still using the token: the loop
             // ends only on the cancel, so this is provably the last read of it.
