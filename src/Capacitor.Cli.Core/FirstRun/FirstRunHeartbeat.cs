@@ -17,10 +17,17 @@ public sealed class FirstRunHeartbeat : IDisposable {
     /// verdict. Lighter than the 2s poll it runs beside.</summary>
     public static readonly TimeSpan Interval = TimeSpan.FromSeconds(5);
 
-    /// <summary>How long to go quiet on a throttle that names no delay. Well past the staleness window,
-    /// deliberately: a throttled tenant reading as silent is honest — the machine cannot be heard — and
-    /// beating through the refusal to avoid saying so would spend the budget the poll needs.</summary>
-    static readonly TimeSpan ThrottleBackoff = TimeSpan.FromSeconds(60);
+    /// <summary>How long to go quiet on a throttle that names no delay.</summary>
+    static readonly TimeSpan ThrottleBackoff = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// The longest a throttle may silence the machine, however long the server asks for.
+    ///
+    /// <para>The heartbeat has its own limiter, so the poll can be succeeding every 2s while this route
+    /// is refused — and an unclamped <c>Retry-After: 3600</c> would tell the browser the machine had gone
+    /// for longer than the whole leg, with a working connection either side of it.</para>
+    /// </summary>
+    static readonly TimeSpan MaxThrottleBackoff = TimeSpan.FromMinutes(2);
 
     readonly CancellationTokenSource _stopping = new();
     readonly Task                    _beating;
@@ -73,8 +80,16 @@ public sealed class FirstRunHeartbeat : IDisposable {
 
         try {
             while (!ct.IsCancellationRequested) {
-                if (clock.GetUtcNow() >= quietUntil)
-                    quietUntil = await SendOneAsync(channel, serverUrl, flowId, clock, interval, ct);
+                if (clock.GetUtcNow() >= quietUntil) {
+                    var verdict = await SendOneAsync(channel, serverUrl, flowId, clock, interval, ct);
+
+                    // A route this server does not have answers the same way for the rest of the leg, so
+                    // beating on is ~360 authenticated no-ops that can trip the very limiter the throttle
+                    // handling above exists to keep clear. Same oracle the create uses.
+                    if (verdict.Unavailable) return;
+
+                    quietUntil = verdict.QuietUntil;
+                }
 
                 if (!await timer.WaitForNextTickAsync(ct)) return;
             }
@@ -86,35 +101,58 @@ public sealed class FirstRunHeartbeat : IDisposable {
         }
     }
 
+    /// <summary>What one beat leaves behind: when the next may be sent, and whether to send any more.</summary>
+    readonly record struct BeatVerdict(DateTimeOffset QuietUntil, bool Unavailable) {
+        public static readonly BeatVerdict Continue = new(DateTimeOffset.MinValue, false);
+    }
+
     /// <summary>
-    /// One beat, bounded by the interval, returning the instant to stay quiet until.
+    /// One beat. The loop stops WAITING after an interval; it never cancels the request.
     ///
-    /// <para><b>Bounded, or one black-holed connection costs the client's whole HTTP timeout.</b> That
-    /// timeout is three intervals, so a single wake-from-sleep or NAT rebind — the conditions this
-    /// feature exists for — would produce a gap of several missed beats from one request.</para>
+    /// <para><b>This must not hard-cancel, and that is the load-bearing rule here.</b> The beat rides the
+    /// setup client, whose 401 handler recovers the credential — and that recovery rotates a single-use
+    /// refresh token before persisting it, with the rotation itself uncancellable. A token tripping
+    /// between the two spends the credential server-side and never writes the replacement, logging the
+    /// user out mid-setup. Abandoning the wait costs an overlapping beat; cancelling costs the session.
+    /// </para>
     ///
-    /// <para><b>Success is not inspected; a throttle is.</b> A failing beat needs no handling, because
-    /// the next is already due and a run of them is the signal. A 429 is an instruction rather than a
-    /// failure, and the poll shares this tenant's budget.</para>
+    /// <para>So the bound is on the loop's patience rather than on the request, which also lets a beat
+    /// that legitimately needs longer than one interval — cold TLS after a wake, a tethered link — still
+    /// land, instead of being cancelled just before it would have succeeded.</para>
     ///
-    /// <para>Swallows everything, including a cancel: this runs on a detached task, so an escaping
-    /// exception has no caller to reach. The loop reads the token itself.</para>
+    /// <para>Success is not inspected. A throttle and an absent route are, because both say something no
+    /// later beat can discover for itself.</para>
     /// </summary>
-    static async Task<DateTimeOffset> SendOneAsync(
+    static async Task<BeatVerdict> SendOneAsync(
             IFirstRunFlowChannel channel, string serverUrl, string flowId, TimeProvider clock,
             TimeSpan interval, CancellationToken ct) {
+        var beat = Observed(channel.HeartbeatAsync(serverUrl, flowId, ct));
+
+        var waited = await Task.WhenAny(beat, Task.Delay(interval, clock, ct));
+
+        // Still in flight: leave it running and take the next tick. It will finish or time out on the
+        // client's own deadline, and a beat that lands late is still a beat.
+        if (waited != beat) return BeatVerdict.Continue;
+
+        var outcome = await beat;
+
+        if (outcome.StatusCode is 404 or 405) return new(DateTimeOffset.MinValue, Unavailable: true);
+
+        if (outcome.StatusCode is not 429) return BeatVerdict.Continue;
+
+        var asked = outcome.RetryAfter ?? ThrottleBackoff;
+
+        return new(clock.GetUtcNow() + (asked > MaxThrottleBackoff ? MaxThrottleBackoff : asked), false);
+    }
+
+    /// <summary>Swallows everything a beat can throw, including a cancel: it runs detached, so an
+    /// escaping exception has no caller to reach and a request abandoned by the loop above must not
+    /// surface as an unobserved fault.</summary>
+    static async Task<FirstRunHeartbeatOutcome> Observed(Task<FirstRunHeartbeatOutcome> beat) {
         try {
-            using var bound   = new CancellationTokenSource(interval, clock);
-            using var either  = CancellationTokenSource.CreateLinkedTokenSource(ct, bound.Token);
-
-            var outcome = await channel.HeartbeatAsync(serverUrl, flowId, either.Token);
-
-            return outcome.StatusCode is 429
-                ? clock.GetUtcNow() + (outcome.RetryAfter ?? ThrottleBackoff)
-                : DateTimeOffset.MinValue;
+            return await beat;
         } catch (Exception) {
-            // Best effort, by construction.
-            return DateTimeOffset.MinValue;
+            return new(0);
         }
     }
 }

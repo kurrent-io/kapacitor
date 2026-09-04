@@ -183,18 +183,21 @@ public class FirstRunHeartbeatTests {
     }
 
     /// <summary>
-    /// The client's own HTTP timeout is several intervals, so without a bound of its own one black-holed
-    /// connection — a laptop wake, a NAT rebind, the conditions this feature is for — costs several
-    /// missed beats from a single request, and the machine reads as gone for the whole of it.
+    /// A beat that hangs must not hold the loop, and must not be cancelled either.
+    ///
+    /// <para><b>The no-cancel half is the load-bearing one.</b> The beat rides the setup client, whose
+    /// 401 handler rotates a single-use refresh token and then persists it, with the rotation itself
+    /// uncancellable. A token tripping between the two spends the credential server-side and never
+    /// writes the replacement, logging the user out mid-setup — so the loop abandons the WAIT and leaves
+    /// the request alone.</para>
     /// </summary>
     [Test]
-    public async Task A_beat_is_bounded_by_the_interval() {
+    public async Task A_hung_beat_holds_neither_the_loop_nor_a_cancel() {
         var channel = new FakeChannel { BlockForever = true };
         var clock   = new FakeTimeProvider();
 
         using var beat = FirstRunHeartbeat.Start(channel, Server, Flow, clock, Beat);
 
-        // The first beat is hung; only its own bound can end it, and the bound is on the fake clock.
         await Assert.That(await ReachesAsync(channel, clock, 2)).IsTrue()
                     .Because($"a hung beat blocked the loop; it reached {channel.Beats}");
 
@@ -202,25 +205,24 @@ public class FirstRunHeartbeatTests {
 
         lock (channel.Tokens) first = channel.Tokens[0];
 
-        await Assert.That(first.IsCancellationRequested).IsTrue()
-                    .Because("the hung beat was abandoned rather than cancelled, so its request is still open");
+        await Assert.That(first.IsCancellationRequested).IsFalse()
+                    .Because("the hung request was cancelled, which is what can strand a rotated credential");
     }
 
     /// <summary>
-    /// A 429 is an instruction, not a failure, and it is the one status this beat reads. Beating through
-    /// it would spend a throttled tenant's budget on liveness and leave the poll — the half a human is
-    /// waiting on — in penalty.
+    /// A 429 is an instruction, not a failure, and it is one of the two statuses this beat reads.
+    /// Beating through it would spend a throttled tenant's budget on liveness and leave the poll — the
+    /// half a human is waiting on — in penalty.
     /// </summary>
     [Test]
     public async Task A_throttled_beat_goes_quiet_for_as_long_as_it_was_told() {
-        var channel = new FakeChannel { Next = new FirstRunHeartbeatOutcome(429, TimeSpan.FromMinutes(2)) };
+        var channel = new FakeChannel { Next = new FirstRunHeartbeatOutcome(429, TimeSpan.FromSeconds(90)) };
         var clock   = new FakeTimeProvider();
 
         using var beat = FirstRunHeartbeat.Start(channel, Server, Flow, clock, Beat);
 
         await Assert.That(channel.Beats).IsEqualTo(1);
 
-        // Well past the interval, nowhere near the delay the server named.
         for (var i = 0; i < 10; i++) {
             clock.Advance(Beat);
 
@@ -230,9 +232,53 @@ public class FirstRunHeartbeatTests {
         await Assert.That(channel.Beats).IsEqualTo(1)
                     .Because("the beat kept posting through a throttle it had been given a delay for");
 
-        clock.Advance(TimeSpan.FromMinutes(2));
+        clock.Advance(TimeSpan.FromSeconds(90));
 
         await Assert.That(await ReachesAsync(channel, clock, 2)).IsTrue()
                     .Because("the beat never resumed after the throttle window passed");
+    }
+
+    /// <summary>
+    /// The heartbeat has its own limiter, so the poll can be answering every 2s while this route is
+    /// refused. An unclamped delay would then tell the browser the machine had gone for longer than the
+    /// leg itself lasts, with a working connection either side of it.
+    /// </summary>
+    [Test]
+    public async Task A_throttle_longer_than_the_leg_is_clamped() {
+        var channel = new FakeChannel { Next = new FirstRunHeartbeatOutcome(429, TimeSpan.FromHours(1)) };
+        var clock   = new FakeTimeProvider();
+
+        using var beat = FirstRunHeartbeat.Start(channel, Server, Flow, clock, Beat);
+
+        clock.Advance(TimeSpan.FromMinutes(3));
+
+        await Assert.That(await ReachesAsync(channel, clock, 2)).IsTrue()
+                    .Because("an hour-long Retry-After was honoured in full, outlasting the whole leg");
+    }
+
+    /// <summary>
+    /// A route this server does not have answers the same way for the rest of the leg. Beating on is
+    /// hundreds of authenticated no-ops per run, which can trip the very limiter the throttle handling
+    /// exists to keep clear for the poll. The create path reads 404 the same way.
+    /// </summary>
+    [Test]
+    [Arguments(404)]
+    [Arguments(405)]
+    public async Task A_missing_route_stops_the_beat(int status) {
+        var channel = new FakeChannel { Next = new FirstRunHeartbeatOutcome(status) };
+        var clock   = new FakeTimeProvider();
+
+        using var beat = FirstRunHeartbeat.Start(channel, Server, Flow, clock, Beat);
+
+        await Assert.That(channel.Beats).IsEqualTo(1);
+
+        for (var i = 0; i < 10; i++) {
+            clock.Advance(Beat);
+
+            await Task.Delay(5);
+        }
+
+        await Assert.That(channel.Beats).IsEqualTo(1)
+                    .Because("the beat went on posting to a route the server does not have");
     }
 }

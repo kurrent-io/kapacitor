@@ -705,9 +705,17 @@ during the one stretch it is working hardest. A separate timer measures the proc
 thing a beat can honestly claim — a wedged leg goes on beating, and nothing here should ever be read as
 progress.
 
-**Nothing inspects the result.** A beat is a network call on a machine whose network may be exactly what
-is failing, so a status code is not read and a throw does not end the loop: a run of failures is the
-signal, and only the server is positioned to read it.
+**Nothing inspects the result for success.** A beat is a network call on a machine whose network may be
+exactly what is failing, so a failure is not handled and a throw does not end the loop: a run of them is
+the signal, and only the server is positioned to read it. Two statuses are read, because neither is
+discoverable by a later beat — a throttle, which is an instruction and would otherwise spend the budget
+the poll needs, and an absent route, which answers the same way for the whole leg.
+
+**A beat is never cancelled, only stopped being waited for.** The beat rides the setup client, whose 401
+handler rotates a single-use refresh token and then persists it, with the rotation itself uncancellable.
+A cancel landing between the two spends the credential server-side and never writes the replacement,
+logging the user out mid-setup. Abandoning the wait costs an overlapping no-op POST; cancelling costs the
+session — and it lets a beat that legitimately needs longer than one interval still land.
 
 **Stopping does not wait for a beat in flight** — the cancel aborts it. Nothing is owed to it: the
 relinquish that follows states the ending, and the browser reads a stated ending ahead of an inferred

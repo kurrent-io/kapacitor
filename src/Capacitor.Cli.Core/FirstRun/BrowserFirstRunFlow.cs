@@ -127,26 +127,25 @@ public sealed class BrowserFirstRunFlow(
         // either a leg still waiting or a settled one, never a half-decided state.
         FirstRunFlowResult? settled = null;
 
-        using var notice = _interrupts.Arm(
-            (reason, token) => RelinquishAsync(serverUrl, flowId, reason, token),
-            interruptReason: () => InterruptReason(Volatile.Read(ref settled)));
-
         // Says this machine is still here on its own timer, so a death that sends nothing — a kill, a
         // lost network, a shut lid — is still something the browser can see.
         using var beat = FirstRunHeartbeat.Start(channel, serverUrl, flowId, _clock);
 
+        // Stopped by whichever path sends, INSIDE the send rather than around it — which is what makes
+        // the ordering hold on the interrupt path too. There, Environment.Exit runs no `using` at all,
+        // so a beat scheduled by the timer could otherwise post inside the notice's own budget and tell
+        // the server this machine is here, moments after it said it had gone.
+        using var notice = _interrupts.Arm(
+            (reason, token) => {
+                beat.Dispose();
+
+                return RelinquishAsync(serverUrl, flowId, reason, token);
+            },
+            interruptReason: () => InterruptReason(Volatile.Read(ref settled)));
+
         try {
             Volatile.Write(ref settled, await PollAsync(serverUrl, flowId, report, ct));
         } finally {
-            // Stopped before the notice below, not left to the `using`: a beat scheduled after the
-            // relinquish says this machine is here, having just said it had gone. Synchronous, so it
-            // costs the leg's exit nothing.
-            //
-            // Closes the SCHEDULED beat only. One already in flight, and every beat on the
-            // Environment.Exit path — which runs no `using` at all — can still arrive late, so a
-            // relinquish has to be terminal on the server rather than merely first.
-            beat.Dispose();
-
             progress.WaitEnded();
         }
 
