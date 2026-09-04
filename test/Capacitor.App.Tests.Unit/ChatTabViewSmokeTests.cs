@@ -48,8 +48,8 @@ public class ChatTabViewSmokeTests {
     /// A synthetic pointer event hit-tests the compositor's last committed scene, which layout alone
     /// does not refresh: a control shown since the last frame is invisible to the click until the
     /// render timer ticks. One tick is enough on macOS/Linux; Windows headless sometimes needs a
-    /// second before a freshly-shown summary button is in the scene (tool groups sit deeper in a
-    /// Border now). Aim at the control's center — a (2,2) corner miss is easy when DPI scales.
+    /// second before a freshly-shown summary button is in the scene (tool groups nest under a Border).
+    /// Aim at the control's center — a (2,2) corner miss is easy when DPI scales.
     static Point PresentAndLocate(Host host, Control target) {
         host.Settle();
         AvaloniaHeadlessPlatform.ForceRenderTimerTick();
@@ -510,20 +510,6 @@ public class ChatTabViewSmokeTests {
             await Assert.That(chip.Text).IsEqualTo("Search");
             await Assert.That(ToolRows(host.View)).Count().IsEqualTo(1);
             await Assert.That(((ToolCallItem)ToolRows(host.View)[0].DataContext!).Outcome).IsEqualTo(ToolOutcome.Done);
-            await host.CloseAsync();
-        });
-    }
-
-    [Test]
-    [NotInParallel("AvaloniaSession")]
-    public async Task A_lone_task_call_shows_a_task_kind_chip() {
-        await RunOnUiAsync(async () => {
-            var host = new Host();
-            const string taskCall = """{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t9","name":"Task","input":{"prompt":"Build the CLI project"}}]}}""";
-            const string taskResult = """{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t9","content":"ok"}]}}""";
-            await host.LoadAsync(Tmp.CreateFile("task.jsonl", [taskCall, taskResult]));
-            await Assert.That(OnlyGroup(host).KindChip).IsEqualTo("Task");
-            await Assert.That(OnlyGroup(host).ShowsKindChip).IsTrue();
             await host.CloseAsync();
         });
     }

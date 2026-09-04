@@ -103,8 +103,7 @@ public sealed class SignInStepViewModel : ReactiveObject, IWizardStep {
             Append(line);
         };
         bridges.Progress.ErrorReceived += line => {
-            // Headline + StatusDetail carry the failure. Do not also Append — that duplicated the
-            // same line under the progress log.
+            // Headline + StatusDetail only — Append would double the line in the progress log.
             var detail = FormatErrorDetail(line);
             _lastReport  = detail;
             StatusDetail = detail;

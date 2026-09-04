@@ -28,10 +28,10 @@ public sealed class ToolCallItem(string name, string detail, ToolCategory catego
     public string Detail { get; } = detail;
     public ToolCategory Category { get; } = category;
 
-    /// What the row shows: the human detail when present, otherwise the tool name.
+    /// What the row shows: detail when present, otherwise the tool name.
     public string LineText => string.IsNullOrEmpty(Detail) ? Name : Detail;
 
-    /// True when the transcript carried a useful detail — the row paints that brighter than a bare name.
+    /// True when the transcript carried a useful detail (brighter paint than a bare name).
     public bool HasDetail => !string.IsNullOrEmpty(Detail);
 
     ToolOutcome _outcome;

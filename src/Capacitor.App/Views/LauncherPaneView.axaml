@@ -17,8 +17,7 @@
             <StackPanel Spacing="12">
                 <TextBlock x:Name="BannerMessageText" Text="{Binding BannerMessage}"
                            Foreground="{StaticResource KcapWarningBrush}" FontSize="13" LineHeight="20"
-                           TextWrapping="Wrap"
-                           IsVisible="{Binding BannerMessage, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                           TextWrapping="Wrap" />
                 <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Left">
                     <Button x:Name="StartDaemonButton" Classes="kcapPrimary" Content="Start daemon"
                             Command="{Binding StartDaemonCommand}" IsVisible="{Binding DaemonStartVisible}"
@@ -83,9 +82,7 @@
 
                         <Grid ColumnDefinitions="*,Auto">
                             <WrapPanel ItemSpacing="8" LineSpacing="8" VerticalAlignment="Center">
-                                <!-- One picker for harness AND model (T3-style): searchable, grouped by
-                                     vendor, with a per-vendor default row and a typed-custom escape hatch —
-                                     built per open in code-behind, like the repository picker. -->
+                                <!-- Harness + model picker: built per open in code-behind, like the repo menu. -->
                                 <Button x:Name="AgentChip" Classes="kcapChip" Click="OnAgentChipClick"
                                         Background="{StaticResource KcapSurfaceRaisedBrush}" BorderBrush="{StaticResource KcapBorderBrush}"
                                         Foreground="{StaticResource KcapTextBrush}" CornerRadius="999" Padding="11,5"

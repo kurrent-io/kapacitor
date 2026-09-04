@@ -11,20 +11,12 @@
                      Width="1200" MinWidth="1200" Height="760" MinHeight="560"
                      Background="{StaticResource KcapCanvasBrush}"
                      ExtendClientAreaToDecorationsHint="True">
-    <!-- The window lives on the Sessions surface (spec §3, revised): rail | workspace, where the
-         right pane's EMPTY state is the launcher (LauncherPaneView) — asking for a new session
-         and having none selected are the same screen. The Home surface stays in the tree but
-         hidden: nothing navigates to it for now (ShowHomeCommand still exists), and its launcher
-         card moved to the pane. CurrentWorkspace only means anything inside Sessions, and the
-         workspace side is a ContentControl over a template rather than an always-present
-         WorkspaceView, so the terminal control is CONSTRUCTED only once a session is opened
-         instead of sitting hidden in every window that never opens one.
-
-         The client area extends into the title bar (design canvas: the dark surfaces reach the
-         top, the native caption buttons sit over the content — Avalonia 12 keeps system chrome
-         itself; the ChromeHints knob no longer exists). The strip below is the
-         bottom-most child, so it only receives presses where no surface content is hit-testable —
-         the rail and workspace headers carry their own drag handlers. -->
+    <!-- Sessions is the home surface: rail | launcher-or-workspace. The right pane's empty state
+         IS the launcher. Home stays in the tree but hidden (ShowHomeCommand still exists).
+         Workspace content is a template so the terminal is only built once a session opens.
+         ExtendClientAreaToDecorationsHint paints into the title bar; the transparent strip below
+         only receives presses where no surface content is hit-testable — rail and workspace
+         headers carry their own drag handlers. -->
     <Panel>
         <Border Height="40" VerticalAlignment="Top" Background="Transparent"
                 PointerPressed="OnChromePointerPressed" />

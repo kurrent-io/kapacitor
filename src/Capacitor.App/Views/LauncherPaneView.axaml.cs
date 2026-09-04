@@ -477,17 +477,6 @@ public sealed class PermissionChipVisibleConverter : IValueConverter {
         throw new NotSupportedException();
 }
 
-/// Fixed launcher question — the selected leaf lives on the subtitle line, not inside this string.
-public sealed class LauncherHeadlineConverter : IValueConverter {
-    public static readonly LauncherHeadlineConverter Instance = new();
-    public const string Question = "What should we build?";
-
-    public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture) => Question;
-
-    public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) =>
-        throw new NotSupportedException();
-}
-
 /// Leaf under the fixed question; empty when nothing is selected (the subtitle is then hidden).
 public sealed class LauncherRepoSubtitleConverter : IValueConverter {
     public static readonly LauncherRepoSubtitleConverter Instance = new();

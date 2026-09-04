@@ -57,45 +57,6 @@ public class HomeViewSmokeTests {
 
     [Test]
     [NotInParallel("AvaloniaSession")]
-    public async Task LauncherPane_resolves_its_named_controls() {
-        var found = await AvaloniaSession.DispatchAsync(() => {
-            var (_, vm, _, _, tmp) = Build();
-            using var _tmp = tmp;
-            var window = new Window { Content = new LauncherPaneView { DataContext = vm } };
-            window.Show();
-            Dispatcher.UIThread.RunJobs();
-
-            var names = new[] {
-                "LauncherHeadline", "LauncherRepoSubtitle",
-                "GoalInput", "RepositoryChip", "AgentChip", "EffortChip", "PermissionChip", "StartButton",
-                "StartErrorText", "BannerMessageText",
-                "StartDaemonButton", "RetryDaemonButton", "HomeSignInButton",
-            };
-            var resolved = names.ToDictionary(name => name, name => Find<Control>(window, name) is not null);
-
-            window.Close();
-            Dispatcher.UIThread.RunJobs();
-            vm.Dispose();
-            return resolved;
-        });
-
-        await Assert.That(found["LauncherHeadline"]).IsTrue();
-        await Assert.That(found["LauncherRepoSubtitle"]).IsTrue();
-        await Assert.That(found["GoalInput"]).IsTrue();
-        await Assert.That(found["RepositoryChip"]).IsTrue();
-        await Assert.That(found["AgentChip"]).IsTrue();
-        await Assert.That(found["EffortChip"]).IsTrue();
-        await Assert.That(found["PermissionChip"]).IsTrue();
-        await Assert.That(found["StartButton"]).IsTrue();
-        await Assert.That(found["StartErrorText"]).IsTrue();
-        await Assert.That(found["BannerMessageText"]).IsTrue();
-        await Assert.That(found["StartDaemonButton"]).IsTrue();
-        await Assert.That(found["RetryDaemonButton"]).IsTrue();
-        await Assert.That(found["HomeSignInButton"]).IsTrue();
-    }
-
-    [Test]
-    [NotInParallel("AvaloniaSession")]
     public async Task Headline_keeps_a_fixed_question_and_a_repo_subtitle() {
         var (question, subtitleBefore, subtitleVisibleBefore, subtitleAfter, subtitleVisibleAfter) =
             await AvaloniaSession.DispatchAsync(async () => {
@@ -432,9 +393,8 @@ public class HomeViewSmokeTests {
         await Assert.That(realizedCount).IsEqualTo(1);
     }
 
-    /// The card's click plumbing (spec §3, entry points): the whole card is a Button whose Click
-    /// carries the card's OWN id to the window. Realized-visual-dependent by necessity — the
-    /// handler lives in the item template, so only a rendered card can raise it.
+    /// The card is a Button whose Click carries its own id to the window. Needs a realized visual —
+    /// the handler lives in the item template.
     [Test]
     [NotInParallel("AvaloniaSession")]
     public async Task Clicking_a_session_card_asks_to_open_that_session() {

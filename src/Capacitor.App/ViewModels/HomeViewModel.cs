@@ -44,9 +44,8 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
     /// a storage key only.
     public const string ScratchRepoPath = "";
 
-    /// A launch that started but handed back an id nothing can open. The session is real and running
-    /// — it just has to be reached from the session list, so this is a launch-succeeded wording, not
-    /// a failure one (spec §3, entry-point guards).
+    /// A launch that started but handed back an id nothing can open. The session is real — open
+    /// it from the session list rather than treating this as a launch failure.
     public const string UnusableIdMessage = "Launched, but the session ID was unusable. Open it from the session list.";
 
     internal const string ConnectingNotice     = "Connecting to the server…";
@@ -158,23 +157,15 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
     ObservableAsPropertyHelper<bool>? _daemonRetryVisible;
     public bool DaemonRetryVisible => _daemonRetryVisible?.Value ?? false;
 
-    ObservableAsPropertyHelper<string?>? _daemonStartMessage;
-    /// Start-daemon failure text mirrored from MainWindow (cleared on Connected / new attempt).
-    public string? DaemonStartMessage => _daemonStartMessage?.Value;
-
     // Feeds BannerMessage before AttachDaemonRecovery runs (null) and after (lifecycle lane).
     readonly BehaviorSubject<string?> _daemonStartMessageFeed = new(null);
 
-    /// Shared with MainWindowViewModel so the banner's Start daemon button is the same command
-    /// lifecycle / startAction already owns. Null until AttachDaemonRecovery runs.
+    /// Wired by AttachDaemonRecovery to MainWindow's Start/Reconnect commands.
     public ReactiveCommand<Unit, Unit>? StartDaemonCommand { get; private set; }
-
-    /// Shared with MainWindowViewModel.RetryCommand. Null until AttachDaemonRecovery runs.
     public ReactiveCommand<Unit, Unit>? RetryDaemonCommand { get; private set; }
 
     readonly ObservableAsPropertyHelper<string> _startButtonTip;
-    /// Hover tip for Start: names the gate that keeps it disabled (no repo, or ConnectionNotice),
-    /// else plain "Start". Bound with ToolTip.ShowOnDisabled so a disabled button still explains.
+    /// Tip when Start is disabled (no repo / connection gate). ToolTip.ShowOnDisabled is required.
     public string StartButtonTip => _startButtonTip.Value;
 
     public ReactiveCommand<Unit, Unit> SignInCommand { get; }
@@ -334,10 +325,6 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
         startMessage
             .ObserveOn(RxSchedulers.MainThreadScheduler)
             .Subscribe(_daemonStartMessageFeed)
-            .DisposeWith(_disposables);
-        _daemonStartMessage = startMessage
-            .ObserveOn(RxSchedulers.MainThreadScheduler)
-            .ToProperty(this, x => x.DaemonStartMessage, (string?)null)
             .DisposeWith(_disposables);
     }
 

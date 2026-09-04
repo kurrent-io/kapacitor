@@ -16,9 +16,7 @@ namespace Capacitor.App.Tests.Unit;
 /// RxSchedulers.MainThreadScheduler), so every test runs inside
 /// AvaloniaSession.WithImmediateRxScheduler and carries [NotInParallel("AvaloniaSession")].
 public class MainWindowViewModelTests {
-    // Real AppNotifier (not RecordingNotifier) — none of these tests exercise notifications, and
-    // the toast overlay is a View concern MainWindowViewModel no longer touches (spec §11); the
-    // production notifier is fine here, kept only because AgentActionService requires one.
+    // Real AppNotifier — these tests do not exercise toasts; AgentActionService still needs one.
     static (AgentActionService Actions, IAppNotifier Notifier) NewActions(FakeDaemonClientService service) {
         var notifier = new AppNotifier();
         var actions = new AgentActionService(new ScriptedLocalControlOps(), notifier, new RecordingOpener(), service.SnapshotsSubject, CancellationToken.None, NeverConfirm.Confirm);
@@ -265,7 +263,6 @@ public class MainWindowViewModelTests {
             await Assert.That(vm.Reason!).Contains("App and daemon are incompatible");
             await Assert.That(vm.Reason!).Contains("Reconnect");
             await Assert.That(vm.Reason!).DoesNotContain("daemon_incompatible");
-            await Assert.That(vm.RecoveryVisible).IsTrue();
             await Assert.That(vm.StartVisible).IsFalse();
             await Assert.That(vm.RetryVisible).IsTrue();
             await Assert.That(startCanExecute).IsFalse();
@@ -285,16 +282,12 @@ public class MainWindowViewModelTests {
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "daemon_unreachable", null));
             await Assert.That(vm.Reason).IsEqualTo(MainWindowViewModel.UnreachableMessage);
             await Assert.That(vm.Reason!).DoesNotContain("daemon_unreachable");
-            await Assert.That(vm.RecoveryVisible).IsTrue();
 
             service.StartBehavior = _ => Task.FromResult(new StartDaemonResult(false, "boom: could not bind socket"));
             await vm.StartDaemonCommand.Execute().ToTask();
             await Assert.That(vm.StartMessage).IsEqualTo("boom: could not bind socket");
-            await Assert.That(vm.RecoveryVisible).IsTrue();
 
-            // A new attempt replaces the previous failure with StartingMessage SYNCHRONOUSLY,
-            // before the attempt's own async work resolves — proven here while the gated fake
-            // is still pending.
+            // StartingMessage is set before the gated startAction returns.
             var gate = new TaskCompletionSource();
             service.StartBehavior = async _ => {
                 await gate.Task;
@@ -317,7 +310,7 @@ public class MainWindowViewModelTests {
         });
     }
 
-    // spec §6: ILifecycleSurface.Status one-liners ride the same StartMessage lane.
+    // ILifecycleSurface.Status one-liners ride the same StartMessage lane.
     [Test]
     [NotInParallel("AvaloniaSession")]
     public async Task Lifecycle_status_sets_and_is_cleared_like_a_start_failure() {
@@ -402,10 +395,7 @@ public class MainWindowViewModelTests {
         });
     }
 
-    // StartDaemonCommand is repointed to the service-aware
-    // DaemonLifecycleController.StartActionAsync when the composition root supplies one — the
-    // plain detached StartDaemonAsync is a fallback for callers with no live controller, not the
-    // production path.
+    // Supplied startAction runs instead of StartDaemonAsync.
     [Test]
     [NotInParallel("AvaloniaSession")]
     public async Task StartDaemonCommand_invokes_the_supplied_startAction_instead_of_StartDaemonAsync() {
@@ -431,9 +421,8 @@ public class MainWindowViewModelTests {
         });
     }
 
-    // ---- Navigation (spec §3). The full surface-swap/teardown matrix lives in
-    // WorkspaceNavigationTests; these two pin what the VM's own nullable-default seams promise. ----
-
+    // Navigation: the full surface-swap/teardown matrix lives in WorkspaceNavigationTests;
+    // these two pin what the VM's own nullable-default seams promise.
     /// Every caller that predates workspaces passes no factory — and must keep landing on the
     /// tabbed shell rather than a half-built workspace or a throw.
     [Test]

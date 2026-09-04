@@ -3,6 +3,7 @@ using System.Reactive.Concurrency;
 using System.Reactive.Disposables;
 using System.Reactive.Disposables.Fluent;
 using System.Reactive.Linq;
+using System.Reactive.Subjects;
 using Avalonia.Threading;
 using Capacitor.App.Services;
 using Capacitor.Cli.Core.LocalIpc;
@@ -106,11 +107,14 @@ public sealed partial class WorkContextViewModel : ReactiveObject {
         }
     }
     bool _hasSession;
+    // Subject, not WhenAnyValue — same RxAppBuilder init trap as SessionRailViewModel.SelectedAgentId.
+    readonly BehaviorSubject<bool> _hasSessionChanges = new(false);
     public bool HasSession {
         get => _hasSession;
         private set {
             if (_hasSession == value) return;
             this.RaiseAndSetIfChanged(ref _hasSession, value);
+            _hasSessionChanges.OnNext(value);
             this.RaisePropertyChanged(nameof(RefreshTip));
         }
     }
@@ -132,6 +136,7 @@ public sealed partial class WorkContextViewModel : ReactiveObject {
         _source = source;
         _opener = opener;
         InitializeProjections();
+        _disposables.Add(_hasSessionChanges);
 
         // Enabled for any known session id. A click while a read is in flight queues one follow-up
         // (RefreshPending) instead of disabling the control — a greyed icon looked broken and ate
@@ -142,7 +147,7 @@ public sealed partial class WorkContextViewModel : ReactiveObject {
                 if (_current.IsReading) _current.RefreshPending = true;
                 else StartRead(_current);
             },
-            this.WhenAnyValue(x => x.HasSession));
+            _hasSessionChanges);
         _disposables.Add(RefreshCommand);
         SignInCommand = ReactiveCommand.Create(() => { requestSignIn?.Invoke(); });
         _disposables.Add(SignInCommand);

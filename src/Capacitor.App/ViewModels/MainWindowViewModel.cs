@@ -14,16 +14,10 @@ namespace Capacitor.App.ViewModels;
 public enum ShellView { Home, Sessions }
 
 /// Projects IDaemonClientService.Status/Snapshots into display text and drives Start/Reconnect.
-/// All display projections are activation-scoped (WhenActivated) — the service outlives this
-/// ViewModel and owns its subjects (spec §5), so nothing here disposes the service itself.
-/// DEVIATION: StartDaemonCommand/RetryCommand and their canExecute pipelines are built in the
-/// CONSTRUCTOR, not inside WhenActivated — commands must exist (and be assertable via
-/// CanExecute) independent of window activation; service.Status/service.Snapshots are the
-/// service's own long-lived subjects, not resources the VM needs to scope to a window's
-/// lifetime. StartVisible/RetryVisible mirror that same constructor scoping (spec: presentation
-/// visibility must track the identical state predicate the command's own canExecute uses,
-/// independent of activation too). One primary action at a time: Start when the daemon looks
-/// down; Reconnect when attaching or skewed (never both).
+/// Display projections are activation-scoped (WhenActivated). StartDaemonCommand/RetryCommand and
+/// their canExecute pipelines are built in the constructor so they exist pre-activation.
+/// StartVisible/RetryVisible track the same predicates (one primary action: Start when down;
+/// Reconnect when connecting or skewed). The service outlives this VM and owns its subjects.
 public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel {
     const string IncompatibleReason = "daemon_incompatible";
     const string UnreachableReason  = "daemon_unreachable";
@@ -95,9 +89,8 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     ObservableAsPropertyHelper<IBrush>? _statusDotBrush;
     public IBrush StatusDotBrush => _statusDotBrush?.Value ?? DotBrush(StatusColors.Unavailable);
 
-    // "n of m agents" only while Connected (spec §1.5: active_agents is a display count, never
-    // a free-slots/launch-capacity claim) — "—" otherwise, even though the last-known snapshot
-    // (and the Agents cache) is retained by the service across disconnects.
+    // "n of m agents" only while Connected — active_agents is a display count, never capacity.
+    // "—" otherwise; the service still retains the last snapshot across disconnects.
     ObservableAsPropertyHelper<string>? _agentCountText;
     public string AgentCountText => _agentCountText?.Value ?? "—";
 
@@ -110,15 +103,9 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     public string? Reason => _reason?.Value;
 
     readonly BehaviorSubject<string?> _startMessageChanges = new(null);
-    readonly ObservableAsPropertyHelper<bool> _recoveryVisible;
-    /// Recovery chrome (banner + Start/Retry): Unreachable attach, or a failed start message still
-    /// on screen — so the user always has a next step, not a dead end.
-    public bool RecoveryVisible => _recoveryVisible.Value;
 
-
-    /// The Activity feed (spec §7) — constructed once at the composition root, same instance the
-    /// prompt window's onConcluded callback nudges, so this is a plain ctor-injected reference,
-    /// not something built here.
+    /// Constructed once at the composition root; the prompt window's onConcluded callback nudges
+    /// the same instance.
     public ActivityViewModel Activity { get; }
 
     /// The Home surface's launcher and cards — constructed at the composition root over the SAME
@@ -134,7 +121,7 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     WorkspaceViewModel? _currentWorkspace;
     /// null = the Sessions surface shows its placeholder pane; non-null = that session's workspace.
     /// Exactly one workspace at a time, and this VM owns it: every swap starts the outgoing one's
-    /// tracked teardown (spec §3).
+    /// tracked teardown.
     public WorkspaceViewModel? CurrentWorkspace {
         get => _currentWorkspace;
         private set => this.RaiseAndSetIfChanged(ref _currentWorkspace, value);
@@ -175,8 +162,7 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     public ReactiveCommand<Unit, Unit> CloseWorkspaceCommand { get; }
 
     string? _startMessage;
-    // Start-daemon failure text. Cleared on every new start attempt AND on any transition to
-    // Connected (spec §5); set only when a start attempt actually fails.
+    // Cleared on every new start attempt and on Connected; set when a start attempt fails.
     public string? StartMessage {
         get => _startMessage;
         private set {
@@ -188,11 +174,8 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     public ReactiveCommand<Unit, Unit> StartDaemonCommand { get; }
     public ReactiveCommand<Unit, Unit> RetryCommand { get; }
 
-    // Button IsVisible projections (spec: "shows ONLY when its action is meaningful"). Deliberately
-    // NOT ReactiveCommand.CanExecute — that ANDs in "not currently executing", which would hide the
-    // button mid-attempt instead of just disabling it. These track the exact same state predicate
-    // (canStart/canRetry below) the commands' own canExecute pipelines use, ctor-scoped for the
-    // same reason those pipelines are (see class doc comment).
+    // Visibility tracks "action is meaningful", not CanExecute — CanExecute also ANDs "not
+    // executing", which would hide the button mid-attempt instead of only disabling it.
     readonly ObservableAsPropertyHelper<bool> _startVisible;
     public bool StartVisible => _startVisible.Value;
 
@@ -202,27 +185,20 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     readonly TimeProvider _time;
 
     /// <param name="shutdownToken">
-    /// Abandons StartDaemonAsync's WAIT (never the spawned daemon) on app shutdown. MUST be a
-    /// token linked to the app lifetime — never CancellationToken.None (Task 4 carry-note: an
-    /// unbounded wait would survive app exit).
+    /// Abandons StartDaemonAsync's WAIT (never the spawned daemon) on app shutdown. Must be linked
+    /// to the app lifetime — never CancellationToken.None (an unbounded wait would survive exit).
     /// </param>
     /// <param name="startAction">
-    /// spec §4.4: the service-aware Start action (DaemonLifecycleController.StartActionAsync).
-    /// Null falls back to the plain detached `StartDaemonAsync` RunStartAsync always used —
-    /// preserved so a caller without a live controller (most existing tests) keeps today's
-    /// behavior verbatim.
+    /// Service-aware Start (DaemonLifecycleController.StartActionAsync). Null falls back to plain
+    /// StartDaemonAsync — for callers without a live controller (most unit tests).
     /// </param>
     /// <param name="lifecycleStatus">
-    /// ILifecycleSurface.Status one-liners (e.g. "daemon started, app not yet
-    /// attached — retrying", a coded transaction failure) ride the SAME start-message lane
-    /// RunStartAsync already uses — one place near the Start button for "why isn't this working",
-    /// cleared by the identical Connected-transition rule below. Null (most existing tests, and
-    /// any caller without a live lifecycle controller) means this lane never receives anything.
+    /// ILifecycleSurface.Status one-liners ride the same StartMessage lane as start failures.
+    /// Null means this lane never receives anything.
     /// </param>
     /// <param name="lifecycleAttention">
-    /// ILifecycleSurface.Attention lines (mutation failures presented by the outcome consumer).
-    /// Same StartMessage lane as lifecycleStatus — otherwise a Start daemon click that fails in
-    /// the mutation lane only updates the menu-bar icon and the banner stays mute.
+    /// ILifecycleSurface.Attention lines on the same StartMessage lane — otherwise a mutation-lane
+    /// Start failure only updates the tray and the banner stays mute.
     /// </param>
     /// <param name="navigation">
     /// The composition root's app-lifetime NavigationGate. Null builds a private one, so
@@ -299,11 +275,6 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
         // behavior. Ctor-scoped for the same reason as the commands themselves.
         _startVisible = canStart.ToProperty(this, x => x.StartVisible, initialValue: false);
         _retryVisible = canRetry.ToProperty(this, x => x.RetryVisible, initialValue: false);
-        _recoveryVisible = service.Status
-            .CombineLatest(_startMessageChanges, (s, msg) =>
-                s.State == AttachState.Unreachable || !string.IsNullOrEmpty(msg))
-            .ObserveOn(RxSchedulers.MainThreadScheduler)
-            .ToProperty(this, x => x.RecoveryVisible, initialValue: false);
 
         // Launcher banner owns the chrome; share the same Start/Reconnect commands and start-message
         // lane so the pane never drifts from what MainWindow already drives.
@@ -391,9 +362,8 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
         });
     }
 
-    /// Card and rail click: swaps the window to this session's workspace on the Sessions surface,
-    /// starting the tracked teardown of whatever it replaces. Refused once shutdown has latched — a
-    /// new workspace is a new attach, and quiesce/disposal is already running (spec §3).
+    /// Card and rail click: swaps to this session's workspace. Refused once shutdown has latched —
+    /// a new workspace is a new attach, and quiesce is already running.
     public void OpenSession(string agentId) {
         if (_navigation.ShutdownLatched || _workspaceFactory is null) return;
         CurrentView = ShellView.Sessions;
@@ -417,10 +387,9 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     /// open must still retire an in-flight launch's captured generation.
     public void CloseWorkspace() => SwapTo(null);
 
-    /// The first shutdown pass, synchronously: unhook the live workspace and register its teardown
-    /// BEFORE the drain seals the tracker, then latch the gate so no later window can open another
-    /// one. A workspace that never went through a close or close-to-hide would otherwise register
-    /// its teardown after the drain, against already-disposed dependencies (spec §3).
+    /// First shutdown pass: unhook the live workspace and register its teardown before the drain
+    /// seals the tracker, then latch so no later window opens another. A workspace that never
+    /// closed would otherwise register teardown after drain against already-disposed deps.
     public void LatchShutdown() {
         var live = CurrentWorkspace;
         CurrentWorkspace = null;
