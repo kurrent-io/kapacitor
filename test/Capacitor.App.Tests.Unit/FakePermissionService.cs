@@ -31,6 +31,7 @@ sealed class FakePermissionService : IPermissionService {
     readonly Queue<TaskCompletionSource<PermissionResolveOutcome>> _outcomes = new();
     public readonly List<(string RequestId, PermissionAnswer Answer)> Resolved = [];
     public readonly List<(string RequestId, IReadOnlyList<ElicitationAnswer> Answers)> Answered = [];
+    public readonly List<string> Withdrawn = [];
 
     public IObservable<IChangeSet<PendingPermissionRequest, string>> Pending => Cache.Connect();
     public IObservable<int> PendingCount => Cache.CountChanged;
@@ -64,6 +65,14 @@ sealed class FakePermissionService : IPermissionService {
         if (target.Questions is null) throw new ArgumentException("not an elicitation entry", nameof(target));
         Answered.Add((target.RequestId, answers));
         if (_outcomes.Count == 0) throw new InvalidOperationException("FakePermissionService: unscripted answer call");
+        var outcome = await _outcomes.Dequeue().Task;
+        if (outcome.Kind != PermissionResolveKind.TransportFailure) Cache.Remove(target.RequestId);
+        return outcome;
+    }
+
+    public async Task<PermissionResolveOutcome> WithdrawAsync(PendingPermissionRequest target, CancellationToken ct) {
+        Withdrawn.Add(target.RequestId);
+        if (_outcomes.Count == 0) throw new InvalidOperationException("FakePermissionService: unscripted withdraw call");
         var outcome = await _outcomes.Dequeue().Task;
         if (outcome.Kind != PermissionResolveKind.TransportFailure) Cache.Remove(target.RequestId);
         return outcome;

@@ -10,10 +10,16 @@ public sealed record PermissionPendingDto(
     JsonElement? ToolInput, JsonElement? Suggestions, bool ToolInputOmitted, bool SuggestionsOmitted,
     string RequestedAt, string? ToolUseId = null);
 
+/// Decision: allow|deny|withdraw. A withdraw carries no answer: the app saw the tool's result in
+/// the transcript, so whoever prompted has already been answered elsewhere and the request is moot.
 public sealed record PermissionResolveDto(
     string RequestId, string Decision, JsonElement? ApplyPermissions, JsonElement? UpdatedInput);
 
-/// Outcome: allow|deny|withdrawn. Source: app|server|agent_gone|no_ui|daemon_shutdown.
+public static class PermissionResolveDecisions {
+    public const string Allow = "allow", Deny = "deny", Withdraw = "withdraw";
+}
+
+/// Outcome: allow|deny|withdrawn. Source: app|server|policy|agent_gone|no_ui|daemon_shutdown|tool_settled.
 public sealed record PermissionResolvedDto(string RequestId, string Outcome, string Source);
 
 public sealed record PermissionAckDto(bool Ok, string? Error);

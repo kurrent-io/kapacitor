@@ -502,6 +502,17 @@ question with options) still submits on the pick. Option chrome lives in class s
 local `Background`/`BorderBrush` on the button outranks the `selected` style and leaves it inert,
 which is what made a pick look like nothing had happened.
 
+**A terminal answer retires the card.** The daemon never sees a TUI answer: the `PermissionRequest`
+hook stays parked and no hook reports the tool's completion (the plugin registers no
+`PostToolUse`), so the broker holds the request until the agent exits. The Chat tab already tails
+the transcript, and a `tool_result` for a pending request's `tool_use_id` is the one signal that
+the prompt was answered elsewhere — so the tab sends the resolve frame with decision `withdraw`,
+which the daemon settles as `withdrawn`/`tool_settled` and answers the hook with a deny (an allow
+could only apply to some later call). An older daemon rejects the decision and the app concludes
+the entry locally on that ack, so the card still goes. Sent once per request; a transport failure
+reopens it for the next reconcile, and the resubscribe that follows a daemon reconnect is what
+brings that reconcile.
+
 ## Compact tool calls in the Chat tab
 
 **AI-2418** (spec: `docs/superpowers/specs/2026-09-02-ai2418-compact-tool-calls-design.md`) folds a
