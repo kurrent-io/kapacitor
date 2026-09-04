@@ -188,7 +188,7 @@ public class WorkContextViewModelTests {
             h.Time.Advance(WorkContextViewModel.PollInterval); // the read parks on the gate, so TickAsync's await would never return
             await Assert.That(h.Source.Requested.Count).IsEqualTo(2);
             await Assert.That(h.Vm.IsReading).IsTrue();
-            await Assert.That(await h.Vm.RefreshCommand.CanExecute.FirstAsync()).IsFalse();
+            await Assert.That(await h.Vm.RefreshCommand.CanExecute.FirstAsync()).IsTrue();
 
             h.Time.Advance(WorkContextViewModel.PollInterval);
             await Assert.That(h.Source.Requested.Count).IsEqualTo(2);
@@ -201,6 +201,31 @@ public class WorkContextViewModelTests {
             await h.Vm.RefreshCommand.Execute();
             await h.Vm.PendingReadForTesting!;
             await Assert.That(h.Source.Requested.Count).IsEqualTo(3);
+            await h.Vm.TeardownAsync();
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task A_refresh_while_a_read_is_in_flight_queues_one_follow_up() {
+        await RunOnUiAsync(async () => {
+            var h = new Harness();
+            h.Source.Enqueue(Ready());
+            await h.PushAsync(Dto());
+            var gate = h.Source.Gate();
+            h.Time.Advance(WorkContextViewModel.PollInterval);
+            await Assert.That(h.Vm.IsReading).IsTrue();
+            await Assert.That(h.Source.Requested.Count).IsEqualTo(2);
+
+            h.Source.Enqueue(Ready());
+            await h.Vm.RefreshCommand.Execute();
+            await Assert.That(h.Source.Requested.Count).IsEqualTo(2);
+
+            gate.SetResult(Ready());
+            await h.Vm.PendingReadForTesting!;
+            await Assert.That(h.Source.Requested.Count).IsEqualTo(3);
+            await h.Vm.PendingReadForTesting!;
+            await Assert.That(h.Vm.IsReading).IsFalse();
             await h.Vm.TeardownAsync();
         });
     }
@@ -240,7 +265,7 @@ public class WorkContextViewModelTests {
             await Task.Yield();
             await Assert.That(h.Vm.Phase).IsEqualTo(WorkContextPhase.Loading);
             await Assert.That(h.Vm.IsReading).IsTrue();
-            await Assert.That(await h.Vm.RefreshCommand.CanExecute.FirstAsync()).IsFalse();
+            await Assert.That(await h.Vm.RefreshCommand.CanExecute.FirstAsync()).IsTrue();
             h.Time.Advance(WorkContextViewModel.PollInterval);
             await Assert.That(h.Source.Requested.Count).IsEqualTo(2);
 

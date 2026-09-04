@@ -47,7 +47,7 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
     /// A launch that started but handed back an id nothing can open. The session is real and running
     /// — it just has to be reached from the session list, so this is a launch-succeeded wording, not
     /// a failure one (spec §3, entry-point guards).
-    public const string UnusableIdMessage = "Launched, but the session id was unusable. Open it from the session list.";
+    public const string UnusableIdMessage = "Launched, but the session ID was unusable. Open it from the session list.";
 
     internal const string ConnectingNotice     = "Connecting to the server…";
     internal const string FinishingSignInNotice =

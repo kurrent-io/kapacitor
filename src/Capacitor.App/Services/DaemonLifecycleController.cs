@@ -365,7 +365,7 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
 
     void AttentionCoexistence(int daemonPid) =>
         _surface.Attention(
-            $"A daemon is already running (pid {daemonPid}) alongside the installed service — not starting a second one.");
+            $"A daemon is already running (PID {daemonPid}) alongside the installed service — not starting a second one.");
 
     /// §4.1 preconditions, install-only — start performs no viability check (spec §3.4), so this
     /// is never called on a start row. Returns the honest line to surface on failure, or null
@@ -572,7 +572,7 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
         if (attached) {
             if (snap.JobPid is not null && snap.DaemonPid is not null && snap.JobPid != snap.DaemonPid)
                 _surface.Attention(
-                    $"The daemon service job (pid {snap.JobPid}) does not match the attached daemon (pid {snap.DaemonPid}).");
+                    $"The daemon service job (PID {snap.JobPid}) does not match the attached daemon (PID {snap.DaemonPid}).");
             else if (state == ServiceState.Running && snap.DaemonPid is null)
                 _surface.Attention("The service reports its job running, but no attached-daemon evidence backs it.");
         }
@@ -585,7 +585,7 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
 
         if (attached && snap.UnitPresent && state == ServiceState.NotInstalled && snap.DaemonPid is not null)
             _surface.Attention(
-                $"A daemon is running outside the installed service — the service is stopped while a manual daemon (pid {snap.DaemonPid}) owns the name.");
+                $"A daemon is running outside the installed service — the service is stopped while a manual daemon (PID {snap.DaemonPid}) owns the name.");
     }
 
     // The inline, AWAITED building block: used by RunStartupBranchAsync, which already holds the

@@ -97,9 +97,28 @@ public sealed partial class WorkContextViewModel : ReactiveObject {
     bool _isStale;
     public bool IsStale { get => _isStale; private set => this.RaiseAndSetIfChanged(ref _isStale, value); }
     bool _isReading;
-    public bool IsReading { get => _isReading; private set => this.RaiseAndSetIfChanged(ref _isReading, value); }
+    public bool IsReading {
+        get => _isReading;
+        private set {
+            if (_isReading == value) return;
+            this.RaiseAndSetIfChanged(ref _isReading, value);
+            this.RaisePropertyChanged(nameof(RefreshTip));
+        }
+    }
     bool _hasSession;
-    public bool HasSession { get => _hasSession; private set => this.RaiseAndSetIfChanged(ref _hasSession, value); }
+    public bool HasSession {
+        get => _hasSession;
+        private set {
+            if (_hasSession == value) return;
+            this.RaiseAndSetIfChanged(ref _hasSession, value);
+            this.RaisePropertyChanged(nameof(RefreshTip));
+        }
+    }
+
+    /// Tip on the header refresh control — bound with ShowOnDisabled so a greyed icon still explains itself.
+    public string RefreshTip => HasSession
+        ? IsReading ? "Refreshing…" : "Refresh"
+        : "Waiting for the session ID";
 
     public ReactiveCommand<Unit, Unit> RefreshCommand { get; }
     public ReactiveCommand<Unit, Unit> SignInCommand { get; }
@@ -114,9 +133,16 @@ public sealed partial class WorkContextViewModel : ReactiveObject {
         _opener = opener;
         InitializeProjections();
 
+        // Enabled for any known session id. A click while a read is in flight queues one follow-up
+        // (RefreshPending) instead of disabling the control — a greyed icon looked broken and ate
+        // the click with no feedback.
         RefreshCommand = ReactiveCommand.Create(
-            () => { if (_current is { IsReading: false } lease) StartRead(lease); },
-            this.WhenAnyValue(x => x.HasSession, x => x.IsReading, (has, reading) => has && !reading));
+            () => {
+                if (_current is null) return;
+                if (_current.IsReading) _current.RefreshPending = true;
+                else StartRead(_current);
+            },
+            this.WhenAnyValue(x => x.HasSession));
         _disposables.Add(RefreshCommand);
         SignInCommand = ReactiveCommand.Create(() => { requestSignIn?.Invoke(); });
         _disposables.Add(SignInCommand);

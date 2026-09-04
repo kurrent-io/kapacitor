@@ -37,14 +37,14 @@
          terminal keeps its own column, so the size it reports to the PTY is the real center width. -->
     <Grid ColumnDefinitions="*,400">
     <Grid Grid.Column="0" RowDefinitions="56,42,*">
-        <!-- Header: title over quiet identity meta · spacer · actions.
-             Leaving the workspace is the rail's job, not a Back button's. -->
+        <!-- Header: title over checkout · spacer · actions.
+             Harness/transport live in the work-context pane; leaving is the rail's job. -->
         <Grid Grid.Row="0" ColumnDefinitions="*,Auto,Auto" Margin="20,0,16,0"
               Background="Transparent" PointerPressed="OnHeaderPointerPressed">
             <StackPanel Grid.Column="0" Spacing="2" VerticalAlignment="Center" Margin="0,0,16,0">
                 <TextBlock x:Name="WorkspaceTitle" Text="{Binding Title}" FontWeight="SemiBold" FontSize="14.5"
                            Foreground="{StaticResource KcapTextBrush}" TextTrimming="CharacterEllipsis" />
-                <TextBlock x:Name="WorkspaceSubtitle" Text="{Binding IdentitySubtitle}" FontSize="11.5"
+                <TextBlock x:Name="WorkspaceSubtitle" Text="{Binding RepoLabelText}" FontSize="11.5"
                            Foreground="{StaticResource KcapMutedBrush}" TextTrimming="CharacterEllipsis" />
             </StackPanel>
 
