@@ -107,6 +107,29 @@ public class WorkspaceViewModelTests {
             // a blanked placeholder -- a frozen last-known snapshot.
             await Assert.That(vm.Title).IsEqualTo("myproj");
             await Assert.That(vm.ShowsTerminalTab).IsTrue();
+            await Assert.That(await vm.StopCommand.CanExecute.FirstAsync()).IsFalse();
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task SessionEnded_and_Stop_disable_when_status_becomes_Completed_or_Failed() {
+        await RunOnUiAsync(async () => {
+            var daemon = new FakeDaemonClientService();
+            var actions = NewActions(new ScriptedLocalControlOps(), new RecordingNotifier(), new RecordingOpener());
+            var factory = new FakeTerminalAttachClientFactory();
+            var vm = Build(daemon, actions, factory, new FakeTimeProvider(), agentId: "a1");
+
+            daemon.Agents.AddOrUpdate(Agent("a1", "claude", hasTerminal: true, repoPath: "/repo/myproj") with { Status = "Running" });
+            await (vm.Terminal.PendingResolveWorkForTesting ?? Task.CompletedTask);
+            await Assert.That(await vm.StopCommand.CanExecute.FirstAsync()).IsTrue();
+
+            daemon.Agents.AddOrUpdate(Agent("a1", "claude", hasTerminal: true, repoPath: "/repo/myproj") with { Status = "Completed" });
+            await Assert.That(vm.SessionEnded).IsTrue();
+            await Assert.That(await vm.StopCommand.CanExecute.FirstAsync()).IsFalse();
+            await Assert.That(vm.Terminal.State.Phase).IsEqualTo(TerminalSessionPhase.SessionEnded);
+            await Assert.That(vm.Terminal.CanAcceptText).IsFalse();
+            await Assert.That(vm.Title).IsEqualTo("myproj");
         });
     }
 

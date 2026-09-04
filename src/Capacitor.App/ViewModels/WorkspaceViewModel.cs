@@ -31,8 +31,8 @@ public enum WorkspaceTab { Chat, Terminal }
 /// subscriber is exactly correct, unlike replaying a raw changeset to a fresh DynamicData query
 /// aggregator would be.
 ///
-/// A removed agent id freezes its LAST known dto rather than blanking the header back to
-/// placeholders -- SessionEnded flips (sticky, mirroring TerminalTabViewModel's own
+/// A removed or terminal-status agent freezes its LAST known dto rather than blanking the header
+/// back to placeholders -- SessionEnded flips (sticky, mirroring TerminalTabViewModel's own
 /// Exited/Failed stickiness) but Title/RepoLabelText/etc keep identifying the session
 /// that just ended instead of reverting to "—".
 public sealed class WorkspaceViewModel : ReactiveObject {
@@ -150,6 +150,8 @@ public sealed class WorkspaceViewModel : ReactiveObject {
         OpenInWebCommand = ReactiveCommand.Create(() => actions.OpenInWeb(agentId));
         _disposables.Add(OpenInWebCommand);
 
+        var canStop = presence.Select(p => !p.SessionEnded)
+            .CombineLatest(actions.StopsInFlight, (alive, inFlight) => alive && !inFlight.Contains(agentId));
         StopCommand = ReactiveCommand.Create(() => {
             var dto = _latestDto;
             // UnresolvedKind fails safe as protected (AgentActionService.IsProtectedKind treats
@@ -159,7 +161,7 @@ public sealed class WorkspaceViewModel : ReactiveObject {
             var kind = dto?.Kind ?? UnresolvedKind;
             var label = dto is null ? agentId : $"{dto.Kind} · {dto.Vendor} · {RepoLabel.Leaf(dto.RepoPath)}";
             actions.RequestStop(agentId, label, kind);
-        });
+        }, canStop);
         _disposables.Add(StopCommand);
     }
 
@@ -169,6 +171,7 @@ public sealed class WorkspaceViewModel : ReactiveObject {
         foreach (var change in changes) {
             if (change.Reason == ChangeReason.Remove) { ended = true; continue; } // dto stays frozen
             dto = change.Current;
+            if (SessionStatusDots.IsTerminal(dto.Status)) ended = true;
         }
         return new AgentPresence(dto, ended);
     }

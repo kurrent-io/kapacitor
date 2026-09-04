@@ -24,4 +24,7 @@ public static class SessionStatusDots {
     /// The needs-you pip's status rule, held beside the dot vocabulary so the two can never
     /// disagree.
     public static bool NeedsAttention(string status) => status == "Failed";
+
+    /// Process is gone — Completed/Failed stay in the snapshot until teardown removes the agent.
+    public static bool IsTerminal(string? status) => status is "Completed" or "Failed";
 }

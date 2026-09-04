@@ -240,7 +240,7 @@
             <StackPanel Spacing="6">
                 <TextBox x:Name="ComposerInput" Classes="kcapEmbedded" Text="{Binding ComposerText}" AcceptsReturn="True" TextWrapping="Wrap"
                          MinHeight="38" MaxHeight="160" Background="Transparent" BorderThickness="0"
-                         PlaceholderText="Write a message" IsVisible="{Binding !IsReadOnlyParticipant}" />
+                         PlaceholderText="Write a message" IsVisible="{Binding ShowsComposer}" />
                 <!-- A flow participant is addressed through the flow protocol, never messaged
                      directly, so the banner replaces the input rather than overlaying a dead one. -->
                 <Border x:Name="ReadOnlyBanner" IsVisible="{Binding IsReadOnlyParticipant}"
@@ -255,7 +255,7 @@
                     <Button x:Name="SendButton" Grid.Column="1" Classes="kcapPrimary" Content="Send" Command="{Binding SendCommand}" Margin="12,0,0,0"
                             Padding="12,4" FontSize="12" FontWeight="SemiBold" CornerRadius="7"
                             Background="{StaticResource KcapPrimaryBrush}" Foreground="{StaticResource KcapOnPrimaryBrush}"
-                            IsVisible="{Binding !IsReadOnlyParticipant}" />
+                            IsVisible="{Binding ShowsComposer}" />
                 </Grid>
             </StackPanel>
         </Border>

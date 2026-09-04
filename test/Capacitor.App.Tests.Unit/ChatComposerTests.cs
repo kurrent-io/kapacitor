@@ -68,6 +68,7 @@ public class ChatComposerTests {
             // a detach lands SessionEnded — and the hint follows the terminal there too.
             daemon.Agents.Remove("a1");
             await Assert.That(chat.ComposerHint).IsEqualTo("This session has ended");
+            await Assert.That(chat.ShowsComposer).IsFalse();
 
             var attached = TerminalSessionState.Attached(null);
             await Assert.That(ChatTabViewModel.HintFor(SendAvailability.Transitioning, attached)).IsEqualTo("Updating the terminal connection…");
@@ -75,6 +76,22 @@ public class ChatComposerTests {
             await Assert.That(ChatTabViewModel.HintFor(SendAvailability.Connecting, TerminalSessionState.Connecting)).IsEqualTo("Connecting to the terminal…");
             await Assert.That(ChatTabViewModel.HintFor(SendAvailability.Ended, TerminalSessionState.SessionEnded)).IsEqualTo("This session has ended");
             await Assert.That(ChatTabViewModel.HintFor(SendAvailability.NoTerminal, TerminalSessionState.NotFound)).IsEqualTo("No terminal to send to");
+            await chat.TeardownAsync();
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Composer_hides_when_agent_status_becomes_Failed() {
+        await RunOnUiAsync(async () => {
+            var (daemon, _, _, chat, _, _) = await BuildAttachedAsync();
+            await Assert.That(chat.ShowsComposer).IsTrue();
+
+            daemon.Agents.AddOrUpdate(Agent("a1", "claude", hasTerminal: true, repoPath: "/repo") with { Status = "Failed" });
+            await Assert.That(chat.ComposerHint).IsEqualTo("This session has ended");
+            await Assert.That(chat.ShowsComposer).IsFalse();
+            chat.ComposerText = "too late";
+            await Assert.That(await chat.SendCommand.CanExecute.FirstAsync()).IsFalse();
             await chat.TeardownAsync();
         });
     }

@@ -92,6 +92,11 @@ public sealed class ChatTabViewModel : ReactiveObject {
     readonly ObservableAsPropertyHelper<string> _composerHint;
     public string ComposerHint => _composerHint.Value;
 
+    readonly ObservableAsPropertyHelper<bool> _showsComposer;
+    /// Input + Send stay in the tree only while messaging is still possible. An ended session
+    /// hides them and leaves the hint — a greyed empty box is the wrong affordance.
+    public bool ShowsComposer => _showsComposer.Value;
+
     string _vendor = "";
     IReadOnlyList<HarnessOption> _options = HostedHarnessCatalog.Build(null);
 
@@ -226,6 +231,14 @@ public sealed class ChatTabViewModel : ReactiveObject {
                 this.WhenAnyValue(x => x.IsReadOnlyParticipant),
                 (t, readOnly) => readOnly ? "" : HintFor(t.availability, t.state))
             .ToProperty(this, x => x.ComposerHint, HintFor(terminal.SendAvailability, terminal.State))
+            .DisposeWith(_disposables);
+
+        _showsComposer = Observable.CombineLatest(
+                terminal.WhenAnyValue(t => t.SendAvailability),
+                this.WhenAnyValue(x => x.IsReadOnlyParticipant),
+                (availability, readOnly) => !readOnly && availability != SendAvailability.Ended)
+            .ToProperty(this, x => x.ShowsComposer,
+                initialValue: !IsReadOnlyParticipant && terminal.SendAvailability != SendAvailability.Ended)
             .DisposeWith(_disposables);
 
         var canSend = Observable.CombineLatest(
