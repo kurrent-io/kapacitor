@@ -32,8 +32,8 @@ Three facts found while surveying both repos shape the solution:
   Whatever the leaf emits feeds the transcript pipeline through an adapter that replaces the
   per-vendor normalizers; the envelope stays the daemon's wire type.
 - **The server keeps no raw transcript lines.** Only canonical events are appended, with
-  `$lineNumber` for watermark recovery. An ingested session cannot be re-projected server-side;
-  only a client re-import runs a projection again. The skew rule below follows from this.
+  `$lineNumber` for watermark recovery. An ingested session cannot be re-projected server-side.
+  The immutable-history rule in section 8 follows from this.
 
 A probe settled the one open feasibility question. A NativeAOT console app referencing
 `Kurrent.Agent.Schema` 0.4.1 (and through it `Google.Protobuf` 3.34.1) publishes with zero
@@ -60,14 +60,17 @@ Settled with the owner during brainstorming, 2026-09-04:
 3. **The leaf never mutates an event it has returned.** Everything the Codex normalizer does in
    place today (usage stamping, `task_complete` timing, exec and patch telemetry that lands after
    its output) becomes an explicit amendment or a `UsageApplied` event the caller applies. The
-   pipeline feedback loop (persisted cluster members) disappears: the adapter decides pending
-   versus persisted from the batch it is writing.
+   leaf holds no persistence knowledge; the server adapter classifies targets as pending or
+   persisted from the batch it is writing and the writer's dedup set.
 4. **`JsonElementExtensions` moves to the leaf and becomes public.** Core, the app and the server
    read JSON through the same tolerant accessors.
 5. **Stored events the envelope cannot express are shown as notes, not dropped.** `ContextCompacted`
    is persisted exactly as today and the Chat tab renders it as a `system_note` ("Context
    compacted"). The rule for any later such event: a note when it marks something a reader should
    see, skipped in the chat only when it does not.
+6. **The leaf owns every timestamp.** The caller passes the receive time into `Project`, and the
+   leaf uses it wherever the server uses the clock today, so output is a pure function of the
+   line, the context and that instant. Tests inject a fixed instant.
 
 ## 1. The leaf project
 
@@ -108,7 +111,7 @@ version. `Capacitor.slnx` and both `CLAUDE.md` layout notes name the new project
 ```csharp
 public interface ITranscriptProjection {
     TranscriptContext CreateContext(string sessionId, string? agentId);
-    ProjectionResult Project(string line, int lineNumber, TranscriptContext context);
+    ProjectionResult Project(string line, int lineNumber, DateTimeOffset receivedAt, TranscriptContext context);
 }
 
 public abstract class TranscriptContext {
@@ -118,13 +121,14 @@ public abstract class TranscriptContext {
 public sealed record ProjectionResult(
     IReadOnlyList<CanonicalEvent>  Events,
     IReadOnlyList<EventAmendment>  Amendments,
-    string?                        Rejected = null);   // the line is not a JSON object; nothing else set
+    string?                        Rejected = null);   // see "Rejected lines"; when set both lists are empty
 
 public sealed record CanonicalEvent(
     string          EventType,          // the schema's EventTypeMap name, or the leaf record's fixed name
     object          Payload,            // a schema message, or CodexUsageBackfilledEvent / ContextCompactedEvent / UsageApplied
     Guid            EventId,
-    DateTimeOffset? Timestamp,
+    DateTimeOffset  Timestamp,          // effective: the record's own, else receivedAt (see "Timestamps")
+    string?         RecordTimestamp     = null,   // the record's raw timestamp string, null when it had none
     string?         CausedBy            = null,
     TokenUsage?     Usage               = null,
     bool            UsageIsEcho         = false,
@@ -133,8 +137,7 @@ public sealed record CanonicalEvent(
 
 public sealed record EventAmendment(Guid TargetEventId, string Slug, Struct Extension);
 
-public sealed record UsageApplied(
-    TokenUsage Usage, long? ModelContextWindow, Guid AnchorEventId, IReadOnlyList<UsageTarget> Targets);
+public sealed record UsageApplied(TokenUsage Usage, Guid AnchorEventId, IReadOnlyList<UsageTarget> Targets);
 public sealed record UsageTarget(Guid EventId, string EventType, string? ToolName, bool IsEcho);
 
 public sealed record TranscriptAttachment(Guid Id, string FileName, string ContentType, byte[] Data);
@@ -144,42 +147,86 @@ public static class TranscriptProjection {
 }
 ```
 
-`UsageApplied` is a `CanonicalEvent` like any other, with `EventType = "UsageApplied"` and an id
-derived from `AnchorEventId` the way the server derives the backfill id today, so a repeated
-`token_count` collapses on the same id. It is never persisted verbatim; section 5 says what the
-adapter does with it. Extension amendments carry a whole extension block for one slug; the
-receiver merges it over whatever that slug already holds on the target.
+**Payloads.** A schema message is complete as returned; the caller adds nothing to it. `Usage`,
+when set, is the whole `$usage` block as it is written today, `additional_counts` included; the
+adapter serializes it as is and adds the echo and cache-creation companions.
 
-Timestamps are the record's own, absent when the record has none; the caller fills a missing one
-with receive time, as the server does today. Every JSON read goes through the public extensions, so
-a wrong-typed field reads as absent. A line that is not a JSON object is `Rejected` with a short
-reason and emits nothing; the server logs it with an excerpt as it does today, the app drops it.
+**`UsageApplied`** is a `CanonicalEvent` with `EventType = "UsageApplied"`, `EventId` =
+`Sibling(AnchorEventId, "usage-backfill")`, and the `token_count` line's timestamps. It is never
+persisted verbatim; section 5 defines how the adapter consumes it. `Targets` are in cluster
+order.
+
+**Amendments** carry one slug's block for one target. Applying one is a shallow field merge into
+that slug's `Struct` on the target: the block's fields overwrite same-named fields, other existing
+fields stay, the slug is created when the target has none, amendments apply in the order returned,
+and the `Struct` is cloned on application so a caller holding the amendment cannot alias the
+event. A target the caller does not hold is dropped by the caller. This is what the server does
+today when it sets `extensions.codex.exec`, `.patch` or `.task` on an event it already emitted.
+
+**Timestamps.** `Timestamp` is the record's own when it parses, else `receivedAt`; every event
+from one line shares the same `receivedAt`. `RecordTimestamp` is the record's raw string, present
+exactly when the server writes `$timestamp` today. The synthesized Codex web-search result carries
+its call's `Timestamp` plus one tick and its call's `RecordTimestamp`, so its metadata equals the
+call's as today. Cross-line sorting is by `RecordTimestamp` presence and value, unchanged.
+
+**Rejected lines.** `Rejected` is set, with a short reason, when the line is not valid JSON, when
+it parses to something other than an object, or when a field the projection cannot proceed
+without is unusable (Claude: a `uuid` that is not a GUID). A rejected line mutates no context
+state. A whitespace-only line, and an object whose discriminators are absent, wrong-typed or
+unknown, is not rejected: it is a valid record the projection ignores, `Events` and `Amendments`
+are empty, and it may still touch context state the way a real record of its kind would (Claude's
+usage-suppression memory resets on any non-assistant record; Codex's `turn_context` and
+`web_search_end` are record kinds that emit nothing). The server treats a rejected line exactly as
+a thrown parse error today: logged with an excerpt, zero entries, the watermark steps over it,
+never retried. The app drops it.
+
+### Identifiers
+
+Every id is `new Guid(XxHash128.Hash(bytes))` over the bytes named here, with `Guid`'s own
+16-byte layout (`TryWriteBytes`, mixed-endian) wherever a `Guid` is an input, UTF-8 without a BOM
+for strings, and the line's exact bytes as received, newline excluded. These are persistence
+contracts: the server's dedup set is keyed by them.
+
+| Id | Bytes hashed | Status |
+|---|---|---|
+| Claude record | not hashed: `Guid.Parse(uuid)` | unchanged |
+| Claude fallback (no `uuid`) | UTF-8 of `"{lineNumber} {line}"`, line number in invariant decimal | unchanged |
+| Claude attachment | UTF-8 of the id scope, then the record id's 16 bytes, then the block index as a 4-byte little-endian `int` | unchanged |
+| Codex record | UTF-8 of the line | unchanged |
+| `Sibling(primary, suffix)` | the primary id's 16 bytes, then UTF-8 of the suffix | unchanged |
+| Codex synthesized web-search result | `Sibling(call id, "result")` | unchanged |
+| Codex usage backfill | `Sibling(cluster first event id, "usage-backfill")` | unchanged |
+| Claude block after the first | `Sibling(record id, "block:{index}")`, index in invariant decimal | new |
+
+The id scope is `"{sessionId}:{agentId}"` for a subagent stream and the bare session id
+otherwise, computed by the leaf context from `CreateContext`'s arguments; the ids the caller
+passes must be the canonical forms the server stores. The leaf's tests carry fixed vectors for
+every row, and the server's parity suite proves the unchanged rows against the legacy code on the
+real corpus.
 
 ## 3. Claude at parity
 
-Keyed on the record's root `type`; timestamp from the root `timestamp`; `CausedBy` from
-`parentUuid`. Every event's id is the record `uuid`; a record without one hashes line number and
-line with XxHash128, unchanged. Noise, emitting nothing: `progress`, `system`,
-`file-history-snapshot`, `queue-operation`, `pr-link`, `last-prompt`, `ai-title` (the pipeline's
-title side-channel reads it), and any type the build does not know.
+Keyed on the record's root `type`; `RecordTimestamp` from the root `timestamp`; `CausedBy` from
+`parentUuid`. Noise, emitting nothing: `progress`, `system`, `file-history-snapshot`,
+`queue-operation`, `pr-link`, `last-prompt`, `ai-title` (the pipeline's title side-channel reads
+it), and any type the build does not know.
 
 - `assistant`: one event per content block, in order. `text` → `AssistantTextGenerated`;
   `tool_use` → `AssistantToolCallsGenerated` with one `ToolCallInfo` (`call_id` = `id`,
   `tool_name` = `name`, `arguments` = `input` as a `Struct`; a non-object input is wrapped as
   `{"input": …}`); `thinking` → `AssistantThinkingGenerated` (`content`, `signature`,
   `encrypted = false`). Usage from `message.usage` rides on the line's first emitted event, and
-  only when it differs from the previous assistant line's usage (the context remembers it and any
-  non-assistant line resets it): `input_tokens`, `output_tokens`, `cache_read_input_tokens` as
-  cached input, `model` from `message.model`, and `cache_creation_input_tokens` as
-  `CacheCreationTokens`. Blocks after the first take sibling ids, XxHash128 of the record id and
-  the block index.
+  only when it differs from the previous assistant record's usage (the context remembers it and
+  any non-assistant record resets it): `input_tokens`, `output_tokens`, `cache_read_input_tokens`
+  as cached input, `model` from `message.model`, and `cache_creation_input_tokens` as
+  `CacheCreationTokens`. The first block's event keeps the record id; later blocks take the block
+  sibling id and carry no usage.
 - `user`, string content → `UserMessageReceived`. Array content: `text` blocks joined with `"\n"` →
   `UserMessageReceived`, dropped when the text opens with `<available-deferred-tools`; `image`
-  blocks → `TranscriptAttachment`s on that message, id = XxHash128 of the context's id scope, the
-  record id and the block index, unchanged; `tool_result` blocks → one `ToolResultReceived` each
-  (`call_id` = `tool_use_id`; `result` = the string, the joined `text` blocks, or the raw JSON;
-  `extensions.claude_code` = `tool_use_result`, `output_raw`, `is_error`). A root `isMeta` sets
-  `extensions.claude_code.is_meta`.
+  blocks → `TranscriptAttachment`s on that message with the attachment id above; `tool_result`
+  blocks → one `ToolResultReceived` each (`call_id` = `tool_use_id`; `result` = the string, the
+  joined `text` blocks, or the raw JSON; `extensions.claude_code` = `tool_use_result`,
+  `output_raw`, `is_error`). A root `isMeta` sets `extensions.claude_code.is_meta`.
 - `attachment` whose `attachment.type` is `queued_command` → `UserMessageReceived` from the prompt,
   string or content array.
 
@@ -187,13 +234,13 @@ Two additive extension fields the chat needs and the server does not write today
 `extensions.claude_code.is_sidechain` on every event from a sidechain record, and
 `extensions.claude_code.origin_kind` on a `UserMessageReceived` whose record carries `origin.kind`
 (Claude Code's finished-background-task injection). The schema lists `is_sidechain` under the
-`claude_code` slug and declares additions under it non-breaking.
+`claude_code` slug and declares additions under it non-breaking; the server's unpacker
+deserializes the slug with System.Text.Json, which ignores properties its records do not declare.
 
 ## 4. Codex at parity
 
-Keyed on the envelope `type`, then `payload.type`; timestamp from the envelope; no `CausedBy`.
-Every event's id is XxHash128 of the raw line, unchanged; sibling ids are XxHash128 of a primary
-id and a suffix (`result`, `usage-backfill`), unchanged.
+Keyed on the envelope `type`, then `payload.type`; `RecordTimestamp` from the envelope; no
+`CausedBy`. Ids per the table above.
 
 - `session_meta` → `SessionStarted` with `extensions.codex` (`cwd`, `originator`, `cli_version`,
   `source`, `model_provider`, `git`), suppressed when `payload.thread_source` is `subagent` or
@@ -210,58 +257,93 @@ id and a suffix (`result`, `usage-backfill`), unchanged.
   `tool_name` = namespace-qualified name, `arguments`; a custom tool's input becomes
   `{"input": …}`; `extensions.codex` `name` and `namespace` when a namespace is present).
 - `web_search_call` → `AssistantToolCallsGenerated` (`web_search`, the payload as arguments) plus a
-  synthesized `ToolResultReceived` (`result` = the `action` JSON, timestamp one tick later, sibling
-  id `result`). The call id comes from the preceding `web_search_end`; the context keeps the queue,
-  the ever-enqueued set that stops a replayed end-event stashing a duplicate, and the sticky map
-  from call event id to assigned call id, all across batches.
+  synthesized `ToolResultReceived` (`result` = the `action` JSON, timestamps per section 2, the
+  `result` sibling id). The call id comes from the preceding `web_search_end`; the context keeps
+  the queue, the ever-enqueued set that stops a replayed end-event stashing a duplicate, and the
+  sticky map from call event id to assigned call id, all across batches.
 - `tool_search_call` → `AssistantToolCallsGenerated` (`tool_search`), no synthesized result.
 - `function_call_output`, `custom_tool_call_output`, `tool_search_output` → `ToolResultReceived`
   (`call_id`, `result`). Exec and patch telemetry stashed earlier in the batch merges into
-  `extensions.codex.exec` and `extensions.codex.patch`.
-- `event_msg.exec_command_end` and `patch_apply_end` → an `EventAmendment` for the result already
-  emitted in this batch, else a stash for the output still to come. `BeginBatch()` clears both.
-- `event_msg.task_complete` → an `EventAmendment` with `extensions.codex.task` (`duration_ms`,
-  `time_to_first_token_ms`) for the current cluster's first event.
-- `event_msg.token_count` → one `UsageApplied`: net input (`input_tokens` minus cached), output,
-  cached input, reasoning, `model` from the last turn context, `model_context_window` under
-  `additional_counts`, anchored on the cluster's first event, one target per cluster member with
-  `is_echo` false on the first non-thinking member and true elsewhere. The cluster is every
-  reasoning, assistant text, agent message and tool call since the previous finalization; results
-  and the synthesized web-search result are not members; the next assistant event after a
-  `token_count` opens a new cluster.
+  `extensions.codex.exec` and `extensions.codex.patch` before the event is returned.
+- `event_msg.exec_command_end` and `patch_apply_end` → an `EventAmendment` (`codex` slug, the
+  `exec` or `patch` field) for the result already emitted in this batch, else a stash for the
+  output still to come. `BeginBatch()` clears the stash and the batch's emitted-result index.
+- `event_msg.task_complete` → an `EventAmendment` (`codex` slug, the `task` field: `duration_ms`,
+  `time_to_first_token_ms`) for the current cluster's first event. When that event was emitted in
+  an earlier batch the caller drops the amendment; the server loses the same timing today, because
+  it mutates an event object that was already written.
+- `event_msg.token_count` → one `UsageApplied`, or nothing. Nothing when the cluster is empty,
+  when it is already finalized (a repeated `token_count` is a no-op until a new member opens the
+  next cluster), or when `info.last_token_usage` is absent. Otherwise: `Usage` with net input
+  (`input_tokens` minus `cached_input_tokens`, floored at zero), output, cached input, reasoning,
+  `model` from the last turn context, and `additional_counts.model_context_window` from
+  `info.model_context_window` when present; `AnchorEventId` = the cluster's first event; one
+  target per member in cluster order, `ToolName` = the first tool call's name for an
+  `AssistantToolCallsGenerated` member, `IsEcho` false on the first member that is not
+  `AssistantThinkingGenerated` (the first member when all are thinking) and true elsewhere. The
+  cluster is every reasoning, assistant text, agent message and tool call since the previous
+  finalization; results and the synthesized web-search result are not members; the next member
+  after a finalization opens a new cluster.
 - `compacted` → `ContextCompactedEvent` (`replacement_history`, `encrypted_content`).
 - Dropped: `world_state`, `inter_agent_communication_metadata`, `sub_agent_activity`,
   `thread_settings_applied`, the `event_msg` form of `agent_message`, and `web_search_end` beyond
   its queue effect.
 
+State that survives batches, all of it as the server keeps it today: the last turn-context model,
+the usage cluster and its finalized flag, the web-search queue, ever-enqueued set and sticky map.
+State cleared by `BeginBatch()`: the exec and patch stashes and the index of results emitted this
+batch. The Claude context keeps only the previous usage, across batches.
+
 ## 5. The server adapter
 
-One `ProjectionNormalizer : ITranscriptNormalizer` in `Sessions/Canonical/`, registered for the
-`claude` and `codex` keys in place of the two deleted classes; the other seven registrations are
-untouched. `ITranscriptNormalizer` gains `string Vendor { get; }` so the pipeline can key the Claude
-`ai-title` side-channel on the vendor instead of on a class it no longer has.
+`ProjectionNormalizer : ITranscriptNormalizer` in `Sessions/Canonical/`, constructed with a vendor
+key and its leaf projection, registered once per vendor in place of the two deleted classes; the
+other seven registrations are untouched. `ITranscriptNormalizer` gains `string Vendor { get; }` so
+the pipeline keys the Claude `ai-title` side-channel on the vendor instead of on a class it no
+longer has.
 
-`NormalizerContext` gains two slots and loses every Claude and Codex field: the leaf context,
-created from the session and agent ids the pipeline already sets, and a per-batch map from event id
-to the `NormalizedEvent` the adapter has returned in this batch, cleared where
-`ClearTransientBatchState()` runs today, which now also calls `BeginBatch()`.
+`NormalizerContext` loses every Claude and Codex field and gains: the leaf context, created from
+the session and agent ids the pipeline already sets; a per-batch map from event id to the
+`NormalizedEvent` the adapter has returned in this batch; and a predicate the writer supplies that
+answers whether an id is already in its dedup set. `ClearTransientBatchState()` clears the map and
+calls `BeginBatch()`.
+
+**Phases.** The pipeline normalizes every surviving line of a batch, then writes. Amendments and
+usage stamps are applied during the normalize phase, to `NormalizedEvent`s the adapter still holds,
+before anything is serialized; the write phase sees final metadata. This is the structure today.
 
 Per line, under the context lock the pipeline already holds, the adapter:
 
-- calls the projection; on `Rejected` throws the same malformed-line signal the pipeline logs with
-  an excerpt today, so that path is unchanged;
-- turns each `CanonicalEvent` into a `NormalizedEvent`: payload as is, `$lineNumber`, `$vendor`,
-  `$timestamp` when present, `$causedBy` when present, `$usage` via `UsageMetadataHelper.Write`
-  with the echo flag and the cache-creation count, attachments as they are; a missing payload
-  timestamp is filled with receive time. The first event is `Normalize`'s return value and the
-  rest go on `PendingEmissions`, so sequence and tick ordering are unchanged;
-- applies each `EventAmendment` to the pending target by merging the extension block into that
-  slug; a target that is not pending is dropped, which is today's per-batch stash semantics;
-- on `UsageApplied`, stamps `$usage` on every pending target with its echo flag. If any target is
-  not pending, the non-pending targets become a `CodexUsageBackfilledEvent` (its id the
-  `UsageApplied` id, its buckets the `TokenUsage`) and every pending stamp is forced to echo, which
-  is today's rule that the backfill event is the canonical carrier whenever one is emitted. When
-  every target is pending nothing is persisted from the `UsageApplied` itself.
+- calls the projection with the line, its line number, `DateTimeOffset.UtcNow` and the leaf
+  context; on `Rejected` it throws, and the pipeline's existing catch logs the excerpt and moves
+  on;
+- turns each `CanonicalEvent` that is not a `UsageApplied` into a `NormalizedEvent`: payload as is,
+  `$lineNumber`, `$vendor`, `$timestamp` = `RecordTimestamp` when present, `$causedBy` when
+  present, `$usage` from `Usage` with `$usage_echo` and `$claude_cache_creation_tokens` as today,
+  attachments as they are, and records it in the batch map. The first such event is `Normalize`'s
+  return value and the rest go on `PendingEmissions`, so sequence and tick ordering are unchanged;
+  a line with none returns null, which is how the pipeline already treats a noise line;
+- applies each `EventAmendment` to the batch-map target with the merge in section 2; a target not
+  in the map is dropped;
+- consumes a `UsageApplied`: a target is **pending** when it is in the batch map and the writer's
+  predicate says it is not yet in the dedup set, and **persisted** otherwise. Every pending
+  target's `NormalizedEvent` is stamped with `Usage` and its `IsEcho`. If any target is
+  persisted, every pending stamp is forced to echo and one `CodexUsageBackfilledEvent` is queued
+  on `PendingEmissions`, as today: id = the `UsageApplied` id; `Model`, `InputTokens`,
+  `OutputTokens`, `CacheReadTokens`, `ReasoningTokens` from `Usage`; `ModelContextWindow` =
+  `UsableContextWindow(additional_counts.model_context_window)`; `Targets` = the persisted targets
+  in cluster order, `EventId` in `"N"` format, `EventType`, `ToolName`, `IsEcho`; metadata =
+  `$lineNumber`, `$vendor` and `$timestamp` of the `token_count` line, no `$usage`. When every
+  target is pending nothing is queued. The cases: all pending → stamps only; mixed → echo stamps
+  plus a backfill event naming the persisted ones; all persisted → the backfill event only; a
+  target that is neither in the map nor in the dedup set (its append failed and its line has not
+  been re-delivered yet) counts as persisted, so the usage is still recorded, where the server
+  today stamps a stale object and loses it.
+
+Retry semantics are unchanged: the leaf context is mutated during normalize and not rolled back
+on an append failure, exactly as `NormalizerContext` is today, and the replay guards the Codex
+normalizer carries for that reason move with it. An adapter test drives a failed append followed
+by re-delivery of the same lines and pins the outcome.
 
 The pipeline's high-water mark, per-line atomicity, cross-line sort, dedup set, retry, attachment
 blob storage, hosted-session source guard and derived side events are untouched.
@@ -274,14 +356,16 @@ event to the chat vocabulary: `UserMessageReceived` → `user_message`, `Assista
 `ToolCallInfo`, `ToolResultReceived` → `tool_result` with the 4096-unit cap the chat projection
 applied until now, which moves here because stored results are never capped,
 `ContextCompactedEvent` → `system_note`. `UsageApplied`, `SessionStarted` and anything else map to
-nothing. Two vendor display rules the projections carried for the chat move beside it, under
-Core's `Harness/<Vendor>/`: Claude's wrapper stripping and its task-notification note (recognised
-by `origin_kind`, sidechain events skipped by `is_sidechain`), and Codex's injected-prelude filter
-for user text.
+nothing; `TimestampIso` is the event's `Timestamp`. Two vendor display rules the projections
+carried for the chat move beside it, under Core's `Harness/<Vendor>/`: Claude's wrapper stripping
+and its task-notification note (recognised by `origin_kind`, sidechain events skipped by
+`is_sidechain`), and Codex's injected-prelude filter for user text.
 
-`ChatTabViewModel` creates one leaf context when its projection resolves, calls `Project` per
-tailed line with the line number the tail already tracks, ignores amendments and rejected lines,
-and renders the envelopes as before.
+`ChatTabViewModel` creates one leaf context when its projection resolves and a new one whenever
+the tail resets (a length regression, which is truncation or rotation) or the transcript path
+changes. Each tail read that yields lines is one batch: `BeginBatch()` first, then `Project` per
+line with the line number the tail tracks and the app's clock as `receivedAt`. Amendments and
+rejected lines are ignored, and the envelopes render as before. There is no retry in the app.
 
 ## 7. Testing and parity
 
@@ -290,31 +374,56 @@ The existing projection tests move there and grow to the full surface. Inputs ar
 single rules plus a synthetic fixture corpus checked into the repo with golden expected output per
 fixture. The repo is public, so nothing from the server's captured sessions is copied; the
 synthetic fixtures cover each rule that matters: multi-block Claude lines, tool results with image
-blocks, task notifications, sidechain records, Codex clusters straddling a batch boundary,
-web-search pairing across batches, exec and patch telemetry in both orders, `task_complete`,
-compaction, subagent rollouts. A golden file holds each event as schema JSON plus id, timestamp,
-caused-by, usage and attachment ids and sizes; a re-record switch regenerates them.
+blocks, task notifications, sidechain records, an invalid `uuid`, rejected and ignored lines of
+every kind in section 2, Codex clusters straddling a batch boundary, a repeated `token_count`, a
+thinking-only cluster, web-search pairing across batches, exec and patch telemetry in both orders,
+`task_complete` in the same batch and across one, compaction, subagent rollouts. A golden file
+holds every channel of every `ProjectionResult`: events as schema JSON plus id, effective and
+record timestamps, caused-by, usage and its flags, attachments by id, filename, content type and a
+SHA-256 of the bytes; amendments; `UsageApplied`; `Rejected`. Every fixture runs under a fixed
+`receivedAt`, and the batch boundaries it uses are part of the fixture. The identifier table has
+fixed vectors, one per row. A re-record switch regenerates the goldens.
 
 **Parity suite** in the server repo at `test/Capacitor.Server.Tests.Ingest/Parity/`, run against
 the real corpus under `test/data`: the Claude sessions with their subagent files and the three Codex
-rollouts. For each fixture it runs the legacy normalizer and the adapter over the same lines through
-the same pipeline, once as a single batch and once in small batches so cross-batch state is
-exercised, and compares event for event: type, id, payload JSON, metadata including usage,
-attachments by id and size. Accepted deltas are explicit exemptions in the suite, so everything
-else stays exact. The accepted deltas are the multi-block Claude rule and the two additive
-`claude_code` fields. Before the legacy normalizers are deleted the suite records their output as
-golden files under `test/data/golden/`; after deletion it compares the adapter against those.
+rollouts. For each fixture it runs the legacy normalizer and the adapter over the same lines
+through the same pipeline with the same fixed clock, and compares what reaches the event store,
+event for event: type, id, payload JSON, every metadata key including usage, attachments by id,
+filename, content type and byte digest. It runs once as a single batch, once in batches of one
+line, and once with boundaries placed at every sensitive pair the corpus contains: a cluster and
+its `token_count`, a cluster's first event and its `task_complete`, a `web_search_end` and its
+call, telemetry and its output. Accepted deltas are explicit exemptions, each at field level, and
+everything else stays exact:
+
+- *Multi-block Claude assistant line.* Legacy emits one event from block 0; new emits one per
+  block. Event 0 is identical to legacy's in id, payload and every metadata key, usage included.
+  Events 1..n are new: block sibling ids, no `$usage`, the same `$lineNumber`, `$timestamp` and
+  `$causedBy`. Usage totals, per-model attribution and cost are unchanged because usage rides only
+  on event 0; the trace shows the extra blocks as rows in line order.
+- *`extensions.claude_code.is_sidechain` and `origin_kind`.* Present only on the events section 3
+  names; no other field of the slug changes; the server's unpacker ignores them.
+- *A `UsageApplied` target that is neither pending nor persisted.* New records it in the backfill
+  event; legacy loses it. Only reachable through a failed append, so it is pinned by the adapter's
+  retry test rather than the corpus.
+
+Before the legacy normalizers are deleted the suite records their output as golden files under
+`test/data/golden/`; after deletion it compares the adapter against those.
 
 **Ported tests.** The server's `ClaudeCodeNormalizerTests`, `ClaudeCodeFallbackIdTests`,
 `CodexNormalizerTests` and `CodexUsageBackfillTests` are ported rule by rule: projection rules to
 the leaf's tests, metadata and pipeline behaviour to adapter tests. Deleting a legacy normalizer
 waits on that port.
 
+**Hybrid session test.** A Claude session ingested up to a line under the legacy normalizer, then
+continued under the adapter, and then re-imported in full: no duplicate ids, every legacy event
+unchanged, the new block siblings present only for lines first ingested under the adapter, and
+line order preserved.
+
 **Pins.** A server test asserts the leaf's event type names equal the Eventuous type-map
 registrations; the envelope wire-compat tests stay; the schema package version is asserted equal in
 both repos; both AOT binaries publish with zero IL warnings after the package lands.
 
-## 8. Delivery and the skew rule
+## 8. Delivery, immutable history, and the skew rule
 
 The CLI repo leads and the server follows; each server PR pins a submodule commit already on the
 CLI's main.
@@ -329,18 +438,25 @@ CLI's main.
 5. Server: delete both legacy normalizers and their context fields, port the remaining tests, the
    parity suite now against golden files.
 
+**Immutable history.** A persisted event is never rewritten. A projection change takes effect
+for lines the server first ingests after the deploy that carries it; a session ingested before is
+never upgraded, because a re-delivered line yields the same ids and the dedup set keeps the stored
+event, and this design provides no rebuild. A session that straddles a change is therefore a
+hybrid and must be well-formed as one: no id may change meaning, a new event may only carry a new
+id, and additive fields may appear on new events only. The accepted deltas satisfy this (block 0
+keeps the record id; siblings are new ids appended in line order; the two fields ride new events),
+and the hybrid session test pins it.
+
 The coupling is compile-time only: the server builds the leaf at its pinned commit, so an
 incompatible change fails the bump PR rather than a deploy. Three rules follow:
 
 - **The CLI leads, the server follows in the same bump.** A leaf change never waits on the
   server; a server change that needs new leaf behaviour lands the leaf first.
-- **Event id derivation is frozen per vendor.** With no raw lines on the server, an ingested
-  session cannot be re-projected there, and its dedup set is keyed by event id, so a new id scheme
-  would append duplicates on the next re-import. Changing it needs a migration story and is out of
-  scope.
-- **An output-changing projection change is read-model-visible.** Existing sessions keep their
-  old shape until a client re-import; the CLI PR says so in `docs/CHANGES.md`, and the server bump
-  re-records the golden files.
+- **Event id derivation is frozen per vendor.** The identifier table is the contract; a new
+  scheme would append duplicates on the next re-import and needs a migration story, out of scope.
+- **An output-changing projection change is read-model-visible.** It must satisfy the hybrid
+  rule above; the CLI PR says so in `docs/CHANGES.md`, and the server bump re-records the golden
+  files.
 
 The desktop app and the server may run different leaf commits between releases. The chat is a
 live view and nothing from it is persisted, so that divergence is cosmetic. `release.sh` tags both
@@ -351,7 +467,7 @@ would otherwise float the server silently onto the leaf's newer version.
 ## 9. Risks
 
 - Parity surprises in the real corpus. The suite's exemption list is the control: a delta is
-  either accepted and listed or fixed.
+  either accepted, listed at field level, or fixed.
 - The Linux and Windows AOT legs. The probe ran on macOS only; the protobuf runtime is managed
   code, and CI publishes all three.
 - `JsonElement` to `Struct` conversion. The leaf owns one, `Struct.Parser.ParseJson` over the raw
