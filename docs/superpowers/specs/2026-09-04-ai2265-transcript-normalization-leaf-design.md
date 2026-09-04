@@ -53,8 +53,10 @@ Settled with the owner during brainstorming, 2026-09-04:
    Google.Protobuf runtime either way, and a message generated in a different assembly is a
    different CLR type from the one the server persists; the package is taken, pinned to the
    server's version.
-2. **A leaf project, not Core itself.** `src/Capacitor.Models.Transcripts/` has one package
-   reference, the schema, and no project references. Core, the app and the server reference it.
+2. **A leaf project, not Core itself.** `src/Capacitor.Models.Transcripts/` has two package
+   references, the schema and `System.IO.Hashing` (the `XxHash128` the ids need, a Microsoft
+   package with no dependencies of its own), and no project references. Core, the app and the
+   server reference it.
    Rejected: a production reference from the server to `Capacitor.Cli.Core`, which would import
    every Core dependency, present and future, into the server.
 3. **The leaf never mutates an event it has returned.** Everything the Codex normalizer does in
@@ -390,8 +392,8 @@ blob storage, hosted-session source guard and derived side events are untouched.
 
 ## 6. Core and the desktop app
 
-Core gains `TranscriptEnvelopes.ToEnvelope(CanonicalEvent)`, the one place that maps a stored
-event to the chat vocabulary: `UserMessageReceived` → `user_message`, `AssistantTextGenerated` →
+Core gains `TranscriptEnvelopes.From(CanonicalEvent)`, the one place that maps a stored event
+to the chat vocabulary, returning one envelope per tool call and none for what the chat cannot show: `UserMessageReceived` → `user_message`, `AssistantTextGenerated` →
 `assistant_text`, `AssistantThinkingGenerated` → `assistant_thinking`, one `tool_call` per
 `ToolCallInfo`, `ToolResultReceived` → `tool_result` with the 4096-unit cap the chat projection
 applied until now, which moves here because stored results are never capped,
