@@ -101,8 +101,8 @@
                                 </Panel>
                             </Grid>
                             <Button Classes="toolSummary" IsVisible="{Binding ShowsSummaryHeader}" Command="{Binding ToggleCommand}"
-                                    Background="Transparent" BorderBrush="Transparent" Padding="0" Cursor="Hand"
-                                    HorizontalAlignment="Left">
+                                    Background="Transparent" BorderBrush="Transparent" Padding="0,4" MinHeight="28" Cursor="Hand"
+                                    HorizontalAlignment="Left" HorizontalContentAlignment="Left">
                                 <StackPanel Orientation="Horizontal" Spacing="9">
                                     <Panel Width="12" Height="12" VerticalAlignment="Center">
                                         <Path Stroke="{StaticResource KcapMutedBrush}" StrokeThickness="1.8"

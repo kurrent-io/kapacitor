@@ -47,12 +47,22 @@ public class ChatTabViewSmokeTests {
 
     /// A synthetic pointer event hit-tests the compositor's last committed scene, which layout alone
     /// does not refresh: a control shown since the last frame is invisible to the click until the
-    /// render timer ticks once more.
+    /// render timer ticks. One tick is enough on macOS/Linux; Windows headless sometimes needs a
+    /// second before a freshly-shown summary button is in the scene (tool groups sit deeper in a
+    /// Border now). Aim at the control's center — a (2,2) corner miss is easy when DPI scales.
     static Point PresentAndLocate(Host host, Control target) {
         host.Settle();
         AvaloniaHeadlessPlatform.ForceRenderTimerTick();
         Dispatcher.UIThread.RunJobs();
-        return target.TranslatePoint(new Point(2, 2), host.Window)!.Value;
+        AvaloniaHeadlessPlatform.ForceRenderTimerTick();
+        Dispatcher.UIThread.RunJobs();
+        host.Window.UpdateLayout();
+        if (target.Bounds.Width < 1 || target.Bounds.Height < 1)
+            throw new InvalidOperationException(
+                $"Click target '{target.GetType().Name}' has empty bounds after present; cannot hit-test.");
+        var local = new Point(target.Bounds.Width / 2, target.Bounds.Height / 2);
+        return target.TranslatePoint(local, host.Window)
+            ?? throw new InvalidOperationException("Click target is not under the window.");
     }
 
     static void Click(Host host, Control target) {
