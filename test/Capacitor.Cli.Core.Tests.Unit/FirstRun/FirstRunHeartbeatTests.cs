@@ -37,8 +37,17 @@ public class FirstRunHeartbeatTests {
         /// <summary>Answered to every beat. Models a route that is simply not there.</summary>
         public FirstRunHeartbeatOutcome? Always { get; set; }
 
-        /// <summary>Never completes, so a beat only ends when its own bound cancels it.</summary>
+        /// <summary>Never completes, so the beat stays outstanding until the test ends.</summary>
         public bool BlockForever { get; init; }
+
+        /// <summary>Held beats, released together by <see cref="ReleaseHeld"/>. Models an answer that
+        /// arrives later than the interval that asked for it — the case carrying the verdict across
+        /// ticks exists for, and one no synchronous fake can produce.</summary>
+        public bool HoldAnswers { get; init; }
+
+        readonly TaskCompletionSource _held = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public void ReleaseHeld() => _held.TrySetResult();
 
         public List<CancellationToken> Tokens { get; } = [];
 
@@ -51,6 +60,7 @@ public class FirstRunHeartbeatTests {
             lock (Tokens) Tokens.Add(ct);
 
             if (BlockForever) await Task.Delay(Timeout.Infinite, ct);
+            if (HoldAnswers) await _held.Task;
             if (Block) await _gate.Task;
             if (Throws is { } boom) throw boom;
 
@@ -211,8 +221,10 @@ public class FirstRunHeartbeatTests {
             await Task.Delay(5);
         }
 
-        await Assert.That(channel.Beats).IsEqualTo(1)
-                    .Because("beats piled up behind a hung one, on the machine whose network is failing");
+        // Bounded, not stopped: a hung request must not silence the machine, and must not accumulate one
+        // open POST per tick either.
+        await Assert.That(channel.Beats).IsEqualTo(3)
+                    .Because("beats are capped in flight, and a hung one must not hold the whole budget");
 
         CancellationToken first;
 
@@ -273,7 +285,7 @@ public class FirstRunHeartbeatTests {
     /// <summary>
     /// A route this server does not have answers the same way for the rest of the leg. Beating on is
     /// hundreds of authenticated no-ops per run, which can trip the very limiter the throttle handling
-    /// exists to keep clear for the poll. The create path reads 404 the same way.
+    /// exists to keep clear for the poll.
     /// </summary>
     [Test]
     [Arguments(404)]
@@ -290,9 +302,56 @@ public class FirstRunHeartbeatTests {
             await Task.Delay(5);
         }
 
-        await Assert.That(channel.Beats).IsLessThanOrEqualTo(4)
+        // Exactly the threshold: a lower number would pass here too, so an inequality would not pin the
+        // constant the test is named for.
+        await Assert.That(channel.Beats).IsEqualTo(3)
                     .Because("the beat went on posting to a route the server does not have");
+
+        // A pause, not an ending — the poll rides out a rolling deploy on the same client, so a beat that
+        // stopped for good would have the browser infer a death from a machine still talking to it.
+        clock.Advance(TimeSpan.FromMinutes(3));
+
+        await Assert.That(await ReachesAsync(channel, clock, 4)).IsTrue()
+                    .Because("the beat never probed the route again after backing off");
     }
+
+    /// <summary>
+    /// The reason a verdict is carried across ticks rather than dropped: a throttling server is exactly
+    /// the one whose answer outruns the interval that asked for it. Every other fake here completes
+    /// synchronously, so without this the behaviour this loop is built around is unpinned.
+    /// </summary>
+    [Test]
+    public async Task A_verdict_that_arrives_late_is_still_acted_on() {
+        var channel = new FakeChannel {
+            HoldAnswers = true, Always = new FirstRunHeartbeatOutcome(429, TimeSpan.FromSeconds(90))
+        };
+
+        var clock = new FakeTimeProvider();
+
+        using var beat = FirstRunHeartbeat.Start(channel, Server, Flow, clock, Beat);
+
+        // Nothing has answered yet, so the loop fills its lane and stops.
+        await ReachesAsync(channel, clock, MaxInFlightForTest);
+
+        var issued = channel.Beats;
+
+        channel.ReleaseHeld();
+
+        // The throttle those answers carry has to take effect even though every one of them arrived
+        // later than the tick that asked for it.
+        for (var i = 0; i < 10; i++) {
+            clock.Advance(Beat);
+
+            await Task.Delay(5);
+        }
+
+        await Assert.That(channel.Beats).IsEqualTo(issued)
+                    .Because("a throttle answered late was dropped, so the beat kept posting through it");
+    }
+
+    /// <summary>Mirrors the loop's own cap. Named here rather than read from the class, so a change to the
+    /// constant shows up as a failing test rather than a silently re-scoped one.</summary>
+    const int MaxInFlightForTest = 3;
 
     /// <summary>
     /// One refusal is not the route being absent. A gateway 405 during a rolling deploy, or a proxy

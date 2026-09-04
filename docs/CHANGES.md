@@ -717,12 +717,16 @@ two spends the credential server-side and never writes the replacement, logging 
 So the stop token is kept off the request entirely: what ends a beat is the client's own timeout, and what
 ends the loop is the token one level up.
 
-**One beat is in flight at a time, carried across ticks rather than abandoned.** A dropped task's verdict
-is never read, and a throttling or absent-route server is exactly the one whose answer outruns an
-interval — so the two statuses worth reading would be missed precisely when they matter. Issuing a fresh
-beat per tick regardless would also accumulate one open POST per interval against a wedged network, on the
-machine whose network is the failing thing. The cost is that an outstanding beat holds the lane, which is
-why the client that carries it is given a timeout rather than the 100-second default.
+**Answers are carried across ticks rather than abandoned, and beats are capped rather than serialised.**
+A dropped verdict is never read, and a throttling or absent-route server is exactly the one whose answer
+outruns an interval — so the two statuses worth reading would be missed precisely when they matter. But
+allowing only one at a time makes a single slow request the whole liveness budget, so the bound is a
+count: enough that a slow answer cannot silence the machine, few enough that a wedged network cannot
+accumulate one open POST per interval on the very machine whose network is failing.
+
+**Backing off a missing route is a pause, not an ending.** A rolling deploy or a proxy reload is minutes
+long and the poll on the same client rides straight through it, so a beat that stopped for good would have
+the browser infer a death from a machine still demonstrably talking to it.
 
 **Stopping does not wait for a beat in flight**, and does not cancel it either. Nothing is owed to it:
 the relinquish that follows states the ending, and the browser reads a stated ending ahead of an inferred

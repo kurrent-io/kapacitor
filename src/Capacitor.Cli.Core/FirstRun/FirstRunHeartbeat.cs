@@ -17,10 +17,30 @@ public sealed class FirstRunHeartbeat : IDisposable {
     /// verdict. Lighter than the 2s poll it runs beside.</summary>
     public static readonly TimeSpan Interval = TimeSpan.FromSeconds(5);
 
-    /// <summary>Consecutive not-found answers before the beat gives up on the route. More than one, so a
-    /// blip cannot be terminal; small, because a route that is genuinely absent answers this way every
+    /// <summary>
+    /// How many beats may be outstanding at once.
+    ///
+    /// <para>More than one, or a single slow request becomes the whole liveness budget: the loop would
+    /// issue nothing until the answer came back, so a request that outlives its interval halves the
+    /// cadence and one that hangs to the client's timeout silences the machine for the whole of it.
+    /// Bounded all the same, because a wedged network would otherwise accumulate one open POST per
+    /// interval on the very machine whose network is failing.</para>
+    /// </summary>
+    const int MaxInFlight = 3;
+
+    /// <summary>Consecutive not-found answers before the beat backs off the route. More than one, so a
+    /// blip cannot silence it; small, because a route that is genuinely absent answers this way every
     /// time and beating on is hundreds of authenticated no-ops per run.</summary>
-    const int UnavailableBeforeStopping = 3;
+    const int UnavailableBeforeBackingOff = 3;
+
+    /// <summary>
+    /// How long to go quiet after the route has refused often enough to look absent.
+    ///
+    /// <para>A pause rather than an ending. A rolling deploy or a proxy reload is minutes long and the
+    /// 2s poll on the same client rides straight through it, so a beat that stopped for good would have
+    /// the browser infer the machine has gone from one that is demonstrably still talking to it.</para>
+    /// </summary>
+    static readonly TimeSpan UnavailableBackoff = TimeSpan.FromMinutes(2);
 
     /// <summary>How long to go quiet on a throttle that names no delay.</summary>
     static readonly TimeSpan ThrottleBackoff = TimeSpan.FromSeconds(30);
@@ -65,17 +85,23 @@ public sealed class FirstRunHeartbeat : IDisposable {
         // Observed so a fault cannot surface as an unobserved task exception. Every beat is wrapped
         // before it is awaited, so there is only ever the cancel we just asked for.
         _ = _beating.ContinueWith(static t => _ = t.Exception, TaskScheduler.Default);
+
+        // After the cancel and the observation, and tolerated by the loop: a tick entering
+        // WaitForNextTickAsync as this runs sees ObjectDisposedException, which ends it exactly as the
+        // cancel would. Left undisposed the source leaks per leg, and stops being harmless the moment
+        // anything here links one or sets a deadline on it.
+        _stopping.Dispose();
     }
 
     /// <summary>
-    /// One beat in flight at a time, carried across ticks.
+    /// Beats on the tick, harvesting answers as they arrive.
     ///
-    /// <para><b>Held rather than abandoned</b>, for three reasons that are one change. A dropped task's
-    /// verdict is never read, and a throttling or absent-route server is exactly the one whose answer
-    /// outruns an interval — so the two statuses this reads would be missed precisely when they matter.
-    /// A new beat per tick against a wedged network accumulates one open POST per interval until the
-    /// client's timeout, which on a client that sets none is the 100s default. And the stop token stays
-    /// off the request entirely, which is what keeps a credential recovery intact.</para>
+    /// <para><b>Answers are read, never dropped.</b> A throttling or absent-route server is exactly the
+    /// one whose reply outruns an interval, so abandoning a slow request would miss the two statuses
+    /// worth reading precisely when they matter.</para>
+    ///
+    /// <para><b>Nothing is cancelled, and the count is what bounds it instead</b> — see
+    /// <see cref="SendAsync"/> for why a cancel here can cost the user their session.</para>
     /// </summary>
     static async Task BeatAsync(
             IFirstRunFlowChannel channel, string serverUrl, string flowId, TimeProvider clock,
@@ -84,24 +110,25 @@ public sealed class FirstRunHeartbeat : IDisposable {
 
         using var timer = new PeriodicTimer(interval, clock);
 
-        Task<FirstRunHeartbeatOutcome>? pending = null;
+        var inFlight = new List<Task<FirstRunHeartbeatOutcome>>(MaxInFlight);
 
         var quietUntil  = DateTimeOffset.MinValue;
         var unavailable = 0;
 
         try {
             while (!ct.IsCancellationRequested) {
-                if (pending is { IsCompleted: true }) {
-                    var outcome = await pending;
+                for (var i = inFlight.Count - 1; i >= 0; i--) {
+                    if (!inFlight[i].IsCompleted) continue;
 
-                    pending = null;
+                    var outcome = await inFlight[i];
 
-                    // Transient rather than terminal on the first refusal: a gateway 405 mid-deploy or a
-                    // proxy rejecting POST on a path it does not know would otherwise silence liveness for
-                    // the rest of the leg while the poll keeps succeeding on the same client — the browser
-                    // inferring the machine has gone from one that is demonstrably still talking to it.
+                    inFlight.RemoveAt(i);
+
                     if (outcome.StatusCode is 404 or 405) {
-                        if (++unavailable >= UnavailableBeforeStopping) return;
+                        if (++unavailable >= UnavailableBeforeBackingOff) {
+                            quietUntil  = clock.GetUtcNow() + UnavailableBackoff;
+                            unavailable = 0;
+                        }
                     } else {
                         unavailable = 0;
                     }
@@ -114,15 +141,16 @@ public sealed class FirstRunHeartbeat : IDisposable {
                     }
                 }
 
-                if (pending is null && clock.GetUtcNow() >= quietUntil)
-                    pending = SendAsync(channel, serverUrl, flowId);
+                if (inFlight.Count < MaxInFlight && clock.GetUtcNow() >= quietUntil)
+                    inFlight.Add(SendAsync(channel, serverUrl, flowId));
 
                 if (!await timer.WaitForNextTickAsync(ct)) return;
             }
         } catch (OperationCanceledException) {
-            // The stop. The source is deliberately not disposed here: this loop no longer ends only on
-            // the cancel, so a dispose here could race Dispose's own use of it — and a source with no
-            // timer and no registrations left costs nothing to leave for the collector.
+            // The stop.
+        } catch (ObjectDisposedException) {
+            // Dispose raced the tick this loop was entering. Same outcome as the cancel, and the reason
+            // the source can be disposed there at all: nothing below this line reads it.
         }
     }
 
