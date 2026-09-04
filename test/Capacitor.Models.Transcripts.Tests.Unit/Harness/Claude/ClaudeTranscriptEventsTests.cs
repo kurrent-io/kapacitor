@@ -146,4 +146,15 @@ public class ClaudeTranscriptEventsTests {
             await Assert.That(r.Events).IsEmpty().Because(line);
         }
     }
+
+    [Test]
+    public async Task Events_of_one_record_never_share_an_extension_struct() {
+        var e = E("""{"type":"assistant","isSidechain":true,"message":{"content":[{"type":"text","text":"a"},{"type":"text","text":"b"}]}}""");
+        await Assert.That(e).Count().IsEqualTo(2);
+        var first  = SchemaExtensions.Slug(e[0].Payload, "claude_code");
+        var second = SchemaExtensions.Slug(e[1].Payload, "claude_code");
+        await Assert.That(first).IsNotNull();
+        await Assert.That(second).IsNotNull();
+        await Assert.That(ReferenceEquals(first, second)).IsFalse();
+    }
 }

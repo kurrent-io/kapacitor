@@ -68,6 +68,10 @@ Deliberate choices a change can silently undo — each looks like a bug until yo
   over the whole line matches past the value it found into the surrounding structure, and the server
   drops an unparseable line silently. A line the writer refuses is replaced by a placeholder —
   never by the raw line, which would re-expose what the redactor just matched.
+- **Transcript event ids are a persistence contract.** `TranscriptIds` in `Capacitor.Models.Transcripts`
+  fixes the bytes each id hashes; the server dedups by them, and a session it has already ingested
+  is never re-projected. A different derivation would append duplicates on the next re-import, so
+  the leaf's fixed vectors pin every row and a change needs a migration, not a bump.
 
 ## Tech stack
 

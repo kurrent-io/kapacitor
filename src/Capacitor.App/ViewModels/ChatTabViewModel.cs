@@ -48,14 +48,16 @@ public sealed class ChatTabViewModel : ReactiveObject {
     sealed class TailLease(JsonlTail tail, int generation) {
         public JsonlTail Tail { get; } = tail;
         public int Generation { get; } = generation;
-        public TranscriptContext? Context { get; private set; }
+        TranscriptContext? _context;
         int _linesRead;
 
+        // The app has no session id and persists nothing, so the agent id stands in; only attachment ids would read it.
         public TranscriptContext ContextFor(TranscriptChatProjection projection, string agentId) =>
-            Context ??= projection.CreateContext(agentId, null);
+            _context ??= projection.CreateContext(agentId, null);
 
-        public void Reset() { Context = null; _linesRead = 0; }
+        public void Reset() { _context = null; _linesRead = 0; }
 
+        // Counts the lines the tail yields, which skips blank lines, so it is not the file's physical line number.
         public int NextLine() => ++_linesRead;
     }
 

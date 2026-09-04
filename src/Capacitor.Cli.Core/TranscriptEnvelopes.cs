@@ -65,7 +65,9 @@ public static class TranscriptEnvelopes {
     static void Write(Utf8JsonWriter writer, Value value) {
         switch (value.KindCase) {
             case Value.KindOneofCase.StringValue: writer.WriteStringValue(value.StringValue); break;
-            case Value.KindOneofCase.NumberValue: writer.WriteNumberValue(value.NumberValue); break;
+            case Value.KindOneofCase.NumberValue:
+                if (double.IsFinite(value.NumberValue)) writer.WriteNumberValue(value.NumberValue); else writer.WriteNullValue();
+                break;
             case Value.KindOneofCase.BoolValue:   writer.WriteBooleanValue(value.BoolValue); break;
             case Value.KindOneofCase.StructValue: Write(writer, value.StructValue); break;
             case Value.KindOneofCase.ListValue:

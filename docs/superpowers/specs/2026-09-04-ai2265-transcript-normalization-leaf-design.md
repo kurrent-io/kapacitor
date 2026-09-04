@@ -252,7 +252,9 @@ it), and any type the build does not know.
   block is present:
   - *With tool results:* one `ToolResultReceived` per `tool_result` block, in raw order, and
     nothing else from the record; text and image blocks beside them are dropped, as today
-    (`call_id` = `tool_use_id`; `result` = the string, the joined `text` blocks, or the raw JSON;
+    (`call_id` = `tool_use_id`; `result` = a string `content` as is; an array's `text` blocks
+    joined with a blank line (`"\n\n"`), or the array's raw JSON when it has none; any other
+    non-null `content` as its raw JSON; unset when `content` is absent or null;
     `extensions.claude_code` = `tool_use_result`, `output_raw`, `is_error`). The first result
     keeps the record id, exactly legacy's single event; later results are new events on block
     sibling ids.

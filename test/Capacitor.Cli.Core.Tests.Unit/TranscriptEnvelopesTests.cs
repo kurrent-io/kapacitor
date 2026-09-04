@@ -69,4 +69,11 @@ public class TranscriptEnvelopesTests {
         await Assert.That(TranscriptEnvelopes.From(Ev(new SessionStarted()))).IsEmpty();
         await Assert.That(TranscriptEnvelopes.From(new CanonicalEvent("Other", new object(), Guid.NewGuid(), At))).IsEmpty();
     }
+
+    [Test]
+    public async Task A_non_finite_number_in_a_struct_writes_as_null() {
+        var s = new Struct();
+        s.Fields["n"] = Value.ForNumber(double.PositiveInfinity);
+        await Assert.That(TranscriptEnvelopes.CompactJson(s)).IsEqualTo("""{"n":null}""");
+    }
 }
