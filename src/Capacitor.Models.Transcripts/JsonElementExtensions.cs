@@ -1,6 +1,6 @@
 using System.Text.Json;
 
-namespace Capacitor.Cli.Core;
+namespace Capacitor.Models.Transcripts;
 
 public static class JsonElementExtensions {
     extension(JsonElement el) {

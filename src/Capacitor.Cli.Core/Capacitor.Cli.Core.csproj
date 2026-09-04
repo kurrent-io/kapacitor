@@ -34,4 +34,10 @@
         <PackageReference Include="Duende.IdentityModel" />
         <PackageReference Include="Tomlyn" />
     </ItemGroup>
+    <ItemGroup>
+        <ProjectReference Include="..\Capacitor.Models.Transcripts\Capacitor.Models.Transcripts.csproj" />
+    </ItemGroup>
+    <ItemGroup>
+        <Using Include="Capacitor.Models.Transcripts" />
+    </ItemGroup>
 </Project>
