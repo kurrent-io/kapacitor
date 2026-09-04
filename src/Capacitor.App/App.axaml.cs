@@ -990,14 +990,22 @@ public partial class App : Application {
                 break;
             }
             case RecoverySurface.Reinstall:
-                surface.Attention($"kcap needs to be reinstalled to continue ({named}).");
+                // Token stays in the log for support; the banner names the action, not the wire code.
+                Console.Error.WriteLine($"kcap: daemon package inconsistent ({named}) — reinstall needed");
+                surface.Attention("This kcap install looks broken. Reinstall kcap, then try again.");
                 markPresented?.Invoke();
                 break;
             case RecoverySurface.Attention:
-            case RecoverySurface.Storage:
-                surface.Attention($"A daemon mutation needs attention ({named}).");
+            case RecoverySurface.Storage: {
+                if (AttentionCopyFor(named) is { } copy) {
+                    surface.Attention(copy);
+                } else {
+                    // Opaque tokens are for the log — a bare "needs attention (token)" banner helps nobody.
+                    Console.Error.WriteLine($"kcap: daemon mutation needs attention ({named}) — not shown in the UI");
+                }
                 markPresented?.Invoke();
                 break;
+            }
         }
     }
 
@@ -1008,6 +1016,37 @@ public partial class App : Application {
         MutationVerb.StartVerified => "verified start",
         MutationVerb.DetachedStart => "daemon start",
         _                          => verb.ToString(),
+    };
+
+    /// User-facing line for Attention/Storage outcomes. Null means log-only — never surface a
+    /// machine token the operator cannot act on.
+    internal static string? AttentionCopyFor(string token) => token switch {
+        "cli_not_found"            => "kcap CLI not found. Can't manage the daemon from this app.",
+        // App↔CLI floor — never "for the daemon"; this gate runs before any daemon contact.
+        "cli_below_floor"          => "This kcap is too old for this app. Update kcap, then press Start daemon.",
+        "no_server_configured"     => "No server is configured. Sign in or run setup first.",
+        "consent_seed_unwritable"  => "Couldn't write consent data. Check permissions on the kcap config directory.",
+        "internal_error"           => "Couldn't finish daemon setup. Press Start daemon to try again.",
+
+        "verify_viability" or "verify_hello_validation" or "verify_start_gate" or "verify_start_gate_drift"
+            or "daemon_start_gate"
+            => "The daemon didn't come up cleanly. Press Start daemon to try again.",
+
+        "verify_readiness_timeout" or "verify_contended" or "verify_rollback_budget"
+            or "verify_restore_verification" or "verify_stop_unconfirmed" or "verify_bootout_unknown"
+            => "Daemon setup didn't finish in time. Press Start daemon to try again.",
+
+        "stale_txn_marker"
+            => "A previous daemon setup didn't finish. Press Start daemon to try again.",
+
+        "ownership_mismatch" or "ownership_unknown" or "instance_pid_mismatch"
+            or "instance_changed_during_classification" or "unreachable_with_recorded_owner"
+            => "Another daemon may already be running for this name. Stop it, then press Start daemon.",
+
+        "server_or_name_mismatch" or "identity_inconsistent"
+            => "This daemon doesn't match the configured server or name. Check setup, then press Start daemon.",
+
+        _ => null,
     };
 
     // spec §10 invariant: only these AttentionSkew tokens route to Takeover; every other AttentionSkew/AttentionRepair stays Attention.

@@ -120,31 +120,32 @@ public class MainWindowViewModelTests {
         await Assert.That(brush.Color).IsEqualTo(Color.Parse(expectedHex));
     }
 
-    // ---- Start/Retry visibility (spec: shows ONLY when the action is meaningful, tracking the
-    // SAME state predicate as canStart/canRetry — but, unlike CanExecute, never hidden just
-    // because a start is in flight) ----
+    // ---- Start/Reconnect visibility (one primary action: Start when unreachable-down;
+    // Reconnect when connecting or skew — never both) ----
 
     [Test]
     [NotInParallel("AvaloniaSession")]
-    public async Task Start_and_retry_visibility_track_the_command_state_matrix() {
+    public async Task Start_and_reconnect_visibility_are_mutually_exclusive() {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var service = new FakeDaemonClientService();
             var (actions, _) = NewActions(service);
             var vm = new MainWindowViewModel(service, CancellationToken.None, TestActivity.New());
 
-            foreach (var reason in new[] { "daemon_unreachable", "daemon_incompatible" }) {
-                service.StatusSubject.OnNext(new AttachStatus(AttachState.Connecting, null, null));
-                await Assert.That(vm.StartVisible).IsFalse();
-                await Assert.That(vm.RetryVisible).IsTrue();
+            service.StatusSubject.OnNext(new AttachStatus(AttachState.Connecting, null, null));
+            await Assert.That(vm.StartVisible).IsFalse();
+            await Assert.That(vm.RetryVisible).IsTrue();
 
-                service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, null));
-                await Assert.That(vm.StartVisible).IsFalse();
-                await Assert.That(vm.RetryVisible).IsFalse();
+            service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, null));
+            await Assert.That(vm.StartVisible).IsFalse();
+            await Assert.That(vm.RetryVisible).IsFalse();
 
-                service.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, reason, null));
-                await Assert.That(vm.StartVisible).IsEqualTo(reason == "daemon_unreachable");
-                await Assert.That(vm.RetryVisible).IsTrue();
-            }
+            service.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "daemon_unreachable", null));
+            await Assert.That(vm.StartVisible).IsTrue();
+            await Assert.That(vm.RetryVisible).IsFalse();
+
+            service.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "daemon_incompatible", null));
+            await Assert.That(vm.StartVisible).IsFalse();
+            await Assert.That(vm.RetryVisible).IsTrue();
         });
     }
 
@@ -220,7 +221,7 @@ public class MainWindowViewModelTests {
 
                 service.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, reason, null));
                 await Assert.That(startCanExecute).IsEqualTo(reason == "daemon_unreachable");
-                await Assert.That(retryCanExecute).IsTrue();
+                await Assert.That(retryCanExecute).IsEqualTo(reason != "daemon_unreachable");
             }
 
             // In-flight: an outstanding start disables StartDaemonCommand even though the
@@ -262,7 +263,7 @@ public class MainWindowViewModelTests {
 
             await Assert.That(vm.Reason).IsNotNull();
             await Assert.That(vm.Reason!).Contains("App and daemon are incompatible");
-            await Assert.That(vm.Reason!).Contains("Retry");
+            await Assert.That(vm.Reason!).Contains("Reconnect");
             await Assert.That(vm.Reason!).DoesNotContain("daemon_incompatible");
             await Assert.That(vm.RecoveryVisible).IsTrue();
             await Assert.That(vm.StartVisible).IsFalse();
@@ -339,14 +340,16 @@ public class MainWindowViewModelTests {
 
     [Test]
     [NotInParallel("AvaloniaSession")]
-    public async Task Retry_sets_reconnecting_then_settles_if_still_unreachable() {
+    public async Task Reconnect_sets_reconnecting_then_settles_if_still_unreachable() {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var service = new FakeDaemonClientService();
             var vm = new MainWindowViewModel(service, CancellationToken.None, TestActivity.New());
             using var activation = vm.Activator.Activate();
 
-            service.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "daemon_unreachable", null));
+            // Reconnect is offered while connecting or skewed — not while Start owns the down case.
+            service.StatusSubject.OnNext(new AttachStatus(AttachState.Connecting, null, null));
             await Assert.That(vm.StartMessage).IsNull();
+            await Assert.That(vm.RetryVisible).IsTrue();
 
             var execute = vm.RetryCommand.Execute().ToTask();
             await Assert.That(vm.StartMessage).IsEqualTo(MainWindowViewModel.ReconnectingMessage);
@@ -375,8 +378,8 @@ public class MainWindowViewModelTests {
                 lifecycleAttention: lifecycleAttention);
             using var activation = vm.Activator.Activate();
 
-            lifecycleAttention.OnNext("A daemon mutation needs attention (verify_viability).");
-            await Assert.That(vm.StartMessage).IsEqualTo("A daemon mutation needs attention (verify_viability).");
+            lifecycleAttention.OnNext("The daemon didn't come up cleanly. Press Start daemon to try again.");
+            await Assert.That(vm.StartMessage).IsEqualTo("The daemon didn't come up cleanly. Press Start daemon to try again.");
         });
     }
 

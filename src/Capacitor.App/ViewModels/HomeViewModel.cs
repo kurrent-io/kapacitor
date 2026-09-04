@@ -53,9 +53,9 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
     internal const string FinishingSignInNotice =
         "Finishing sign-in. Reconnecting to the server…";
     internal const string DaemonDownNotice     =
-        "The daemon isn't running. Start it to launch sessions. If it should already be up, press Retry.";
+        "The daemon isn't running. Press Start daemon to launch sessions.";
     internal const string DaemonIncompatibleNotice =
-        "App and daemon are incompatible. Update both to matching versions, then press Retry.";
+        "App and daemon are incompatible. Update both to matching versions, then press Reconnect.";
     internal const string ServerLostNotice     = "Not connected to the server. Sign in again to reconnect.";
     internal const string SignInExpiredNotice  = "Your sign-in has expired. Sign in again.";
 
@@ -140,6 +140,11 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
     /// wins over the connection-derived one — it is the more specific diagnosis.
     public string? ConnectionNotice => _connectionNotice.Value;
 
+    readonly ObservableAsPropertyHelper<string?> _bannerMessage;
+    /// Single banner body: a start/lifecycle message wins over the generic connection notice so
+    /// Unreachable + "kcap too old" does not stack two lines that both say press Start daemon.
+    public string? BannerMessage => _bannerMessage.Value;
+
     readonly ObservableAsPropertyHelper<bool> _connectionBannerVisible;
     /// Same connection/sign-in/daemon banner the launcher shows above the composer.
     public bool ConnectionBannerVisible => _connectionBannerVisible.Value;
@@ -156,6 +161,9 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
     ObservableAsPropertyHelper<string?>? _daemonStartMessage;
     /// Start-daemon failure text mirrored from MainWindow (cleared on Connected / new attempt).
     public string? DaemonStartMessage => _daemonStartMessage?.Value;
+
+    // Feeds BannerMessage before AttachDaemonRecovery runs (null) and after (lifecycle lane).
+    readonly BehaviorSubject<string?> _daemonStartMessageFeed = new(null);
 
     /// Shared with MainWindowViewModel so the banner's Start daemon button is the same command
     /// lifecycle / startAction already owns. Null until AttachDaemonRecovery runs.
@@ -274,8 +282,12 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
         _connectionNotice = notices
             .ToProperty(this, x => x.ConnectionNotice, ConnectingNotice)
             .DisposeWith(_disposables);
-        _connectionBannerVisible = notices
-            .Select(notice => notice is not null)
+        var bannerMessages = notices.CombineLatest(_daemonStartMessageFeed, BannerMessageFor);
+        _bannerMessage = bannerMessages
+            .ToProperty(this, x => x.BannerMessage, ConnectingNotice)
+            .DisposeWith(_disposables);
+        _connectionBannerVisible = bannerMessages
+            .Select(message => message is not null)
             .ToProperty(this, x => x.ConnectionBannerVisible, initialValue: false)
             .DisposeWith(_disposables);
         _signInVisible = signInState
@@ -300,7 +312,7 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
         _ = EnsureDefaultRepositoryAsync();
     }
 
-    /// MainWindow owns Start/Retry (lifecycle startAction + shutdown token). The launcher banner
+    /// MainWindow owns Start/Reconnect (lifecycle startAction + shutdown token). The launcher banner
     /// reuses those commands and the start-message lane so chrome and pane never diverge.
     public void AttachDaemonRecovery(
             ReactiveCommand<Unit, Unit> startDaemon,
@@ -319,11 +331,19 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
         _daemonRetryVisible = retryVisible
             .ToProperty(this, x => x.DaemonRetryVisible, initialValue: false)
             .DisposeWith(_disposables);
+        startMessage
+            .ObserveOn(RxSchedulers.MainThreadScheduler)
+            .Subscribe(_daemonStartMessageFeed)
+            .DisposeWith(_disposables);
         _daemonStartMessage = startMessage
             .ObserveOn(RxSchedulers.MainThreadScheduler)
             .ToProperty(this, x => x.DaemonStartMessage, (string?)null)
             .DisposeWith(_disposables);
     }
+
+    /// Prefer the actionable start/lifecycle line when present; otherwise the connection notice.
+    internal static string? BannerMessageFor(string? connectionNotice, string? startMessage) =>
+        !string.IsNullOrEmpty(startMessage) ? startMessage : connectionNotice;
 
     /// The re-auth dialog's success lands here (App wires it): clears the expired flag and holds a
     /// finishing notice until the daemon reports the server is connected again.
@@ -379,7 +399,10 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
 
     // Constructor-scoped (like TrayViewModel/ActivityViewModel), not WhenActivated — the OAPH and
     // the Agents subscription above run for this object's whole lifetime, not a window's.
-    public void Dispose() => _disposables.Dispose();
+    public void Dispose() {
+        _disposables.Dispose();
+        _daemonStartMessageFeed.Dispose();
+    }
 
     /// Sets the selection and persists it for SelectedRepoPath.
     public async Task ChooseHarnessAsync(string vendor) {

@@ -552,10 +552,22 @@ public class HomeViewModelTests {
             daemon.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "not running", null));
 
             await Assert.That(vm.ConnectionNotice).IsEqualTo(HomeViewModel.DaemonDownNotice);
+            await Assert.That(vm.BannerMessage).IsEqualTo(HomeViewModel.DaemonDownNotice);
             await Assert.That(vm.ConnectionBannerVisible).IsTrue();
             await Assert.That(vm.SignInVisible).IsFalse();
             await Assert.That(await vm.StartCommand.CanExecute.FirstAsync()).IsFalse();
         });
+    }
+
+    [Test]
+    [Arguments(null, null, null)]
+    [Arguments("daemon down", null, "daemon down")]
+    [Arguments("daemon down", "kcap too old", "kcap too old")]
+    [Arguments(null, "kcap too old", "kcap too old")]
+    [Arguments("daemon down", "", "daemon down")]
+    public async Task BannerMessage_prefers_a_start_message_over_the_connection_notice(
+            string? notice, string? startMessage, string? expected) {
+        await Assert.That(HomeViewModel.BannerMessageFor(notice, startMessage)).IsEqualTo(expected);
     }
 
     [Test]

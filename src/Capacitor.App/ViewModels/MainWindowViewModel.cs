@@ -13,7 +13,7 @@ namespace Capacitor.App.ViewModels;
 /// Sessions view.
 public enum ShellView { Home, Sessions }
 
-/// Projects IDaemonClientService.Status/Snapshots into display text and drives Start/Retry.
+/// Projects IDaemonClientService.Status/Snapshots into display text and drives Start/Reconnect.
 /// All display projections are activation-scoped (WhenActivated) — the service outlives this
 /// ViewModel and owns its subjects (spec §5), so nothing here disposes the service itself.
 /// DEVIATION: StartDaemonCommand/RetryCommand and their canExecute pipelines are built in the
@@ -22,7 +22,8 @@ public enum ShellView { Home, Sessions }
 /// service's own long-lived subjects, not resources the VM needs to scope to a window's
 /// lifetime. StartVisible/RetryVisible mirror that same constructor scoping (spec: presentation
 /// visibility must track the identical state predicate the command's own canExecute uses,
-/// independent of activation too).
+/// independent of activation too). One primary action at a time: Start when the daemon looks
+/// down; Reconnect when attaching or skewed (never both).
 public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel {
     const string IncompatibleReason = "daemon_incompatible";
     const string UnreachableReason  = "daemon_unreachable";
@@ -38,7 +39,7 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     /// click is never silent even when the start action itself has nothing further to say.
     internal const string StartingMessage = "Starting the daemon…";
 
-    /// Shown the moment Retry is pressed. Cleared on Connected; replaced if attach stays unreachable.
+    /// Shown the moment Reconnect is pressed. Cleared on Connected; replaced if attach stays unreachable.
     internal const string ReconnectingMessage = "Reconnecting…";
 
     internal const string ReconnectFailedMessage =
@@ -271,11 +272,15 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
         // IsEnabled write, onto that same background thread, tripping Avalonia's dispatcher
         // thread-affinity check. These stay constructor-scoped (not inside WhenActivated) since
         // commands must exist and be assertable pre-activation — see the class doc comment.
+        // One primary action at a time: Start when nothing is listening (spawn/reattach via the
+        // lifecycle); Reconnect when Start is not the right next step (skew, or still connecting).
         var canStart = service.Status
             .Select(s => s.State == AttachState.Unreachable && s.Reason == UnreachableReason)
             .ObserveOn(RxSchedulers.MainThreadScheduler);
         var canRetry = service.Status
-            .Select(s => s.State != AttachState.Connected)
+            .Select(s =>
+                s.State == AttachState.Connecting
+                || (s.State == AttachState.Unreachable && s.Reason != UnreachableReason))
             .ObserveOn(RxSchedulers.MainThreadScheduler);
 
         var start = startAction ?? RunStartAsync;
@@ -296,13 +301,10 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
             .ObserveOn(RxSchedulers.MainThreadScheduler)
             .ToProperty(this, x => x.RecoveryVisible, initialValue: false);
 
-        // Launcher banner owns the chrome; share the same Start/Retry commands and start-message
+        // Launcher banner owns the chrome; share the same Start/Reconnect commands and start-message
         // lane so the pane never drifts from what MainWindow already drives.
-        var daemonRetryVisible = service.Status
-            .Select(s => s.State == AttachState.Unreachable)
-            .ObserveOn(RxSchedulers.MainThreadScheduler);
         home?.AttachDaemonRecovery(
-            StartDaemonCommand, RetryCommand, canStart, daemonRetryVisible, _startMessageChanges);
+            StartDaemonCommand, RetryCommand, canStart, canRetry, _startMessageChanges);
 
         this.WhenActivated(disposables => {
             var status    = service.Status.ObserveOn(RxSchedulers.MainThreadScheduler);

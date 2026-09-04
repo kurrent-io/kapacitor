@@ -198,13 +198,12 @@ public class MainWindowSmokeTests {
         await Assert.That(completed).IsTrue();
     }
 
-    /// ConnectionNotice / DaemonStartMessage must not reserve dead space when there is nothing
-    /// to say: both start out empty (Connecting, no failed attempt yet), then the notice appears
-    /// on Unreachable and the start-message appears once a start attempt fails.
+    /// BannerMessage must not reserve dead space when empty: Connecting… shows a notice, then a
+    /// failed start replaces that body with the start message (one line, never stacked).
     [Test]
     [NotInParallel("AvaloniaSession")]
     public async Task StartMessage_and_reason_text_collapse_when_empty_and_appear_once_set() {
-        var (noticeInitially, startMessageInitially, noticeWhileUnreachable, startMessageAfterFailure) =
+        var (bannerInitially, bannerTextUnreachable, bannerTextAfterFailure) =
             await AvaloniaSession.DispatchAsync(async () => {
                 using var tmp = TempDir.WithPathTo("app-state.json", out var path);
                 var service = new FakeDaemonClientService();
@@ -216,33 +215,31 @@ public class MainWindowSmokeTests {
                 window.Show();
                 Dispatcher.UIThread.RunJobs();
 
-                TextBlock Find(string name) =>
-                    window.GetVisualDescendants().OfType<TextBlock>().First(t => t.Name == name);
-                Border NoticeBanner() => Find("ConnectionNoticeText").FindAncestorOfType<Border>()!;
+                TextBlock Banner() =>
+                    window.GetVisualDescendants().OfType<TextBlock>().First(t => t.Name == "BannerMessageText");
+                Border NoticeBanner() => Banner().FindAncestorOfType<Border>()!;
 
-                var noticeInit = NoticeBanner().IsVisible;
-                var startMessageInit = Find("DaemonStartMessageText").IsVisible;
+                var bannerInit = NoticeBanner().IsVisible;
 
                 service.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "daemon_unreachable", null));
                 Dispatcher.UIThread.RunJobs();
-                var noticeUnreachable = NoticeBanner().IsVisible;
+                var textUnreachable = Banner().Text;
 
                 service.StartBehavior = _ => Task.FromResult(new StartDaemonResult(false, "boom: could not bind socket"));
                 await vm.StartDaemonCommand.Execute().ToTask();
                 Dispatcher.UIThread.RunJobs();
-                var startMessageAfter = Find("DaemonStartMessageText").IsVisible;
+                var textAfter = Banner().Text;
 
                 window.Close();
                 Dispatcher.UIThread.RunJobs();
                 home.Dispose();
 
-                return (noticeInit, startMessageInit, noticeUnreachable, startMessageAfter);
+                return (bannerInit, textUnreachable, textAfter);
             });
 
-        await Assert.That(noticeInitially).IsTrue(); // Connecting… still has a notice
-        await Assert.That(startMessageInitially).IsFalse();
-        await Assert.That(noticeWhileUnreachable).IsTrue();
-        await Assert.That(startMessageAfterFailure).IsTrue();
+        await Assert.That(bannerInitially).IsTrue(); // Connecting… still has a notice
+        await Assert.That(bannerTextUnreachable).IsEqualTo(HomeViewModel.DaemonDownNotice);
+        await Assert.That(bannerTextAfterFailure).IsEqualTo("boom: could not bind socket");
     }
 
     // ---- Toast overlay (spec §11: WindowNotificationManager replaces the inline banner) ----

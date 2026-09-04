@@ -15,22 +15,17 @@
                 BorderBrush="{StaticResource KcapWarningBrush}" BorderThickness="1"
                 IsVisible="{Binding ConnectionBannerVisible}">
             <StackPanel Spacing="12">
-                <StackPanel Spacing="6">
-                    <TextBlock x:Name="ConnectionNoticeText" Text="{Binding ConnectionNotice}"
-                               Foreground="{StaticResource KcapWarningBrush}" FontSize="13" LineHeight="20"
-                               TextWrapping="Wrap" />
-                    <TextBlock x:Name="DaemonStartMessageText" Text="{Binding DaemonStartMessage}"
-                               Foreground="{StaticResource KcapDangerBrush}" FontSize="12.5" LineHeight="18"
-                               TextWrapping="Wrap"
-                               IsVisible="{Binding DaemonStartMessage, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
-                </StackPanel>
+                <TextBlock x:Name="BannerMessageText" Text="{Binding BannerMessage}"
+                           Foreground="{StaticResource KcapWarningBrush}" FontSize="13" LineHeight="20"
+                           TextWrapping="Wrap"
+                           IsVisible="{Binding BannerMessage, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
                 <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Left">
                     <Button x:Name="StartDaemonButton" Classes="kcapPrimary" Content="Start daemon"
                             Command="{Binding StartDaemonCommand}" IsVisible="{Binding DaemonStartVisible}"
                             Background="{StaticResource KcapPrimaryBrush}"
                             Foreground="{StaticResource KcapOnPrimaryBrush}"
                             FontWeight="SemiBold" CornerRadius="7" Padding="14,6" />
-                    <Button x:Name="RetryDaemonButton" Classes="kcapChip" Content="Retry"
+                    <Button x:Name="RetryDaemonButton" Classes="kcapChip" Content="Reconnect"
                             Command="{Binding RetryDaemonCommand}" IsVisible="{Binding DaemonRetryVisible}"
                             Background="{StaticResource KcapSurfaceRaisedBrush}"
                             BorderBrush="{StaticResource KcapBorderBrush}"

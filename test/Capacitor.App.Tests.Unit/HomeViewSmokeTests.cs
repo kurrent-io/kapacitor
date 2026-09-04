@@ -68,7 +68,7 @@ public class HomeViewSmokeTests {
             var names = new[] {
                 "LauncherHeadline", "LauncherRepoSubtitle",
                 "GoalInput", "RepositoryChip", "AgentChip", "EffortChip", "PermissionChip", "StartButton",
-                "StartErrorText", "ConnectionNoticeText", "DaemonStartMessageText",
+                "StartErrorText", "BannerMessageText",
                 "StartDaemonButton", "RetryDaemonButton", "HomeSignInButton",
             };
             var resolved = names.ToDictionary(name => name, name => Find<Control>(window, name) is not null);
@@ -88,8 +88,7 @@ public class HomeViewSmokeTests {
         await Assert.That(found["PermissionChip"]).IsTrue();
         await Assert.That(found["StartButton"]).IsTrue();
         await Assert.That(found["StartErrorText"]).IsTrue();
-        await Assert.That(found["ConnectionNoticeText"]).IsTrue();
-        await Assert.That(found["DaemonStartMessageText"]).IsTrue();
+        await Assert.That(found["BannerMessageText"]).IsTrue();
         await Assert.That(found["StartDaemonButton"]).IsTrue();
         await Assert.That(found["RetryDaemonButton"]).IsTrue();
         await Assert.That(found["HomeSignInButton"]).IsTrue();
@@ -141,7 +140,7 @@ public class HomeViewSmokeTests {
             window.Show();
             Dispatcher.UIThread.RunJobs();
 
-            var notice = Find<TextBlock>(window, "ConnectionNoticeText")!;
+            var notice = Find<TextBlock>(window, "BannerMessageText")!;
             var signIn = Find<Button>(window, "HomeSignInButton")!;
             // The banner Border owns visibility; the text/button stay in the tree.
             var banner = notice.FindAncestorOfType<Border>()!;
