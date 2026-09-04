@@ -657,3 +657,17 @@ config root's cache directory, so an absent directory after the initialize/tools
 proves it never ran; the tool call that follows then proves on-demand resolution by carrying the
 repo hash. Asserting on the cache file itself would key on the child's own view of its cwd, which
 macOS reports through the resolved `/private` path rather than the one the test handed it.
+
+## Transcript normalization has one home
+
+**AI-2265** (spec: `docs/superpowers/specs/2026-09-04-ai2265-transcript-normalization-leaf-design.md`)
+moves transcript-to-canonical projection into `Capacitor.Models.Transcripts`, a leaf with the
+`Kurrent.Agent.Schema` package and nothing else, so the desktop chat and the server read one
+implementation. **Projections emit the schema's own messages**, because that is what the server
+persists and the package is AOT-clean; the chat keeps its `AcpEventEnvelope` renderer through an
+adapter in Core, with each vendor's display rules (Claude's wrapper stripping and task-notification
+note, Codex's injected-prelude skip) beside it under `Harness/<Vendor>/`. **A projection never
+mutates an event it has returned**: anything the server stamps in place today arrives as an
+explicit amendment or a `UsageApplied` instruction. **Every id derivation is a persistence
+contract** pinned by fixed vectors; the server dedups by them. This first step carries the chat's
+coverage only; Claude and Codex parity with the server's normalizers follow, one PR each.

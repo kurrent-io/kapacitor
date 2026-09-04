@@ -48,8 +48,7 @@ public class TranscriptIdsTests {
         await Assert.That(TranscriptIds.CodexRecord(line)).IsEqualTo(new Guid(XxHash128.Hash(Encoding.UTF8.GetBytes(line))));
     }
 
-    /// Fixed vectors. Fill the expected literals once from the printer below, then delete the
-    /// printer; a later change to any derivation fails here even if the framing test is edited too.
+    /// Fixed vectors: a later change to any derivation fails here even if the framing tests are edited too.
     [Test]
     [Arguments("sibling", "580a4b24-18bc-bc19-9676-ed805dff4bdd")]
     [Arguments("claude-fallback", "076b76f4-34c5-66d5-20c5-52bcc518f62c")]
