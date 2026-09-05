@@ -55,6 +55,7 @@ public class TranscriptIdsTests {
     [Arguments("claude-block", "de376eef-af14-5d28-b930-bbbef251635d")]
     [Arguments("claude-attachment", "c0331d1c-5d1f-a123-49d3-820902c4d48b")]
     [Arguments("codex-record", "b17e302c-b826-0247-6fda-5634e74c45ce")]
+    [Arguments("codex-usage-backfill", "5bccf7a4-6eee-83b2-b58c-f10627871a82")]
     public async Task Vectors_are_fixed(string name, string expected) {
         await Assert.That(Vector(name).ToString("D")).IsEqualTo(expected);
     }
@@ -65,6 +66,7 @@ public class TranscriptIdsTests {
         "claude-block"      => TranscriptIds.ClaudeBlock(Primary, 2),
         "claude-attachment" => TranscriptIds.ClaudeAttachment("sess:agent", Primary, 3),
         "codex-record"      => TranscriptIds.CodexRecord("{\"type\":\"response_item\",\"payload\":{}}"),
+        "codex-usage-backfill" => TranscriptIds.Sibling(Primary, "usage-backfill"),
         _                   => throw new ArgumentOutOfRangeException(nameof(name)),
     };
 }

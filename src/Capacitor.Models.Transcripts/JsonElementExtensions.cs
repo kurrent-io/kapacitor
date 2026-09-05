@@ -4,15 +4,9 @@ namespace Capacitor.Models.Transcripts;
 
 public static class JsonElementExtensions {
     extension(JsonElement el) {
-        // The one primitive the property accessors below cannot express: whether the element ITSELF
-        // is an object. They all answer about a named property, so a caller guarding a document root
-        // (or any element it is about to read properties off) had no helper to reach for and dropped
-        // to a raw ValueKind comparison instead.
+        // The element's own kind, for a document root or a value already in hand; every accessor
+        // below answers about a named property instead.
         public bool IsObject => el.ValueKind == JsonValueKind.Object;
-
-        // Same shape as IsObject, for callers that already have an element in hand (e.g. a property
-        // value pulled via TryGetProperty) and need to branch on ITS kind rather than a named
-        // property of it — the accessors below only ever answer about a property BY NAME.
         public bool IsString => el.ValueKind == JsonValueKind.String;
         public bool IsArray  => el.ValueKind == JsonValueKind.Array;
         public bool IsNumber => el.ValueKind == JsonValueKind.Number;

@@ -31,22 +31,27 @@ public sealed class ClaudeTranscriptEvents : ITranscriptProjection {
             var root = doc.RootElement;
             if (!root.IsObject) return ProjectionResult.Reject("not a JSON object");
 
+            // Only a record the projection reads needs a usable id; every other type is ignored
+            // whatever its uuid holds.
+            var type = root.Str("type");
+            if (type is not ("user" or "assistant")) return ProjectionResult.Empty;
+
             Guid recordId;
-            if (root.Str("uuid") is { } uuid) {
-                if (!Guid.TryParse(uuid, out recordId)) return ProjectionResult.Reject("uuid is not a GUID");
-            } else {
-                recordId = TranscriptIds.ClaudeFallback(lineNumber, line);
+            switch (root.Prop("uuid")) {
+                case null:
+                    recordId = TranscriptIds.ClaudeFallback(lineNumber, line);
+                    break;
+                case { } uuid when uuid.IsString && Guid.TryParse(uuid.GetString(), out var parsed):
+                    recordId = parsed;
+                    break;
+                default:
+                    return ProjectionResult.Reject("uuid is not a GUID");
             }
 
             var (at, recordTimestamp) = TranscriptTime.Resolve(root.Str("timestamp"), receivedAt);
             var record = new Record(recordId, at, recordTimestamp, root.Str("parentUuid"), root.Bool("isSidechain") == true);
 
-            IReadOnlyList<CanonicalEvent> events = root.Str("type") switch {
-                "user"      => ProjectUser(root, record),
-                "assistant" => ProjectAssistant(root, record),
-                _           => [],
-            };
-            return ProjectionResult.Of(events);
+            return ProjectionResult.Of(type == "user" ? ProjectUser(root, record) : ProjectAssistant(root, record));
         }
     }
 

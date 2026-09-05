@@ -139,6 +139,17 @@ public class ClaudeTranscriptEventsTests {
     }
 
     [Test]
+    public async Task A_uuid_matters_only_on_a_record_the_projection_reads() {
+        var ignored = P("""{"type":"progress","uuid":"bad","message":{"content":"x"}}""");
+        await Assert.That(ignored.Rejected).IsNull();
+        await Assert.That(ignored.Events).IsEmpty();
+
+        var numeric = P("""{"type":"user","uuid":42,"message":{"content":"x"}}""");
+        await Assert.That(numeric.Rejected).IsNotNull();
+        await Assert.That(numeric.Events).IsEmpty();
+    }
+
+    [Test]
     public async Task Malformed_lines_are_rejected_with_a_reason_and_emit_nothing() {
         foreach (var line in new[] { "", "   ", "not json", "[1,2]", "\"s\"", $$$"""{"type":"user","uuid":"not-a-guid","message":{"content":"x"}}""" }) {
             var r = P(line);
