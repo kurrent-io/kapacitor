@@ -82,6 +82,11 @@ internal record AgentInstance(
         }
     }
 
+    /// <summary>A title resolved after launch — native extraction, local generation, or the
+    /// server's — which the status payload prefers over the prompt seed. Written only through
+    /// <see cref="AgentOrchestrator.SetResolvedTitle"/> so the pulse cannot be forgotten.</summary>
+    public string? ResolvedTitle { get; set; }
+
     /// First non-blank line of the launch prompt, trimmed, capped at 80 chars total (ellipsis when
     /// cut, never splitting a surrogate pair) — the status payload is re-sent on every revision,
     /// so the full prompt never rides it.
@@ -865,6 +870,12 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
     internal void UnpublishAgent(string agentId) {
         _agents.TryRemove(agentId, out _);
+        _statusNotifier.Pulse();
+    }
+
+    internal void SetResolvedTitle(AgentInstance agent, string title) {
+        if (agent.ResolvedTitle == title) return;
+        agent.ResolvedTitle = title;
         _statusNotifier.Pulse();
     }
 
