@@ -3,7 +3,7 @@ using Capacitor.Cli.Core.WorkItems;
 
 namespace Capacitor.Cli.Core.Tests.Unit.WorkItems;
 
-/// The three server shapes the sidebar reads, pinned against literal server-shaped bodies, plus
+/// The server shapes the sidebar reads, pinned against literal server-shaped bodies, plus
 /// the source-generated metadata for each root: a round trip alone would pass under reflection
 /// and only fail on the AOT binary.
 public class WorkContextDtoTests {

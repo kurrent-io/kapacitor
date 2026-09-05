@@ -7,7 +7,6 @@ public sealed record WorkContextOutcome<T>(int StatusCode, T? Body, WorkItemErro
     public bool Succeeded => StatusCode is >= 200 and < 300 && Body is not null;
 }
 
-/// The four routes as a seam, so the reader is testable without a socket.
 public interface IWorkContextChannel {
     Task<WorkContextOutcome<List<SessionWorkItemAssignmentDto>>> GetSessionAssignmentsAsync(string sessionId, CancellationToken ct);
     Task<WorkContextOutcome<WorkItemDto>>                         GetWorkItemAsync(string workItemId, CancellationToken ct);

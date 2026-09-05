@@ -118,7 +118,6 @@
         </Style>
     </UserControl.Styles>
     <UserControl.Resources>
-        <!-- One card for a pull request or the issue; the eyebrow says which. -->
         <DataTemplate x:Key="LinkCard" x:DataType="vm:WorkContextLinkViewModel">
             <Button Command="{Binding OpenCommand}" Classes="toggle" Margin="0,9,0,0" ToolTip.Tip="{Binding Url}">
                 <Border Classes="card" Padding="13,11">
@@ -183,7 +182,6 @@
                                        Foreground="{StaticResource KcapMutedBrush}" TextWrapping="Wrap" Margin="0,4,0,0"
                                        IsVisible="{Binding PartOfTitle, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
 
-                            <!-- Parts: header toggle with the settled count, then one row per part. -->
                             <Button x:Name="PartsToggle" Command="{Binding TogglePartsCommand}" Classes="sectionHeader" Margin="-8,8,-8,0">
                                 <StackPanel Orientation="Horizontal" Spacing="7">
                                     <!-- Stroked chevron, not a text glyph — the 9px ▸ rendered as a dot. -->
@@ -248,7 +246,6 @@
                     </StackPanel>
                 </Border>
 
-                <!-- Link cards: one per pull request, then the issue. -->
                 <ItemsControl x:Name="LinkCards" ItemsSource="{Binding Links}" ItemTemplate="{StaticResource LinkCard}" />
                 <ContentControl x:Name="IssueCard" Content="{Binding Issue}" ContentTemplate="{StaticResource LinkCard}" IsVisible="{Binding HasIssue}" />
 
