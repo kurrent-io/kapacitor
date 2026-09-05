@@ -1069,10 +1069,13 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
 
     /// The hub method the web UI answers through, invoked as the owner so the web card clears
     /// after a local settlement. Never throws; runs on the daemon-lifetime token.
+    /// SignalR binds a positional invocation by argument count, so all seven of the server
+    /// method's parameters are sent; the last two name an ACP option, which a hook decision
+    /// never carries.
     public virtual async Task<RespondOutcome> RespondToPermissionAsync(string sessionId, string serverRequestId, PermissionDecision decision) {
         try {
             await _hub.InvokeAsync("RespondToPermission", sessionId, serverRequestId, decision.Behavior,
-                decision.ApplyPermissions, decision.UpdatedInput, _ct);
+                decision.ApplyPermissions, decision.UpdatedInput, null, null, _ct);
             return new RespondOutcome(RespondOutcomeKind.Applied, null);
         } catch (Exception ex) {
             return ClassifyRespondFailure(ex);
