@@ -120,8 +120,21 @@ public class HostedHarnessCatalogTests {
         await Assert.That(HostedHarnessCatalog.ModelLabelFor("claude", "claude-fable-5")).IsEqualTo("Claude Fable 5");
         await Assert.That(HostedHarnessCatalog.ModelLabelFor("claude", "CLAUDE-FABLE-5")).IsEqualTo("Claude Fable 5");
         await Assert.That(HostedHarnessCatalog.ModelLabelFor("claude", "some-future-id")).IsEqualTo("some-future-id");
-        await Assert.That(HostedHarnessCatalog.ModelLabelFor("claude", "")).IsEqualTo("default");
-        await Assert.That(HostedHarnessCatalog.ModelLabelFor("gemini", "  ")).IsEqualTo("default");
+        await Assert.That(HostedHarnessCatalog.ModelLabelFor("claude", "")).IsEqualTo("Default");
+        await Assert.That(HostedHarnessCatalog.ModelLabelFor("gemini", "  ")).IsEqualTo("Default");
+    }
+
+    [Test]
+    public async Task Effort_labels_are_sentence_case_and_default_is_not_auto() {
+        await Assert.That(HostedHarnessCatalog.EffortLabelFor(null)).IsEqualTo("Default");
+        await Assert.That(HostedHarnessCatalog.EffortLabelFor("")).IsEqualTo("Default");
+        await Assert.That(HostedHarnessCatalog.EffortLabelFor("low")).IsEqualTo("Low");
+        await Assert.That(HostedHarnessCatalog.EffortLabelFor("medium")).IsEqualTo("Medium");
+        await Assert.That(HostedHarnessCatalog.EffortLabelFor("high")).IsEqualTo("High");
+        await Assert.That(HostedHarnessCatalog.EffortLabelFor("xhigh")).IsEqualTo("Max");
+        await Assert.That(HostedHarnessCatalog.EffortLabelFor("weird")).IsEqualTo("weird");
+        await Assert.That(HostedHarnessCatalog.EffortLadder)
+            .IsEquivalentTo(["low", "medium", "high", "xhigh"], CollectionOrdering.Matching);
     }
 
     /// The tokens are the Claude CLI's own `--permission-mode` choices, listed from most to least

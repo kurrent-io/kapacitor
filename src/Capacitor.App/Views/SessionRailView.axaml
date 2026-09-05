@@ -20,6 +20,18 @@
         <Style Selector="Button.selected, Button.holdsSelected">
             <Setter Property="Background" Value="{StaticResource KcapSurfaceRaisedBrush}" />
         </Style>
+        <Style Selector="Button.railRow:pointerover /template/ ContentPresenter#PART_ContentPresenter,
+                         Button.railRow:pressed /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="{StaticResource KcapSurfaceRaisedBrush}" />
+            <Setter Property="Foreground" Value="{StaticResource KcapTextBrush}" />
+        </Style>
+        <Style Selector="Button.selected:pointerover /template/ ContentPresenter#PART_ContentPresenter,
+                         Button.holdsSelected:pointerover /template/ ContentPresenter#PART_ContentPresenter,
+                         Button.selected:pressed /template/ ContentPresenter#PART_ContentPresenter,
+                         Button.holdsSelected:pressed /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="{StaticResource KcapSurfaceRaisedBrush}" />
+            <Setter Property="Foreground" Value="{StaticResource KcapTextBrush}" />
+        </Style>
 
     </UserControl.Styles>
 
@@ -33,7 +45,7 @@
                 <Grid Height="44" Background="Transparent" PointerPressed="OnChromePointerPressed" />
 
                 <!-- Deselects the workspace: the pane's empty state IS the launcher. -->
-                <Button x:Name="RailNewSessionButton" HorizontalAlignment="Stretch" Margin="10,0,10,10"
+                <Button x:Name="RailNewSessionButton" Classes="kcapChip" HorizontalAlignment="Stretch" Margin="10,0,10,10"
                         Command="{Binding CloseWorkspaceCommand}"
                         Background="{StaticResource KcapSurfaceRaisedBrush}" BorderBrush="{StaticResource KcapBorderBrush}"
                         BorderThickness="1" CornerRadius="7" Padding="11,7">
@@ -42,7 +54,7 @@
                                    Foreground="{StaticResource KcapFaintBrush}" VerticalAlignment="Center" />
                         <StackPanel Orientation="Horizontal" Spacing="8">
                             <TextBlock Text="+" FontSize="15" FontWeight="SemiBold"
-                                       Foreground="{StaticResource KcapAccentBrush}" VerticalAlignment="Center" />
+                                       Foreground="{StaticResource KcapTextBrush}" VerticalAlignment="Center" />
                             <TextBlock Text="New session" FontSize="13" FontWeight="SemiBold"
                                        Foreground="{StaticResource KcapTextBrush}" VerticalAlignment="Center" />
                         </StackPanel>

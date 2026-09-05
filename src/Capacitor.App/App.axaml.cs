@@ -101,6 +101,7 @@ public partial class App : Application {
     // holder on both teardown paths, after _home — never before, or a launch still in flight would
     // lose its transport mid-invoke.
     ServerClients? _serverClients;
+    ServerLaunchClient? _launch;
     TrayViewModel? _trayVm;
     TrayIconManager? _tray;
     // No disposal needed — RefCount tears its Interval down with its last subscriber, and every
@@ -329,6 +330,7 @@ public partial class App : Application {
         var launch = new ServerLaunchClient(_config, profiles);
         var workContext = new ServerWorkContextSource(_config, profiles);
         var serverClients = new ServerClients(launch, workContext);
+        _launch = launch;
         _serverClients = serverClients;
 
         // One attach client per attempt, dialed at the daemon's own control socket; 80x24 is a
@@ -346,7 +348,8 @@ public partial class App : Application {
                 lifecycleStatus, launch, _navigation, _workspaceTeardown.Track, BuildWorkspace,
                 // The tenant slug the rail footer shows — profiles are named after it at sign-in.
                 tenantName: profiles?.Resolution?.ProfileName, agentsWithPending: permissions.AgentsWithPending,
-                requestSignIn: requestSignIn),
+                requestSignIn: requestSignIn,
+                lifecycleAttention: lifecycleAttention),
             // Both close paths release the workspace: hide-to-tray keeps the window (and its
             // attach) alive, a real close discards the window the next Show() would rebuild.
             releaseWorkspace: window => (window.DataContext as MainWindowViewModel)?.CloseWorkspace());
@@ -385,7 +388,7 @@ public partial class App : Application {
         // Reachable in the carve-out arm (gate Incomplete after an abandoned wizard), where the
         // rail can show disconnected with no server to re-auth against.
         if (profiles?.Resolution.ServerUrl is not { } serverUrl || !OnboardingGate.ValidServerUrl(serverUrl)) {
-            notifier.Notify("No server is configured — run kcap setup first.");
+            notifier.Notify("No server is configured. Run kcap setup first.");
             return;
         }
 
@@ -398,10 +401,11 @@ public partial class App : Application {
             WizardComposition.NewOperation);
         var window = new SignInWindow { DataContext = graph.SignIn };
 
-        // A committed sign-in closes the dialog itself; Closed below is the ONE finish path, so
-        // both the auto-close and the user's own close cancel/quiesce identically.
+        // Hold the dialog on success so "Signed in…" is readable, refresh app state in parallel,
+        // then close. Closed below is still the ONE finish path for cancel/quiesce.
         void OnSignInChanged(object? _, PropertyChangedEventArgs e) {
-            if (e.PropertyName == nameof(SignInStepViewModel.Satisfied) && graph.SignIn.Satisfied) window.Close();
+            if (e.PropertyName == nameof(SignInStepViewModel.Satisfied) && graph.SignIn.Satisfied)
+                _ = CloseSignInAfterSuccessAsync(window);
         }
 
         graph.SignIn.PropertyChanged += OnSignInChanged;
@@ -415,15 +419,37 @@ public partial class App : Application {
         window.Show();
     }
 
+    /// How long a successful re-auth keeps the dialog open so the success line is not a flash.
+    internal static readonly TimeSpan SignInSuccessHold = TimeSpan.FromMilliseconds(1600);
+
+    async Task CloseSignInAfterSuccessAsync(Window window) {
+        var refresh = RefreshAfterReauthAsync();
+        try {
+            await Task.WhenAll(refresh, Task.Delay(SignInSuccessHold)).ConfigureAwait(true);
+        } catch (Exception ex) {
+            Console.Error.WriteLine($"kcap: post-sign-in refresh failed: {ex.Message}");
+        }
+
+        if (ReferenceEquals(_signInWindow, window)) window.Close();
+    }
+
+    /// Clears the launcher's expired/disconnected sign-in banner path, drops a stale launch hub,
+    /// nudges work-context refresh, and kicks attach so snapshots catch up sooner after new tokens land.
+    async Task RefreshAfterReauthAsync() {
+        _home?.NotifySignInCompleted();
+        _serverClients?.NotifySignInCompleted();
+        if (_launch is not null) await _launch.InvalidateAsync().ConfigureAwait(true);
+        if (_service is not null) await _service.RestartLoopAsync().ConfigureAwait(true);
+    }
+
     /// Fire-and-forget from the dialog's Closed handler — nothing may block the UI close. The
     /// quiesce is what stops a still-running attempt from committing after the window is gone.
     async Task FinishSignInAsync(ReauthGraph graph) {
         try {
             await graph.CloseAsync(CancellationToken.None);
-            if (graph.SignIn.Satisfied) {
-                _home?.NotifySignInCompleted();
-                _serverClients?.NotifySignInCompleted();
-            }
+            // Success path already refreshed before close; call again so a manual close after
+            // Satisfied still clears the banner if the hold was interrupted.
+            if (graph.SignIn.Satisfied) await RefreshAfterReauthAsync();
         } catch (Exception ex) {
             Console.Error.WriteLine($"kcap: sign-in dialog teardown failed: {ex.Message}");
         }
@@ -718,7 +744,8 @@ public partial class App : Application {
             IObservable<string?>? lifecycleStatus = null, ILaunchClient? launch = null,
             NavigationGate? navigation = null, Action<Func<Task>>? trackWorkspaceTeardown = null,
             Func<string, WorkspaceViewModel>? workspaceFactory = null, string? tenantName = null,
-            IObservable<IReadOnlySet<string>>? agentsWithPending = null, Action? requestSignIn = null) {
+            IObservable<IReadOnlySet<string>>? agentsWithPending = null, Action? requestSignIn = null,
+            IObservable<string?>? lifecycleAttention = null) {
         // Notifier is set on the WINDOW (spec §11 toast overlay), not the ViewModel — the toast
         // is a View-level concern (WindowNotificationManager lives on MainWindow) independent of
         // the VM's WhenActivated-scoped projections.
@@ -750,7 +777,7 @@ public partial class App : Application {
         vm = new MainWindowViewModel(
             service, shutdownToken, activity, startAction, lifecycleStatus, home: home,
             navigation: navigation, trackWorkspaceTeardown: trackWorkspaceTeardown, workspaceFactory: workspaceFactory,
-            rail: rail, tenantName: tenantName);
+            rail: rail, tenantName: tenantName, lifecycleAttention: lifecycleAttention);
         var window = new MainWindow {
             DataContext = vm,
             Notifier = notifier,
@@ -963,14 +990,22 @@ public partial class App : Application {
                 break;
             }
             case RecoverySurface.Reinstall:
-                surface.Attention($"kcap needs to be reinstalled to continue ({named}).");
+                // Token stays in the log for support; the banner names the action, not the wire code.
+                Console.Error.WriteLine($"kcap: daemon package inconsistent ({named}) — reinstall needed");
+                surface.Attention("This kcap install looks broken. Reinstall kcap, then try again.");
                 markPresented?.Invoke();
                 break;
             case RecoverySurface.Attention:
-            case RecoverySurface.Storage:
-                surface.Attention($"A daemon mutation needs attention ({named}).");
+            case RecoverySurface.Storage: {
+                if (AttentionCopyFor(named) is { } copy) {
+                    surface.Attention(copy);
+                } else {
+                    // Opaque tokens are for the log — a bare "needs attention (token)" banner helps nobody.
+                    Console.Error.WriteLine($"kcap: daemon mutation needs attention ({named}) — not shown in the UI");
+                }
                 markPresented?.Invoke();
                 break;
+            }
         }
     }
 
@@ -981,6 +1016,43 @@ public partial class App : Application {
         MutationVerb.StartVerified => "verified start",
         MutationVerb.DetachedStart => "daemon start",
         _                          => verb.ToString(),
+    };
+
+    /// User-facing line for Attention/Storage outcomes. Null means log-only — never surface a
+    /// machine token the operator cannot act on.
+    internal static string? AttentionCopyFor(string token) => token switch {
+        "cli_not_found"            => "kcap CLI not found. Can't manage the daemon from this app.",
+        // App↔CLI floor — never "for the daemon"; this gate runs before any daemon contact.
+        "cli_below_floor"          => "This kcap is too old for this app. Update kcap, then press Start daemon.",
+        "no_server_configured"     => "No server is configured. Sign in or run setup first.",
+        "consent_seed_unwritable"  => "Couldn't write consent data. Check permissions on the kcap config directory.",
+        "internal_error"           => "Couldn't finish daemon setup. Press Start daemon to try again.",
+
+        "verify_viability" or "verify_hello_validation" or "verify_start_gate" or "verify_start_gate_drift"
+            or "daemon_start_gate"
+            => "The daemon didn't come up cleanly. Press Start daemon to try again.",
+
+        "verify_readiness_timeout" or "verify_contended" or "verify_rollback_budget"
+            or "verify_restore_verification" or "verify_stop_unconfirmed" or "verify_bootout_unknown"
+            => "Daemon setup didn't finish in time. Press Start daemon to try again.",
+
+        "stale_txn_marker"
+            => "A previous daemon setup didn't finish. Press Start daemon to try again.",
+
+        "running_without_daemon_pid"
+            => "The daemon service is loaded but no process is attached. Press Start daemon to repair.",
+
+        "daemon_running_outside_service"
+            => "A daemon is running outside the service. Press Start daemon to repair.",
+
+        "ownership_mismatch" or "ownership_unknown" or "instance_pid_mismatch"
+            or "instance_changed_during_classification" or "unreachable_with_recorded_owner"
+            => "Another daemon may already be running for this name. Stop it, then press Start daemon.",
+
+        "server_or_name_mismatch" or "identity_inconsistent"
+            => "This daemon doesn't match the configured server or name. Check setup, then press Start daemon.",
+
+        _ => null,
     };
 
     // spec §10 invariant: only these AttentionSkew tokens route to Takeover; every other AttentionSkew/AttentionRepair stays Attention.

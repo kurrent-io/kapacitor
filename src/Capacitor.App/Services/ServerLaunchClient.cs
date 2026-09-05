@@ -85,6 +85,20 @@ public sealed class ServerLaunchClient(ConfigRoot config, ProfileContext? profil
     }
 
     /// Takes the gate first: disposing it out from under an in-flight launch would fault that
+    /// launch's Release. Next StartAsync rebuilds the hub so a fresh AccessTokenProvider reads
+    /// tokens written by a just-finished sign-in.
+    public async Task InvalidateAsync(CancellationToken ct = default) {
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try {
+            if (_hub is null) return;
+            await _hub.DisposeAsync().ConfigureAwait(false);
+            _hub = null;
+        } finally {
+            _gate.Release();
+        }
+    }
+
+    /// Takes the gate first: disposing it out from under an in-flight launch would fault that
     /// launch's Release. A launch arriving after this point fails with ObjectDisposedException,
     /// which StartAsync already turns into a failed LaunchOutcome.
     public async ValueTask DisposeAsync() {

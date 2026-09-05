@@ -157,7 +157,7 @@ public static class MarkdownBlocks {
         FontSize = fontSize,
         FontWeight = weight,
         Cursor = new Cursor(StandardCursorType.Hand),
-        Foreground = Brush("KcapAccentBrush"),
+        Foreground = Brush("KcapSuccessBrush"),
         VerticalAlignment = VerticalAlignment.Center,
     };
 

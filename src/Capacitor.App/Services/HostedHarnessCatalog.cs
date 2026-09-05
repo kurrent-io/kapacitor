@@ -83,10 +83,10 @@ public static class HostedHarnessCatalog {
         ModelChoices.TryGetValue(vendor, out var models) ? models : [];
 
     /// Chip wording for a model selection: the curated label when known, the raw slug otherwise,
-    /// "default" for the "" sentinel.
+    /// "Default" for the "" sentinel (same word the effort/agent pickers use for "harness chooses").
     public static string ModelLabelFor(string vendor, string model) =>
         string.IsNullOrWhiteSpace(model)
-            ? "default"
+            ? EffortDefaultLabel
             : ModelChoicesFor(vendor).FirstOrDefault(m => string.Equals(m.Slug, model, StringComparison.OrdinalIgnoreCase))?.Label ?? model;
 
     /// The effort ladder the daemon passes through verbatim (codex maps max→xhigh itself); the
@@ -94,6 +94,23 @@ public static class HostedHarnessCatalog {
     /// beside the model catalog so the launch vocabularies have one authority.
     public static readonly IReadOnlyList<string> EffortLadder = ["low", "medium", "high", "xhigh"];
 
+    /// Shared chip/flyout word for "omit from the wire — let the harness decide". Not "Auto":
+    /// that label is Claude's permission mode, a different control.
+    public const string EffortDefaultLabel = "Default";
+
+    /// Sentence-case display for an effort wire token; unknown tokens pass through unchanged.
+    public static string EffortLabelFor(string? token) => token switch {
+        null or "" => EffortDefaultLabel,
+        "low"      => "Low",
+        "medium"   => "Medium",
+        "high"     => "High",
+        "xhigh"    => "Max",
+        _          => token,
+    };
+
+    /// Claude permission modes, most → least prompting. Manual is the product default and is
+    /// omitted from the launch payload (same "harness default" idea as Effort's Default); the
+    /// rows below it are escalations, so the flyout keeps a separator after Manual.
     public static readonly IReadOnlyList<PermissionModeChoice> PermissionModes = [
         new(ClaudePermissionModes.Manual, "Manual"),
         new(ClaudePermissionModes.AcceptEdits, "Accept edits"),
@@ -130,7 +147,7 @@ public static class HostedHarnessCatalog {
     public static (string Glyph, string Color) TileFor(string vendor) =>
         VendorTiles.TryGetValue(vendor, out var tile)
             ? tile
-            : (vendor.Length > 0 ? vendor[..1].ToUpperInvariant() : "?", "#9299AA");
+            : (vendor.Length > 0 ? vendor[..1].ToUpperInvariant() : "?", "#B0B7C6");
 
     /// Display label for a vendor token: the option's Label when the list carries one, the raw
     /// token otherwise (before the first daemon snapshot, or a token this build has never heard

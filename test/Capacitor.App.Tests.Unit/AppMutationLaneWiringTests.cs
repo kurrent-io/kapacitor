@@ -130,7 +130,7 @@ public class AppMutationLaneWiringTests {
     // ---- PresentOutcomeAsync: Reinstall/Attention/Storage ----
 
     [Test]
-    public async Task Reinstall_surface_is_an_attention_line_naming_the_token_no_dialog_no_status() {
+    public async Task Reinstall_surface_is_an_attention_line_without_a_dialog() {
         var surface = new FakeLifecycleSurface();
         var envelope = Envelope(new MutationOutcome.Failed(28, "package_inconsistent", RecoverySurface.Reinstall));
 
@@ -140,11 +140,12 @@ public class AppMutationLaneWiringTests {
         await Assert.That(surface.Prompts).IsEmpty();
         await Assert.That(surface.StatusMessages).IsEmpty(); // Reinstall never writes Status
         await Assert.That(surface.AttentionMessages.Count).IsEqualTo(1);
-        await Assert.That(surface.AttentionMessages[0]).Contains("package_inconsistent");
+        await Assert.That(surface.AttentionMessages[0]).Contains("Reinstall", StringComparison.OrdinalIgnoreCase);
+        await Assert.That(surface.AttentionMessages[0]).DoesNotContain("package_inconsistent");
     }
 
     [Test]
-    public async Task Attention_surface_names_the_token() {
+    public async Task Attention_surface_uses_human_copy_not_the_wire_token() {
         var surface = new FakeLifecycleSurface();
         var envelope = Envelope(new MutationOutcome.Failed(1, "internal_error", RecoverySurface.Attention));
 
@@ -152,13 +153,14 @@ public class AppMutationLaneWiringTests {
             surface, envelope, NeverRunMutation, FixedTerminalPath("/usr/bin"), () => null, CancellationToken.None);
 
         await Assert.That(surface.AttentionMessages.Count).IsEqualTo(1);
-        await Assert.That(surface.AttentionMessages[0]).Contains("internal_error");
+        await Assert.That(surface.AttentionMessages[0]).IsEqualTo(AppUnderTest.AttentionCopyFor("internal_error")!);
+        await Assert.That(surface.AttentionMessages[0]).DoesNotContain("internal_error");
         await Assert.That(surface.Prompts).IsEmpty();
         await Assert.That(surface.StatusMessages).IsEmpty();
     }
 
     [Test]
-    public async Task Storage_surface_also_reads_as_attention_and_names_the_token() {
+    public async Task Storage_surface_uses_human_copy_not_the_wire_token() {
         var surface = new FakeLifecycleSurface();
         var envelope = Envelope(new MutationOutcome.Refused("consent_seed_unwritable", RecoverySurface.Storage));
 
@@ -166,11 +168,12 @@ public class AppMutationLaneWiringTests {
             surface, envelope, NeverRunMutation, FixedTerminalPath("/usr/bin"), () => null, CancellationToken.None);
 
         await Assert.That(surface.AttentionMessages.Count).IsEqualTo(1);
-        await Assert.That(surface.AttentionMessages[0]).Contains("consent_seed_unwritable");
+        await Assert.That(surface.AttentionMessages[0]).IsEqualTo(AppUnderTest.AttentionCopyFor("consent_seed_unwritable")!);
+        await Assert.That(surface.AttentionMessages[0]).DoesNotContain("consent_seed_unwritable");
     }
 
     [Test]
-    public async Task AttentionSkew_always_reads_as_attention_naming_its_own_detail() {
+    public async Task AttentionSkew_uses_human_copy_for_known_ownership_tokens() {
         var surface = new FakeLifecycleSurface();
         var envelope = Envelope(new MutationOutcome.AttentionSkew("ownership_mismatch"));
 
@@ -178,11 +181,12 @@ public class AppMutationLaneWiringTests {
             surface, envelope, NeverRunMutation, FixedTerminalPath("/usr/bin"), () => null, CancellationToken.None);
 
         await Assert.That(surface.AttentionMessages.Count).IsEqualTo(1);
-        await Assert.That(surface.AttentionMessages[0]).Contains("ownership_mismatch");
+        await Assert.That(surface.AttentionMessages[0]).IsEqualTo(AppUnderTest.AttentionCopyFor("ownership_mismatch")!);
+        await Assert.That(surface.AttentionMessages[0]).DoesNotContain("ownership_mismatch");
     }
 
     [Test]
-    public async Task AttentionRepair_always_reads_as_attention_naming_its_own_detail() {
+    public async Task AttentionRepair_uses_human_copy_for_stale_txn_marker() {
         var surface = new FakeLifecycleSurface();
         var envelope = Envelope(new MutationOutcome.AttentionRepair("stale_txn_marker"));
 
@@ -190,7 +194,39 @@ public class AppMutationLaneWiringTests {
             surface, envelope, NeverRunMutation, FixedTerminalPath("/usr/bin"), () => null, CancellationToken.None);
 
         await Assert.That(surface.AttentionMessages.Count).IsEqualTo(1);
-        await Assert.That(surface.AttentionMessages[0]).Contains("stale_txn_marker");
+        await Assert.That(surface.AttentionMessages[0]).IsEqualTo(AppUnderTest.AttentionCopyFor("stale_txn_marker")!);
+        await Assert.That(surface.AttentionMessages[0]).DoesNotContain("stale_txn_marker");
+    }
+
+    [Test]
+    [Arguments("running_without_daemon_pid")]
+    [Arguments("daemon_running_outside_service")]
+    public async Task AttentionRepair_uses_human_copy_for_service_ownership_tokens(string token) {
+        var surface = new FakeLifecycleSurface();
+        var envelope = Envelope(new MutationOutcome.AttentionRepair(token));
+
+        await AppUnderTest.PresentOutcomeAsync(
+            surface, envelope, NeverRunMutation, FixedTerminalPath("/usr/bin"), () => null, CancellationToken.None);
+
+        await Assert.That(surface.AttentionMessages.Count).IsEqualTo(1);
+        await Assert.That(surface.AttentionMessages[0]).IsEqualTo(AppUnderTest.AttentionCopyFor(token)!);
+        await Assert.That(surface.AttentionMessages[0]).DoesNotContain(token);
+    }
+
+    [Test]
+    public async Task Unknown_attention_token_is_acked_but_not_shown_in_the_banner() {
+        var surface = new FakeLifecycleSurface();
+        var presented = false;
+        var envelope = Envelope(new MutationOutcome.Failed(1, "some_future_token", RecoverySurface.Attention));
+
+        await AppUnderTest.PresentOutcomeAsync(
+            surface, envelope, NeverRunMutation, FixedTerminalPath("/usr/bin"), () => null, CancellationToken.None,
+            markPresented: () => presented = true);
+
+        await Assert.That(presented).IsTrue();
+        await Assert.That(surface.AttentionMessages).IsEmpty();
+        await Assert.That(surface.StatusMessages).IsEmpty();
+        await Assert.That(surface.Prompts).IsEmpty();
     }
 
     // UnconfirmedNoAttach is actionable: one attention presentation naming the verb
@@ -233,7 +269,8 @@ public class AppMutationLaneWiringTests {
         await AppUnderTest.PresentOutcomeAsync(
             surface, envelope, NeverRunMutation, FixedTerminalPath("/usr/bin"), () => null, CancellationToken.None);
 
-        await Assert.That(surface.AttentionMessages[0]).Contains("verify_readiness_timeout");
+        await Assert.That(surface.AttentionMessages[0]).IsEqualTo(AppUnderTest.AttentionCopyFor("verify_readiness_timeout")!);
+        await Assert.That(surface.AttentionMessages[0]).DoesNotContain("verify_readiness_timeout");
     }
 
     // DigestGate (43) is DaemonCommands' own gate, not a ServiceVerify exit code, but it still
@@ -247,7 +284,8 @@ public class AppMutationLaneWiringTests {
         await AppUnderTest.PresentOutcomeAsync(
             surface, envelope, NeverRunMutation, FixedTerminalPath("/usr/bin"), () => null, CancellationToken.None);
 
-        await Assert.That(surface.AttentionMessages[0]).Contains("daemon_start_gate");
+        await Assert.That(surface.AttentionMessages[0]).IsEqualTo(AppUnderTest.AttentionCopyFor("daemon_start_gate")!);
+        await Assert.That(surface.AttentionMessages[0]).DoesNotContain("daemon_start_gate");
     }
 
     // ---- ClassifyForPresentation (the pure routing table, standalone) ----
@@ -330,8 +368,7 @@ public class AppMutationLaneWiringTests {
     [Arguments("server_or_name_mismatch")]
     [Arguments("ownership_mismatch")]
     [Arguments("unreachable_with_recorded_owner")]
-    [Arguments("some_unknown_future_token")]
-    public async Task AttentionSkew_other_token_is_attention_only_no_dialog(string token) {
+    public async Task AttentionSkew_known_attention_token_is_human_copy_no_dialog(string token) {
         var surface = new FakeLifecycleSurface();
         var envelope = Envelope(new MutationOutcome.AttentionSkew(token));
 
@@ -340,7 +377,20 @@ public class AppMutationLaneWiringTests {
 
         await Assert.That(surface.Prompts).IsEmpty();
         await Assert.That(surface.AttentionMessages.Count).IsEqualTo(1);
-        await Assert.That(surface.AttentionMessages[0]).Contains(token);
+        await Assert.That(surface.AttentionMessages[0]).IsEqualTo(AppUnderTest.AttentionCopyFor(token)!);
+        await Assert.That(surface.AttentionMessages[0]).DoesNotContain(token);
+    }
+
+    [Test]
+    public async Task AttentionSkew_unknown_token_is_acked_but_not_shown() {
+        var surface = new FakeLifecycleSurface();
+        var envelope = Envelope(new MutationOutcome.AttentionSkew("some_unknown_future_token"));
+
+        await AppUnderTest.PresentOutcomeAsync(
+            surface, envelope, NeverRunMutation, FixedTerminalPath("/usr/bin"), () => null, CancellationToken.None);
+
+        await Assert.That(surface.Prompts).IsEmpty();
+        await Assert.That(surface.AttentionMessages).IsEmpty();
     }
 
     // ---- ConsumeMutationOutcomesAsync ----
@@ -371,18 +421,19 @@ public class AppMutationLaneWiringTests {
         var consumerTask = AppUnderTest.ConsumeMutationOutcomesAsync(
             channel, surface, NeverRunMutation, FixedTerminalPath("/usr/bin"), () => null, cts.Token);
 
-        channel.Enqueue(new OutcomeEnvelope(Req(), new MutationOutcome.Failed(1, "boom1", RecoverySurface.Attention)));
+        // Known tokens so presentation still calls Attention (unknown tokens are log-only).
+        channel.Enqueue(new OutcomeEnvelope(Req(), new MutationOutcome.Failed(1, "internal_error", RecoverySurface.Attention)));
 
         // The first attempt throws (pre-presentation) and is requeued at the front, not skipped —
         // the retry succeeds (ThrowOnceOnAttentionSurface only throws once) and is what actually
         // reaches the surface.
         await WaitUntilAsync(() => inner.AttentionMessages.Count == 1, what: "the requeued retry's presentation");
-        await Assert.That(inner.AttentionMessages[0]).Contains("boom1");
+        await Assert.That(inner.AttentionMessages[0]).IsEqualTo(AppUnderTest.AttentionCopyFor("internal_error")!);
 
         // Channel remains functional afterward: a fresh envelope still presents normally.
-        channel.Enqueue(new OutcomeEnvelope(Req(), new MutationOutcome.Failed(2, "boom2", RecoverySurface.Attention)));
+        channel.Enqueue(new OutcomeEnvelope(Req(), new MutationOutcome.Failed(2, "stale_txn_marker", RecoverySurface.Attention)));
         await WaitUntilAsync(() => inner.AttentionMessages.Count == 2, what: "the next envelope's presentation");
-        await Assert.That(inner.AttentionMessages[1]).Contains("boom2");
+        await Assert.That(inner.AttentionMessages[1]).IsEqualTo(AppUnderTest.AttentionCopyFor("stale_txn_marker")!);
 
         cts.Cancel();
         // The loop's own outer catch swallows shutdown's OperationCanceledException by design

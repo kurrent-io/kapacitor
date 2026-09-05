@@ -288,24 +288,90 @@ public class HomeViewModelTests {
         });
     }
 
+    /// Trailing separators are spelling, not identity — a remembered path and a known/agent path
+    /// that differ only by `/` must stay one menu row.
     [Test]
     [NotInParallel("AvaloniaSession")]
-    public async Task The_scratch_target_is_always_the_last_repository_entry() {
+    public async Task The_repository_list_dedups_trailing_separators() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            using var tmp = TempDir.WithPathTo("app-state.json", out var path);
+            var daemon = new FakeDaemonClientService();
+            using var vm = new HomeViewModel(
+                daemon, new AppStateStore(path), new RecordingLaunchClient(),
+                () => Task.FromResult(new[] { "/repo/kcap-cli/" }));
+
+            await vm.SelectRepositoryAsync("/repo/kcap-cli");
+            daemon.Agents.AddOrUpdate(Agent("x", "/repo/kcap-cli/"));
+
+            var repos = (await vm.ListRepositoriesAsync()).Where(r => r.RepoPath.Length > 0).ToList();
+
+            await Assert.That(repos.Count).IsEqualTo(1);
+            await Assert.That(repos[0].RepoPath).IsEqualTo("/repo/kcap-cli");
+            await Assert.That(repos[0].Selected).IsTrue();
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Scratch_appears_only_when_no_real_repositories() {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             using var tmp = TempDir.WithPathTo("app-state.json", out var path);
             var daemon = new FakeDaemonClientService();
             using var vm = new HomeViewModel(daemon, new AppStateStore(path), new RecordingLaunchClient(), Known());
 
-            await vm.SelectRepositoryAsync(HomeViewModel.ScratchRepoPath);
-            await vm.ChooseHarnessAsync("pi");
+            var empty = await vm.ListRepositoriesAsync();
+            await Assert.That(empty.Count).IsEqualTo(1);
+            await Assert.That(empty[0].RepoPath).IsEqualTo(HomeViewModel.ScratchRepoPath);
+
             daemon.Agents.AddOrUpdate(Agent("x", "/repo/b"));
+            var withRepo = await vm.ListRepositoriesAsync();
 
+            await Assert.That(withRepo.Any(r => r.RepoPath.Length == 0)).IsFalse();
+            await Assert.That(withRepo.Single(r => r.RepoPath == "/repo/b").Selected).IsTrue();
+            await Assert.That(vm.SelectedRepoPath).IsEqualTo("/repo/b");
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Empty_selection_adopts_the_most_recent_known_repository() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            using var tmp = TempDir.WithPathTo("app-state.json", out var path);
+            var daemon = new FakeDaemonClientService();
+            // GetSortedPathsAsync is last-used first — index 0 is the most recent.
+            using var vm = new HomeViewModel(
+                daemon, new AppStateStore(path), new RecordingLaunchClient(),
+                Known("/repo/newer", "/repo/older"));
+
+            await vm.EnsureDefaultRepositoryAsync();
+
+            await Assert.That(vm.SelectedRepoPath).IsEqualTo("/repo/newer");
             var repos = await vm.ListRepositoriesAsync();
+            await Assert.That(repos.Any(r => r.RepoPath.Length == 0)).IsFalse();
+            await Assert.That(repos.Single(r => r.RepoPath == "/repo/newer").Selected).IsTrue();
+        });
+    }
 
-            await Assert.That(repos[^1].RepoPath).IsEqualTo(HomeViewModel.ScratchRepoPath);
-            await Assert.That(repos[^1].Vendor).IsEqualTo("pi");
-            await Assert.That(repos[^1].Selected).IsTrue();
-            await Assert.That(repos.Count(r => r.RepoPath.Length == 0)).IsEqualTo(1);
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task EnsureDefault_does_not_overwrite_a_pick_made_during_discovery() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            using var tmp = TempDir.WithPathTo("app-state.json", out var path);
+            var daemon = new FakeDaemonClientService();
+            var release = new TaskCompletionSource();
+            using var vm = new HomeViewModel(
+                daemon, new AppStateStore(path), new RecordingLaunchClient(),
+                async () => {
+                    await release.Task;
+                    return ["/repo/default"];
+                });
+
+            var ensure = vm.EnsureDefaultRepositoryAsync();
+            await vm.SelectRepositoryAsync("/repo/user-picked");
+            release.SetResult();
+            await ensure;
+
+            await Assert.That(vm.SelectedRepoPath).IsEqualTo("/repo/user-picked");
         });
     }
 
@@ -481,12 +547,15 @@ public class HomeViewModelTests {
             using var vm = new HomeViewModel(daemon, new AppStateStore(path), new RecordingLaunchClient(), Known());
 
             Connect(daemon);
+            await vm.SelectRepositoryAsync("/repo/a");
             await Assert.That(vm.ConnectionNotice).IsNull();
             await Assert.That(vm.SignInVisible).IsFalse();
+            await Assert.That(vm.StartButtonTip).IsEqualTo("Start");
 
             daemon.SnapshotsSubject.OnNext(FakeDaemonClientService.Snap(connection: "disconnected"));
             await Assert.That(vm.ConnectionNotice).IsEqualTo(HomeViewModel.ServerLostNotice);
             await Assert.That(vm.SignInVisible).IsTrue();
+            await Assert.That(vm.StartButtonTip).IsEqualTo(HomeViewModel.ServerLostNotice);
 
             // Transient by definition — the retry resolves it or lands on "disconnected".
             daemon.SnapshotsSubject.OnNext(FakeDaemonClientService.Snap(connection: "reconnecting"));
@@ -506,9 +575,22 @@ public class HomeViewModelTests {
             daemon.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "not running", null));
 
             await Assert.That(vm.ConnectionNotice).IsEqualTo(HomeViewModel.DaemonDownNotice);
+            await Assert.That(vm.BannerMessage).IsEqualTo(HomeViewModel.DaemonDownNotice);
+            await Assert.That(vm.ConnectionBannerVisible).IsTrue();
             await Assert.That(vm.SignInVisible).IsFalse();
             await Assert.That(await vm.StartCommand.CanExecute.FirstAsync()).IsFalse();
         });
+    }
+
+    [Test]
+    [Arguments(null, null, null)]
+    [Arguments("daemon down", null, "daemon down")]
+    [Arguments("daemon down", "kcap too old", "kcap too old")]
+    [Arguments(null, "kcap too old", "kcap too old")]
+    [Arguments("daemon down", "", "daemon down")]
+    public async Task BannerMessage_prefers_a_start_message_over_the_connection_notice(
+            string? notice, string? startMessage, string? expected) {
+        await Assert.That(HomeViewModel.BannerMessageFor(notice, startMessage)).IsEqualTo(expected);
     }
 
     [Test]
@@ -537,6 +619,29 @@ public class HomeViewModelTests {
             await Assert.That(signInRequests).IsEqualTo(1);
 
             vm.NotifySignInCompleted();
+            await Assert.That(vm.SignInVisible).IsFalse();
+            await Assert.That(vm.ConnectionNotice).IsNull();
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task After_sign_in_a_disconnected_server_shows_finishing_not_sign_in_again() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            using var tmp = TempDir.WithPathTo("app-state.json", out var path);
+            var daemon = new FakeDaemonClientService();
+            using var vm = new HomeViewModel(daemon, new AppStateStore(path), new RecordingLaunchClient(), Known());
+
+            daemon.SnapshotsSubject.OnNext(FakeDaemonClientService.Snap(connection: "disconnected"));
+            daemon.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, null));
+            await Assert.That(vm.SignInVisible).IsTrue();
+            await Assert.That(vm.ConnectionNotice).IsEqualTo(HomeViewModel.ServerLostNotice);
+
+            vm.NotifySignInCompleted();
+            await Assert.That(vm.SignInVisible).IsFalse();
+            await Assert.That(vm.ConnectionNotice).IsEqualTo(HomeViewModel.FinishingSignInNotice);
+
+            daemon.SnapshotsSubject.OnNext(FakeDaemonClientService.Snap(connection: "connected"));
             await Assert.That(vm.SignInVisible).IsFalse();
             await Assert.That(vm.ConnectionNotice).IsNull();
         });
