@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.Core;
 
 namespace Capacitor.Cli.Tests.Unit.Commands;
 
@@ -36,7 +37,7 @@ public class ImportResolveReposSubSessionTests {
         // embedded prompt template is reworded.
         var subPath       = Path.Combine(Tmp.Path, "agent-title.jsonl");
         var queueOpLine   = """{"type":"queue-operation","operation":"enqueue","content":"""
-                          + JsonSerializer.Serialize(TitleGenerator.TitlePromptPrefix) + "}";
+                          + JsonSerializer.Serialize(TitleGeneration.TitlePromptPrefix) + "}";
         var subCwdLine    = """{"type":"user","timestamp":"2026-03-15T10:00:00Z","cwd":"/private/var/folders/x/T/kcap-claude-deadbeef","message":{"content":"x"}}""";
         await File.WriteAllLinesAsync(subPath, [queueOpLine, subCwdLine]);
 
