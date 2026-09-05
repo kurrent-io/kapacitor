@@ -1,5 +1,6 @@
 using System.Reactive.Linq;
 using Avalonia.Threading;
+using Capacitor.App.Services;
 using Capacitor.App.ViewModels;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.LocalIpc;
@@ -466,7 +467,7 @@ public class ChatTabViewModelTests {
 
     [Test]
     [NotInParallel("AvaloniaSession")]
-    public async Task Two_requests_on_one_row_keep_the_mark_until_both_go_and_a_settled_row_is_cleared() {
+    public async Task Two_requests_on_one_row_keep_the_mark_until_both_go_and_a_settled_row_withdraws_the_survivor() {
         await RunOnUiAsync(async () => {
             var h = Claude();
             var path = Tmp.CreateFile("t.jsonl", [ToolCallLine]);
@@ -480,11 +481,107 @@ public class ChatTabViewModelTests {
             await WaitUntilAsync(() => h.Chat.PendingCards.Count == 1, what: "one card left");
             await Assert.That(bash.IsAwaitingPermission).IsTrue();
 
+            h.Permissions.Queue(PermissionResolveKind.Applied);
             File.AppendAllText(path, ToolResultLine + "\n");
             await h.TickAsync();
             await Assert.That(bash.Outcome).IsEqualTo(ToolOutcome.Done);
             await Assert.That(bash.IsAwaitingPermission).IsFalse();
-            await Assert.That(h.Chat.PendingCards).Count().IsEqualTo(1);
+            await WaitUntilAsync(() => h.Chat.PendingCards.Count == 0, what: "the survivor withdrawn");
+            await Assert.That(h.Permissions.Withdrawn).IsEquivalentTo(["r2"]);
+            await h.TeardownAsync();
+        });
+    }
+
+    /// The daemon never sees a terminal answer, so a result for a pending request's tool is the
+    /// app's cue to retire it — whichever of the two arrives first, since a replayed request can
+    /// land after the transcript's initial load. A request for another tool, or without an id,
+    /// is left alone.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task A_result_for_a_pending_requests_tool_withdraws_it_in_either_order() {
+        await RunOnUiAsync(async () => {
+            var h = Claude();
+            var path = Tmp.CreateFile("t.jsonl", [ToolCallLine, ReadCallLine]);
+            await h.PushAsync(Dto(path));
+
+            h.Permissions.Add(PermissionEntries.Entry("r1", "a1", toolUseId: "t1"));
+            h.Permissions.Add(PermissionEntries.Entry("r2", "a1", toolUseId: "t2"));
+            h.Permissions.Add(PermissionEntries.Entry("r3", "a1", vendor: "codex"));
+            await WaitUntilAsync(() => h.Chat.PendingCards.Count == 3, what: "three cards");
+
+            h.Permissions.Queue(PermissionResolveKind.Applied);
+            File.AppendAllText(path, ToolResultLine + "\n");
+            await h.TickAsync();
+            await WaitUntilAsync(() => h.Chat.PendingCards.Count == 2, what: "the result's request withdrawn");
+            await Assert.That(h.Permissions.Withdrawn).IsEquivalentTo(["r1"]);
+
+            // Result already on file when the request arrives: withdrawn on arrival.
+            h.Permissions.Queue(PermissionResolveKind.Applied);
+            h.Permissions.Add(PermissionEntries.Entry("r4", "a1", toolUseId: "t1"));
+            await WaitUntilAsync(() => h.Permissions.Withdrawn.Count == 2, what: "the late request withdrawn");
+            await Assert.That(h.Permissions.Withdrawn[1]).IsEqualTo("r4");
+            await Assert.That(h.Chat.PendingCards.Count).IsEqualTo(2);
+            await h.TeardownAsync();
+        });
+    }
+
+    /// A withdraw the daemon could not be reached for is not final: it retries on its own after a
+    /// backoff, with no other event needed, and a withdraw in flight is never sent twice.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task A_failed_withdraw_retries_on_its_own_after_a_backoff_and_is_never_doubled() {
+        await RunOnUiAsync(async () => {
+            var h = Claude();
+            var path = Tmp.CreateFile("t.jsonl", [ToolCallLine, ToolResultLine]);
+            await h.PushAsync(Dto(path));
+
+            var gate = h.Permissions.Arm();
+            h.Permissions.Add(PermissionEntries.Entry("r1", "a1", toolUseId: "t1"));
+            await WaitUntilAsync(() => h.Permissions.Withdrawn.Count == 1, what: "the first withdraw");
+            h.Permissions.Add(PermissionEntries.Entry("r2", "a1", toolUseId: "t9"));
+            await WaitUntilAsync(() => h.Chat.PendingCards.Count == 2, what: "a reconcile while in flight");
+            await Assert.That(h.Permissions.Withdrawn.Count).IsEqualTo(1);
+
+            gate.SetResult(new PermissionResolveOutcome(PermissionResolveKind.TransportFailure, "daemon_unreachable"));
+            await WaitUntilAsync(() => h.Chat.WithdrawsInFlightForTesting == 0, what: "the failure reopened it");
+            h.Permissions.Queue(PermissionResolveKind.Applied);
+            h.Time.Advance(ChatTabViewModel.WithdrawRetryDelay);
+            await WaitUntilAsync(() => h.Chat.PendingCards.Count == 1, what: "the retry withdrew it");
+            await Assert.That(h.Permissions.Withdrawn).IsEquivalentTo(["r1", "r1"]);
+            await h.TeardownAsync();
+        });
+    }
+
+    /// The backoff doubles and stops at the cap; after that only a fresh reconcile retries.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Withdraw_retries_are_capped_and_a_later_reconcile_tries_again() {
+        await RunOnUiAsync(async () => {
+            var h = Claude();
+            var path = Tmp.CreateFile("t.jsonl", [ToolCallLine, ToolResultLine]);
+            await h.PushAsync(Dto(path));
+
+            h.Permissions.Queue(PermissionResolveKind.TransportFailure, "daemon_unreachable");
+            h.Permissions.Add(PermissionEntries.Entry("r1", "a1", toolUseId: "t1"));
+            await WaitUntilAsync(() => h.Chat.WithdrawsInFlightForTesting == 0, what: "the first failure");
+            for (var retry = 1; retry <= ChatTabViewModel.MaxWithdrawRetries; retry++) {
+                h.Permissions.Queue(PermissionResolveKind.TransportFailure, "daemon_unreachable");
+                h.Time.Advance(ChatTabViewModel.WithdrawRetryDelay * (1 << (retry - 1)) - TimeSpan.FromMilliseconds(1));
+                await Task.Delay(20);
+                await Assert.That(h.Permissions.Withdrawn.Count).IsEqualTo(retry);
+                h.Time.Advance(TimeSpan.FromMilliseconds(1));
+                await WaitUntilAsync(() => h.Permissions.Withdrawn.Count == retry + 1, what: $"retry {retry}");
+                await WaitUntilAsync(() => h.Chat.WithdrawsInFlightForTesting == 0, what: $"retry {retry} failed");
+            }
+
+            h.Time.Advance(TimeSpan.FromMinutes(5));
+            await Task.Delay(20);
+            await Assert.That(h.Permissions.Withdrawn.Count).IsEqualTo(ChatTabViewModel.MaxWithdrawRetries + 1);
+
+            h.Permissions.Queue(PermissionResolveKind.Applied);
+            h.Permissions.Add(PermissionEntries.Entry("r2", "a1", toolUseId: "t9"));
+            await WaitUntilAsync(() => h.Chat.PendingCards.Count == 1, what: "the reconcile's retry withdrew it");
+            await Assert.That(h.Permissions.Withdrawn.Count).IsEqualTo(ChatTabViewModel.MaxWithdrawRetries + 2);
             await h.TeardownAsync();
         });
     }

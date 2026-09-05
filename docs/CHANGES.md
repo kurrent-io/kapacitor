@@ -494,6 +494,26 @@ what bounds the outgoing resolve frame by arithmetic. An unparseable or oversize
 back to the permission card (Allow = let the TUI ask) with "Allow always" hidden for the
 question tool.
 
+**A series is walked one question at a time**, the way Claude Code's own TUI does it: a step chip
+per question plus a closing Review step, a single-select pick advances, Enter on an answered
+question advances, and only the Review step — every answer listed, each row a way back to its
+question — submits. A lone question keeps its Submit inline and the fast path (one single-select
+question with options) still submits on the pick. Option chrome lives in class styles only: a
+local `Background`/`BorderBrush` on the button outranks the `selected` style and leaves it inert,
+which is what made a pick look like nothing had happened.
+
+**A terminal answer retires the card.** The daemon never sees a TUI answer: the `PermissionRequest`
+hook stays parked and no hook reports the tool's completion (the plugin registers no
+`PostToolUse`), so the broker holds the request until the agent exits. The Chat tab already tails
+the transcript, and a `tool_result` for a pending request's `tool_use_id` is the one signal that
+the prompt was answered elsewhere — so the tab sends the resolve frame with decision `withdraw`,
+which the daemon settles as `withdrawn`/`tool_settled` and answers the hook with a deny (an allow
+could only apply to some later call). An older daemon rejects the decision and the app concludes
+the entry locally on that ack, so the card still goes. Sent once per request. A failed send
+reopens it and retries on a bounded doubling backoff of its own, because the resolve rides a
+one-shot socket that can fail while the subscription stays healthy, and an empty transcript poll
+never reconciles; past the cap, the next resubscribe or permission/transcript change tries again.
+
 ## Compact tool calls in the Chat tab
 
 **AI-2418** (spec: `docs/superpowers/specs/2026-09-02-ai2418-compact-tool-calls-design.md`) folds a

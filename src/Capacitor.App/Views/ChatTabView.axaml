@@ -134,7 +134,7 @@
         <Border x:Name="NeedsYouRow" Grid.Row="1" Margin="22,0,22,4" IsVisible="{Binding HasPendingCards}">
             <StackPanel Spacing="6">
                 <TextBlock Text="NEEDS YOU" FontSize="10" FontWeight="SemiBold" Foreground="{StaticResource KcapMutedBrush}" />
-                <ScrollViewer MaxHeight="260" VerticalScrollBarVisibility="Auto">
+                <ScrollViewer MaxHeight="420" VerticalScrollBarVisibility="Auto">
                     <ItemsControl ItemsSource="{Binding PendingCards}">
                         <ItemsControl.DataTemplates>
                             <DataTemplate x:DataType="vm:PermissionCardViewModel">
@@ -158,59 +158,143 @@
                             </DataTemplate>
                             <DataTemplate x:DataType="vm:QuestionCardViewModel">
                                 <Border Background="{StaticResource KcapSurfaceRaisedBrush}" BorderBrush="{StaticResource KcapSuccessBrush}"
-                                        BorderThickness="1" CornerRadius="10" Padding="13,10" Margin="0,0,0,6">
+                                        BorderThickness="1" CornerRadius="10" Padding="14,12" Margin="0,0,0,6">
                                     <Border.Styles>
-                                        <Style Selector="Button.selected">
+                                        <!-- Option chrome lives in class styles only: a local Background/BorderBrush on
+                                             the Button would outrank the selected style and leave it inert, and the
+                                             theme's hover fill on PART_ContentPresenter is overridden for the same reason. -->
+                                        <Style Selector="Button.option">
+                                            <Setter Property="Background" Value="{StaticResource KcapSurfaceBrush}" />
+                                            <Setter Property="BorderBrush" Value="{StaticResource KcapBorderBrush}" />
+                                            <Setter Property="BorderThickness" Value="1" />
+                                            <Setter Property="CornerRadius" Value="8" />
+                                            <Setter Property="Padding" Value="12,9" />
+                                            <Setter Property="HorizontalAlignment" Value="Stretch" />
+                                            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                                            <Setter Property="Cursor" Value="Hand" />
+                                        </Style>
+                                        <Style Selector="Button.option:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+                                            <Setter Property="Background" Value="{StaticResource KcapSurfaceRaisedBrush}" />
+                                            <Setter Property="BorderBrush" Value="{StaticResource KcapMutedBrush}" />
+                                        </Style>
+                                        <Style Selector="Button.option.selected">
+                                            <Setter Property="Background" Value="{StaticResource KcapSuccessDimBrush}" />
                                             <Setter Property="BorderBrush" Value="{StaticResource KcapSuccessBrush}" />
                                         </Style>
+                                        <Style Selector="Button.option.selected /template/ ContentPresenter#PART_ContentPresenter">
+                                            <Setter Property="Background" Value="{StaticResource KcapSuccessDimBrush}" />
+                                            <Setter Property="BorderBrush" Value="{StaticResource KcapSuccessBrush}" />
+                                        </Style>
+                                        <Style Selector="Border.indicator">
+                                            <Setter Property="Width" Value="16" />
+                                            <Setter Property="Height" Value="16" />
+                                            <Setter Property="BorderThickness" Value="1.5" />
+                                            <Setter Property="BorderBrush" Value="{StaticResource KcapMutedBrush}" />
+                                            <Setter Property="Background" Value="Transparent" />
+                                            <Setter Property="VerticalAlignment" Value="Top" />
+                                            <Setter Property="Margin" Value="0,2,11,0" />
+                                        </Style>
+                                        <Style Selector="Button.option.selected Border.indicator">
+                                            <Setter Property="BorderBrush" Value="{StaticResource KcapSuccessBrush}" />
+                                            <Setter Property="Background" Value="{StaticResource KcapSuccessBrush}" />
+                                        </Style>
+                                        <Style Selector="Button.step">
+                                            <Setter Property="Background" Value="Transparent" />
+                                            <Setter Property="BorderBrush" Value="{StaticResource KcapBorderBrush}" />
+                                            <Setter Property="BorderThickness" Value="1" />
+                                            <Setter Property="CornerRadius" Value="999" />
+                                            <Setter Property="Padding" Value="10,3" />
+                                            <Setter Property="FontSize" Value="11.5" />
+                                            <Setter Property="Foreground" Value="{StaticResource KcapMutedBrush}" />
+                                            <Setter Property="Cursor" Value="Hand" />
+                                        </Style>
+                                        <Style Selector="Button.step.answered">
+                                            <Setter Property="Foreground" Value="{StaticResource KcapTextBrush}" />
+                                        </Style>
+                                        <Style Selector="Button.step.current">
+                                            <Setter Property="Background" Value="{StaticResource KcapSuccessDimBrush}" />
+                                            <Setter Property="BorderBrush" Value="{StaticResource KcapSuccessBrush}" />
+                                            <Setter Property="Foreground" Value="{StaticResource KcapTextBrush}" />
+                                            <Setter Property="FontWeight" Value="SemiBold" />
+                                        </Style>
+                                        <Style Selector="Button.step.current /template/ ContentPresenter#PART_ContentPresenter, Button.step:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+                                            <Setter Property="Background" Value="{StaticResource KcapSuccessDimBrush}" />
+                                        </Style>
+                                        <Style Selector="Button.reviewRow">
+                                            <Setter Property="Background" Value="{StaticResource KcapSurfaceBrush}" />
+                                            <Setter Property="BorderBrush" Value="{StaticResource KcapBorderBrush}" />
+                                            <Setter Property="BorderThickness" Value="1" />
+                                            <Setter Property="CornerRadius" Value="8" />
+                                            <Setter Property="Padding" Value="12,8" />
+                                            <Setter Property="HorizontalAlignment" Value="Stretch" />
+                                            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                                            <Setter Property="Cursor" Value="Hand" />
+                                        </Style>
                                     </Border.Styles>
-                                    <StackPanel Spacing="8" IsEnabled="{Binding !IsBusy}">
-                                        <ItemsControl ItemsSource="{Binding Questions}">
+                                    <StackPanel Spacing="10" IsEnabled="{Binding !IsBusy}">
+                                        <ItemsControl ItemsSource="{Binding Steps}" IsVisible="{Binding ShowsSteps}">
+                                            <ItemsControl.ItemsPanel>
+                                                <ItemsPanelTemplate>
+                                                    <WrapPanel Orientation="Horizontal" />
+                                                </ItemsPanelTemplate>
+                                            </ItemsControl.ItemsPanel>
                                             <ItemsControl.ItemTemplate>
+                                                <DataTemplate x:DataType="vm:QuestionStepViewModel">
+                                                    <Button Classes="step" Classes.current="{Binding IsCurrent}" Classes.answered="{Binding IsAnswered}"
+                                                            Command="{Binding GoCommand}" Margin="0,0,6,4">
+                                                        <StackPanel Orientation="Horizontal" Spacing="5">
+                                                            <TextBlock Text="✓" FontSize="10.5" Foreground="{StaticResource KcapSuccessBrush}"
+                                                                       IsVisible="{Binding IsAnswered}" VerticalAlignment="Center" />
+                                                            <TextBlock Text="{Binding Title}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" MaxWidth="180" />
+                                                        </StackPanel>
+                                                    </Button>
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                        <ContentControl Content="{Binding CurrentQuestion}" IsVisible="{Binding !IsOnReview}">
+                                            <ContentControl.ContentTemplate>
                                                 <DataTemplate x:DataType="vm:QuestionGroupViewModel">
-                                                    <StackPanel Spacing="5" Margin="0,0,0,4">
-                                                        <Border Background="{StaticResource KcapSurfaceBrush}" CornerRadius="4" Padding="5,1" HorizontalAlignment="Left"
-                                                                IsVisible="{Binding Header, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
-                                                            <TextBlock Text="{Binding Header}" FontSize="10" FontWeight="SemiBold" Foreground="{StaticResource KcapMutedBrush}"
+                                                    <StackPanel Spacing="8">
+                                                        <Border Background="{StaticResource KcapSurfaceBrush}" CornerRadius="4" Padding="6,2" HorizontalAlignment="Left"
+                                                                IsVisible="{Binding ShowsHeader}">
+                                                            <TextBlock Text="{Binding Header}" FontSize="11" FontWeight="SemiBold" Foreground="{StaticResource KcapMutedBrush}"
                                                                        TextTrimming="CharacterEllipsis" MaxLines="1" />
                                                         </Border>
-                                                        <TextBlock Text="{Binding Text}" FontWeight="SemiBold" FontSize="13" TextWrapping="Wrap"
+                                                        <TextBlock Text="{Binding Text}" FontWeight="SemiBold" FontSize="15" LineHeight="21" TextWrapping="Wrap"
                                                                    Foreground="{StaticResource KcapTextBrush}" />
                                                         <ItemsControl ItemsSource="{Binding Options}">
+                                                            <ItemsControl.ItemsPanel>
+                                                                <ItemsPanelTemplate>
+                                                                    <StackPanel Spacing="6" />
+                                                                </ItemsPanelTemplate>
+                                                            </ItemsControl.ItemsPanel>
                                                             <ItemsControl.ItemTemplate>
                                                                 <DataTemplate x:DataType="vm:QuestionOptionViewModel">
-                                                                    <StackPanel Margin="0,0,0,2">
-                                                                        <Button IsVisible="{Binding !IsMulti}" Command="{Binding PickCommand}"
-                                                                                Classes.selected="{Binding IsSelected}"
-                                                                                HorizontalAlignment="Stretch" HorizontalContentAlignment="Left"
-                                                                                Padding="10,5" FontSize="12" CornerRadius="7"
-                                                                                Background="{StaticResource KcapSurfaceBrush}" BorderBrush="{StaticResource KcapBorderBrush}" BorderThickness="1">
-                                                                            <StackPanel>
-                                                                                <TextBlock Text="{Binding Label}" Foreground="{StaticResource KcapTextBrush}" />
-                                                                                <TextBlock Text="{Binding Description}" FontSize="11" Foreground="{StaticResource KcapMutedBrush}"
-                                                                                           TextWrapping="Wrap" MaxLines="3" TextTrimming="CharacterEllipsis"
+                                                                    <Button Classes="option" Classes.selected="{Binding IsSelected}" Command="{Binding PickCommand}">
+                                                                        <DockPanel>
+                                                                            <Panel DockPanel.Dock="Left" VerticalAlignment="Top">
+                                                                                <Border Classes="indicator" CornerRadius="8" IsVisible="{Binding !IsMulti}" />
+                                                                                <Border Classes="indicator" CornerRadius="3" IsVisible="{Binding IsMulti}" />
+                                                                            </Panel>
+                                                                            <StackPanel Spacing="3">
+                                                                                <TextBlock Text="{Binding Label}" FontSize="14" FontWeight="Medium" TextWrapping="Wrap"
+                                                                                           Foreground="{StaticResource KcapTextBrush}" />
+                                                                                <TextBlock Text="{Binding Description}" FontSize="12.5" LineHeight="18" TextWrapping="Wrap"
+                                                                                           Foreground="{StaticResource KcapMutedBrush}"
                                                                                            IsVisible="{Binding Description, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
                                                                             </StackPanel>
-                                                                        </Button>
-                                                                        <CheckBox IsVisible="{Binding IsMulti}" IsChecked="{Binding IsSelected}" FontSize="12">
-                                                                            <StackPanel>
-                                                                                <TextBlock Text="{Binding Label}" Foreground="{StaticResource KcapTextBrush}" />
-                                                                                <TextBlock Text="{Binding Description}" FontSize="11" Foreground="{StaticResource KcapMutedBrush}"
-                                                                                           TextWrapping="Wrap" MaxLines="3" TextTrimming="CharacterEllipsis"
-                                                                                           IsVisible="{Binding Description, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
-                                                                            </StackPanel>
-                                                                        </CheckBox>
-                                                                    </StackPanel>
+                                                                        </DockPanel>
+                                                                    </Button>
                                                                 </DataTemplate>
                                                             </ItemsControl.ItemTemplate>
                                                         </ItemsControl>
                                                         <DockPanel>
                                                             <Button DockPanel.Dock="Right" Content="Answer" Command="{Binding EnterCommand}"
                                                                     IsVisible="{Binding ShowsOtherAnswer}" Margin="6,0,0,0"
-                                                                    Padding="10,4" FontSize="12" CornerRadius="7"
-                                                                    Background="{StaticResource KcapPrimaryBrush}" Foreground="{StaticResource KcapOnPrimaryBrush}" />
+                                                                    Padding="12,5" FontSize="13" CornerRadius="7"
+                                                                    Classes="kcapPrimary" Background="{StaticResource KcapPrimaryBrush}" Foreground="{StaticResource KcapOnPrimaryBrush}" />
                                                             <TextBox Text="{Binding OtherText}" PlaceholderText="Other…" MaxLength="{Binding MaxOtherLength}"
-                                                                     AcceptsReturn="False" FontSize="12" MinHeight="30">
+                                                                     AcceptsReturn="False" FontSize="13" MinHeight="34">
                                                                 <TextBox.KeyBindings>
                                                                     <KeyBinding Gesture="Enter" Command="{Binding EnterCommand}" />
                                                                 </TextBox.KeyBindings>
@@ -218,13 +302,47 @@
                                                         </DockPanel>
                                                     </StackPanel>
                                                 </DataTemplate>
-                                            </ItemsControl.ItemTemplate>
-                                        </ItemsControl>
-                                        <TextBlock Text="{Binding ErrorText}" FontSize="11" Foreground="{StaticResource KcapDangerBrush}"
+                                            </ContentControl.ContentTemplate>
+                                        </ContentControl>
+                                        <StackPanel Spacing="8" IsVisible="{Binding IsOnReview}">
+                                            <TextBlock Text="Review your answers" FontWeight="SemiBold" FontSize="15" Foreground="{StaticResource KcapTextBrush}" />
+                                            <ItemsControl ItemsSource="{Binding Questions}">
+                                                <ItemsControl.ItemsPanel>
+                                                    <ItemsPanelTemplate>
+                                                        <StackPanel Spacing="6" />
+                                                    </ItemsPanelTemplate>
+                                                </ItemsControl.ItemsPanel>
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate x:DataType="vm:QuestionGroupViewModel">
+                                                        <Button Classes="reviewRow" Command="{Binding EditCommand}">
+                                                            <StackPanel Spacing="3">
+                                                                <TextBlock Text="{Binding Text}" FontSize="12.5" TextWrapping="Wrap" Foreground="{StaticResource KcapMutedBrush}" />
+                                                                <TextBlock Text="{Binding AnswerSummary}" FontSize="14" FontWeight="Medium" TextWrapping="Wrap"
+                                                                           Foreground="{StaticResource KcapTextBrush}" IsVisible="{Binding IsAnswered}" />
+                                                                <TextBlock Text="Not answered" FontSize="14" Foreground="{StaticResource KcapWarningBrush}"
+                                                                           IsVisible="{Binding !IsAnswered}" />
+                                                            </StackPanel>
+                                                        </Button>
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+                                        </StackPanel>
+                                        <TextBlock Text="{Binding ErrorText}" FontSize="12" Foreground="{StaticResource KcapDangerBrush}"
                                                    IsVisible="{Binding ErrorText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
-                                        <Button Content="Submit" Command="{Binding SubmitCommand}" IsVisible="{Binding ShowsSubmit}"
-                                                HorizontalAlignment="Right" Padding="12,4" FontSize="12" FontWeight="SemiBold" CornerRadius="7"
-                                                Background="{StaticResource KcapPrimaryBrush}" Foreground="{StaticResource KcapOnPrimaryBrush}" />
+                                        <DockPanel IsVisible="{Binding !IsFastPath}">
+                                            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="6">
+                                                <Button Content="Back" Classes="kcapGhost" Command="{Binding BackCommand}" IsVisible="{Binding ShowsSteps}"
+                                                        Background="Transparent" BorderBrush="Transparent" Foreground="{StaticResource KcapMutedBrush}"
+                                                        Padding="12,5" FontSize="13" CornerRadius="7" />
+                                                <Button Content="{Binding NextLabel}" Command="{Binding NextCommand}" IsVisible="{Binding ShowsNext}"
+                                                        Padding="14,5" FontSize="13" FontWeight="SemiBold" CornerRadius="7"
+                                                        Classes="kcapPrimary" Background="{StaticResource KcapPrimaryBrush}" Foreground="{StaticResource KcapOnPrimaryBrush}" />
+                                                <Button Content="Submit" Command="{Binding SubmitCommand}" IsVisible="{Binding ShowsSubmit}"
+                                                        Padding="14,5" FontSize="13" FontWeight="SemiBold" CornerRadius="7"
+                                                        Classes="kcapPrimary" Background="{StaticResource KcapPrimaryBrush}" Foreground="{StaticResource KcapOnPrimaryBrush}" />
+                                            </StackPanel>
+                                            <TextBlock Text="{Binding StepLabel}" FontSize="11.5" Foreground="{StaticResource KcapMutedBrush}" VerticalAlignment="Center" />
+                                        </DockPanel>
                                     </StackPanel>
                                 </Border>
                             </DataTemplate>

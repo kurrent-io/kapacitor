@@ -46,11 +46,15 @@ internal sealed class PermissionIpc(PermissionPromptBroker broker, ILogger<Permi
         PermissionAckDto ack;
         try {
             var dto = JsonSerializer.Deserialize(payload, PermissionIpcJsonContext.Default.PermissionResolveDto);
-            if (dto is null || string.IsNullOrEmpty(dto.RequestId) || dto.Decision is not ("allow" or "deny")) {
-                ack = new PermissionAckDto(false, "invalid resolve payload (decision must be allow|deny)");
+            if (dto is null || string.IsNullOrEmpty(dto.RequestId)
+                || dto.Decision is not (PermissionResolveDecisions.Allow or PermissionResolveDecisions.Deny or PermissionResolveDecisions.Withdraw)) {
+                ack = new PermissionAckDto(false, "invalid resolve payload (decision must be allow|deny|withdraw)");
             } else {
-                var decision = new PermissionDecision(dto.Decision, dto.ApplyPermissions, dto.UpdatedInput);
-                var settled  = broker.TrySettle(dto.RequestId, decision, dto.Decision, PermissionSettlements.SourceApp);
+                // A withdrawn request still answers its hook, and that answer must be a deny: the
+                // tool has already run, so an allow could only ever apply to some later call.
+                var settled = dto.Decision == PermissionResolveDecisions.Withdraw
+                    ? broker.TrySettle(dto.RequestId, PermissionSettlements.DenyDecision, PermissionSettlements.Withdrawn, PermissionSettlements.SourceToolSettled)
+                    : broker.TrySettle(dto.RequestId, new PermissionDecision(dto.Decision, dto.ApplyPermissions, dto.UpdatedInput), dto.Decision, PermissionSettlements.SourceApp);
                 ack = settled
                     ? new PermissionAckDto(true, null)
                     : new PermissionAckDto(false, "no pending permission request with that id");

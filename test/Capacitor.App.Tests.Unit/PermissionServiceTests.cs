@@ -201,6 +201,36 @@ public class PermissionServiceTests {
         await WaitUntilAsync(() => h.View.Count == 0, what: "push cleared the survivor");
     }
 
+    /// A withdraw carries no answer, and an older daemon that rejects the decision still gets the
+    /// entry concluded here: the tool already ran, so the card is stale whatever the ack says.
+    [Test]
+    public async Task Withdraw_sends_withdraw_with_no_payload_and_concludes_on_either_ack() {
+        using var h = new Harness();
+        await h.StartAsync();
+        var entry = await h.EmitAsync(Dto("r1"));
+
+        h.Ops.QueuePermissionResolve(true);
+        var applied = await h.Service.WithdrawAsync(entry, CancellationToken.None);
+        await Assert.That(applied.Kind).IsEqualTo(PermissionResolveKind.Applied);
+        var payload = h.Ops.PermissionResolvePayloads[0];
+        await Assert.That(payload.Decision).IsEqualTo("withdraw");
+        await Assert.That(payload.ApplyPermissions).IsNull();
+        await Assert.That(payload.UpdatedInput).IsNull();
+        await Assert.That(h.View.Count).IsEqualTo(0);
+
+        var second = await h.EmitAsync(Dto("r2"));
+        h.Ops.QueuePermissionResolve(false, "invalid resolve payload (decision must be allow|deny)");
+        var rejected = await h.Service.WithdrawAsync(second, CancellationToken.None);
+        await Assert.That(rejected.Kind).IsEqualTo(PermissionResolveKind.AlreadyDecided);
+        await Assert.That(h.View.Count).IsEqualTo(0);
+
+        var third = await h.EmitAsync(Dto("r3"));
+        h.Ops.QueuePermissionResolveFailure("daemon_unreachable");
+        var failed = await h.Service.WithdrawAsync(third, CancellationToken.None);
+        await Assert.That(failed.Kind).IsEqualTo(PermissionResolveKind.TransportFailure);
+        await Assert.That(h.View.Count).IsEqualTo(1);
+    }
+
     [Test]
     public async Task Answer_rejects_an_unclassified_target_and_a_bad_answer_set_without_sending() {
         using var h = new Harness();

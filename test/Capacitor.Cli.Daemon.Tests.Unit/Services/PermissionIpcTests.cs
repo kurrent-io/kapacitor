@@ -83,8 +83,8 @@ public class PermissionIpcTests {
     [Test]
     [Arguments("""{"request_id":"r1","decision":"allow","apply_permissions":null,"updated_input":null}""", true, null)]
     [Arguments("""{"request_id":"nope","decision":"allow","apply_permissions":null,"updated_input":null}""", false, "no pending permission request with that id")]
-    [Arguments("""{"request_id":"r1","decision":"maybe","apply_permissions":null,"updated_input":null}""", false, "invalid resolve payload (decision must be allow|deny)")]
-    [Arguments("""{"decision":"allow"}""", false, "invalid resolve payload (decision must be allow|deny)")]
+    [Arguments("""{"request_id":"r1","decision":"maybe","apply_permissions":null,"updated_input":null}""", false, "invalid resolve payload (decision must be allow|deny|withdraw)")]
+    [Arguments("""{"decision":"allow"}""", false, "invalid resolve payload (decision must be allow|deny|withdraw)")]
     [Arguments("""{ not json""", false, "malformed resolve payload")]
     public async Task Resolve_acks(string payload, bool ok, string? error) {
         var broker = new PermissionPromptBroker();
@@ -103,6 +103,32 @@ public class PermissionIpcTests {
             await Assert.That(s.Source).IsEqualTo("app");
             await Assert.That(s.Decision.Behavior).IsEqualTo("allow");
         }
+    }
+
+    /// A withdraw is the app reporting the tool already ran (its result is in the transcript), so
+    /// the settlement is withdrawn under the tool_settled source and the hook is answered deny —
+    /// a decision nothing reads any more, never an allow that could apply to a later call.
+    [Test]
+    public async Task Resolve_withdraw_settles_as_withdrawn_by_tool_settled_and_pushes_resolved() {
+        var broker = new PermissionPromptBroker();
+        var settlement = broker.Register(Dto("r1"));
+        var (_, reader) = broker.Subscribe();
+        _ = await reader.ReadAsync(new CancellationTokenSource(5000).Token); // Pending
+        var ipc = new PermissionIpc(broker, NullLogger<PermissionIpc>.Instance);
+        var (server, client) = Duplex();
+
+        await ipc.HandleResolveAsync("""{"request_id":"r1","decision":"withdraw","apply_permissions":null,"updated_input":null}""", server, CancellationToken.None);
+        var reply = await FrameCodec.ReadAsync(client, CancellationToken.None);
+        var ack = JsonSerializer.Deserialize(reply!.Text, PermissionIpcJsonContext.Default.PermissionAckDto)!;
+        await Assert.That(ack.Ok).IsTrue();
+
+        var s = await settlement;
+        await Assert.That(s.Outcome).IsEqualTo("withdrawn");
+        await Assert.That(s.Source).IsEqualTo("tool_settled");
+        await Assert.That(s.Decision.Behavior).IsEqualTo("deny");
+        var resolved = ((PermissionStreamItem.Resolved)await reader.ReadAsync(new CancellationTokenSource(5000).Token)).Dto;
+        await Assert.That(resolved.Outcome).IsEqualTo("withdrawn");
+        await Assert.That(resolved.Source).IsEqualTo("tool_settled");
     }
 
     [Test]
