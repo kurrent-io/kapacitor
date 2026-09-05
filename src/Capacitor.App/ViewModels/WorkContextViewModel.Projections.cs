@@ -210,7 +210,7 @@ public sealed partial class WorkContextViewModel {
         var people = item.Contributors
             .Select(c => new WorkContextPersonViewModel(FirstNonBlank(c.DisplayName, c.UserId) ?? "Someone", c.AvatarUrl, c.LastActivityAt, now))
             .ToList();
-        Replace(_contributors, people, c => (c.Name, c.LastActivityText));
+        Replace(_contributors, people, c => (c.Name, c.AvatarUrl, c.LastActivityText));
         SessionCount = item.SessionCount;
         RaiseCardCounts();
     }

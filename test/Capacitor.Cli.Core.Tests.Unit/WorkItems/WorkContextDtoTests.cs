@@ -73,8 +73,8 @@ public class WorkContextDtoTests {
     [Test]
     public async Task The_work_item_read_deserializes_from_the_server_shape_and_ignores_extra_members() {
         const string body = """
-            {"work_item_id":"w1","title":"AI-2521","enriched_title":"Desktop pane: read the work item","overview":"One read for the pane.","is_overview_mechanical":false,
-             "key":{"short_key":"AI-2521","provider":"linear","kind":"issue","value":"linear:AI-2521"},
+            {"work_item_id":"w1","title":"WK-2521","enriched_title":"Desktop pane: read the work item","overview":"One read for the pane.","is_overview_mechanical":false,
+             "key":{"short_key":"WK-2521","provider":"linear","kind":"issue","value":"linear:WK-2521"},
              "state":{"kind":"shipped","settled_at":"2026-09-05T10:00:00Z"},
              "links":[{"kind":"issue","provider":"github","value":"kurrent-io/kcap-cli#777","short_key":"#777","url":"https://github.com/kurrent-io/kcap-cli/issues/777","title":"Desktop pane","state":"open","link_class":"link","is_seed":true},
                       {"kind":"issue","provider":"github","value":"kurrent-io/kcap-cli#764","short_key":"#764","url":null,"title":null,"state":null,"link_class":"reference","is_seed":false}],
@@ -88,11 +88,11 @@ public class WorkContextDtoTests {
         var item = JsonSerializer.Deserialize(body, CapacitorJsonContext.Default.WorkItemDto)!;
 
         await Assert.That(item.WorkItemId).IsEqualTo("w1");
-        await Assert.That(item.Title).IsEqualTo("AI-2521");
+        await Assert.That(item.Title).IsEqualTo("WK-2521");
         await Assert.That(item.EnrichedTitle).IsEqualTo("Desktop pane: read the work item");
         await Assert.That(item.Overview).IsEqualTo("One read for the pane.");
         await Assert.That(item.IsOverviewMechanical).IsFalse();
-        await Assert.That(item.Key!.ShortKey).IsEqualTo("AI-2521");
+        await Assert.That(item.Key!.ShortKey).IsEqualTo("WK-2521");
         await Assert.That(item.Key.Provider).IsEqualTo("linear");
         await Assert.That(item.State.Kind).IsEqualTo("shipped");
         await Assert.That(item.State.SettledAt).IsEqualTo(new DateTimeOffset(2026, 9, 5, 10, 0, 0, TimeSpan.Zero));

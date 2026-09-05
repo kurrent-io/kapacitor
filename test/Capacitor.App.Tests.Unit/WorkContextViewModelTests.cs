@@ -397,11 +397,11 @@ public class WorkContextViewModelTests {
     static WorkItemLinkDto Link(string kind, string shortKey, string? url = null, string? title = null, string linkClass = "link") =>
         new() { Kind = kind, Provider = "github", Value = shortKey, ShortKey = shortKey, Url = url, Title = title, LinkClass = linkClass };
 
-    static WorkItemContributorDto Person(string userId, string? name, DateTimeOffset? at = null) =>
-        new() { UserId = userId, DisplayName = name, LastActivityAt = at };
+    static WorkItemContributorDto Person(string userId, string? name, DateTimeOffset? at = null, string? avatar = null) =>
+        new() { UserId = userId, DisplayName = name, LastActivityAt = at, AvatarUrl = avatar };
 
     static WorkItemDto Item(
-            string id = "w1", string title = "AI-2198", string? enriched = "Desktop shell: work-context sidebar", string? key = "AI-2198",
+            string id = "w1", string title = "WK-2198", string? enriched = "Desktop shell: work-context sidebar", string? key = "WK-2198",
             string? state = "in_flight", params WorkItemPartDto[] parts) =>
         new() {
             WorkItemId = id, Title = title, EnrichedTitle = enriched,
@@ -449,13 +449,13 @@ public class WorkContextViewModelTests {
                 Cycle = "indeterminate",
             };
             var item = Item(parts: [Part("p3", "Third", 2, settled: true), Part("p2", "Second", 1), Part("p1", "First", 0)]);
-            h.Source.Enqueue(ReadyWith(Row("w1", "AI-2198 — old label"), item, topology,
-                assignments: [Row("w1", "AI-2198 — old label"), Row("p1", "part", primary: false)]));
+            h.Source.Enqueue(ReadyWith(Row("w1", "WK-2198 — old label"), item, topology,
+                assignments: [Row("w1", "WK-2198 — old label"), Row("p1", "part", primary: false)]));
 
             await h.PushAsync(Dto());
 
             await Assert.That(h.Vm.Phase).IsEqualTo(WorkContextPhase.Ready);
-            await Assert.That(h.Vm.Key).IsEqualTo("AI-2198");
+            await Assert.That(h.Vm.Key).IsEqualTo("WK-2198");
             await Assert.That(h.Vm.Title).IsEqualTo("Desktop shell: work-context sidebar");
             await Assert.That(h.Vm.PartOfTitle).IsEqualTo("Parent epic");
             await Assert.That(h.Vm.Parts.Select(p => p.Title)).IsEquivalentTo(new[] { "First", "Second", "Third" }, TUnit.Assertions.Enums.CollectionOrdering.Matching);
@@ -512,13 +512,13 @@ public class WorkContextViewModelTests {
     public async Task Without_an_item_a_new_primary_shows_the_assignment_label_whole_with_no_key() {
         await RunOnUiAsync(async () => {
             var h = new Harness();
-            h.Source.Enqueue(ReadyWith(Row("w1", "AI-2198 — Desktop shell"), itemFailed: true, topology: Topology()));
+            h.Source.Enqueue(ReadyWith(Row("w1", "WK-2198 — Desktop shell"), itemFailed: true, topology: Topology()));
 
             await h.PushAsync(Dto());
 
             await Assert.That(h.Vm.Phase).IsEqualTo(WorkContextPhase.Ready);
             await Assert.That(h.Vm.Key).IsNull();
-            await Assert.That(h.Vm.Title).IsEqualTo("AI-2198 — Desktop shell");
+            await Assert.That(h.Vm.Title).IsEqualTo("WK-2198 — Desktop shell");
             await Assert.That(h.Vm.StateLabel).IsNull();
             await Assert.That(h.Vm.IsStale).IsTrue();
             await h.Vm.TeardownAsync();
@@ -537,7 +537,7 @@ public class WorkContextViewModelTests {
                 ReadyWith(Row("w9", "WK-9 — other"), Item(id: "w9", key: "WK-9", enriched: "other")));
             await h.PushAsync(Dto());
             await h.TickAsync();
-            await Assert.That(h.Vm.Key).IsEqualTo("AI-2198");
+            await Assert.That(h.Vm.Key).IsEqualTo("WK-2198");
             await Assert.That(h.Vm.Parts.Count).IsEqualTo(1);
             await Assert.That(h.Vm.IsStale).IsTrue();
 
@@ -609,7 +609,7 @@ public class WorkContextViewModelTests {
             var h = new Harness();
             h.Source.Enqueue(
                 ReadyWith(Row("w1", "t"), Item() with { Overview = " Reads the item in one call. " }),
-                ReadyWith(Row("w1", "t"), Item() with { Overview = "Work item AI-2198", IsOverviewMechanical = true }),
+                ReadyWith(Row("w1", "t"), Item() with { Overview = "Work item WK-2198", IsOverviewMechanical = true }),
                 ReadyWith(Row("w1", "t"), Item() with { Overview = "   " }),
                 ReadyWith(Row("w1", "t"), Item() with { Overview = null }));
             await h.PushAsync(Dto());
@@ -673,7 +673,7 @@ public class WorkContextViewModelTests {
                     Link("issue", "#778", "https://github.com/kurrent-io/kcap-cli/issues/778", "Later"),
                 ],
             };
-            var untitled = Item() with { Links = [Link("issue", "AI-2521")] };
+            var untitled = Item() with { Links = [Link("issue", "WK-2521")] };
             h.Source.Enqueue(ReadyWith(Row("w1", "t"), withIssue), ReadyWith(Row("w1", "t"), untitled), ReadyWith(Row("w1", "t"), Item()));
             await h.PushAsync(Dto());
 
@@ -686,7 +686,7 @@ public class WorkContextViewModelTests {
             await Assert.That(h.Opener.Opened).IsEquivalentTo(new[] { "https://github.com/kurrent-io/kcap-cli/issues/777" });
 
             await h.TickAsync();
-            await Assert.That(h.Vm.Issue!.Title).IsEqualTo("Issue AI-2521");
+            await Assert.That(h.Vm.Issue!.Title).IsEqualTo("Issue WK-2521");
             await Assert.That(h.Vm.Issue.CanOpen).IsFalse();
 
             await h.TickAsync();
@@ -720,6 +720,25 @@ public class WorkContextViewModelTests {
             await Assert.That(h.Vm.Contributors).IsEmpty();
             await Assert.That(h.Vm.SessionCountText).IsEqualTo("1 session");
             await Assert.That(h.Vm.Requester).IsEqualTo("You");
+            await h.Vm.TeardownAsync();
+        });
+    }
+
+    /// Every public field of a row takes part in the "same rows" check, or a poll that changes only
+    /// that field leaves the bound row stale.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task An_avatar_change_alone_refreshes_the_contributor_row() {
+        await RunOnUiAsync(async () => {
+            var h = new Harness();
+            h.Source.Enqueue(
+                ReadyWith(Row("w1", "t"), Item() with { Contributors = [Person("u1", "Ada", avatar: "https://avatars.example/u1?v=1")] }),
+                ReadyWith(Row("w1", "t"), Item() with { Contributors = [Person("u1", "Ada", avatar: "https://avatars.example/u1?v=2")] }));
+            await h.PushAsync(Dto());
+            await Assert.That(h.Vm.Contributors[0].AvatarUrl).IsEqualTo("https://avatars.example/u1?v=1");
+
+            await h.TickAsync();
+            await Assert.That(h.Vm.Contributors[0].AvatarUrl).IsEqualTo("https://avatars.example/u1?v=2");
             await h.Vm.TeardownAsync();
         });
     }
