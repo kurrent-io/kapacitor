@@ -731,3 +731,22 @@ client by lease so overlapping reads never see it disposed, retires it on sign-o
 with the launch client through a holder that memoizes the cleanup, so both teardown paths reach it
 and nothing is disposed twice. The window gains a minimum width equal to its default: 310 of rail plus
 400 of pane must never squeeze the terminal column to nothing.
+
+## Transcript normalization has one home
+
+**AI-2265** (spec: `docs/superpowers/specs/2026-09-04-ai2265-transcript-normalization-leaf-design.md`)
+moves transcript-to-canonical projection into `Capacitor.Models.Transcripts`, a leaf with the
+`Kurrent.Agent.Schema` package and nothing else, so the desktop chat and, from the server's
+adoption step onward, the server read one implementation. **Projections emit the schema's own
+messages**, because that is what the server persists and the package is AOT-clean; the chat keeps
+its `AcpEventEnvelope` renderer through an adapter in Core, with each vendor's display rules
+(Claude's wrapper stripping and task-notification note, Codex's injected-prelude skip) beside it
+under `Harness/<Vendor>/`. **A projection never mutates an event it has returned**: anything the
+server stamps in place today arrives as an explicit amendment or a `UsageApplied` instruction.
+**Every id derivation is a persistence contract** pinned by fixed vectors; the server dedups by
+them. This first step carries the chat's coverage only; Claude and Codex parity with the server's
+normalizers follow, one PR each. Five things the chat shows differently after this step, all
+narrower than before: several text blocks in one Claude user record are one bubble; text beside
+tool results is not shown; the envelope carries no model; a user record opening with an
+available-deferred-tools injection is dropped, as the server drops it; and a meta record's tool
+results settle their tool rows instead of vanishing with the record.

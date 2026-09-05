@@ -33,7 +33,7 @@ public sealed class ChatTabViewModel : ReactiveObject {
 
     readonly string _agentId;
     readonly TerminalTabViewModel _terminal;
-    readonly ITranscriptProjection? _projection;
+    readonly TranscriptChatProjection? _projection;
     readonly IUrlOpener _opener;
     readonly TimeProvider _time;
     readonly IPermissionService _permissions;
@@ -54,10 +54,25 @@ public sealed class ChatTabViewModel : ReactiveObject {
     readonly HashSet<ToolCallItem> _marked = new(ReferenceEqualityComparer.Instance);
     ToolGroupItem? _openGroup;
 
-    /// The tail and the generation it belongs to, taken as one reference: reading the two
+    /// The tail, the generation it belongs to, and the projection context and line count that
+    /// live exactly as long as the file the tail is reading. Taken as one reference: reading them
     /// separately lets a switch land between them and tag a read of the old file with the new
     /// generation, which Apply's guard would then wave through onto the freshly cleared list.
-    sealed record TailLease(JsonlTail Tail, int Generation);
+    sealed class TailLease(JsonlTail tail, int generation) {
+        public JsonlTail Tail { get; } = tail;
+        public int Generation { get; } = generation;
+        TranscriptContext? _context;
+        int _linesRead;
+
+        // The app has no session id and persists nothing, so the agent id stands in; only attachment ids would read it.
+        public TranscriptContext ContextFor(TranscriptChatProjection projection, string agentId) =>
+            _context ??= projection.CreateContext(agentId, null);
+
+        public void Reset() { _context = null; _linesRead = 0; }
+
+        // Counts the lines the tail yields, which skips blank lines, so it is not the file's physical line number.
+        public int NextLine() => ++_linesRead;
+    }
 
     int _generation;
     int _readInFlight;
@@ -172,7 +187,7 @@ public sealed class ChatTabViewModel : ReactiveObject {
 
     public ChatTabViewModel(
             string agentId, IDaemonClientService daemon, TerminalTabViewModel terminal,
-            ITranscriptProjection? projection, IUrlOpener opener, TimeProvider time, IPermissionService permissions) {
+            TranscriptChatProjection? projection, IUrlOpener opener, TimeProvider time, IPermissionService permissions) {
         _agentId = agentId;
         _terminal = terminal;
         _projection = projection;
@@ -321,22 +336,29 @@ public sealed class ChatTabViewModel : ReactiveObject {
     void OnTick() {
         if (_lease is not { } lease || _projection is not { } projection) return;
         if (Interlocked.CompareExchange(ref _readInFlight, 1, 0) != 0) return;
-        _pendingRead = ReadAndApplyAsync(lease.Tail, projection, lease.Generation);
+        _pendingRead = ReadAndApplyAsync(lease, projection);
     }
 
-    async Task ReadAndApplyAsync(JsonlTail tail, ITranscriptProjection projection, int generation) {
+    async Task ReadAndApplyAsync(TailLease lease, TranscriptChatProjection projection) {
         try {
             var (read, envelopes) = await Task.Run(() => {
-                var result = tail.ReadAppended();
+                var result = lease.Tail.ReadAppended();
+                if (result.Status == TailStatus.Reset) lease.Reset();
                 var list = new List<AcpEventEnvelope>();
-                foreach (var line in result.Lines) {
-                    try { list.AddRange(projection.Project(line)); }
-                    catch (Exception ex) { LogOnce($"projection: {ex.Message}"); }
+                if (result.Lines.Count > 0) {
+                    var context = lease.ContextFor(projection, _agentId);
+                    context.BeginBatch();
+                    var receivedAt = _time.GetUtcNow();
+                    foreach (var line in result.Lines) {
+                        var lineNumber = lease.NextLine();
+                        try { list.AddRange(projection.Project(line, lineNumber, receivedAt, context)); }
+                        catch (Exception ex) { LogOnce($"projection: {ex.Message}"); }
+                    }
                 }
                 return (result, list);
             }).ConfigureAwait(false);
 
-            await Dispatcher.UIThread.InvokeAsync(() => Apply(generation, read, envelopes));
+            await Dispatcher.UIThread.InvokeAsync(() => Apply(lease.Generation, read, envelopes));
         } catch (Exception ex) {
             LogOnce($"read: {ex.Message}");
         } finally {

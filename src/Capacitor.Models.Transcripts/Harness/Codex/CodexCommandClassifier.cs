@@ -1,4 +1,4 @@
-namespace Capacitor.Cli.Core.Harness.Codex;
+namespace Capacitor.Models.Transcripts.Harness.Codex;
 
 /// <summary>
 /// Result of classifying a Codex shell command.

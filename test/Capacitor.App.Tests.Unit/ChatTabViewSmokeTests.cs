@@ -93,7 +93,7 @@ public class ChatTabViewSmokeTests {
         /// first read starts before the workspace view exists.
         public Host(bool show = true) {
             Terminal = new TerminalTabViewModel("a1", Daemon, Attach.Factory, () => new FakeTerminalSurface(), Time);
-            Chat = new ChatTabViewModel("a1", Daemon, Terminal, TranscriptProjection.For("claude"), Opener, Time, Permissions);
+            Chat = new ChatTabViewModel("a1", Daemon, Terminal, TranscriptChat.For("claude"), Opener, Time, Permissions);
             View = new ChatTabView { DataContext = Chat };
             Window = new Window { Content = View, Width = 800, Height = 600 };
             if (!show) return;

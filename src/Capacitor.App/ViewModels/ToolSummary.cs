@@ -1,7 +1,6 @@
 using System.Text;
 using System.Text.Json;
-using Capacitor.Cli.Core;
-using Capacitor.Cli.Core.Harness.Codex;
+using Capacitor.Models.Transcripts.Harness.Codex;
 
 namespace Capacitor.App.ViewModels;
 

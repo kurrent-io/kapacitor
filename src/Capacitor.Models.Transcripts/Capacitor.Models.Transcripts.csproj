@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <TargetFramework>net10.0</TargetFramework>
+        <IsAotCompatible>true</IsAotCompatible>
+        <IsTrimmable>true</IsTrimmable>
+    </PropertyGroup>
+    <ItemGroup>
+        <InternalsVisibleTo Include="Capacitor.Models.Transcripts.Tests.Unit" />
+        <InternalsVisibleTo Include="Capacitor.Tests.Helpers" />
+    </ItemGroup>
+    <ItemGroup>
+        <PackageReference Include="Kurrent.Agent.Schema" />
+        <PackageReference Include="System.IO.Hashing" />
+    </ItemGroup>
+</Project>

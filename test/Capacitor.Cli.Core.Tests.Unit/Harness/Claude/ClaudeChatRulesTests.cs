@@ -1,10 +1,13 @@
-using System.Text.Json;
-using Capacitor.Cli.Core.Harness.Claude;
-
 namespace Capacitor.Cli.Core.Tests.Unit.Harness.Claude;
 
-public class ClaudeTranscriptEventsTests {
-    static IReadOnlyList<AcpEventEnvelope> P(string line) => ClaudeTranscriptEvents.Instance.Project(line);
+/// The chat-level view of Claude records: what the Chat tab shows for each record shape.
+public class ClaudeChatRulesTests {
+    static readonly DateTimeOffset Received = new(2026, 9, 4, 10, 0, 0, TimeSpan.Zero);
+
+    static IReadOnlyList<AcpEventEnvelope> P(string line) {
+        var chat = TranscriptChat.For("claude")!;
+        return chat.Project(line, 1, Received, chat.CreateContext("a1", null));
+    }
 
     [Test]
     public async Task String_user_content_is_one_user_message_with_its_timestamp() {
@@ -59,7 +62,6 @@ public class ClaudeTranscriptEventsTests {
         await Assert.That(e[0].Text).IsEqualTo("hmm");
         await Assert.That(e[1].Kind).IsEqualTo(AcpEventKind.AssistantText);
         await Assert.That(e[1].Text).IsEqualTo("Hi");
-        await Assert.That(e[1].Model).IsEqualTo("claude-fable-5");
         await Assert.That(e[2].Kind).IsEqualTo(AcpEventKind.ToolCall);
         await Assert.That(e[2].ToolCallId).IsEqualTo("toolu_1");
         await Assert.That(e[2].ToolName).IsEqualTo("Bash");
@@ -79,8 +81,6 @@ public class ClaudeTranscriptEventsTests {
         }) {
             var e = P($$$"""{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t","name":"X","input":{{{input}}}}]}}""");
             await Assert.That(e[0].ToolInputJson).IsEqualTo(expected);
-            using var doc = JsonDocument.Parse(e[0].ToolInputJson!);
-            await Assert.That(doc.RootElement.ValueKind).IsEqualTo(JsonValueKind.Object);
         }
     }
 
@@ -95,9 +95,8 @@ public class ClaudeTranscriptEventsTests {
         await Assert.That(P("""{"type":"assistant","message":{"content":[{"type":"text","text":7}]}}""")).IsEmpty();
     }
 
-    /// Pins the task-notification rule: a record Claude Code injects for a finished background
-    /// task is system-attributed, never the user's words — its summary leads in bold and its result
-    /// follows as markdown; a notification with no result is the summary alone.
+    /// A record Claude Code injects for a finished background task is system-attributed, never
+    /// the user's words: its summary leads in bold and its result follows as markdown.
     [Test]
     public async Task A_task_notification_projects_to_a_system_note_of_summary_and_result() {
         var line = """{"type":"user","origin":{"kind":"task-notification"},"promptSource":"system","message":{"role":"user","content":"<task-notification>\n<task-id>k1</task-id>\n<status>completed</status>\n<summary>Agent \"Review Task 15\" finished</summary>\n<result>\n## Findings\n\nNone.\n</result>\n</task-notification>"}}""";

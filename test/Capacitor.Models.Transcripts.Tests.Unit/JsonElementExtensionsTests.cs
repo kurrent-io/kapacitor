@@ -1,6 +1,6 @@
 using System.Text.Json;
 
-namespace Capacitor.Cli.Core.Tests.Unit;
+namespace Capacitor.Models.Transcripts.Tests.Unit;
 
 public class JsonElementExtensionsTests {
     static JsonElement Parse(string json) => JsonDocument.Parse(json).RootElement;
