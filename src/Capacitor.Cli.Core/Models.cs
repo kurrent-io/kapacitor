@@ -986,6 +986,7 @@ public sealed record CurationApplyResponse {
 [JsonSerializable(typeof(CliProjectError))]
 [JsonSerializable(typeof(List<WorkItems.SessionWorkItemAssignmentDto>))]
 [JsonSerializable(typeof(WorkItems.WorkItemTopologyDto))]
+[JsonSerializable(typeof(WorkItems.WorkItemDto))]
 [JsonSerializable(typeof(WorkItems.SessionSummaryDto))]
 [JsonSerializable(typeof(WorkItems.WorkItemErrorDto))]
 [JsonSerializable(typeof(RepositoryPayload))]

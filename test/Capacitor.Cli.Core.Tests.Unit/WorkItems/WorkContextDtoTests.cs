@@ -71,9 +71,65 @@ public class WorkContextDtoTests {
     }
 
     [Test]
+    public async Task The_work_item_read_deserializes_from_the_server_shape_and_ignores_extra_members() {
+        const string body = """
+            {"work_item_id":"w1","title":"AI-2521","enriched_title":"Desktop pane: read the work item","overview":"One read for the pane.","is_overview_mechanical":false,
+             "key":{"short_key":"AI-2521","provider":"linear","kind":"issue","value":"linear:AI-2521"},
+             "state":{"kind":"shipped","settled_at":"2026-09-05T10:00:00Z"},
+             "links":[{"kind":"issue","provider":"github","value":"kurrent-io/kcap-cli#777","short_key":"#777","url":"https://github.com/kurrent-io/kcap-cli/issues/777","title":"Desktop pane","state":"open","link_class":"link","is_seed":true},
+                      {"kind":"issue","provider":"github","value":"kurrent-io/kcap-cli#764","short_key":"#764","url":null,"title":null,"state":null,"link_class":"reference","is_seed":false}],
+             "parts":[{"work_item_id":"p1","title":"Core DTOs","ordinal":0,"is_settled":true,"settled_at":"2026-09-05T09:00:00Z"},
+                      {"work_item_id":"p2","title":"View","ordinal":1,"is_settled":false,"settled_at":null}],
+             "contributors":[{"user_id":"u1","display_name":"Ada","avatar_url":"https://avatars.example/u1","last_activity_at":"2026-09-05T12:00:00Z"},
+                             {"user_id":"u2","display_name":null,"avatar_url":null,"last_activity_at":null}],
+             "session_count":3,"future":{"x":1}}
+            """;
+
+        var item = JsonSerializer.Deserialize(body, CapacitorJsonContext.Default.WorkItemDto)!;
+
+        await Assert.That(item.WorkItemId).IsEqualTo("w1");
+        await Assert.That(item.Title).IsEqualTo("AI-2521");
+        await Assert.That(item.EnrichedTitle).IsEqualTo("Desktop pane: read the work item");
+        await Assert.That(item.Overview).IsEqualTo("One read for the pane.");
+        await Assert.That(item.IsOverviewMechanical).IsFalse();
+        await Assert.That(item.Key!.ShortKey).IsEqualTo("AI-2521");
+        await Assert.That(item.Key.Provider).IsEqualTo("linear");
+        await Assert.That(item.State.Kind).IsEqualTo("shipped");
+        await Assert.That(item.State.SettledAt).IsEqualTo(new DateTimeOffset(2026, 9, 5, 10, 0, 0, TimeSpan.Zero));
+        await Assert.That(item.Links[0].Url).IsEqualTo("https://github.com/kurrent-io/kcap-cli/issues/777");
+        await Assert.That(item.Links[0].LinkClass).IsEqualTo("link");
+        await Assert.That(item.Links[0].IsSeed).IsTrue();
+        await Assert.That(item.Links[1].LinkClass).IsEqualTo("reference");
+        await Assert.That(item.Links[1].Url).IsNull();
+        await Assert.That(item.Parts[0].IsSettled).IsTrue();
+        await Assert.That(item.Parts[0].SettledAt).IsNotNull();
+        await Assert.That(item.Parts[1].IsSettled).IsFalse();
+        await Assert.That(item.Parts[1].Ordinal).IsEqualTo(1);
+        await Assert.That(item.Contributors[0].DisplayName).IsEqualTo("Ada");
+        await Assert.That(item.Contributors[0].AvatarUrl).IsEqualTo("https://avatars.example/u1");
+        await Assert.That(item.Contributors[1].DisplayName).IsNull();
+        await Assert.That(item.Contributors[1].LastActivityAt).IsNull();
+        await Assert.That(item.SessionCount).IsEqualTo(3);
+    }
+
+    [Test]
+    public async Task A_work_item_with_null_lists_and_no_key_deserializes_to_empty_lists() {
+        const string body = """{"work_item_id":"w1","title":"Daemon tests flake","enriched_title":null,"overview":null,"is_overview_mechanical":true,"key":null,"state":{"kind":"in_flight","settled_at":null},"links":null,"parts":null,"contributors":null,"session_count":0}""";
+
+        var item = JsonSerializer.Deserialize(body, CapacitorJsonContext.Default.WorkItemDto)!;
+
+        await Assert.That(item.Key).IsNull();
+        await Assert.That(item.State.SettledAt).IsNull();
+        await Assert.That(item.Links).IsEmpty();
+        await Assert.That(item.Parts).IsEmpty();
+        await Assert.That(item.Contributors).IsEmpty();
+    }
+
+    [Test]
     public async Task Every_root_the_client_reads_has_generated_metadata() {
         await Assert.That(CapacitorJsonContext.Default.GetTypeInfo(typeof(List<SessionWorkItemAssignmentDto>))).IsNotNull();
         await Assert.That(CapacitorJsonContext.Default.GetTypeInfo(typeof(WorkItemTopologyDto))).IsNotNull();
+        await Assert.That(CapacitorJsonContext.Default.GetTypeInfo(typeof(WorkItemDto))).IsNotNull();
         await Assert.That(CapacitorJsonContext.Default.GetTypeInfo(typeof(SessionSummaryDto))).IsNotNull();
         await Assert.That(CapacitorJsonContext.Default.GetTypeInfo(typeof(WorkItemErrorDto))).IsNotNull();
     }

@@ -7,15 +7,24 @@ namespace Capacitor.Cli.Core.Tests.Unit.WorkItems;
 public class WorkContextReaderTests {
     sealed class ScriptedChannel : IWorkContextChannel {
         public WorkContextOutcome<List<SessionWorkItemAssignmentDto>> Assignments = new(200, [], null);
+        public WorkContextOutcome<WorkItemDto> Item = new(200, new WorkItemDto { WorkItemId = "w1", Title = "T" }, null);
         public WorkContextOutcome<WorkItemTopologyDto> Topology = new(200, new WorkItemTopologyDto(), null);
         public WorkContextOutcome<SessionSummaryDto> Summary = new(200, new SessionSummaryDto { SessionId = "s1" }, null);
         public readonly List<string> Calls = [];
         public TaskCompletionSource SummaryGate = new();
+        public TaskCompletionSource ItemGate = new();
         public bool GateSummary;
+        public bool GateItem;
 
         public Task<WorkContextOutcome<List<SessionWorkItemAssignmentDto>>> GetSessionAssignmentsAsync(string sessionId, CancellationToken ct) {
             Calls.Add($"assignments:{sessionId}");
             return Task.FromResult(Assignments);
+        }
+
+        public async Task<WorkContextOutcome<WorkItemDto>> GetWorkItemAsync(string workItemId, CancellationToken ct) {
+            Calls.Add($"item:{workItemId}");
+            if (GateItem) await ItemGate.Task;
+            return Item;
         }
 
         public Task<WorkContextOutcome<WorkItemTopologyDto>> GetTopologyAsync(string workItemId, CancellationToken ct) {
@@ -40,18 +49,65 @@ public class WorkContextReaderTests {
         WorkContextReader.ReadAsync(channel, "s1", CancellationToken.None);
 
     [Test]
-    public async Task Ready_carries_the_primary_its_topology_and_the_summary() {
+    public async Task Ready_carries_the_primary_its_item_its_topology_and_the_summary() {
         var channel = new ScriptedChannel { Assignments = new(200, [Row("w2"), Row("w1", primary: true)], null) };
 
         var read = await Read(channel);
 
         await Assert.That(read.Kind).IsEqualTo(WorkContextReadKind.Ready);
         await Assert.That(read.Primary!.WorkItemId).IsEqualTo("w1");
+        await Assert.That(read.Item!.Title).IsEqualTo("T");
         await Assert.That(read.Topology).IsNotNull();
         await Assert.That(read.Summary!.SessionId).IsEqualTo("s1");
+        await Assert.That(read.ItemFailed).IsFalse();
         await Assert.That(read.TopologyFailed).IsFalse();
         await Assert.That(read.SummaryFailed).IsFalse();
+        await Assert.That(channel.Calls).Contains("item:w1");
         await Assert.That(channel.Calls).Contains("topology:w1");
+    }
+
+    [Test]
+    public async Task The_item_and_topology_reads_start_together_once_the_primary_is_known() {
+        var channel = new ScriptedChannel { Assignments = new(200, [Row("w1", primary: true)], null), GateItem = true };
+        var pending = Read(channel);
+
+        await Task.Delay(50);
+        await Assert.That(pending.IsCompleted).IsFalse();
+        await Assert.That(channel.Calls).Contains("topology:w1");
+        channel.ItemGate.SetResult();
+
+        await Assert.That((await pending).Item).IsNotNull();
+    }
+
+    [Test]
+    public async Task Without_a_primary_no_item_is_read() {
+        var read = await Read(new ScriptedChannel());
+
+        await Assert.That(read.Item).IsNull();
+        await Assert.That(read.ItemFailed).IsFalse();
+        await Assert.That(read.Assignments).IsEmpty();
+    }
+
+    [Test]
+    public async Task A_403_with_the_plan_code_on_the_item_is_not_in_plan() {
+        var channel = new ScriptedChannel { Assignments = new(200, [Row("w1", primary: true)], null), Item = PlanGate<WorkItemDto>() };
+        var read = await Read(channel);
+        await Assert.That(read.Kind).IsEqualTo(WorkContextReadKind.NotInPlan);
+    }
+
+    [Test]
+    public async Task Item_failures_degrade_the_section() {
+        var non2xx = new ScriptedChannel { Assignments = new(200, [Row("w1", primary: true)], null), Item = new(500, null, null) };
+        var gone   = new ScriptedChannel { Assignments = new(200, [Row("w1", primary: true)], null), Item = new(404, null, null) };
+        var noBody = new ScriptedChannel { Assignments = new(200, [Row("w1", primary: true)], null), Item = new(200, null, null) };
+
+        foreach (var channel in new[] { non2xx, gone, noBody }) {
+            var read = await Read(channel);
+            await Assert.That(read.Kind).IsEqualTo(WorkContextReadKind.Ready);
+            await Assert.That(read.Item).IsNull();
+            await Assert.That(read.ItemFailed).IsTrue();
+            await Assert.That(read.Topology).IsNotNull();
+        }
     }
 
     [Test]
@@ -81,12 +137,14 @@ public class WorkContextReaderTests {
 
     [Test]
     [Arguments("assignments")]
+    [Arguments("item")]
     [Arguments("topology")]
     [Arguments("summary")]
     public async Task A_final_401_on_any_call_signs_the_read_out(string call) {
         var channel = new ScriptedChannel { Assignments = new(200, [Row("w1", primary: true)], null) };
         switch (call) {
             case "assignments": channel.Assignments = new(401, null, null); break;
+            case "item":        channel.Item = new(401, null, null); break;
             case "topology":    channel.Topology = new(401, null, null); break;
             case "summary":     channel.Summary = new(401, null, null); break;
         }
