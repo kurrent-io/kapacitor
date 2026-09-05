@@ -2232,4 +2232,4 @@ git commit -m "Retire the Core chat projections in favour of the transcripts lea
 
 - [ ] **Step 7: Open the PR**
 
-Read `.github/PULL_REQUEST_TEMPLATE.md` and follow its comment block. Title: `Carve transcript normalization out into Capacitor.Models.Transcripts`. The description's reference line carries `Closes #679` only if the whole issue is done, which it is not: write `Part of #679` and `AI-2265` instead. Push with `git push https://github.com/kurrent-io/kcap-cli.git <branch>` if an SSH push is refused.
+Read `.github/PULL_REQUEST_TEMPLATE.md` and follow its comment block. Title: `Carve transcript normalization out into Capacitor.Models.Transcripts`. The reference line closes this step's own sub-issue and names the parent, which stays open for the later steps: `Closes #774 — AI-2517. Part of #679 — AI-2265.` Push with `git push https://github.com/kurrent-io/kcap-cli.git <branch>` if an SSH push is refused.

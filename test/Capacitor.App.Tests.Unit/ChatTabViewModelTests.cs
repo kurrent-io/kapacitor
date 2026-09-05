@@ -562,7 +562,7 @@ public class ChatTabViewModelTests {
             await h.PushAsync(Dto(path));
             await Assert.That(counting.LineNumbers).IsEquivalentTo(new[] { 1, 2 });
 
-            File.WriteAllLines(path, [UserLine]);    // shorter: the tail resets
+            Tmp.CreateFile("t.jsonl", [UserLine]);    // shorter: the tail resets
             await h.TickAsync();
             await Assert.That(counting.LineNumbers).IsEquivalentTo(new[] { 1, 2, 1 });
             await Assert.That(counting.ContextsCreated).IsEqualTo(2);

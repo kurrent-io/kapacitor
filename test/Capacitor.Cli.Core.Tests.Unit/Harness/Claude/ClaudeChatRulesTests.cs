@@ -1,6 +1,6 @@
 namespace Capacitor.Cli.Core.Tests.Unit.Harness.Claude;
 
-/// The chat-level view of Claude records: what the Chat tab showed before the projection moved.
+/// The chat-level view of Claude records: what the Chat tab shows for each record shape.
 public class ClaudeChatRulesTests {
     static readonly DateTimeOffset Received = new(2026, 9, 4, 10, 0, 0, TimeSpan.Zero);
 
