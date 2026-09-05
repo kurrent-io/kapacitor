@@ -50,6 +50,14 @@ public class ToolSummaryTests {
     }
 
     [Test]
+    public async Task Chip_label_is_a_short_noun_per_category() {
+        await Assert.That(ToolSummary.ChipLabel(ToolCategory.Agent)).IsEqualTo("Task");
+        await Assert.That(ToolSummary.ChipLabel(ToolCategory.Command)).IsEqualTo("Command");
+        await Assert.That(ToolSummary.ChipLabel(ToolCategory.WebSearch)).IsEqualTo("Web");
+        await Assert.That(ToolSummary.ChipLabel(ToolCategory.Other)).IsEqualTo("Tool");
+    }
+
+    [Test]
     [Arguments("Read", """{"file_path":"/repo/.claude/skills/review/SKILL.md"}""", ToolCategory.Skill)]
     [Arguments("Read", """{"file_path":"/repo/SKILL.md.bak"}""", ToolCategory.Read)]
     [Arguments("exec_command", """{"cmd":"sed -n '1,40p' a.cs"}""", ToolCategory.Read)]

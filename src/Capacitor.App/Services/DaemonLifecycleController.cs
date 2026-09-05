@@ -49,6 +49,11 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
     internal const string TakeoverDisclosure =
         "This replaces the existing daemon service and re-captures its settings; a failed replacement leaves it uninstalled rather than restored.";
 
+    /// Status when Start finds a live service and only kicks reattach. MainWindow replaces this
+    /// (and its own Retry reconnect copy) if attach lands Unreachable again.
+    internal const string AlreadyRunningReconnectStatus =
+        "Daemon service is already running. Reconnecting…";
+
     internal static readonly TimeSpan TxnActiveRequeryDelay = TimeSpan.FromSeconds(2);
 
     readonly IDaemonClientService _client;
@@ -365,7 +370,7 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
 
     void AttentionCoexistence(int daemonPid) =>
         _surface.Attention(
-            $"A daemon is already running (pid {daemonPid}) alongside the installed service — not starting a second one.");
+            $"A daemon is already running (PID {daemonPid}) alongside the installed service — not starting a second one.");
 
     /// §4.1 preconditions, install-only — start performs no viability check (spec §3.4), so this
     /// is never called on a start row. Returns the honest line to surface on failure, or null
@@ -572,7 +577,7 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
         if (attached) {
             if (snap.JobPid is not null && snap.DaemonPid is not null && snap.JobPid != snap.DaemonPid)
                 _surface.Attention(
-                    $"The daemon service job (pid {snap.JobPid}) does not match the attached daemon (pid {snap.DaemonPid}).");
+                    $"The daemon service job (PID {snap.JobPid}) does not match the attached daemon (PID {snap.DaemonPid}).");
             else if (state == ServiceState.Running && snap.DaemonPid is null)
                 _surface.Attention("The service reports its job running, but no attached-daemon evidence backs it.");
         }
@@ -585,7 +590,7 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
 
         if (attached && snap.UnitPresent && state == ServiceState.NotInstalled && snap.DaemonPid is not null)
             _surface.Attention(
-                $"A daemon is running outside the installed service — the service is stopped while a manual daemon (pid {snap.DaemonPid}) owns the name.");
+                $"A daemon is running outside the installed service — the service is stopped while a manual daemon (PID {snap.DaemonPid}) owns the name.");
     }
 
     // The inline, AWAITED building block: used by RunStartupBranchAsync, which already holds the
@@ -640,33 +645,37 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
             var lct = linked.Token;
 
             if (_cli.CliPath is null) {
-                _surface.Status("kcap CLI not found — can't start the daemon service.");
+                _surface.Status("kcap CLI not found. Can't start the daemon service.");
                 return;
             }
 
-            if (!await TryAcquireGateAsync(lct).ConfigureAwait(false)) return;
+            if (!await TryAcquireGateAsync(lct).ConfigureAwait(false)) {
+                _surface.Status("Couldn't start the daemon. Try again.");
+                return;
+            }
             try {
                 // Fresh evidence every call — a Start racing an in-flight mutation blocks on the
                 // gate above and, once it clears, re-queries rather than acting on anything it
                 // might have observed before the wait.
                 var snap = await QueryStatusForActionAsync(lct).ConfigureAwait(false);
-                if (snap is null) return; // unknown — already surfaced, no action (spec §6)
+                if (snap is null) return; // unknown — already surfaced, no action
 
                 var state = ServiceStateClassifier.Parse(snap.State);
                 if (state == ServiceState.Unknown) {
-                    _surface.Status("Daemon service reported an unrecognized state — skipping this action.");
+                    _surface.Status("Daemon service reported an unrecognized state. Skipping this action.");
                     Console.Error.WriteLine($"kcap: daemon lifecycle start action saw an unrecognized service state: {snap.State}");
                     return;
                 }
 
                 if (state == ServiceState.Running) {
+                    _surface.Status(AlreadyRunningReconnectStatus);
                     _ = _client.RestartLoopAsync();
                     return;
                 }
 
                 if (state == ServiceState.Installed) {
                     if (snap.UnitPresent && snap.DaemonPid is null)
-                        await RunLaneMutationAsync(MutationVerb.StartVerified, lct).ConfigureAwait(false);
+                        await ReportStartMutationAsync(MutationVerb.StartVerified, lct).ConfigureAwait(false);
                     else
                         await OfferRepairAsync(snap, lct).ConfigureAwait(false); // orphan label or coexistence
                     return;
@@ -675,13 +684,13 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
                 // state == ServiceState.NotInstalled: no loaded label.
                 if (snap.UnitPresent) {
                     if (snap.DaemonPid is null)
-                        await RunLaneMutationAsync(MutationVerb.StartVerified, lct).ConfigureAwait(false); // bootstrap the stopped unit
+                        await ReportStartMutationAsync(MutationVerb.StartVerified, lct).ConfigureAwait(false); // bootstrap the stopped unit
                     else
                         await OfferRepairAsync(snap, lct).ConfigureAwait(false); // a manual daemon owns the name
                     return;
                 }
 
-                await RunLaneMutationAsync(MutationVerb.DetachedStart, lct).ConfigureAwait(false); // nothing at all — no unit to rewrite
+                await ReportStartMutationAsync(MutationVerb.DetachedStart, lct).ConfigureAwait(false); // nothing at all — no unit to rewrite
             } finally {
                 _gate.Release();
             }
@@ -691,6 +700,16 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
             _surface.Status("Starting the daemon failed unexpectedly.");
             Console.Error.WriteLine($"kcap: daemon lifecycle start action failed unexpectedly: {ex.Message}");
         }
+    }
+
+    /// Start-click feedback after a lane mutation: success and failure both write Status so the
+    /// launcher banner is never left on a mute "Starting…" with no follow-up. Failure detail may
+    /// also arrive later via Attention (outcome consumer); that overwrites this one-liner.
+    async Task ReportStartMutationAsync(MutationVerb verb, CancellationToken ct) {
+        var ok = await RunLaneMutationAsync(verb, ct).ConfigureAwait(false);
+        _surface.Status(ok
+            ? "Daemon start requested. Waiting to connect…"
+            : "Daemon start did not finish. Press Retry.");
     }
 
     /// §4.4 repair affordance: the SAME dialoged operation as skew's takeover

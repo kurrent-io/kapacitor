@@ -106,15 +106,16 @@ public sealed class SessionRailViewModel : ReactiveObject, IDisposable {
     }
 
     internal static string WorktreeKeyFor(AgentStatusDto dto) =>
-        CheckoutLabel.CheckoutPathFor(dto) ?? dto.RepoPath ?? "";
+        PlatformPaths.Normalize(CheckoutLabel.CheckoutPathFor(dto) ?? dto.RepoPath ?? "");
 
     // Memoized: ResolveMainRepoRoot reads .git files — cheap once, not per-changeset cheap; a
     // path's resolution never changes within a daemon's lifetime. A current daemon already sends
-    // the repository, so this only ever rewrites an older daemon's checkout path.
+    // the repository, so this only ever rewrites an older daemon's checkout path. The stored
+    // root is separator-normalized so `/repo` and `/repo/` never become two rail groups.
     string RepoRootFor(AgentStatusDto dto) {
         if (dto.RepoPath is not { Length: > 0 } path) return "";
         if (_rootByPath.TryGetValue(path, out var root)) return root;
-        root = _resolveRepoRoot(path);
+        root = PlatformPaths.Normalize(_resolveRepoRoot(path));
         _rootByPath[path] = root;
         return root;
     }

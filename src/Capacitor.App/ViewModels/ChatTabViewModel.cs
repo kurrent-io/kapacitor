@@ -107,6 +107,11 @@ public sealed class ChatTabViewModel : ReactiveObject {
     readonly ObservableAsPropertyHelper<string> _composerHint;
     public string ComposerHint => _composerHint.Value;
 
+    readonly ObservableAsPropertyHelper<bool> _showsComposer;
+    /// Input + Send stay in the tree only while messaging is still possible. An ended session
+    /// hides them and leaves the hint — a greyed empty box is the wrong affordance.
+    public bool ShowsComposer => _showsComposer.Value;
+
     string _vendor = "";
     IReadOnlyList<HarnessOption> _options = HostedHarnessCatalog.Build(null);
 
@@ -147,8 +152,9 @@ public sealed class ChatTabViewModel : ReactiveObject {
 
     /// The hint is built from the terminal's own availability, so it is true in the windows
     /// where State alone would lie (a reattach or detach under way while State reads Attached).
-    internal static string HintFor(SendAvailability availability, TerminalSessionState state, string vendorLabel) => availability switch {
-        SendAvailability.Ready         => $"Reply to {vendorLabel} · Enter sends · Shift+Enter for a new line",
+    /// Ready omits the harness name — the workspace chip already names it.
+    internal static string HintFor(SendAvailability availability, TerminalSessionState state) => availability switch {
+        SendAvailability.Ready         => "Enter sends · Shift+Enter for a new line",
         SendAvailability.Sending       => "Sending…",
         SendAvailability.Transitioning => "Updating the terminal connection…",
         SendAvailability.ReadOnly      => $"Read-only: {state.Detail}",
@@ -237,10 +243,17 @@ public sealed class ChatTabViewModel : ReactiveObject {
         // goes blank there instead of offering a reply that can never be sent.
         _composerHint = Observable.CombineLatest(
                 terminal.WhenAnyValue(t => t.SendAvailability, t => t.State, (availability, state) => (availability, state)),
-                this.WhenAnyValue(x => x.VendorLabel),
                 this.WhenAnyValue(x => x.IsReadOnlyParticipant),
-                (t, label, readOnly) => readOnly ? "" : HintFor(t.availability, t.state, label))
-            .ToProperty(this, x => x.ComposerHint, HintFor(terminal.SendAvailability, terminal.State, ""))
+                (t, readOnly) => readOnly ? "" : HintFor(t.availability, t.state))
+            .ToProperty(this, x => x.ComposerHint, HintFor(terminal.SendAvailability, terminal.State))
+            .DisposeWith(_disposables);
+
+        _showsComposer = Observable.CombineLatest(
+                terminal.WhenAnyValue(t => t.SendAvailability),
+                this.WhenAnyValue(x => x.IsReadOnlyParticipant),
+                (availability, readOnly) => !readOnly && availability != SendAvailability.Ended)
+            .ToProperty(this, x => x.ShowsComposer,
+                initialValue: !IsReadOnlyParticipant && terminal.SendAvailability != SendAvailability.Ended)
             .DisposeWith(_disposables);
 
         var canSend = Observable.CombineLatest(
@@ -253,11 +266,7 @@ public sealed class ChatTabViewModel : ReactiveObject {
         }, canSend);
         _disposables.Add(SendCommand);
 
-        OpenLinkCommand = ReactiveCommand.Create<string>(url => {
-            if (!LinkPolicy.IsOpenable(url)) return;
-            try { _opener.Open(url); }
-            catch (Exception ex) { Console.Error.WriteLine($"kcap: open link failed: {ex.Message}"); }
-        });
+        OpenLinkCommand = ReactiveCommand.Create<string>(url => LinkPolicy.Open(_opener, url));
         _disposables.Add(OpenLinkCommand);
     }
 

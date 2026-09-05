@@ -8,11 +8,11 @@ using ReactiveUI;
 
 namespace Capacitor.App.ViewModels;
 
-/// One row of the decision log, projected for display (spec §7). Time is local
-/// ("yyyy-MM-dd HH:mm:ss"); an unparseable decided_at renders verbatim rather than throwing.
-/// IsAllowed drives the outcome badge color; Outcome carries the raw wire value.
+/// One row of the decision log, projected for display. Time is a short local clock for the
+/// table; TimeTip carries the full local stamp for hover. An unparseable decided_at renders
+/// verbatim in both rather than throwing. IsAllowed drives the outcome color.
 public sealed record ActivityRow(
-    string Time, string Outcome, bool IsAllowed, string Requester, string KindLabel,
+    string Time, string TimeTip, string Outcome, bool IsAllowed, string Requester, string KindLabel,
     string RepoLeaf, string RepoFull, string Vendor, string SourceLabel);
 
 /// Renders the consent decision log as the Activity tab (spec §7): pure file I/O via the injected
@@ -154,10 +154,13 @@ public sealed class ActivityViewModel : ReactiveObject, IDisposable {
         IsEmpty = _rowsSource.Count == 0;
     }
 
-    static ActivityRow ToRow(ConsentDecisionRecord r) => new(
-        FormatTime(r.DecidedAt), r.Outcome, r.Outcome == "allowed", RequesterOf(r),
-        ConsentPromptViewModel.KindLabelOf(r.Kind), RepoLabel.Leaf(r.RepoPath), r.RepoPath, r.Vendor,
-        SourceLabelOf(r.Source));
+    static ActivityRow ToRow(ConsentDecisionRecord r) {
+        var (time, tip) = FormatTime(r.DecidedAt);
+        return new(
+            time, tip, r.Outcome, r.Outcome == "allowed", RequesterOf(r),
+            ConsentPromptViewModel.KindLabelOf(r.Kind), RepoLabel.Leaf(r.RepoPath), r.RepoPath, r.Vendor,
+            SourceLabelOf(r.Source));
+    }
 
     static string RequesterOf(ConsentDecisionRecord r) =>
         !string.IsNullOrWhiteSpace(r.RequesterDisplay) ? r.RequesterDisplay
@@ -166,11 +169,14 @@ public sealed class ActivityViewModel : ReactiveObject, IDisposable {
 
     // RoundtripKind, matching ConsentService.DeadlineFor: both parse the same daemon-written ISO
     // stamps, and one parse style across the app is one behavior to reason about.
-    static string FormatTime(string decidedAt) =>
-        DateTimeOffset.TryParse(decidedAt, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var parsed)
-            ? parsed.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture)
-            : decidedAt; // unparseable — rendered verbatim rather than thrown
-
+    static (string Display, string Tip) FormatTime(string decidedAt) {
+        if (!DateTimeOffset.TryParse(decidedAt, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var parsed))
+            return (decidedAt, decidedAt);
+        var local = parsed.ToLocalTime();
+        return (
+            local.ToString("MMM d HH:mm", CultureInfo.InvariantCulture),
+            local.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture));
+    }
     internal static string SourceLabelOf(string source) => source switch {
         "owner"          => "owner",
         "default"        => "default policy",

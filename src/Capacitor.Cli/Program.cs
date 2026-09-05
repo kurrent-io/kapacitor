@@ -7,6 +7,7 @@ using Capacitor.Cli.Commands.Harness;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.Config;
+using Capacitor.Cli.Core.FirstRun;
 using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Core.Telemetry;
 using Capacitor.Cli.Harness.Claude;
@@ -149,6 +150,12 @@ var telemetrySuppressed = CliTelemetry.ConsumeSpawnMarker(
 CliTelemetry.Initialize(command, baseUrl, loggedIn, config, telemetrySuppressed);
 
 AppDomain.CurrentDomain.ProcessExit += (_, _) => {
+    // Environment.Exit runs no `finally` and no `using` disposal, so a leg that ends that way has no
+    // other chance to tell a waiting browser it has stopped. Ahead of the telemetry flush because both
+    // spend the runtime's one exit budget and only this one is holding a page open; the notice claims
+    // once, so a leg that already sent stays silent and a process with none armed is a no-op.
+    FirstRunInterruptRelinquish.RunBeforeExit(InteractiveLifetime.ExitNoticeBudget);
+
     CliTelemetry.RecordCommand(command, args, Environment.ExitCode, CommandTiming.ElapsedMs(commandStart));
     CliTelemetry.FlushAndClose().GetAwaiter().GetResult();
 };

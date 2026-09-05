@@ -5,7 +5,6 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Headless;
 using Avalonia.Input;
-using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
@@ -40,19 +39,30 @@ public class ChatTabViewSmokeTests {
     static string CallLine(int n) => ToolCallLine.Replace("\"t1\"", $"\"t{n}\"");
     static string ResultLine(int n) => ToolResultLine.Replace("\"t1\"", $"\"t{n}\"");
 
-    static List<StackPanel> ToolRows(ChatTabView view) => view.GetVisualDescendants().OfType<StackPanel>()
-        .Where(p => p.Orientation == Orientation.Horizontal && p.DataContext is ToolCallItem).ToList();
+    static List<Control> ToolRows(ChatTabView view) => view.GetVisualDescendants().OfType<Control>()
+        .Where(c => c.Name == "ToolCallRow" && c.DataContext is ToolCallItem).ToList();
     static Button Summary(ChatTabView view) => view.GetVisualDescendants().OfType<Button>().Single(b => b.Classes.Contains("toolSummary"));
+    static Button? SummaryOrNull(ChatTabView view) => view.GetVisualDescendants().OfType<Button>().FirstOrDefault(b => b.Classes.Contains("toolSummary"));
     static ToolGroupItem OnlyGroup(Host host) => (ToolGroupItem)host.Chat.Items.Single();
 
     /// A synthetic pointer event hit-tests the compositor's last committed scene, which layout alone
     /// does not refresh: a control shown since the last frame is invisible to the click until the
-    /// render timer ticks once more.
+    /// render timer ticks. One tick is enough on macOS/Linux; Windows headless sometimes needs a
+    /// second before a freshly-shown summary button is in the scene (tool groups nest under a Border).
+    /// Aim at the control's center — a (2,2) corner miss is easy when DPI scales.
     static Point PresentAndLocate(Host host, Control target) {
         host.Settle();
         AvaloniaHeadlessPlatform.ForceRenderTimerTick();
         Dispatcher.UIThread.RunJobs();
-        return target.TranslatePoint(new Point(2, 2), host.Window)!.Value;
+        AvaloniaHeadlessPlatform.ForceRenderTimerTick();
+        Dispatcher.UIThread.RunJobs();
+        host.Window.UpdateLayout();
+        if (target.Bounds.Width < 1 || target.Bounds.Height < 1)
+            throw new InvalidOperationException(
+                $"Click target '{target.GetType().Name}' has empty bounds after present; cannot hit-test.");
+        var local = new Point(target.Bounds.Width / 2, target.Bounds.Height / 2);
+        return target.TranslatePoint(local, host.Window)
+            ?? throw new InvalidOperationException("Click target is not under the window.");
     }
 
     static void Click(Host host, Control target) {
@@ -306,11 +316,11 @@ public class ChatTabViewSmokeTests {
         });
     }
 
-    /// Pins the tool row's outcome colour: the glyph takes the brush ToolOutcomeBrushConverter
+    /// Pins the tool row's outcome colour: the status pill takes the brush ToolOutcomeBrushConverter
     /// maps for the paired result, danger for an error and accent for a success.
     [Test]
     [NotInParallel("AvaloniaSession")]
-    public async Task A_paired_tool_row_paints_its_glyph_with_the_outcome_brush() {
+    public async Task A_paired_tool_row_paints_its_status_dot_with_the_outcome_brush() {
         await RunOnUiAsync(async () => {
             var host = new Host();
             await host.LoadAsync(Tmp.CreateFile("tools.jsonl",
@@ -320,12 +330,13 @@ public class ChatTabViewSmokeTests {
 
             await Assert.That(OnlyGroup(host).Calls.Select(i => i.Outcome))
                 .IsEquivalentTo([ToolOutcome.Done, ToolOutcome.Error], CollectionOrdering.Matching);
-            var glyphs = host.View.GetVisualDescendants().OfType<TextBlock>()
-                .Where(t => t.DataContext is ToolCallItem && t.Text is "✓" or "✕").ToList();
+            var pills = ToolRows(host.View)
+                .Select(row => row.GetVisualDescendants().OfType<Border>().Single(b => b.Classes.Contains("toolStatus") && b.IsVisible))
+                .ToList();
 
-            await Assert.That(glyphs.Select(g => g.Text!)).IsEquivalentTo(["✓", "✕"], CollectionOrdering.Matching);
-            await Assert.That(glyphs[0].Foreground).IsSameReferenceAs(Brush(isError: false));
-            await Assert.That(glyphs[1].Foreground).IsSameReferenceAs(Brush(isError: true));
+            await Assert.That(pills).Count().IsEqualTo(2);
+            await Assert.That(pills[0].Background).IsSameReferenceAs(Brush(isError: false));
+            await Assert.That(pills[1].Background).IsSameReferenceAs(Brush(isError: true));
             await host.CloseAsync();
         });
     }
@@ -447,7 +458,7 @@ public class ChatTabViewSmokeTests {
 
             await Assert.That(rows).Count().IsEqualTo(2);
             await Assert.That(Top(rows[1]) - Bottom(rows[0])).IsLessThan(10);
-            await Assert.That(Top(text) - Bottom(rows[1])).IsGreaterThanOrEqualTo(12);
+            await Assert.That(Top(text) - Bottom(rows[1])).IsGreaterThanOrEqualTo(18);
             await host.CloseAsync();
         });
     }
@@ -464,17 +475,41 @@ public class ChatTabViewSmokeTests {
             await Assert.That(host.Chat.Items).Count().IsEqualTo(1);
             var summary = Summary(host.View);
             await Assert.That(summary.IsVisible).IsTrue();
-            await Assert.That(summary.GetVisualDescendants().OfType<TextBlock>().Select(t => t.Text)).Contains("Searched files, read a file");
+            await Assert.That(OnlyGroup(host).SummaryLine).IsEqualTo("Searched files, read a file · ls -la");
+            await Assert.That(summary.GetVisualDescendants().OfType<TextBlock>().Select(t => t.Text))
+                .Contains("Searched files, read a file · ls -la");
             await Assert.That(ToolRows(host.View)).Count().IsEqualTo(1);
             await Assert.That(((ToolCallItem)ToolRows(host.View)[0].DataContext!).Outcome).IsEqualTo(ToolOutcome.Running);
 
             Click(host, summary);
             await Assert.That(OnlyGroup(host).IsExpanded).IsTrue();
+            await Assert.That(OnlyGroup(host).SummaryLine).IsEqualTo("Searched files, read a file");
             await Assert.That(ToolRows(host.View)).Count().IsEqualTo(3);
 
             Click(host, summary);
             await Assert.That(OnlyGroup(host).IsExpanded).IsFalse();
+            await Assert.That(OnlyGroup(host).SummaryLine).IsEqualTo("Searched files, read a file · ls -la");
             await Assert.That(ToolRows(host.View)).Count().IsEqualTo(1);
+            await host.CloseAsync();
+        });
+    }
+
+    /// A lone settled call is the row itself — no "Ran a command" summary, but a kind chip names it.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task A_single_settled_call_shows_the_row_without_a_summary() {
+        await RunOnUiAsync(async () => {
+            var host = new Host();
+            await host.LoadAsync(Tmp.CreateFile("one.jsonl", [ToolCallLine, ToolResultLine]));
+            await Assert.That(OnlyGroup(host).ShowsSummaryHeader).IsFalse();
+            await Assert.That(OnlyGroup(host).ShowsKindChip).IsTrue();
+            await Assert.That(OnlyGroup(host).KindChip).IsEqualTo("Search");
+            await Assert.That(SummaryOrNull(host.View)?.IsVisible ?? false).IsFalse();
+            var chip = host.View.GetVisualDescendants().OfType<TextBlock>()
+                .Single(t => t.Classes.Contains("toolKindChip") && t.IsEffectivelyVisible);
+            await Assert.That(chip.Text).IsEqualTo("Search");
+            await Assert.That(ToolRows(host.View)).Count().IsEqualTo(1);
+            await Assert.That(((ToolCallItem)ToolRows(host.View)[0].DataContext!).Outcome).IsEqualTo(ToolOutcome.Done);
             await host.CloseAsync();
         });
     }
@@ -486,7 +521,7 @@ public class ChatTabViewSmokeTests {
         await RunOnUiAsync(async () => {
             var host = new Host();
             await host.LoadAsync(Tmp.CreateFile("live.jsonl", [ToolCallLine, ReadCallLine]));
-            await Assert.That(Summary(host.View).IsVisible).IsFalse();
+            await Assert.That(SummaryOrNull(host.View)?.IsVisible ?? false).IsFalse();
             await Assert.That(ToolRows(host.View)).Count().IsEqualTo(2);
             await host.CloseAsync();
         });
@@ -494,13 +529,17 @@ public class ChatTabViewSmokeTests {
 
     [Test]
     [NotInParallel("AvaloniaSession")]
-    public async Task A_failed_call_inside_a_folded_group_shows_the_danger_cross_on_the_summary() {
+    public async Task A_failed_call_inside_a_multi_call_group_marks_the_summary() {
         await RunOnUiAsync(async () => {
             var host = new Host();
-            await host.LoadAsync(Tmp.CreateFile("fail.jsonl", [ToolCallLine, ToolErrorLine]));
-            var cross = Summary(host.View).GetVisualDescendants().OfType<TextBlock>().Single(t => t.Text == "✕");
-            await Assert.That(cross.IsVisible).IsTrue();
-            await Assert.That(cross.Foreground).IsSameReferenceAs(Avalonia.Application.Current!.FindResource("KcapDangerBrush"));
+            await host.LoadAsync(Tmp.CreateFile("fail.jsonl", [
+                ToolCallLine, ToolErrorLine, ReadCallLine, ReadResultLine,
+            ]));
+            var summary = Summary(host.View);
+            await Assert.That(summary.IsVisible).IsTrue();
+            var failPill = summary.GetVisualDescendants().OfType<Border>()
+                .Single(b => b.Classes.Contains("toolStatus") && b.IsVisible);
+            await Assert.That(failPill.Background).IsSameReferenceAs(Avalonia.Application.Current!.FindResource("KcapDangerBrush"));
             await host.CloseAsync();
         });
     }
@@ -514,8 +553,35 @@ public class ChatTabViewSmokeTests {
             host.Permissions.Add(PermissionEntries.Entry("r1", "a1", toolUseId: "t1"));
             await WaitUntilAsync(() => OnlyGroup(host).Calls[0].IsAwaitingPermission, what: "the mark");
             host.Settle();
-            var glyph = host.View.GetVisualDescendants().OfType<TextBlock>().Single(t => t.DataContext is ToolCallItem && t.Text == "?");
+            var call = OnlyGroup(host).Calls[0];
+            await Assert.That(call.IsRunning).IsFalse();
+            await Assert.That(call.ShowRowStatus).IsFalse();
+            var glyph = host.View.GetVisualDescendants().OfType<TextBlock>()
+                .Single(t => t.DataContext is ToolCallItem && t.Text == "?" && t.IsEffectivelyVisible);
             await Assert.That(glyph.Foreground).IsSameReferenceAs(Brush(isError: false));
+            await Assert.That(host.View.GetVisualDescendants().OfType<Border>()
+                .Count(b => b.Classes.Contains("toolRunning") && b.IsEffectivelyVisible)).IsEqualTo(0);
+            await host.CloseAsync();
+        });
+    }
+
+    /// A live row that is not waiting on permission shows the pulsing status pill.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task A_running_row_shows_the_pulsing_status_dot() {
+        await RunOnUiAsync(async () => {
+            var host = new Host();
+            await host.LoadAsync(Tmp.CreateFile("run.jsonl", [ToolCallLine]));
+            var call = OnlyGroup(host).Calls[0];
+            await Assert.That(call.IsRunning).IsTrue();
+            await Assert.That(call.HasDetail).IsTrue();
+            await Assert.That(call.ShowRowStatus).IsFalse();
+            var pulse = host.View.GetVisualDescendants().OfType<Border>()
+                .Single(b => b.Classes.Contains("toolRunning") && b.IsEffectivelyVisible);
+            await Assert.That(pulse.Background).IsSameReferenceAs(Avalonia.Application.Current!.FindResource("KcapWarningBrush"));
+            var detail = ToolRows(host.View)[0].GetVisualDescendants().OfType<TextBlock>()
+                .Single(t => t.IsEffectivelyVisible && t.Text == "ls -la");
+            await Assert.That(detail.Foreground).IsSameReferenceAs(Avalonia.Application.Current!.FindResource("KcapTextBrush"));
             await host.CloseAsync();
         });
     }

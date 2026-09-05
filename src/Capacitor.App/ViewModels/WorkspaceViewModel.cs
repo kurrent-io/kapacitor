@@ -31,10 +31,10 @@ public enum WorkspaceTab { Chat, Terminal }
 /// subscriber is exactly correct, unlike replaying a raw changeset to a fresh DynamicData query
 /// aggregator would be.
 ///
-/// A removed agent id freezes its LAST known dto rather than blanking the header back to
-/// placeholders -- SessionEnded flips (sticky, mirroring TerminalTabViewModel's own
-/// Exited/Failed stickiness) but Title/RepoLabelText/VendorChip/etc keep identifying the session
-/// that just ended instead of reverting to "— · —".
+/// A removed or terminal-status agent freezes its LAST known dto rather than blanking the header
+/// back to placeholders -- SessionEnded flips (sticky, mirroring TerminalTabViewModel's own
+/// Exited/Failed stickiness) but Title/RepoLabelText/etc keep identifying the session
+/// that just ended instead of reverting to "—".
 public sealed class WorkspaceViewModel : ReactiveObject {
     const string UnresolvedKind = "unresolved";
 
@@ -46,13 +46,8 @@ public sealed class WorkspaceViewModel : ReactiveObject {
     public string Title => _title.Value;
 
     readonly ObservableAsPropertyHelper<string> _repoLabelText;
+    /// Checkout under the title (`repo / worktree`); harness/transport live in the work-context pane.
     public string RepoLabelText => _repoLabelText.Value;
-
-    readonly ObservableAsPropertyHelper<string> _vendorChip;
-    public string VendorChip => _vendorChip.Value;
-
-    readonly ObservableAsPropertyHelper<string> _familyDot;
-    public string FamilyDot => _familyDot.Value;
 
     readonly ObservableAsPropertyHelper<bool> _showsTerminalTab;
     public bool ShowsTerminalTab => _showsTerminalTab.Value;
@@ -72,6 +67,10 @@ public sealed class WorkspaceViewModel : ReactiveObject {
         get => _chat;
         private set => this.RaiseAndSetIfChanged(ref _chat, value);
     }
+
+    /// The right pane. Fed by the same presence stream as the header, so the daemon cache has one
+    /// subscription per workspace, not two.
+    public WorkContextViewModel WorkContext { get; }
 
     WorkspaceTab _activeTab = WorkspaceTab.Chat;
     public WorkspaceTab ActiveTab {
@@ -101,7 +100,8 @@ public sealed class WorkspaceViewModel : ReactiveObject {
     public WorkspaceViewModel(
             string agentId, IDaemonClientService daemon, AgentActionService actions,
             TerminalAttachClientFactory factory, Func<ITerminalSurface> surfaceFactory, TimeProvider time,
-            IUrlOpener opener, IPermissionService permissions) {
+            IUrlOpener opener, IPermissionService permissions, IWorkContextSource workContext,
+            Action? requestSignIn = null, IObservable<Unit>? signInCompleted = null) {
         AgentId = agentId;
         Terminal = new TerminalTabViewModel(agentId, daemon, factory, surfaceFactory, time);
 
@@ -112,6 +112,8 @@ public sealed class WorkspaceViewModel : ReactiveObject {
             .Replay(1)
             .RefCount();
 
+        WorkContext = new WorkContextViewModel(presence.Select(p => p.Dto), workContext, time, opener, requestSignIn, signInCompleted);
+
         presence.Select(p => p.Dto).Subscribe(dto => _latestDto = dto).DisposeWith(_disposables);
 
         _title = presence.Select(p => TitleFor(p.Dto))
@@ -119,12 +121,6 @@ public sealed class WorkspaceViewModel : ReactiveObject {
             .DisposeWith(_disposables);
         _repoLabelText = presence.Select(p => CheckoutLabelFor(p.Dto))
             .ToProperty(this, x => x.RepoLabelText, CheckoutLabelFor(null))
-            .DisposeWith(_disposables);
-        _vendorChip = presence.Select(p => VendorChipFor(p.Dto))
-            .ToProperty(this, x => x.VendorChip, VendorChipFor(null))
-            .DisposeWith(_disposables);
-        _familyDot = presence.Select(p => p.Dto is null ? "" : HostedHarnessCatalog.EffectiveFamily(p.Dto.HasTerminal, p.Dto.Vendor))
-            .ToProperty(this, x => x.FamilyDot, "")
             .DisposeWith(_disposables);
         _showsTerminalTab = presence.Select(p => p.Dto is not null && HostedHarnessCatalog.ShowsTerminal(p.Dto.HasTerminal, p.Dto.Vendor))
             .ToProperty(this, x => x.ShowsTerminalTab, initialValue: false)
@@ -154,6 +150,8 @@ public sealed class WorkspaceViewModel : ReactiveObject {
         OpenInWebCommand = ReactiveCommand.Create(() => actions.OpenInWeb(agentId));
         _disposables.Add(OpenInWebCommand);
 
+        var canStop = presence.Select(p => !p.SessionEnded)
+            .CombineLatest(actions.StopsInFlight, (alive, inFlight) => alive && !inFlight.Contains(agentId));
         StopCommand = ReactiveCommand.Create(() => {
             var dto = _latestDto;
             // UnresolvedKind fails safe as protected (AgentActionService.IsProtectedKind treats
@@ -163,7 +161,7 @@ public sealed class WorkspaceViewModel : ReactiveObject {
             var kind = dto?.Kind ?? UnresolvedKind;
             var label = dto is null ? agentId : $"{dto.Kind} · {dto.Vendor} · {RepoLabel.Leaf(dto.RepoPath)}";
             actions.RequestStop(agentId, label, kind);
-        });
+        }, canStop);
         _disposables.Add(StopCommand);
     }
 
@@ -173,6 +171,7 @@ public sealed class WorkspaceViewModel : ReactiveObject {
         foreach (var change in changes) {
             if (change.Reason == ChangeReason.Remove) { ended = true; continue; } // dto stays frozen
             dto = change.Current;
+            if (SessionStatusDots.IsTerminal(dto.Status)) ended = true;
         }
         return new AgentPresence(dto, ended);
     }
@@ -188,18 +187,14 @@ public sealed class WorkspaceViewModel : ReactiveObject {
         return dto.WorkLocation == WorkLocationText.Borrowed ? $"{label} · borrowed" : label;
     }
 
-    static string TitleFor(AgentStatusDto? dto) => dto?.Title ?? $"{RepoLabel.Leaf(dto?.RepoPath)} · {dto?.Vendor ?? "—"}";
+    static string TitleFor(AgentStatusDto? dto) => dto?.Title ?? RepoLabel.Leaf(dto?.RepoPath);
 
-    static string VendorChipFor(AgentStatusDto? dto) {
-        if (dto is null) return "—";
-        return dto.Model is null ? dto.Vendor : $"{dto.Vendor} ({dto.Model})";
-    }
-
-    /// Disposes this workspace's own daemon-cache projections, then tears down Chat (if built)
-    /// before Terminal -- the caller that closes a workspace tab calls this once.
+    /// Disposes this workspace's own daemon-cache projections, then tears down Chat (if built), the
+    /// work-context pane, and Terminal last -- the caller that closes a workspace tab calls this once.
     public async Task TeardownAsync() {
         _disposables.Dispose();
         if (Chat is { } chat) await chat.TeardownAsync();
+        await WorkContext.TeardownAsync();
         await Terminal.TeardownAsync();
     }
 }

@@ -3,6 +3,8 @@ using System.Collections.Specialized;
 using System.Reactive.Linq;
 using Avalonia.Automation;
 using Avalonia.Controls;
+using Avalonia.Headless;
+using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
@@ -26,9 +28,12 @@ public class HomeViewSmokeTests {
 
     sealed class RecordingLaunchClient : ILaunchClient {
         public LaunchOutcome Next = new(true, LaunchedId, null);
+        public int StartCount;
 
-        public Task<LaunchOutcome> StartAsync(LaunchRequest request, CancellationToken ct) =>
-            Task.FromResult(Next);
+        public Task<LaunchOutcome> StartAsync(LaunchRequest request, CancellationToken ct) {
+            StartCount++;
+            return Task.FromResult(Next);
+        }
     }
 
     static (HomeView View, HomeViewModel Vm, FakeDaemonClientService Service, RecordingLaunchClient Launch, TempDir Tmp) Build() {
@@ -52,35 +57,38 @@ public class HomeViewSmokeTests {
 
     [Test]
     [NotInParallel("AvaloniaSession")]
-    public async Task LauncherPane_resolves_its_named_controls() {
-        var found = await AvaloniaSession.DispatchAsync(() => {
-            var (_, vm, _, _, tmp) = Build();
-            using var _tmp = tmp;
-            var window = new Window { Content = new LauncherPaneView { DataContext = vm } };
-            window.Show();
-            Dispatcher.UIThread.RunJobs();
+    public async Task Headline_keeps_a_fixed_question_and_a_repo_subtitle() {
+        var (question, subtitleBefore, subtitleVisibleBefore, subtitleAfter, subtitleVisibleAfter) =
+            await AvaloniaSession.DispatchAsync(async () => {
+                var (_, vm, _, _, tmp) = Build();
+                using var _tmp = tmp;
+                var window = new Window { Content = new LauncherPaneView { DataContext = vm }, Width = 900, Height = 600 };
+                window.Show();
+                Dispatcher.UIThread.RunJobs();
 
-            var names = new[] {
-                "GoalInput", "RepositoryChip", "AgentChip", "EffortChip", "PermissionChip", "StartButton",
-                "StartErrorText", "ConnectionNoticeText", "HomeSignInButton",
-            };
-            var resolved = names.ToDictionary(name => name, name => Find<Control>(window, name) is not null);
+                var headline = Find<TextBlock>(window, "LauncherHeadline")!;
+                var subtitle = Find<TextBlock>(window, "LauncherRepoSubtitle")!;
+                var beforeText = subtitle.Text;
+                var beforeVisible = subtitle.IsVisible;
 
-            window.Close();
-            Dispatcher.UIThread.RunJobs();
-            vm.Dispose();
-            return resolved;
-        });
+                await vm.SelectRepositoryAsync("/repos/Kurrent-Capacitor-New-Machine");
+                Dispatcher.UIThread.RunJobs();
 
-        await Assert.That(found["GoalInput"]).IsTrue();
-        await Assert.That(found["RepositoryChip"]).IsTrue();
-        await Assert.That(found["AgentChip"]).IsTrue();
-        await Assert.That(found["EffortChip"]).IsTrue();
-        await Assert.That(found["PermissionChip"]).IsTrue();
-        await Assert.That(found["StartButton"]).IsTrue();
-        await Assert.That(found["StartErrorText"]).IsTrue();
-        await Assert.That(found["ConnectionNoticeText"]).IsTrue();
-        await Assert.That(found["HomeSignInButton"]).IsTrue();
+                var afterText = subtitle.Text;
+                var afterVisible = subtitle.IsVisible;
+                var q = headline.Text;
+
+                window.Close();
+                Dispatcher.UIThread.RunJobs();
+                vm.Dispose();
+                return (q, beforeText, beforeVisible, afterText, afterVisible);
+            });
+
+        await Assert.That(question).IsEqualTo("What should we build?");
+        await Assert.That(subtitleVisibleBefore).IsFalse();
+        await Assert.That(subtitleBefore ?? "").IsEqualTo("");
+        await Assert.That(subtitleVisibleAfter).IsTrue();
+        await Assert.That(subtitleAfter).IsEqualTo("Kurrent-Capacitor-New-Machine");
     }
 
     [Test]
@@ -93,13 +101,15 @@ public class HomeViewSmokeTests {
             window.Show();
             Dispatcher.UIThread.RunJobs();
 
-            var notice = Find<TextBlock>(window, "ConnectionNoticeText")!;
+            var notice = Find<TextBlock>(window, "BannerMessageText")!;
             var signIn = Find<Button>(window, "HomeSignInButton")!;
-            var before = (notice.IsVisible, signIn.IsVisible);
+            // The banner Border owns visibility; the text/button stay in the tree.
+            var banner = notice.FindAncestorOfType<Border>()!;
+            var before = (banner.IsVisible, signIn.IsVisible);
 
             service.SnapshotsSubject.OnNext(FakeDaemonClientService.Snap(connection: "disconnected"));
             Dispatcher.UIThread.RunJobs();
-            var after = (notice.IsVisible, notice.Text, signIn.IsVisible);
+            var after = (banner.IsVisible, notice.Text, signIn.IsVisible);
 
             window.Close();
             Dispatcher.UIThread.RunJobs();
@@ -164,6 +174,37 @@ public class HomeViewSmokeTests {
         await Assert.That(name).IsEqualTo("Start");
     }
 
+    /// Disabled Start still exposes why — hover tips are suppressed on disabled controls unless
+    /// ShowOnDisabled is set, and the tip text must name the missing repository gate.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task StartButton_tooltip_explains_disabled_without_repository() {
+        var (tipBefore, tipAfter, showOnDisabled) = await AvaloniaSession.DispatchAsync(async () => {
+            var (_, vm, _, _, tmp) = Build();
+            using var _tmp = tmp;
+            var window = new Window { Content = new LauncherPaneView { DataContext = vm } };
+            window.Show();
+            Dispatcher.UIThread.RunJobs();
+
+            var startButton = Find<Button>(window, "StartButton")!;
+            var before = ToolTip.GetTip(startButton) as string;
+            var show = ToolTip.GetShowOnDisabled(startButton);
+
+            await vm.SelectRepositoryAsync("/repos/kcap-cli");
+            Dispatcher.UIThread.RunJobs();
+            var after = ToolTip.GetTip(startButton) as string;
+
+            window.Close();
+            Dispatcher.UIThread.RunJobs();
+            vm.Dispose();
+            return (before, after, show);
+        });
+
+        await Assert.That(showOnDisabled).IsTrue();
+        await Assert.That(tipBefore).IsEqualTo("Select a repository to start");
+        await Assert.That(tipAfter).IsEqualTo("Start");
+    }
+
     [Test]
     [NotInParallel("AvaloniaSession")]
     public async Task StartButton_is_enabled_only_once_a_repository_is_selected() {
@@ -189,6 +230,81 @@ public class HomeViewSmokeTests {
 
         await Assert.That(enabledBefore).IsFalse();
         await Assert.That(enabledAfter).IsTrue();
+    }
+
+    /// Enter in the goal box starts the same way as the Start button — tunnel KeyDown, so the
+    /// TextBox cannot swallow the key before Start sees it.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Enter_in_the_goal_box_starts_when_Start_can_run() {
+        var (goalAfter, startCount) = await AvaloniaSession.DispatchAsync(async () => {
+            var (_, vm, _, launch, tmp) = Build();
+            using var _tmp = tmp;
+            var window = new Window { Content = new LauncherPaneView { DataContext = vm }, Width = 900, Height = 600 };
+            window.Show();
+            Dispatcher.UIThread.RunJobs();
+
+            await vm.SelectRepositoryAsync("/repos/kcap-cli");
+            Dispatcher.UIThread.RunJobs();
+
+            var goal = Find<TextBox>(window, "GoalInput")!;
+            goal.Focus();
+            Dispatcher.UIThread.RunJobs();
+            window.KeyTextInput("ship it");
+            Dispatcher.UIThread.RunJobs();
+            await Assert.That(goal.Text).IsEqualTo("ship it");
+
+            window.KeyPressQwerty(PhysicalKey.Enter, RawInputModifiers.None);
+            Dispatcher.UIThread.RunJobs();
+            for (var i = 0; i < 50 && launch.StartCount == 0; i++) {
+                await Task.Delay(10);
+                Dispatcher.UIThread.RunJobs();
+            }
+
+            var after = vm.Goal;
+            var count = launch.StartCount;
+
+            window.Close();
+            Dispatcher.UIThread.RunJobs();
+            vm.Dispose();
+            return (after, count);
+        });
+
+        await Assert.That(startCount).IsEqualTo(1);
+        await Assert.That(goalAfter).IsEqualTo("");
+    }
+
+    /// Without a repository, Enter is consumed and starts nothing — same gate as the Start button.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Enter_without_a_repository_does_not_start() {
+        var (goalAfter, startCount) = await AvaloniaSession.DispatchAsync(() => {
+            var (_, vm, _, launch, tmp) = Build();
+            using var _tmp = tmp;
+            var window = new Window { Content = new LauncherPaneView { DataContext = vm }, Width = 900, Height = 600 };
+            window.Show();
+            Dispatcher.UIThread.RunJobs();
+
+            var goal = Find<TextBox>(window, "GoalInput")!;
+            goal.Focus();
+            Dispatcher.UIThread.RunJobs();
+            window.KeyTextInput("ship it");
+            Dispatcher.UIThread.RunJobs();
+
+            window.KeyPressQwerty(PhysicalKey.Enter, RawInputModifiers.None);
+            Dispatcher.UIThread.RunJobs();
+
+            var after = goal.Text;
+            var count = launch.StartCount;
+
+            window.Close();
+            Dispatcher.UIThread.RunJobs();
+            vm.Dispose();
+            return (after, count);
+        });
+
+        await Assert.That(startCount).IsEqualTo(0);
+        await Assert.That(goalAfter).IsEqualTo("ship it");
     }
 
     [Test]
@@ -277,9 +393,8 @@ public class HomeViewSmokeTests {
         await Assert.That(realizedCount).IsEqualTo(1);
     }
 
-    /// The card's click plumbing (spec §3, entry points): the whole card is a Button whose Click
-    /// carries the card's OWN id to the window. Realized-visual-dependent by necessity — the
-    /// handler lives in the item template, so only a rendered card can raise it.
+    /// The card is a Button whose Click carries its own id to the window. Needs a realized visual —
+    /// the handler lives in the item template.
     [Test]
     [NotInParallel("AvaloniaSession")]
     public async Task Clicking_a_session_card_asks_to_open_that_session() {

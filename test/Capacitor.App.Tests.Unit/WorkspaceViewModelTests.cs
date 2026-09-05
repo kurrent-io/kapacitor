@@ -3,6 +3,7 @@ using System.Reactive.Subjects;
 using Capacitor.App.Services;
 using Capacitor.App.ViewModels;
 using Capacitor.Cli.Core.LocalIpc;
+using Capacitor.Cli.Core.WorkItems;
 using DynamicData;
 using Microsoft.Extensions.Time.Testing;
 using TUnit.Assertions.Enums;
@@ -11,7 +12,7 @@ using static Capacitor.App.Tests.Unit.WorkspaceFixtures;
 
 namespace Capacitor.App.Tests.Unit;
 
-/// WorkspaceViewModel's header projections (Title/RepoLabelText/VendorChip/FamilyDot/
+/// WorkspaceViewModel's header projections (Title/RepoLabelText/
 /// ShowsTerminalTab/NoTerminalNote), SessionEnded, and Stop routing. WorkspaceViewModel always
 /// builds a real TerminalTabViewModel internally, so pushing a matching AgentStatusDto into the
 /// shared daemon.Agents cache also drives Terminal's OWN resolve gate -- which reaches
@@ -24,7 +25,7 @@ public class WorkspaceViewModelTests {
     static WorkspaceViewModel Build(
             FakeDaemonClientService daemon, AgentActionService actions, FakeTerminalAttachClientFactory factory,
             FakeTimeProvider time, string agentId = "a1") =>
-        new(agentId, daemon, actions, factory.Factory, () => new FakeTerminalSurface(), time, new RecordingOpener(), new FakePermissionService());
+        new(agentId, daemon, actions, factory.Factory, () => new FakeTerminalSurface(), time, new RecordingOpener(), new FakePermissionService(), new FakeWorkContextSource());
 
     static AgentActionService NewActions(
             ScriptedLocalControlOps ops, RecordingNotifier notifier, RecordingOpener opener,
@@ -34,7 +35,7 @@ public class WorkspaceViewModelTests {
 
     [Test]
     [NotInParallel("AvaloniaSession")]
-    public async Task Title_repo_and_vendor_chip_project_from_the_pushed_dto() {
+    public async Task Title_and_repo_label_project_from_the_pushed_dto() {
         await RunOnUiAsync(async () => {
             var daemon = new FakeDaemonClientService();
             var actions = NewActions(new ScriptedLocalControlOps(), new RecordingNotifier(), new RecordingOpener());
@@ -48,10 +49,8 @@ public class WorkspaceViewModelTests {
             daemon.Agents.AddOrUpdate(Agent("a1", "claude", hasTerminal: true, repoPath: "/repo/myproj", model: "sonnet"));
             await (vm.Terminal.PendingResolveWorkForTesting ?? Task.CompletedTask);
 
-            await Assert.That(vm.Title).IsEqualTo("myproj · claude");
+            await Assert.That(vm.Title).IsEqualTo("myproj");
             await Assert.That(vm.RepoLabelText).IsEqualTo("myproj");
-            await Assert.That(vm.VendorChip).IsEqualTo("claude (sonnet)");
-            await Assert.That(vm.FamilyDot).IsEqualTo("pty");
             await Assert.That(vm.ShowsTerminalTab).IsTrue();
             await Assert.That(vm.NoTerminalNote).IsEqualTo("");
         });
@@ -105,9 +104,32 @@ public class WorkspaceViewModelTests {
 
             await Assert.That(vm.SessionEnded).IsTrue();
             // The header keeps identifying the session that just ended rather than reverting to
-            // "— · —" -- a frozen last-known snapshot, not a blanked one.
-            await Assert.That(vm.Title).IsEqualTo("myproj · claude");
+            // a blanked placeholder -- a frozen last-known snapshot.
+            await Assert.That(vm.Title).IsEqualTo("myproj");
             await Assert.That(vm.ShowsTerminalTab).IsTrue();
+            await Assert.That(await vm.StopCommand.CanExecute.FirstAsync()).IsFalse();
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task SessionEnded_and_Stop_disable_when_status_becomes_Completed_or_Failed() {
+        await RunOnUiAsync(async () => {
+            var daemon = new FakeDaemonClientService();
+            var actions = NewActions(new ScriptedLocalControlOps(), new RecordingNotifier(), new RecordingOpener());
+            var factory = new FakeTerminalAttachClientFactory();
+            var vm = Build(daemon, actions, factory, new FakeTimeProvider(), agentId: "a1");
+
+            daemon.Agents.AddOrUpdate(Agent("a1", "claude", hasTerminal: true, repoPath: "/repo/myproj") with { Status = "Running" });
+            await (vm.Terminal.PendingResolveWorkForTesting ?? Task.CompletedTask);
+            await Assert.That(await vm.StopCommand.CanExecute.FirstAsync()).IsTrue();
+
+            daemon.Agents.AddOrUpdate(Agent("a1", "claude", hasTerminal: true, repoPath: "/repo/myproj") with { Status = "Completed" });
+            await Assert.That(vm.SessionEnded).IsTrue();
+            await Assert.That(await vm.StopCommand.CanExecute.FirstAsync()).IsFalse();
+            await Assert.That(vm.Terminal.State.Phase).IsEqualTo(TerminalSessionPhase.SessionEnded);
+            await Assert.That(vm.Terminal.CanAcceptText).IsFalse();
+            await Assert.That(vm.Title).IsEqualTo("myproj");
         });
     }
 
@@ -206,8 +228,7 @@ public class WorkspaceViewModelTests {
     }
 
     /// Pins the header for a titled session on a borrowed checkout: the title line is the
-    /// session's own title, and the subtitle names the repository, the borrowed worktree and the
-    /// marker.
+    /// session's own title, and the subtitle names the repository and the borrowed worktree.
     [Test]
     [NotInParallel("AvaloniaSession")]
     public async Task The_header_shows_the_session_title_over_the_borrowed_worktree() {
@@ -226,6 +247,31 @@ public class WorkspaceViewModelTests {
             await Assert.That(vm.Title).IsEqualTo("Review this PR");
             await Assert.That(vm.RepoLabelText).IsEqualTo("myproj / agent-6da2 · borrowed");
             await vm.TeardownAsync();
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task WorkContext_is_fed_by_the_same_presence_and_torn_down_with_the_workspace() {
+        await RunOnUiAsync(async () => {
+            var daemon = new FakeDaemonClientService();
+            var source = new FakeWorkContextSource();
+            var factory = new FakeTerminalAttachClientFactory();
+            var vm = new WorkspaceViewModel("a1", daemon, NewActions(new ScriptedLocalControlOps(), new RecordingNotifier(), new RecordingOpener()),
+                factory.Factory, () => new FakeTerminalSurface(), new FakeTimeProvider(), new RecordingOpener(), new FakePermissionService(), source);
+            await Assert.That(vm.WorkContext.Phase).IsEqualTo(WorkContextPhase.WaitingForSession);
+
+            daemon.Agents.AddOrUpdate(Agent("a1", "claude", hasTerminal: true, repoPath: "/repo/myproj", sessionId: "0123456789abcdef0123456789abcdef"));
+            await (vm.Terminal.PendingResolveWorkForTesting ?? Task.CompletedTask);
+            await (vm.WorkContext.PendingReadForTesting ?? Task.CompletedTask);
+
+            await Assert.That(vm.WorkContext.Repository).IsEqualTo("myproj");
+            await Assert.That(source.Requested).IsEquivalentTo(new[] { "0123456789abcdef0123456789abcdef" });
+
+            await vm.TeardownAsync();
+            source.Default = WorkContextRead.Of(WorkContextReadKind.Ready);
+            daemon.Agents.AddOrUpdate(Agent("a1", "claude", hasTerminal: true, repoPath: "/repo/myproj", sessionId: "ffffffffffffffffffffffffffffffff"));
+            await Assert.That(source.Requested.Count).IsEqualTo(1);
         });
     }
 }

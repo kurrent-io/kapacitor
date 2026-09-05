@@ -19,6 +19,11 @@ namespace Capacitor.App.Tests.Unit;
 /// that the VM's properties hold the right values (MainWindowViewModelTests already covers
 /// that in isolation).
 public class MainWindowSmokeTests {
+    sealed class NeverLaunchClient : ILaunchClient {
+        public Task<LaunchOutcome> StartAsync(LaunchRequest request, CancellationToken ct) =>
+            Task.FromResult(new LaunchOutcome(false, null, "unexpected launch"));
+    }
+
     // Real AppNotifier (not RecordingNotifier) — the production notifier is fine here; most of
     // these tests don't exercise the toast overlay at all (window.Notifier is left unset), and
     // the one that does (below) needs a real IObservable<string> to subscribe through.
@@ -32,7 +37,7 @@ public class MainWindowSmokeTests {
     /// pieces MainWindowViewModelTests wires, over the actions this file's NewActions built.
     static WorkspaceViewModel NewWorkspace(FakeDaemonClientService service, AgentActionService actions, string agentId) =>
         new(agentId, service, actions, new FakeTerminalAttachClientFactory().Factory,
-            () => new FakeTerminalSurface(), new FakeTimeProvider(), new RecordingOpener(), new FakePermissionService());
+            () => new FakeTerminalSurface(), new FakeTimeProvider(), new RecordingOpener(), new FakePermissionService(), new FakeWorkContextSource());
 
     [Test]
     [NotInParallel("AvaloniaSession")]
@@ -193,46 +198,48 @@ public class MainWindowSmokeTests {
         await Assert.That(completed).IsTrue();
     }
 
-    /// StartMessageText/ReasonText must not reserve dead space when there is nothing to say
-    /// (spec: "collapse when empty"): both start out empty (Connecting, no failed attempt yet),
-    /// then Reason appears on Unreachable and StartMessage appears once a start attempt fails.
+    /// BannerMessage must not reserve dead space when empty: Connecting… shows a notice, then a
+    /// failed start replaces that body with the start message (one line, never stacked).
     [Test]
     [NotInParallel("AvaloniaSession")]
     public async Task StartMessage_and_reason_text_collapse_when_empty_and_appear_once_set() {
-        var (reasonInitially, startMessageInitially, reasonWhileUnreachable, startMessageAfterFailure) =
+        var (bannerInitially, bannerTextUnreachable, bannerTextAfterFailure) =
             await AvaloniaSession.DispatchAsync(async () => {
+                using var tmp = TempDir.WithPathTo("app-state.json", out var path);
                 var service = new FakeDaemonClientService();
-                var (actions, _) = NewActions(service);
-                var vm = new MainWindowViewModel(service, CancellationToken.None, TestActivity.New());
+                var home = new HomeViewModel(
+                    service, new AppStateStore(path), new NeverLaunchClient(),
+                    () => Task.FromResult(Array.Empty<string>()));
+                var vm = new MainWindowViewModel(service, CancellationToken.None, TestActivity.New(), home: home);
                 var window = new MainWindow { DataContext = vm };
                 window.Show();
                 Dispatcher.UIThread.RunJobs();
 
-                TextBlock Find(string name) =>
-                    window.GetVisualDescendants().OfType<TextBlock>().First(t => t.Name == name);
+                TextBlock Banner() =>
+                    window.GetVisualDescendants().OfType<TextBlock>().First(t => t.Name == "BannerMessageText");
+                Border NoticeBanner() => Banner().FindAncestorOfType<Border>()!;
 
-                var reasonInit = Find("ReasonText").IsVisible;
-                var startMessageInit = Find("StartMessageText").IsVisible;
+                var bannerInit = NoticeBanner().IsVisible;
 
                 service.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "daemon_unreachable", null));
                 Dispatcher.UIThread.RunJobs();
-                var reasonUnreachable = Find("ReasonText").IsVisible;
+                var textUnreachable = Banner().Text;
 
                 service.StartBehavior = _ => Task.FromResult(new StartDaemonResult(false, "boom: could not bind socket"));
                 await vm.StartDaemonCommand.Execute().ToTask();
                 Dispatcher.UIThread.RunJobs();
-                var startMessageAfter = Find("StartMessageText").IsVisible;
+                var textAfter = Banner().Text;
 
                 window.Close();
                 Dispatcher.UIThread.RunJobs();
+                home.Dispose();
 
-                return (reasonInit, startMessageInit, reasonUnreachable, startMessageAfter);
+                return (bannerInit, textUnreachable, textAfter);
             });
 
-        await Assert.That(reasonInitially).IsFalse();
-        await Assert.That(startMessageInitially).IsFalse();
-        await Assert.That(reasonWhileUnreachable).IsTrue();
-        await Assert.That(startMessageAfterFailure).IsTrue();
+        await Assert.That(bannerInitially).IsTrue(); // Connecting… still has a notice
+        await Assert.That(bannerTextUnreachable).IsEqualTo(HomeViewModel.DaemonDownNotice);
+        await Assert.That(bannerTextAfterFailure).IsEqualTo("boom: could not bind socket");
     }
 
     // ---- Toast overlay (spec §11: WindowNotificationManager replaces the inline banner) ----
@@ -291,7 +298,7 @@ public class MainWindowSmokeTests {
             var vm = new MainWindowViewModel(
                 service, CancellationToken.None, activity,
                 workspaceFactory: agentId => new WorkspaceViewModel(
-                    agentId, service, actions, attach.Factory, () => new FakeTerminalSurface(), new FakeTimeProvider(), new RecordingOpener(), new FakePermissionService()));
+                    agentId, service, actions, attach.Factory, () => new FakeTerminalSurface(), new FakeTimeProvider(), new RecordingOpener(), new FakePermissionService(), new FakeWorkContextSource()));
             var window = new MainWindow { DataContext = vm };
             window.Show();
             Dispatcher.UIThread.RunJobs();
@@ -378,7 +385,7 @@ public class MainWindowSmokeTests {
                 var vm = new MainWindowViewModel(
                     service, CancellationToken.None, TestActivity.New(),
                     workspaceFactory: agentId => new WorkspaceViewModel(
-                        agentId, service, actions, attach.Factory, () => new FakeTerminalSurface(), new FakeTimeProvider(), new RecordingOpener(), new FakePermissionService()));
+                        agentId, service, actions, attach.Factory, () => new FakeTerminalSurface(), new FakeTimeProvider(), new RecordingOpener(), new FakePermissionService(), new FakeWorkContextSource()));
                 var window = new MainWindow { DataContext = vm };
                 window.Show();
                 Dispatcher.UIThread.RunJobs();
@@ -514,6 +521,18 @@ public class MainWindowSmokeTests {
                 return noTabs && railPresent && newSessionRow;
             });
             await Assert.That(ok).IsTrue();
+        });
+    }
+
+    /// 310 of rail plus 400 of pane must never squeeze the center column to nothing.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task MainWindow_pins_its_minimum_width_to_the_default_width() {
+        await AvaloniaSession.RunOnUiAsync(async () => {
+            var window = new MainWindow { DataContext = new MainWindowViewModel(new FakeDaemonClientService(), CancellationToken.None, TestActivity.New()) };
+
+            await Assert.That(window.MinWidth).IsEqualTo(1200);
+            await Assert.That(window.Width).IsEqualTo(1200);
         });
     }
 }

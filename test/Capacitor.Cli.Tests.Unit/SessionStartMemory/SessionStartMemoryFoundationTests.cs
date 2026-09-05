@@ -258,7 +258,66 @@ public class SessionStartMemoryFoundationTests {
         await provider.GetAsync(new SessionStartMemoryContextRequest(
             "https://example.test/", null, false, TimeSpan.FromSeconds(1), CancellationToken.None));
 
-        await Assert.That(handler.Uri).IsEqualTo("https://example.test/api/memories/index?machine=machine%20tag");
+        await Assert.That(handler.Uri).IsEqualTo("https://example.test/api/memories/index?machine=machine%20tag&include=projects");
+    }
+
+    [Test]
+    public async Task Provider_reads_the_index_in_either_body_shape() {
+        var scope = new FixedScopeResolver("repo", "machine");
+        SessionStartMemoryContextProvider Provider(string body) => new(scope,
+            (_, _) => Task.FromResult(new HttpClient(new StaticHandler(HttpStatusCode.OK, body))));
+        const string entry = "{\"memory_id\":\"1\",\"slug\":\"s\",\"audience\":\"org\",\"description\":\"d\",\"kind\":\"feedback\"}";
+        var request = new SessionStartMemoryContextRequest("https://example", "/repo", false,
+            TimeSpan.FromSeconds(1), CancellationToken.None);
+
+        // An older server ignores include=projects and answers with the bare array it always sent.
+        var bareArray = await Provider($"[{entry}]").GetAsync(request);
+        var withProjects = await Provider(
+            $"{{\"entries\":[{entry}],\"projects\":[{{\"slug\":\"capacitor\",\"name\":\"Kurrent Capacitor\"}}]}}").GetAsync(request);
+        var projectsOnly = await Provider(
+            "{\"entries\":[],\"projects\":[{\"slug\":\"capacitor\",\"name\":\"Kurrent Capacitor\"}]}").GetAsync(request);
+        var neither = await Provider("{\"entries\":[],\"projects\":[]}").GetAsync(request);
+
+        await Assert.That(bareArray.Fragment).Contains("- s: d");
+        await Assert.That(bareArray.Fragment).DoesNotContain("This repo belongs");
+        await Assert.That(withProjects.Fragment).Contains("This repo belongs to project \"capacitor\"");
+        await Assert.That(withProjects.Fragment).Contains("- s: d");
+        await Assert.That(projectsOnly.Disposition).IsEqualTo(SessionStartMemoryDisposition.Ready);
+        await Assert.That(projectsOnly.Fragment).Contains("This repo belongs to project \"capacitor\"");
+        await Assert.That(neither.Disposition).IsEqualTo(SessionStartMemoryDisposition.CompleteWithoutContext);
+    }
+
+    [Test]
+    [Arguments("\"not-an-index\"")]
+    [Arguments("{}")]
+    [Arguments("{\"entries\":null,\"projects\":null}")]
+    [Arguments("{\"unrelated\":1}")]
+    public async Task Provider_retries_a_body_that_is_not_an_index(string body) {
+        // An object carrying neither member must stay retryable rather than read as an empty index:
+        // Empty completes the once-per-session lease, so a session would never ask again.
+        var provider = new SessionStartMemoryContextProvider(new FixedScopeResolver("repo", "machine"),
+            (_, _) => Task.FromResult(new HttpClient(new StaticHandler(HttpStatusCode.OK, body))));
+
+        var result = await provider.GetAsync(new SessionStartMemoryContextRequest("https://example", "/repo", false,
+            TimeSpan.FromSeconds(1), CancellationToken.None));
+
+        await Assert.That(result.Disposition).IsEqualTo(SessionStartMemoryDisposition.RetryableFailure);
+    }
+
+    [Test]
+    [Arguments("{\"entries\":[],\"projects\":[]}")]
+    [Arguments("{\"entries\":[]}")]
+    [Arguments("[]")]
+    public async Task Provider_completes_a_genuinely_empty_index(string body) {
+        // The mirror of the case above: a present-but-empty array IS an answer, and completing the
+        // lease on it is what stops a session re-fetching an index the server says is empty.
+        var provider = new SessionStartMemoryContextProvider(new FixedScopeResolver("repo", "machine"),
+            (_, _) => Task.FromResult(new HttpClient(new StaticHandler(HttpStatusCode.OK, body))));
+
+        var result = await provider.GetAsync(new SessionStartMemoryContextRequest("https://example", "/repo", false,
+            TimeSpan.FromSeconds(1), CancellationToken.None));
+
+        await Assert.That(result.Disposition).IsEqualTo(SessionStartMemoryDisposition.CompleteWithoutContext);
     }
 
     [Test]

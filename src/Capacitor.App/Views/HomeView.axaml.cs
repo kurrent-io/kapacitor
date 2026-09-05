@@ -21,13 +21,14 @@ public partial class HomeView : UserControl {
     }
 }
 
-/// RepositoryChip's label: the repo leaf name, or "No repository" for HomeViewModel.ScratchRepoPath
-/// ("") — RepoLabel.Leaf("") returns "" (there is no leaf), not the sentinel this chip needs.
+/// RepositoryChip's label: always "Repo · …" so the chip's job stays readable next to
+/// Effort/Permissions — leaf name, or "No repository" for HomeViewModel.ScratchRepoPath
+/// ("" — RepoLabel.Leaf("") returns "", not the sentinel this chip needs).
 public sealed class RepositoryLabelConverter : IValueConverter {
     public static readonly RepositoryLabelConverter Instance = new();
 
     public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture) =>
-        value is string { Length: > 0 } path ? RepoLabel.Leaf(path) : "No repository";
+        value is string { Length: > 0 } path ? $"Repo · {RepoLabel.Leaf(path)}" : "Repo · No repository";
 
     public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) =>
         throw new NotSupportedException();
@@ -38,9 +39,20 @@ public sealed class RepositoryLabelConverter : IValueConverter {
 public sealed class CountIsZeroConverter : IValueConverter {
     public static readonly CountIsZeroConverter Instance = new();
 
-    public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture) =>
-        value is int count && count == 0;
+    public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture) =>
+        value is int n && n == 0;
 
-    public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) =>
+    public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) =>
+        throw new NotSupportedException();
+}
+
+/// Inverse of CountIsZeroConverter — progress logs and similar, visible only while there is content.
+public sealed class CountIsNotZeroConverter : IValueConverter {
+    public static readonly CountIsNotZeroConverter Instance = new();
+
+    public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture) =>
+        value is int n && n != 0;
+
+    public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) =>
         throw new NotSupportedException();
 }

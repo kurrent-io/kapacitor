@@ -38,7 +38,7 @@ static class InteractiveLifetime {
     // What an interrupt may spend telling a server the machine has gone. A whole second of an exit
     // the user has already asked for is as much as this is worth: one small POST to a host we are
     // mid-conversation with either lands well inside it or is not going to.
-    static readonly TimeSpan ExitNoticeBudget = TimeSpan.FromSeconds(1);
+    internal static readonly TimeSpan ExitNoticeBudget = TimeSpan.FromSeconds(1);
 
     // PosixSignalRegistration.Create returns an IDisposable that owns the
     // underlying handler slot; if it isn't rooted for the process lifetime the

@@ -79,8 +79,9 @@ public class ActivityViewModelTests {
     [NotInParallel("AvaloniaSession")]
     public async Task Rows_map_records_with_fallbacks_and_source_labels() {
         const string decidedAt = "2026-08-08T12:34:56.0000000+00:00";
-        var expectedTime = DateTimeOffset.Parse(decidedAt, CultureInfo.InvariantCulture)
-            .ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
+        var local = DateTimeOffset.Parse(decidedAt, CultureInfo.InvariantCulture).ToLocalTime();
+        var expectedTime = local.ToString("MMM d HH:mm", CultureInfo.InvariantCulture);
+        var expectedTip = local.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
 
         var records = new[] {
             Rec(decidedAt: decidedAt, requester: "github:1", requesterDisplay: "Ada Lovelace",
@@ -101,6 +102,7 @@ public class ActivityViewModelTests {
         });
 
         await Assert.That(first.Time).IsEqualTo(expectedTime);
+        await Assert.That(first.TimeTip).IsEqualTo(expectedTip);
         await Assert.That(first.Requester).IsEqualTo("Ada Lovelace");
         await Assert.That(first.KindLabel).IsEqualTo("Review flow");
         // A consent record carries the launch request's path verbatim, with no repository behind

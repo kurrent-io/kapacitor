@@ -286,21 +286,24 @@ public sealed class TerminalTabViewModel : ReactiveObject {
                     HandleDtoObserved(change.Current);
                     break;
                 case ChangeReason.Remove:
-                    HandleAgentRemoved();
+                    HandleAgentEnded();
                     break;
             }
         }
     }
 
     void HandleDtoObserved(AgentStatusDto dto) {
-        // Only the FIRST observation is a resolve-gate event; a later update (status text, etc.)
-        // after the gate already decided is not re-run through it.
-        if (Interlocked.CompareExchange(ref _resolveState, ResolveDtoWon, ResolvePending) != ResolvePending) return;
-
-        _resolveTimer?.Dispose();
-        _resolveTimer = null;
-
-        PendingResolveWorkForTesting = RunResolveWorkAsync(dto);
+        // First observation wins the resolve gate; later updates only matter when the agent has
+        // already finished (Completed/Failed stay in the cache until teardown removes them).
+        var prior = Interlocked.CompareExchange(ref _resolveState, ResolveDtoWon, ResolvePending);
+        if (prior == ResolvePending) {
+            _resolveTimer?.Dispose();
+            _resolveTimer = null;
+            PendingResolveWorkForTesting = RunResolveWorkAsync(dto);
+            return;
+        }
+        if (prior == ResolveDtoWon && SessionStatusDots.IsTerminal(dto.Status))
+            HandleAgentEnded();
     }
 
     /// Fault-observing wrapper around ApplyResolvedDtoAsync: this Task is fire-and-forget from
@@ -324,12 +327,13 @@ public sealed class TerminalTabViewModel : ReactiveObject {
         }
     }
 
-    void HandleAgentRemoved() {
+    void HandleAgentEnded() {
         // Meaningful only once resolved via a DTO (not a pending or timed-out gate, which have
         // their own terminal renderings already).
         if (Volatile.Read(ref _resolveState) != ResolveDtoWon) return;
-        // Signal precedence: the run's own Exited/Failed verdict outranks a cache removal.
-        if (State.Phase is TerminalSessionPhase.Exited or TerminalSessionPhase.Failed) return;
+        // Signal precedence: the run's own Exited/Failed verdict outranks a cache end.
+        if (State.Phase is TerminalSessionPhase.Exited or TerminalSessionPhase.Failed
+            or TerminalSessionPhase.SessionEnded) return;
 
         Publish(TerminalSessionState.SessionEnded, null);
     }

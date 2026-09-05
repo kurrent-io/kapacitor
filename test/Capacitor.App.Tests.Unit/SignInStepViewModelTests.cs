@@ -111,7 +111,7 @@ public class SignInStepViewModelTests {
     [Arguments(AuthProvider.GitHubApp)]
     [Arguments(AuthProvider.WorkOS)]
     public async Task A_committed_discovery_satisfies_the_step_and_names_the_signed_in_user(string provider) {
-        var (satisfied, status, isError) = await AvaloniaSession.DispatchAsync(async () => {
+        var (satisfied, status, isError, detail, showPrimary) = await AvaloniaSession.DispatchAsync(async () => {
             using var h = new Harness();
             h.Connect.Choice = ConnectChoice.Discover;
             h.Connect.DiscoveryProvider = provider;
@@ -120,12 +120,14 @@ public class SignInStepViewModelTests {
             await h.Vm.OnEnterAsync(CancellationToken.None);
             await h.SignIn();
 
-            return (h.Vm.Satisfied, h.Vm.Status, h.Vm.StatusIsError);
+            return (h.Vm.Satisfied, h.Vm.Status, h.Vm.StatusIsError, h.Vm.StatusDetail, h.Vm.ShowPrimaryAction);
         });
 
         await Assert.That(satisfied).IsTrue();
         await Assert.That(status).IsEqualTo("Signed in as sam");
         await Assert.That(isError).IsFalse();
+        await Assert.That(detail).IsEqualTo("You're signed in. Refreshing…");
+        await Assert.That(showPrimary).IsFalse();
     }
 
     [Test]
@@ -241,8 +243,8 @@ public class SignInStepViewModelTests {
         await Assert.That(status).IsEqualTo("Sign-in failed.");
         await Assert.That(isError).IsTrue();
         await Assert.That(satisfied).IsFalse();
-        await Assert.That(detail).IsEqualTo("Error: the auth service is unreachable.");
-        await Assert.That(log).IsEquivalentTo(["Error: the auth service is unreachable."]);
+        await Assert.That(detail).IsEqualTo("The auth service is unreachable.");
+        await Assert.That(log).IsEmpty();
     }
 
     [Test]
@@ -763,7 +765,7 @@ public class SignInStepViewModelTests {
 
         await Assert.That(connectBox).IsNotNull();
         await Assert.That(signInButton).IsNotNull();
-        await Assert.That(signInStatus).IsEqualTo("Ready to find your workspaces with GitHub.");
+        await Assert.That(signInStatus).IsEqualTo("Find your workspaces with GitHub");
     }
 
     [Test]

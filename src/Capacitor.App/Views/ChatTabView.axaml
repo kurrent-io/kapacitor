@@ -43,37 +43,85 @@
                     </Border>
                 </DataTemplate>
                 <DataTemplate x:DataType="vm:ToolCallItem">
-                    <StackPanel Orientation="Horizontal" Spacing="9" Margin="0,0,0,6">
-                        <TextBlock Text="›" FontSize="13" Foreground="{StaticResource KcapFaintBrush}" VerticalAlignment="Center" />
-                        <TextBlock Text="{Binding Name}" FontSize="11.5" Foreground="{StaticResource KcapMutedBrush}" VerticalAlignment="Center" />
-                        <TextBlock Text="{Binding Detail}" FontSize="11" Foreground="{StaticResource KcapFaintBrush}"
-                                   TextTrimming="CharacterEllipsis" MaxWidth="480" VerticalAlignment="Center" />
-                        <TextBlock Text="{Binding OutcomeGlyph}" FontSize="11" VerticalAlignment="Center"
-                                   Foreground="{Binding IsError, Converter={x:Static views:ToolOutcomeBrushConverter.Instance}}" />
-                    </StackPanel>
+                    <Grid x:Name="ToolCallRow" ColumnDefinitions="*,Auto" Margin="0,0,0,4" MinHeight="18">
+                        <!-- Detail is the useful bit (command, path); paint it brighter. A bare tool
+                             name is fallback chrome only, so it stays muted. Selectable so a command
+                             can be copied without retyping. -->
+                        <SelectableTextBlock Text="{Binding Detail}" FontSize="12" LineHeight="16"
+                                   FontFamily="Menlo,Monaco,Consolas,Cascadia Mono,DejaVu Sans Mono,monospace"
+                                   Foreground="{StaticResource KcapTextBrush}"
+                                   TextTrimming="CharacterEllipsis" VerticalAlignment="Center"
+                                   IsVisible="{Binding HasDetail}" />
+                        <SelectableTextBlock Text="{Binding Name}" FontSize="12" LineHeight="16"
+                                   FontFamily="Menlo,Monaco,Consolas,Cascadia Mono,DejaVu Sans Mono,monospace"
+                                   Foreground="{StaticResource KcapMutedBrush}"
+                                   TextTrimming="CharacterEllipsis" VerticalAlignment="Center"
+                                   IsVisible="{Binding !HasDetail}" />
+                        <Panel Grid.Column="1" IsVisible="{Binding ShowRowStatus}">
+                            <Border x:Name="ToolStatusPill" Classes="toolStatus" Width="14" Height="8"
+                                    CornerRadius="4" Margin="8,0,0,0" VerticalAlignment="Center"
+                                    IsVisible="{Binding IsSettled}"
+                                    Background="{Binding IsError, Converter={x:Static views:ToolOutcomeBrushConverter.Instance}}" />
+                            <Border Classes="toolRunning toolStatus" Width="14" Height="8"
+                                    CornerRadius="4" Margin="8,0,0,0" VerticalAlignment="Center"
+                                    IsVisible="{Binding IsRunning}"
+                                    Background="{StaticResource KcapWarningBrush}" />
+                            <TextBlock Text="?" FontSize="11" Margin="8,0,0,0"
+                                       VerticalAlignment="Center"
+                                       IsVisible="{Binding IsAwaitingPermission}"
+                                       Foreground="{Binding IsError, Converter={x:Static views:ToolOutcomeBrushConverter.Instance}}" />
+                        </Panel>
+                    </Grid>
                 </DataTemplate>
                 <DataTemplate x:DataType="vm:ToolGroupItem">
-                    <StackPanel>
-                        <Button Classes="toolSummary" IsVisible="{Binding HasSummary}" Command="{Binding ToggleCommand}"
-                                Background="Transparent" BorderBrush="Transparent" Padding="0" Margin="0,0,0,6" Cursor="Hand"
-                                HorizontalAlignment="Left">
-                            <StackPanel Orientation="Horizontal" Spacing="9">
-                                <!-- Stroked chevron, not a text glyph — the 9px ▸ rendered as a dot. -->
-                                <Panel Width="12" Height="12" VerticalAlignment="Center">
-                                    <Path Stroke="{StaticResource KcapMutedBrush}" StrokeThickness="1.8"
-                                          StrokeLineCap="Round" StrokeJoin="Round"
-                                          Data="M3,4.5 L6,7.5 L9,4.5" IsVisible="{Binding IsExpanded}" />
-                                    <Path Stroke="{StaticResource KcapMutedBrush}" StrokeThickness="1.8"
-                                          StrokeLineCap="Round" StrokeJoin="Round"
-                                          Data="M4.5,3 L7.5,6 L4.5,9" IsVisible="{Binding !IsExpanded}" />
+                    <!-- Stretch to the chat column (capped like assistant text) so lone cards are
+                         not content-width pills. -->
+                    <Border MaxWidth="660" MinWidth="320" Margin="0,4,0,22" Padding="12,10" CornerRadius="10"
+                            Background="{StaticResource KcapSurfaceBrush}"
+                            BorderBrush="{StaticResource KcapBorderBrush}" BorderThickness="1"
+                            HorizontalAlignment="Stretch">
+                        <StackPanel Spacing="6">
+                            <!-- Lone call: kind label + status on one header row; detail below.
+                                 Plain text (no chip chrome) so it lines up with the detail. -->
+                            <Grid ColumnDefinitions="*,Auto" IsVisible="{Binding ShowsKindChip}">
+                                <TextBlock Classes="toolKindChip" Text="{Binding KindChip}"
+                                           FontSize="10" FontWeight="SemiBold"
+                                           Foreground="{StaticResource KcapMutedBrush}"
+                                           VerticalAlignment="Center" />
+                                <Panel Grid.Column="1" DataContext="{Binding LoneCall}" VerticalAlignment="Center">
+                                    <Border Classes="toolStatus" Width="14" Height="8" CornerRadius="4"
+                                            VerticalAlignment="Center" IsVisible="{Binding IsSettled}"
+                                            Background="{Binding IsError, Converter={x:Static views:ToolOutcomeBrushConverter.Instance}}" />
+                                    <Border Classes="toolRunning toolStatus" Width="14" Height="8" CornerRadius="4"
+                                            VerticalAlignment="Center" IsVisible="{Binding IsRunning}"
+                                            Background="{StaticResource KcapWarningBrush}" />
+                                    <TextBlock Text="?" FontSize="11" VerticalAlignment="Center"
+                                               IsVisible="{Binding IsAwaitingPermission}"
+                                               Foreground="{Binding IsError, Converter={x:Static views:ToolOutcomeBrushConverter.Instance}}" />
                                 </Panel>
-                                <TextBlock Text="{Binding Summary}" FontSize="11.5" Foreground="{StaticResource KcapMutedBrush}" VerticalAlignment="Center" />
-                                <TextBlock Text="✕" FontSize="11" Foreground="{StaticResource KcapDangerBrush}"
-                                           IsVisible="{Binding HasFailure}" VerticalAlignment="Center" />
-                            </StackPanel>
-                        </Button>
-                        <ItemsControl ItemsSource="{Binding VisibleCalls}" />
-                    </StackPanel>
+                            </Grid>
+                            <Button Classes="toolSummary" IsVisible="{Binding ShowsSummaryHeader}" Command="{Binding ToggleCommand}"
+                                    Background="Transparent" BorderBrush="Transparent" Padding="0,4" MinHeight="28" Cursor="Hand"
+                                    HorizontalAlignment="Left" HorizontalContentAlignment="Left">
+                                <StackPanel Orientation="Horizontal" Spacing="9">
+                                    <Panel Width="12" Height="12" VerticalAlignment="Center">
+                                        <Path Stroke="{StaticResource KcapMutedBrush}" StrokeThickness="1.8"
+                                              StrokeLineCap="Round" StrokeJoin="Round"
+                                              Data="M3,4.5 L6,7.5 L9,4.5" IsVisible="{Binding IsExpanded}" />
+                                        <Path Stroke="{StaticResource KcapMutedBrush}" StrokeThickness="1.8"
+                                              StrokeLineCap="Round" StrokeJoin="Round"
+                                              Data="M4.5,3 L7.5,6 L4.5,9" IsVisible="{Binding !IsExpanded}" />
+                                    </Panel>
+                                    <TextBlock Text="{Binding SummaryLine}" FontSize="12" Foreground="{StaticResource KcapMutedBrush}"
+                                               TextTrimming="CharacterEllipsis" MaxWidth="560" VerticalAlignment="Center" />
+                                    <Border Classes="toolStatus" Width="14" Height="8" CornerRadius="4"
+                                            Background="{StaticResource KcapDangerBrush}"
+                                            IsVisible="{Binding HasFailure}" VerticalAlignment="Center" />
+                                </StackPanel>
+                            </Button>
+                            <ItemsControl ItemsSource="{Binding VisibleCalls}" />
+                        </StackPanel>
+                    </Border>
                 </DataTemplate>
             </ItemsControl.DataTemplates>
         </ItemsControl>
@@ -90,7 +138,7 @@
                     <ItemsControl ItemsSource="{Binding PendingCards}">
                         <ItemsControl.DataTemplates>
                             <DataTemplate x:DataType="vm:PermissionCardViewModel">
-                                <Border Background="{StaticResource KcapSurfaceRaisedBrush}" BorderBrush="{StaticResource KcapAccentBrush}"
+                                <Border Background="{StaticResource KcapSurfaceRaisedBrush}" BorderBrush="{StaticResource KcapSuccessBrush}"
                                         BorderThickness="1" CornerRadius="10" Padding="13,10" Margin="0,0,0,6">
                                     <StackPanel Spacing="6">
                                         <TextBlock Text="{Binding ToolName}" FontWeight="SemiBold" FontSize="13" Foreground="{StaticResource KcapTextBrush}" />
@@ -103,17 +151,17 @@
                                             <Button Content="Allow always" Command="{Binding AllowAlwaysCommand}" IsVisible="{Binding ShowsAllowAlways}"
                                                     Background="Transparent" BorderBrush="Transparent" Foreground="{StaticResource KcapMutedBrush}" Padding="10,4" FontSize="12" CornerRadius="7" />
                                             <Button Content="Allow" Command="{Binding AllowCommand}" Padding="12,4" FontSize="12" FontWeight="SemiBold" CornerRadius="7"
-                                                    Background="{StaticResource KcapAccentBrush}" Foreground="#07120E" />
+                                                    Background="{StaticResource KcapPrimaryBrush}" Foreground="{StaticResource KcapOnPrimaryBrush}" />
                                         </StackPanel>
                                     </StackPanel>
                                 </Border>
                             </DataTemplate>
                             <DataTemplate x:DataType="vm:QuestionCardViewModel">
-                                <Border Background="{StaticResource KcapSurfaceRaisedBrush}" BorderBrush="{StaticResource KcapAccentBrush}"
+                                <Border Background="{StaticResource KcapSurfaceRaisedBrush}" BorderBrush="{StaticResource KcapSuccessBrush}"
                                         BorderThickness="1" CornerRadius="10" Padding="13,10" Margin="0,0,0,6">
                                     <Border.Styles>
                                         <Style Selector="Button.selected">
-                                            <Setter Property="BorderBrush" Value="{StaticResource KcapAccentBrush}" />
+                                            <Setter Property="BorderBrush" Value="{StaticResource KcapSuccessBrush}" />
                                         </Style>
                                     </Border.Styles>
                                     <StackPanel Spacing="8" IsEnabled="{Binding !IsBusy}">
@@ -160,7 +208,7 @@
                                                             <Button DockPanel.Dock="Right" Content="Answer" Command="{Binding EnterCommand}"
                                                                     IsVisible="{Binding ShowsOtherAnswer}" Margin="6,0,0,0"
                                                                     Padding="10,4" FontSize="12" CornerRadius="7"
-                                                                    Background="{StaticResource KcapAccentBrush}" Foreground="#07120E" />
+                                                                    Background="{StaticResource KcapPrimaryBrush}" Foreground="{StaticResource KcapOnPrimaryBrush}" />
                                                             <TextBox Text="{Binding OtherText}" PlaceholderText="Other…" MaxLength="{Binding MaxOtherLength}"
                                                                      AcceptsReturn="False" FontSize="12" MinHeight="30">
                                                                 <TextBox.KeyBindings>
@@ -176,7 +224,7 @@
                                                    IsVisible="{Binding ErrorText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
                                         <Button Content="Submit" Command="{Binding SubmitCommand}" IsVisible="{Binding ShowsSubmit}"
                                                 HorizontalAlignment="Right" Padding="12,4" FontSize="12" FontWeight="SemiBold" CornerRadius="7"
-                                                Background="{StaticResource KcapAccentBrush}" Foreground="#07120E" />
+                                                Background="{StaticResource KcapPrimaryBrush}" Foreground="{StaticResource KcapOnPrimaryBrush}" />
                                     </StackPanel>
                                 </Border>
                             </DataTemplate>
@@ -192,7 +240,7 @@
             <StackPanel Spacing="6">
                 <TextBox x:Name="ComposerInput" Classes="kcapEmbedded" Text="{Binding ComposerText}" AcceptsReturn="True" TextWrapping="Wrap"
                          MinHeight="38" MaxHeight="160" Background="Transparent" BorderThickness="0"
-                         PlaceholderText="Write a message" IsVisible="{Binding !IsReadOnlyParticipant}" />
+                         PlaceholderText="Write a message" IsVisible="{Binding ShowsComposer}" />
                 <!-- A flow participant is addressed through the flow protocol, never messaged
                      directly, so the banner replaces the input rather than overlaying a dead one. -->
                 <Border x:Name="ReadOnlyBanner" IsVisible="{Binding IsReadOnlyParticipant}"
@@ -201,18 +249,13 @@
                     <TextBlock Text="{Binding ReadOnlyNotice, StringFormat='Read-only: {0}'}"
                                Foreground="{StaticResource KcapWarningBrush}" TextWrapping="Wrap" />
                 </Border>
-                <Grid ColumnDefinitions="*,Auto,Auto,Auto,Auto">
+                <Grid ColumnDefinitions="*,Auto">
                     <TextBlock Text="{Binding ComposerHint}" FontSize="11" Foreground="{StaticResource KcapFaintBrush}"
                                VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
-                    <TextBlock Grid.Column="1" Text="{Binding ModelLabel}" FontSize="11" Foreground="{StaticResource KcapFaintBrush}"
-                               VerticalAlignment="Center" Margin="12,0,0,0" />
-                    <Ellipse Grid.Column="2" Width="7" Height="7" Fill="{Binding StatusDot}" VerticalAlignment="Center" Margin="12,0,6,0" />
-                    <TextBlock Grid.Column="3" Text="{Binding StatusText}" FontSize="11" Foreground="{StaticResource KcapMutedBrush}"
-                               VerticalAlignment="Center" />
-                    <Button x:Name="SendButton" Grid.Column="4" Content="Send" Command="{Binding SendCommand}" Margin="12,0,0,0"
+                    <Button x:Name="SendButton" Grid.Column="1" Classes="kcapPrimary" Content="Send" Command="{Binding SendCommand}" Margin="12,0,0,0"
                             Padding="12,4" FontSize="12" FontWeight="SemiBold" CornerRadius="7"
-                            Background="{StaticResource KcapAccentBrush}" Foreground="#07120E"
-                            IsVisible="{Binding !IsReadOnlyParticipant}" />
+                            Background="{StaticResource KcapPrimaryBrush}" Foreground="{StaticResource KcapOnPrimaryBrush}"
+                            IsVisible="{Binding ShowsComposer}" />
                 </Grid>
             </StackPanel>
         </Border>

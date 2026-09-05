@@ -6,6 +6,29 @@ diff. `CLAUDE.md` holds the invariants; `docs/superpowers/specs/` holds the full
 Not release notes. Each entry is written as of the change that produced it and is not revised as the
 code moves on; where an entry disagrees with the code, the code wins.
 
+## The SessionStart index names the repo's projects
+
+An agent can only land a memory at project scope by passing a slug, and nothing in a session told it
+which project the cwd repo is in — so cross-repo learnings went to org, the only cross-repo scope
+reachable without one. The index fragment now opens with a line per project naming that slug.
+
+**The projects ride the index call, negotiated by `include=projects`.** The body was a bare array and
+a CLI that predates this drops the whole fragment when it is not one, so the shape could not simply
+change. A sibling endpoint or a superseding one costs a second round trip inside a hook budget that
+is already tight on Cursor and Claude; a response header cannot carry a non-ASCII project name
+without an encoding nobody else in the wire needs. The parameter costs nothing and degrades in both
+directions: an older server ignores it and answers with the array, a newer one answers with an
+object, and the CLI decides which it got by sniffing the opening token. Sniffing rather than
+attempting the array parse matters — a failed deserialize is indistinguishable from a corrupt body,
+which is retried, and an old server would never answer differently.
+
+**The parameter goes out even with no repo resolved.** It declares that this CLI can read the object
+body, not that a repo is in hand; making it conditional would leave the server answering one request
+with two shapes.
+
+**Projects alone are enough to emit a fragment**, where entries alone are not. A project holding no
+memories yet is exactly the state the agent is being asked to fix, and it cannot without the slug.
+
 ## The flow can enable the daemon as a service
 
 `kcap daemon service ensure` existed with no caller in the product. Making the browser able to ask for it
@@ -657,6 +680,37 @@ config root's cache directory, so an absent directory after the initialize/tools
 proves it never ran; the tool call that follows then proves on-demand resolution by carrying the
 repo hash. Asserting on the cache file itself would key on the child's own view of its cwd, which
 macOS reports through the resolved `/private` path rather than the one the test handed it.
+
+## Desktop shell: the work-context sidebar
+
+**AI-2198** (spec: `docs/superpowers/specs/2026-09-03-ai2198-work-context-sidebar-design.md`) adds the
+400px right column of the session workspace: the session's work item with its declared parts and
+blockers, its pull requests, who is attached, and the session's facts. **It is built on the three
+reads the server exposes over HTTP** — a session's assignments, a work item's topology, and the
+session summary — and everything work-item detail the server serves only in-process to its own
+dashboard (state, overview, per-part completion, links with URL and state, contributors) renders as
+a SOON pill until a read endpoint exists. The card shows the session's primary work item; a
+repo-less session has no work item at all, because the server requires a repository on one, and the
+pane says so rather than showing an item without a key.
+
+**The key is split from the server's label by convention, not contract.** The assignments route
+labels a keyed item `"KEY — title"`; the pane takes the half before the separator as the key and the
+topology item's title as the title. A change to that composition shows the whole label as the title
+and drops the key chip — safe, but silent, which is why the dependency is named here.
+
+**Reads are leased by session id.** The daemon puts `session_id` and `branch` on the status wire, and
+each read carries a lease with its own cancellation; a switch starts the new session's read at once
+and drops the old one's result, teardown cancels and awaits every outstanding lease, and all lease
+bookkeeping runs on the UI thread. The reader fails closed: a 2xx with an unparseable body is a
+failure, a final 401 on any route signs the pane out, a 403 is "not in plan" only with the exact plan
+code. A section blip dims the pane and keeps the last good section; an authoritative empty answer
+clears it; signed-out, not-in-plan and unknown-session clear every server-derived projection.
+
+**The app's server clients are one set with one cleanup.** The work-context source holds its HTTP
+client by lease so overlapping reads never see it disposed, retires it on sign-out, and is torn down
+with the launch client through a holder that memoizes the cleanup, so both teardown paths reach it
+and nothing is disposed twice. The window gains a minimum width equal to its default: 310 of rail plus
+400 of pane must never squeeze the terminal column to nothing.
 
 ## Transcript normalization has one home
 
