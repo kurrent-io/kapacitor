@@ -95,19 +95,22 @@ internal sealed class TitleResolveLoop {
             _logger.LogDebug(ex, "Native title extraction failed for agent {AgentId}", agent.Id);
         }
 
-        string? serverReal = null;
+        string? serverReal   = null;
+        var     serverReadOk = agent.SessionId is null; // an unrecorded agent has no server to ask
         if (agent.SessionId is { } sessionId) {
-            string? serverTitle = null;
             try {
-                serverTitle = Normalize(await _server.GetTitleAsync(sessionId, ct));
+                var serverTitle = Normalize(await _server.GetTitleAsync(sessionId, ct));
+                serverReadOk = true;
+
+                if (serverTitle is not null && !IsPromptEcho(serverTitle, agent.Prompt)) serverReal = serverTitle;
             } catch (Exception ex) {
+                // An unreadable server is not a silent one: generation must not spend an LLM
+                // call on a session whose watcher-made title merely couldn't be fetched.
                 _logger.LogDebug(ex, "Server title read failed for session {SessionId}", sessionId);
             }
-
-            if (serverTitle is not null && !IsPromptEcho(serverTitle, agent.Prompt)) serverReal = serverTitle;
         }
 
-        if (serverReal is null && native is null && !state.GenerationAttempted
+        if (serverReadOk && serverReal is null && native is null && !state.GenerationAttempted
          && !string.IsNullOrWhiteSpace(agent.Prompt)
          && _time.GetUtcNow() - DateTime.SpecifyKind(agent.CreatedAt, DateTimeKind.Utc) >= GenerationGrace) {
             state.GenerationAttempted = true;

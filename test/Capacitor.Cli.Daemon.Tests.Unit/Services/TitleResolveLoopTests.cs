@@ -171,6 +171,20 @@ public class TitleResolveLoopTests {
     }
 
     [Test]
+    public async Task A_recorded_agent_does_not_generate_when_the_server_cannot_be_read() {
+        var h = new Harness();
+        h.Agents.Add(Agent());
+        h.Server.Get = _ => throw new HttpRequestException("outage");
+        h.Generate = (_, _) => Task.FromResult<string?>("Generated title");
+        h.Time.Advance(TimeSpan.FromMinutes(30));
+        var loop = h.Build();
+
+        await loop.TickAsync(CancellationToken.None);
+
+        await Assert.That(h.GenerateCalls).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task A_failed_push_is_retried_on_the_next_tick() {
         var h = new Harness();
         h.Agents.Add(Agent());

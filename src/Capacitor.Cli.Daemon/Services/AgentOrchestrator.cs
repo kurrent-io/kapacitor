@@ -524,6 +524,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     int _quarantineSweepRunning;
     readonly DaemonConfig                                      _config;
     readonly ConfigRoot                                        _configRoot;
+    readonly UserHome                                          _home;
     // The vendors this daemon sees, resolved once for its lifetime: an override cannot change under
     // a running process, and the inventory refresh would otherwise re-resolve all nine per TTL.
     readonly HarnessRegistry                                   _harnesses;
@@ -583,6 +584,11 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     // see SpoolDrainLoop's doc comment. 60s mirrors the reaper-style cadence of the other timers;
     // the drain's own per-tick budget keeps a slow/unreachable server from stalling the daemon.
     readonly PeriodicTimer _spoolDrain = new(TimeSpan.FromSeconds(60));
+
+    // Title resolution ladder (native transcript title → server title → one local generation).
+    // 60s: a title is display convenience — the lanes it drives are either cheap (a transcript
+    // scan) or explicitly rate-limited by TitleResolveLoop itself.
+    readonly PeriodicTimer _titleResolve = new(TimeSpan.FromSeconds(60));
 
     // Refresh once the token is within this much of its expiry. Comfortably above the 60 s tick
     // so the window is never stepped over.
@@ -662,6 +668,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         _shutdownCts       = CancellationTokenSource.CreateLinkedTokenSource(lifetime.ApplicationStopping);
         _config            = config;
         _configRoot        = configRoot;
+        _home              = home;
         _harnesses         = HarnessRegistry.FromEnvironment(home);
         _server            = server;
         _worktreeManager   = worktreeManager;
@@ -779,6 +786,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         _ = RunDaemonHeartbeatLoopAsync(_shutdownCts.Token);
         _ = RunTokenRefreshLoopAsync(_shutdownCts.Token);
         _ = RunSpoolDrainLoopAsync(_shutdownCts.Token);
+        _ = RunTitleResolveLoopAsync(_shutdownCts.Token);
         _ = RunDaemonStatusReportLoopAsync(_shutdownCts.Token); // Phase B (D2): periodic self-report
     }
 
@@ -4792,6 +4800,50 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         }
     }
 
+    async Task RunTitleResolveLoopAsync(CancellationToken ct) {
+        var loop = new TitleResolveLoop(
+            SnapshotAgentsForTitles,
+            (agentId, title) => { if (_agents.TryGetValue(agentId, out var agent)) SetResolvedTitle(agent, title); },
+            new TitleServerPort(_configRoot, _config.Profiles, _config.ServerUrl),
+            NativeTitleFor,
+            GenerateTitleForAsync,
+            TimeProvider.System,
+            _logger);
+
+        while (await _titleResolve.WaitForNextTickAsync(ct)) {
+            // Defence in depth: TickAsync is intentionally total, but this runs as an
+            // unobserved background Task — guard here so the loop survives even if a
+            // future change lets an exception escape the tick.
+            try {
+                await loop.TickAsync(ct);
+            } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
+                return;
+            } catch (Exception ex) {
+                _logger.LogWarning(ex, "Title resolve tick faulted — continuing loop");
+            }
+        }
+    }
+
+    /// A private agent's contract is "no per-agent server calls", so its view carries no session
+    /// id: the resolver then never polls or pushes for it and only the local lanes apply.
+    IReadOnlyList<TitleAgentView> SnapshotAgentsForTitles() =>
+        [.. _agents.Values.Select(a => new TitleAgentView(
+            a.Id, a.Vendor, a.Prompt,
+            a.IsPrivate ? null : a.SessionId ?? (a.Runtime as IAcpTranscriptSource)?.AcpSessionId,
+            a.TranscriptPath, a.CreatedAt))];
+
+    static string? NativeTitleFor(TitleAgentView agent) =>
+        agent is { Vendor: "claude", TranscriptPath: { } path } ? ClaudeNativeTitle.TryExtract(path) : null;
+
+    async Task<string?> GenerateTitleForAsync(TitleAgentView agent, CancellationToken ct) {
+        var result = await TitleGeneration.GenerateAsync(
+            agent.Prompt!, null, msg => _logger.LogDebug("Title generation ({AgentId}): {Message}", agent.Id, msg),
+            _config.Profiles.Resolution.Profile, _home,
+            vendor: agent.Vendor == "codex" ? "codex" : "claude");
+
+        return result?.Result;
+    }
+
     async Task CleanupAgentAsync(string agentId) {
         // Phase B (D1): claim the single-flight teardown BEFORE removing the agent from _agents.
         // TryGetValue (not TryRemove) keeps the agent COUNTED in ActiveCount for the whole teardown, so a
@@ -4997,6 +5049,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 _daemonHeartbeat.Dispose();
                 _tokenRefresh.Dispose();
                 _spoolDrain.Dispose();
+                _titleResolve.Dispose();
             } catch (Exception ex) {
                 LogDisposeStepFailed(ex, "timers");
             }
