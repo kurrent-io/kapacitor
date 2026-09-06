@@ -13,6 +13,7 @@
     </PropertyGroup>
     <ItemGroup>
         <ProjectReference Include="..\Capacitor.Cli.Core\Capacitor.Cli.Core.csproj" />
+        <ProjectReference Include="..\Capacitor.Remote.Models\Capacitor.Remote.Models.csproj" />
         <PackageReference Include="Avalonia" />
         <PackageReference Include="Avalonia.Desktop" />
         <PackageReference Include="Avalonia.Themes.Fluent" />
