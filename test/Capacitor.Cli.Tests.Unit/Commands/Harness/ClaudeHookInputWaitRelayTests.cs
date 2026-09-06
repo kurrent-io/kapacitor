@@ -34,9 +34,9 @@ public class ClaudeHookInputWaitRelayTests {
 
     /// The relay rides ahead of client creation, so it is exercised through HandleWithDeps and
     /// asserted on the bridge itself, never on the server.
-    async Task<int> RunAsync(string eventName, HookClock? clock = null) {
+    async Task<int> RunAsync(string eventName, HookClock? clock = null, string extraFields = "") {
         using var client = new HttpClient(new OkHandler());
-        var payload = $$$"""{"hook_event_name":"{{{eventName}}}","session_id":"{{{Sid}}}","cwd":"/tmp","tool_name":"Bash","tool_input":{"command":"ls"}}""";
+        var payload = $$$"""{"hook_event_name":"{{{eventName}}}","session_id":"{{{Sid}}}","cwd":"/tmp","tool_name":"Bash","tool_input":{"command":"ls"}{{{extraFields}}}}""";
         return await new ClaudeHookCommand(Config.Root, Resolutions.At("http://server.example", Config.Root), clock ?? new HookClock(TimeProvider.System), Home)
             .HandleWithDeps(new HookSpool(Config.Root), new StringReader(payload), () => Task.FromResult((client, AuthStatus.Ok)), new StringWriter());
     }
@@ -73,6 +73,23 @@ public class ClaudeHookInputWaitRelayTests {
 
         await RunAsync("Stop");
 
+        await Assert.That(bridge.LogEntries.Count).IsEqualTo(0);
+    }
+
+    /// A subagent's tool call runs the same hook with the parent's environment, but it is not the
+    /// parent's turn: a background subagent working on after the parent asked the user something
+    /// must not clear the parent's wait.
+    [Test, NotInParallel]
+    public async Task A_subagents_tool_call_relays_nothing() {
+        using var bridge = WireMockServer.Start();
+        bridge.Given(Request.Create().WithPath("/tok/claude/input-wait").UsingPost())
+            .RespondWith(Response.Create().WithStatusCode(204));
+        using var daemonUrl = EnvScope.Exclusive("KCAP_DAEMON_URL", $"http://127.0.0.1:{bridge.Ports[0]}/tok");
+        using var agentId   = EnvScope.Exclusive("KCAP_AGENT_ID", "agent-1");
+
+        var exit = await RunAsync("PreToolUse", extraFields: ",\"agent_id\":\"3f2504e04f8911d39a0c0305e82c3301\"");
+
+        await Assert.That(exit).IsEqualTo(0);
         await Assert.That(bridge.LogEntries.Count).IsEqualTo(0);
     }
 

@@ -82,6 +82,22 @@ public class SendInputActivityClockTests {
         await Assert.That(agent.ActivityClock.AwaitingInput).IsFalse();
     }
 
+    /// Codex can report a turn complete before the send that started it returns, and a PTY submit
+    /// with approvals disabled sprays carriage returns long enough for a short turn's Stop to land:
+    /// the wait that began during the delivery is the newer verdict and must survive the clear.
+    [Test]
+    public async Task A_turn_that_ends_during_delivery_keeps_its_wait() {
+        var clock = new AgentActivityClock(new FakeTimeProvider());
+        var pty   = new MidWritePtyProcess(() => { clock.SetTurnInFlight(true); clock.SetTurnInFlight(false); });
+
+        await using var orch  = AgentOrchestratorHarness.BuildOrchestrator(new CaptureServerConnection(), new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+        var             agent = orch.SeedAgentForTest("send-input-race", pty: pty, activityClock: clock);
+
+        await orch.HandleSendInputForTest(new SendInputCommand(agent.Id, "hello", null));
+
+        await Assert.That(agent.ActivityClock.AwaitingInput).IsTrue();
+    }
+
     [Test]
     public async Task Failed_delivery_advances_nothing() {
         var server = new CaptureServerConnection();

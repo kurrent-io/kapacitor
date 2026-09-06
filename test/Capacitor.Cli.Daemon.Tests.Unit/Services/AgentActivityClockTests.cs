@@ -148,6 +148,24 @@ public class AgentActivityClockTests {
         await Assert.That(notified).IsEqualTo(2);
     }
 
+    /// A delivery clears the wait it was answering, never one that began while the delivery was
+    /// still in flight.
+    [Test]
+    public async Task Clearing_since_a_sample_yields_to_a_wait_that_began_afterwards() {
+        var clock = new AgentActivityClock(new FakeTimeProvider());
+        clock.SetAwaitingInput(true);
+
+        var sampled = clock.WaitGeneration;
+        clock.ClearAwaitingInputSince(sampled);
+        await Assert.That(clock.AwaitingInput).IsFalse();
+
+        var stale = clock.WaitGeneration;
+        clock.SetTurnInFlight(true);
+        clock.SetTurnInFlight(false);
+        clock.ClearAwaitingInputSince(stale);
+        await Assert.That(clock.AwaitingInput).IsTrue();
+    }
+
     /// <summary>
     /// A minimal <see cref="TimeProvider"/> whose monotonic timestamp and wall clock are deliberately
     /// independent axes — every real implementation (including <see cref="FakeTimeProvider"/>) ties

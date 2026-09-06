@@ -26,10 +26,11 @@ internal sealed class AgentActivityClock(TimeProvider time) {
     ulong   _activitySeq = 1;
     bool    _turnInFlight;
     bool    _awaitingInput;
+    ulong   _waitGeneration;
     string? _launchStage;
 
-    /// <summary>Starts at 1 on spawn (spec §0) — a freshly-launched agent is never "already idle";
-    /// the daemon's own first report always shows real activity, never a zero-evidence agent.</summary>
+    /// <summary>Starts at 1 on spawn — a freshly-launched agent is never "already idle"; the
+    /// daemon's own first report always shows real activity, never a zero-evidence agent.</summary>
     public ulong ActivitySeq {
         get { lock (_gate) return _activitySeq; }
     }
@@ -53,10 +54,17 @@ internal sealed class AgentActivityClock(TimeProvider time) {
     /// change, with the new value.</summary>
     public Action<bool>? OnAwaitingInputChanged { get; set; }
 
+    /// <summary>Counts the waits that began. A delivery samples it before writing and clears
+    /// through <see cref="ClearAwaitingInputSince"/>, so a turn that ends while the write is still
+    /// in flight — Codex can complete a turn before the send that started it returns, and a PTY
+    /// submit spray runs for seconds — keeps the wait it began.</summary>
+    public ulong WaitGeneration {
+        get { lock (_gate) return _waitGeneration; }
+    }
+
     /// <summary><c>Starting</c>-only stage stamp (spawned/initialized/session_created/model_set, per
-    /// the ACP handshake — wired in a later task); null once the agent reaches Running. Deliberately
-    /// excluded from the wire's "steady-state capable" group (spec §2) — its absence must never look
-    /// like a lost capability.</summary>
+    /// the ACP handshake); null once the agent reaches Running. Deliberately excluded from the
+    /// wire's "steady-state capable" group — its absence must never look like a lost capability.</summary>
     public string? LaunchStage {
         get { lock (_gate) return _launchStage; }
     }
@@ -138,7 +146,8 @@ internal sealed class AgentActivityClock(TimeProvider time) {
             // held (a runtime going terminal) says nothing about waiting.
             var awaiting = value ? false : ended || _awaitingInput;
             awaitingChanged = awaiting != _awaitingInput;
-            _awaitingInput  = awaiting;
+            if (awaitingChanged && awaiting) _waitGeneration++;
+            _awaitingInput = awaiting;
             AdvanceLocked();
         }
         // Outside the lock, same rule as OnLaunchStageChanged: the callback's send reads this
@@ -152,10 +161,21 @@ internal sealed class AgentActivityClock(TimeProvider time) {
     public void SetAwaitingInput(bool value) {
         bool changed;
         lock (_gate) {
-            changed        = _awaitingInput != value;
+            changed = _awaitingInput != value;
+            if (changed && value) _waitGeneration++;
             _awaitingInput = value;
         }
         if (changed) OnAwaitingInputChanged?.Invoke(value);
+    }
+
+    /// <summary>Clears the wait a delivery answered, unless a newer one began since the caller
+    /// sampled <see cref="WaitGeneration"/> — that one is the agent's latest word.</summary>
+    public void ClearAwaitingInputSince(ulong sampledGeneration) {
+        lock (_gate) {
+            if (!_awaitingInput || _waitGeneration != sampledGeneration) return;
+            _awaitingInput = false;
+        }
+        OnAwaitingInputChanged?.Invoke(false);
     }
 
     /// <summary>A handshake stage transition (spawned → initialized → session_created → model_set) —

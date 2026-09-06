@@ -19,7 +19,10 @@ one place "the turn ended" is known, and the rising edge, a delivered input, or 
 submit clears it. A delivered input is the server's send or a local client's Enter on the attach
 socket: the desktop composer and terminal both arrive as raw PTY bytes there, never through the
 server's send path, and the plugin routes Claude's prompt-submit hook to a title script rather
-than to kcap. The flag is deliberately not activity: it never moves `ActivitySeq` or
+than to kcap. A delivery clears only the wait it answered: the clock counts the waits that began,
+the sender samples the count before writing and clears against it afterwards, because Codex can
+complete a turn before the send that started it returns, and a PTY submit spray runs for seconds
+in which a short turn's Stop lands. The flag is deliberately not activity: it never moves `ActivitySeq` or
 `IdleForMs`, which the reaper and the server's idle episodes read, so a display hint cannot delay a
 reap or open a durable idle marker. The payload emits `awaiting_input` only while Running — a
 terminal agent keeps whatever its clock last saw, and that must not read as a pending ask — and
@@ -32,7 +35,9 @@ of every gate in the hook — client creation, auth, exclusion — because it is
 and a server outage is exactly when the app is the surface that matters; it is best effort on a
 one-second cap, bounded further by the hook's own remaining budget, so a wedged daemon cannot push
 a policy decision past the host's kill. Only a daemon-spawned agent has both `KCAP_AGENT_ID` and a
-loopback `KCAP_DAEMON_URL`; anything else relays nothing. The route trusts the same shared token
+loopback `KCAP_DAEMON_URL`; anything else relays nothing, and neither does a subagent's tool
+call (`agent_id` set), which runs the same hook with the parent's environment but is not the
+parent's turn. The route trusts the same shared token
 and attribution ladder as the permission route, on the same footing: every caller is one of the
 owner's own hosted processes, and the verdict moves nothing but a display hint.
 

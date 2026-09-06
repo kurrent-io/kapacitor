@@ -340,12 +340,15 @@ internal partial class AgentOrchestrator {
                     if (f.Type == FrameType.Stdin) {
                         if (readOnly) continue; // protected agent: input is never delivered
 
+                        // A local client's Enter is the input-delivery edge for a PTY agent: the
+                        // desktop composer and terminal both arrive here, never through
+                        // HandleSendInput, and a hook may not report the submit at all. Sampled
+                        // before the write so a wait that begins during it survives.
+                        var waitGeneration = agent.ActivityClock.WaitGeneration;
+
                         try {
                             await agent.Runtime.SendRawInputAsync(f.Bytes);
-                            // A local client's Enter is the input-delivery edge for a PTY agent: the
-                            // desktop composer and terminal both arrive here, never through
-                            // HandleSendInput, and a hook may not report the submit at all.
-                            if (IsSubmit(f.Bytes)) agent.ActivityClock.SetAwaitingInput(false);
+                            if (IsSubmit(f.Bytes)) agent.ActivityClock.ClearAwaitingInputSince(waitGeneration);
                         } catch (NotSupportedException) {
                             // ACP-backed runtimes (e.g. cursor) have no raw-input surface —
                             // AcpHostedAgentRuntime.SendRawInputAsync throws by design. Tell the

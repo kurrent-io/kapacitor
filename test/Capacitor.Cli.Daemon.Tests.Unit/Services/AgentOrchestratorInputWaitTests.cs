@@ -37,6 +37,19 @@ public class AgentOrchestratorInputWaitTests {
     }
 
     [Test]
+    public async Task A_turn_that_ends_while_the_submit_is_written_keeps_its_wait() {
+        var clock = new AgentActivityClock(new FakeTimeProvider());
+        clock.SetAwaitingInput(true);
+        var pty = new MidWritePtyProcess(() => { clock.SetTurnInFlight(true); clock.SetTurnInFlight(false); });
+        await using var orch  = AgentOrchestratorHarness.BuildOrchestrator(new CaptureServerConnection(), new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+        var             agent = orch.SeedAgentForTest("attach-3", pty: pty, activityClock: clock);
+
+        await orch.AttachClientLoopAsync(agent, await ScriptedClientAsync(LocalFrame.Stdin("hello\r"u8.ToArray())), CancellationToken.None);
+
+        await Assert.That(agent.ActivityClock.AwaitingInput).IsTrue();
+    }
+
+    [Test]
     public async Task A_keystroke_that_submits_nothing_leaves_the_wait() {
         var clock = new AgentActivityClock(new FakeTimeProvider());
         clock.SetAwaitingInput(true);

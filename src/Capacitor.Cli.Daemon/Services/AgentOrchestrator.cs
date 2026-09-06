@@ -736,8 +736,8 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         _permissionBridge.AttributeHandler    =  HandleAttributePermission;
         _permissionBridge.InputWaitHandler    =  HandleInputWait;
         _server.ProbeBorrowSourceHandler      =  HandleProbeBorrowSource;
-        // Task 8: the side-effect-free reviewer-model preflight. Pure resolution over the
-        // advertised resolvers — no subprocess/worktree/config side effects.
+        // The side-effect-free reviewer-model preflight: pure resolution over the advertised
+        // resolvers — no subprocess/worktree/config side effects.
         _server.ResolveReviewerModelHandler   =  req => Task.FromResult(HandleResolveReviewerModel(req));
 
         // Phase B2-b (sequenced-settlement design §4.2.4): the server prunes the resolved-candidates
@@ -1668,7 +1668,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             OnAwaitingInputChanged = _ => _statusNotifier.Pulse(),
         };
 
-    /// <summary>Phase B: test-only seam — insert a minimal <see cref="AgentInstance"/> (Noop
+    /// <summary>Test-only seam — insert a minimal <see cref="AgentInstance"/> (Noop
     /// PTY runtime, no real process/worktree) so unit tests can exercise <see cref="BuildLiveAgents"/>
     /// / status-report / reviewer-TTL logic without a live launch. Never called in production.</summary>
     internal AgentInstance SeedAgentForTest(
@@ -3739,6 +3739,10 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 if (agent.TranscriptPath is { } rolloutPath) codexBaseline = TryFileLength(rolloutPath);
             }
 
+            // Sampled before the write: a turn can end while the delivery is still in flight, and
+            // that wait is newer than the one this input answers.
+            var waitGeneration = agent.ActivityClock.WaitGeneration;
+
             // PTY runtimes use bracketed paste; ACP runtimes send a structured prompt.
             if (agent.BorrowedSnapshotSource is not null)
                 await agent.Runtime.SendUserInputAndWaitForWriteAsync(message);
@@ -3750,7 +3754,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             // residual: a full ACP _pendingTurns queue drops input silently without throwing, so this
             // can advance on a delivery that was actually dropped — kill-delaying only, accepted.
             agent.ActivityClock.Advance();
-            agent.ActivityClock.SetAwaitingInput(false);
+            agent.ActivityClock.ClearAwaitingInputSince(waitGeneration);
 
             // One report per successfully handled invocation (SendInputCommand carries no round
             // identity, so a duplicate is tolerated and content-honest); fire-and-forget, contained,
