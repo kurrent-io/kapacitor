@@ -19,11 +19,12 @@ jobs:
     name: Wait for CI
     runs-on: ubuntu-latest
     steps:
+      # Matrix jobs carry their (matrix) suffix in the check name; the pattern must match the suffixed names.
       - name: Wait for CI workflow to succeed
         uses: lewagon/wait-on-check-action@v1.9.1
         with:
           ref: ${{ github.sha }}
-          check-regexp: '^(Build and test|AOT publish check.*)$'
+          check-regexp: '^(Build and test \(.*\)|AOT publish check \(.*\)|App bundle \(osx-arm64\))$'
           repo-token: ${{ secrets.GITHUB_TOKEN }}
           wait-interval: 15
           checks-discovery-timeout: 300
