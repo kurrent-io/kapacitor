@@ -6,6 +6,29 @@ diff. `CLAUDE.md` holds the invariants; `docs/superpowers/specs/` holds the full
 Not release notes. Each entry is written as of the change that produced it and is not revised as the
 code moves on; where an entry disagrees with the code, the code wins.
 
+## The reviewer lookup places a session running in a linked worktree
+
+`RepoPathStore` collapses a linked worktree to its main repository before storing it, and
+`GitRepository.FindRoot` stops at the worktree's own `.git` file — so comparing the session's root
+against the advertised paths answers `no_repo_hosting_daemon` for a repository the daemon does host,
+from every session inside `<repo>/.claude/worktrees/<slug>`. That the same session can
+`start_review_flow` is not a contradiction: the server matches daemons by repository identity, not by
+path.
+
+**Both shapes of advertised path match, because a daemon's `RepoPaths` carries two origins.** The
+store collapses what it persists; a configured `AllowedRepoPaths` entry is advertised as written, so
+an operator who allowlists a worktree root by hand has that root on the wire. The session's own root
+and its main repository are both compared, and either matching is enough — collapsing one side alone
+would trade the bug for its mirror image.
+
+**The collapse lives in the aggregation, which costs it its purity.** Resolving at the call site
+would leave the next caller free to compare a raw root again, and hashing the way the server does
+would put the server's identity algorithm on the client. It touches the filesystem, but a path that
+names nothing comes back unchanged, so a synthetic root still compares as itself.
+
+A submodule keeps its own identity through this: its `.git` points into `.git/modules`, which the
+resolver leaves alone, so a submodule checkout does not match a daemon hosting the superproject.
+
 ## The work-context pane reads the work item from one endpoint
 
 **AI-2521** fills the sidebar's SOON slots — the item's state, its overview, per-part completion,
