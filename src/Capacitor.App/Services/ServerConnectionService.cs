@@ -90,8 +90,12 @@ public sealed class ServerConnectionService : IServerLane, IAsyncDisposable {
                 hub.Reconnected += async _ =>
                     _status.OnNext(new(ServerLaneState.Connected, Diagnostic: await DiagnoseAsync().ConfigureAwait(false)));
 
+                Exception? closeReason;
                 await using (ct.Register(() => closed.TrySetResult(null)))
-                    await closed.Task.ConfigureAwait(false);
+                    closeReason = await closed.Task.ConfigureAwait(false);
+
+                if (!ct.IsCancellationRequested)
+                    _status.OnNext(new(ServerLaneState.Retrying, closeReason?.Message));
             } catch (OperationCanceledException) {
                 break;
             } catch (Exception ex) {
@@ -159,6 +163,5 @@ public sealed class ServerConnectionService : IServerLane, IAsyncDisposable {
         _agentsChanged.Dispose();
         _daemonsChanged.Dispose();
         _launchFailures.Dispose();
-        _restartGate.Dispose();
     }
 }

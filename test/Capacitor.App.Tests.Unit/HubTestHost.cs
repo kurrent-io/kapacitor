@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
 namespace Capacitor.App.Tests.Unit;
@@ -30,6 +31,10 @@ public sealed class HubTestHost : IAsyncDisposable {
         builder.WebHost.UseUrls("http://127.0.0.1:0");
         builder.Services.AddSignalR().AddJsonProtocol(o =>
             o.PayloadSerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower);
+        // A short cap so StopAsync forcibly severs a still-open hub connection instead of
+        // waiting out the default 30s graceful-drain — a connected-then-closed test would
+        // otherwise sit for tens of seconds before the client ever sees the drop.
+        builder.Services.Configure<HostOptions>(o => o.ShutdownTimeout = TimeSpan.FromMilliseconds(500));
 
         var app = builder.Build();
         app.MapHub<SessionsHub>("/hubs/sessions");

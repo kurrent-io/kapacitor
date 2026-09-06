@@ -79,6 +79,17 @@ public class ServerConnectionServiceTests {
     }
 
     [Test]
+    public async Task ConnectedThenServerClosesSurfacesRetrying() {
+        await using var host = await HubTestHost.StartAsync();
+        await using var lane = Lane(host);
+        lane.Start();
+        await Next(lane.Status, s => s.State == ServerLaneState.Connected);
+
+        await host.StopAsync();
+        await Next(lane.Status, s => s.State == ServerLaneState.Retrying, seconds: 15);
+    }
+
+    [Test]
     public async Task RestartReconnects() {
         await using var host = await HubTestHost.StartAsync();
         await using var lane = Lane(host);
