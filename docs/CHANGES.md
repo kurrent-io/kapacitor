@@ -6,6 +6,15 @@ diff. `CLAUDE.md` holds the invariants; `docs/superpowers/specs/` holds the full
 Not release notes. Each entry is written as of the change that produced it and is not revised as the
 code moves on; where an entry disagrees with the code, the code wins.
 
+## Declared work structure is bounded by visibility, not by repository
+
+The server takes a breakdown or a relation whose other end lives in another repository — it bounds
+both by what the caller can see, and repository is display only. The `declare_work_breakdown` and
+`declare_work_relation` descriptions, the `kcap-workitems` preamble, the skill and the README state
+that boundary, because an agent reads them before it calls: a repository rule in that text costs
+declarations the server would have accepted, and the loss is silent — the structure is simply never
+declared.
+
 ## The reviewer lookup places a session running in a linked worktree
 
 `RepoPathStore` collapses a linked worktree to its main repository before storing it, and
