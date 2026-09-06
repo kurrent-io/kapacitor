@@ -29,6 +29,7 @@
     <PackageVersion Include="Tomlyn" Version="2.4.0" />
     <PackageVersion Include="TUnit" Version="1.65.68" />
     <PackageVersion Include="TUnit.Core" Version="1.65.68" />
+    <PackageVersion Include="Velopack" Version="1.2.0" />
     <PackageVersion Include="WireMock.Net" Version="2.15.0" />
     <PackageVersion Include="XTerm.NET" Version="1.1.0" />
   </ItemGroup>

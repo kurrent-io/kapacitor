@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key>
+  <string>Kurrent Capacitor</string>
+  <key>CFBundleDisplayName</key>
+  <string>Kurrent Capacitor</string>
+  <key>CFBundleExecutable</key>
+  <string>Kurrent Capacitor</string>
+  <key>CFBundleIdentifier</key>
+  <string>io.kurrent.capacitor</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>{SHORT_VERSION}</string>
+  <key>CFBundleVersion</key>
+  <string>{VERSION}</string>
+  <key>CFBundleIconFile</key>
+  <string>kcap-icon.icns</string>
+  <key>NSPrincipalClass</key>
+  <string>NSApplication</string>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+  <key>LSMinimumSystemVersion</key>
+  <string>15.0</string>
+  <key>LSApplicationCategoryType</key>
+  <string>public.app-category.developer-tools</string>
+  <key>NSHumanReadableCopyright</key>
+  <string>© Kurrent, Inc.</string>
+</dict>
+</plist>
