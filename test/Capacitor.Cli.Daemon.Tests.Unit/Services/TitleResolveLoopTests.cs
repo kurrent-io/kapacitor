@@ -259,6 +259,46 @@ public class TitleResolveLoopTests {
     }
 
     [Test]
+    public async Task An_adopted_server_title_survives_a_failed_read() {
+        var h = new Harness();
+        h.Agents.Add(Agent());
+        h.Server.Get = _ => "Server generated title";
+        var loop = h.Build();
+
+        await loop.TickAsync(CancellationToken.None);
+        h.Server.Get = _ => throw new HttpRequestException("outage");
+        h.Native = _ => "Native title";
+        await loop.TickAsync(CancellationToken.None);
+
+        // The outage tick must not demote the adopted server title to the native one.
+        await Assert.That(h.Applied).IsEquivalentTo([("a1", "Server generated title")]);
+
+        // Only a successful read proving the server silent releases the authority.
+        h.Server.Get = _ => null;
+        await loop.TickAsync(CancellationToken.None);
+        await Assert.That(h.Applied.Last().Title).IsEqualTo("Native title");
+    }
+
+    [Test]
+    public async Task An_unconfirmed_push_does_not_become_server_authority() {
+        var h = new Harness();
+        h.Agents.Add(Agent());
+        var native = "First cut";
+        h.Native = _ => native;
+        h.Server.PushResult = false; // the push may have committed server-side; only its ack is lost
+        var loop = h.Build();
+
+        await loop.TickAsync(CancellationToken.None);
+        h.Server.Get = _ => "First cut"; // the committed-but-unacknowledged push coming back
+        h.Server.PushResult = true;
+        native = "Second cut";
+        await loop.TickAsync(CancellationToken.None);
+
+        await Assert.That(h.Applied.Select(a => a.Title)).IsEquivalentTo(["First cut", "Second cut"]);
+        await Assert.That(h.Server.Pushed.Last().Title).IsEqualTo("Second cut");
+    }
+
+    [Test]
     public async Task A_failed_push_is_retried_on_the_next_tick() {
         var h = new Harness();
         h.Agents.Add(Agent());

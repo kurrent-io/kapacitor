@@ -36,7 +36,16 @@ internal sealed class TitleResolveLoop {
     sealed class AgentTitleState {
         public string? Applied;
         public string? Generated;
+        /// Last title confirmed accepted by the server — suppresses re-pushes.
         public string? PushedTitle;
+        /// Last title a push was ATTEMPTED with, confirmed or not. A push whose response was
+        /// lost may still have committed, so this too must count as "ours" when the server
+        /// echoes it back — or the loop would adopt its own title as independent authority.
+        public string? LastPushAttempt;
+        /// The authoritative server title as of the last SUCCESSFUL read. Held across failed
+        /// reads so an outage tick cannot demote the applied title down the ladder; cleared
+        /// only by a successful read proving the server silent.
+        public string? ServerTitle;
         public bool GenerationAttempted;
     }
 
@@ -102,13 +111,17 @@ internal sealed class TitleResolveLoop {
                 var serverTitle = Normalize(await _server.GetTitleAsync(sessionId, ct));
                 serverReadOk = true;
 
-                // A title the loop itself pushed coming back is not an independent server
+                // A title the loop itself pushed (or may have pushed — an unacknowledged
+                // attempt can still have committed) coming back is not an independent server
                 // title: treating it as one would freeze the ladder on our own echo and a
                 // later native revision could never advance past it.
                 if (serverTitle is not null && serverTitle != state.PushedTitle
+                 && serverTitle != state.LastPushAttempt
                  && !IsPromptEcho(serverTitle, agent.Prompt)) {
                     serverReal = serverTitle;
                 }
+
+                state.ServerTitle = serverReal;
             } catch (Exception ex) {
                 // An unreadable server is not a silent one: generation must not spend an LLM
                 // call on a session whose watcher-made title merely couldn't be fetched.
@@ -127,7 +140,9 @@ internal sealed class TitleResolveLoop {
             }
         }
 
-        var best = serverReal ?? native ?? state.Generated;
+        // On a failed read the last successfully-read authority stands in, so an outage tick
+        // cannot demote the applied title down the ladder.
+        var best = (serverReadOk ? serverReal : state.ServerTitle) ?? native ?? state.Generated;
 
         if (best is not null && best != state.Applied) {
             _apply(agent.Id, best);
@@ -140,6 +155,8 @@ internal sealed class TitleResolveLoop {
         var local = native ?? state.Generated;
         if (serverReadOk && serverReal is null && local is not null && local != state.PushedTitle
          && agent.SessionId is { } sid) {
+            state.LastPushAttempt = local;
+
             var pushed = false;
             try {
                 pushed = await _server.PushTitleAsync(sid, local, ct);
