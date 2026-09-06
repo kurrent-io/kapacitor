@@ -1,10 +1,12 @@
-using System.Text.Json;
-using Capacitor.Cli.Core.Harness.Codex;
-
 namespace Capacitor.Cli.Core.Tests.Unit.Harness.Codex;
 
-public class CodexRolloutEventsTests {
-    static IReadOnlyList<AcpEventEnvelope> P(string line) => CodexRolloutEvents.Instance.Project(line);
+public class CodexChatRulesTests {
+    static readonly DateTimeOffset Received = new(2026, 9, 4, 10, 0, 0, TimeSpan.Zero);
+
+    static IReadOnlyList<AcpEventEnvelope> P(string line) {
+        var chat = TranscriptChat.For("codex")!;
+        return chat.Project(line, 1, Received, chat.CreateContext("a1", null));
+    }
 
     static string Item(string payload, string ts = "2026-08-25T00:00:00Z") =>
         $$$"""{"timestamp":"{{{ts}}}","ordinal":1,"type":"response_item","payload":{{{payload}}}}""";
@@ -44,11 +46,6 @@ public class CodexRolloutEventsTests {
         var custom = P(Item("""{"type":"custom_tool_call","name":"exec","call_id":"c3","input":"const r = 1;"}"""));
         await Assert.That(custom[0].ToolName).IsEqualTo("exec");
         await Assert.That(custom[0].ToolInputJson).IsEqualTo("""{"input":"const r = 1;"}""");
-
-        foreach (var e in new[] { fn[0], nonObject[0], custom[0] }) {
-            using var doc = JsonDocument.Parse(e.ToolInputJson!);
-            await Assert.That(doc.RootElement.ValueKind).IsEqualTo(JsonValueKind.Object);
-        }
     }
 
     [Test]
@@ -86,5 +83,11 @@ public class CodexRolloutEventsTests {
         await Assert.That(P(Item("""{"type":"agent_message","content":[{"type":"input_text","text":"x"}]}"""))).IsEmpty();
         await Assert.That(P("garbage")).IsEmpty();
         await Assert.That(P(Item("""{"type":"message","role":"user","content":"not-an-array"}"""))).IsEmpty();
+    }
+
+    [Test]
+    public async Task An_unknown_vendor_has_no_chat_projection() {
+        await Assert.That(TranscriptChat.For("cursor")).IsNull();
+        await Assert.That(TranscriptChat.For("Codex")).IsNotNull();
     }
 }

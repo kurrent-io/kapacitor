@@ -1,6 +1,6 @@
-namespace Capacitor.Cli.Core.Tests.Unit.Harness.Claude;
+namespace Capacitor.Models.Transcripts.Tests.Unit.Harness.Claude;
 
-using Capacitor.Cli.Core.Harness.Claude;
+using Capacitor.Models.Transcripts.Harness.Claude;
 
 public class ClaudeNativeTitleTests {
     [TempDir] public required TempDir Tmp { get; init; }

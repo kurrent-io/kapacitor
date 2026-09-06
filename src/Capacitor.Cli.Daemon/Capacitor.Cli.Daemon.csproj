@@ -15,6 +15,9 @@
         <ProjectReference Include="..\Capacitor.Cli.Core\Capacitor.Cli.Core.csproj" />
     </ItemGroup>
     <ItemGroup>
+        <Using Include="Capacitor.Models.Transcripts" />
+    </ItemGroup>
+    <ItemGroup>
         <InternalsVisibleTo Include="Capacitor.Cli.Tests.Unit" />
         <InternalsVisibleTo Include="Capacitor.Cli.Daemon.Tests.Unit" />
         <InternalsVisibleTo Include="Capacitor.Cli.Tests.Integration" />

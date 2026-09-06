@@ -32,4 +32,7 @@
     <ItemGroup>
         <InternalsVisibleTo Include="Capacitor.App.Tests.Unit" />
     </ItemGroup>
+    <ItemGroup>
+        <Using Include="Capacitor.Models.Transcripts" />
+    </ItemGroup>
 </Project>

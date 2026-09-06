@@ -30,6 +30,46 @@ concurrent writer — last writer wins on the server, and the loop adopts the se
 it differs, so web and desktop settle on the identical string. A private agent's view carries no
 session id at all: its contract is no per-agent server calls, so only the local lanes apply.
 
+## The work-context pane reads the work item from one endpoint
+
+**AI-2521** fills the sidebar's SOON slots — the item's state, its overview, per-part completion,
+the linked issue and who is on it — from the server's one read per work item,
+`GET /api/work-items/{id}`. It joins the assignments, topology and summary calls as a fourth read:
+it starts beside the topology read once the primary assignment is known, a final 401 or a
+plan-gate 403 on it decides the whole read like the others, and any other failure degrades its
+section the way a topology blip does.
+
+**The key is the endpoint's, not split from the label.** The assignments label packed `"KEY — title"`
+by convention; the item read carries the key, the title and the tracker's enriched title as
+separate fields, so the split and its silent failure mode are gone. When the item read fails for a
+primary the pane has not shown before, the label shows whole as the title with no key chip and the
+pane is stale.
+
+**Parts move to the item read; the topology keeps the rest.** The item's parts carry a settled flag
+the topology never had, so the parts list, its "N of M" header and the marks come from there.
+Part-of, blockers and the cycle marker still come from the topology, and each section keeps its own
+last projection when its read fails.
+
+**The card's identity is the served id.** An absorbed item is served under its survivor's id, and
+the assignments row may catch up to that id a poll later. The pane keys "same primary" on the served
+id and falls back to the requested one when a read carried no item, so neither transition drops the
+projection.
+
+**Reference-class links are ignored on purpose.** The server passes `link_class = reference` rows
+through for other consumers; the issue card is the first `kind = issue` row of class `link`, and its
+URL crosses the same `LinkPolicy` boundary as the PR cards.
+
+**Contributors render as initials.** The app has no remote image loader, so `avatar_url` is carried
+on the view model and not fetched. Collapsed, the section is an initials stack with the session
+count; expanded, a row per person with their last activity. Until an item has contributors the
+row shows this session's requester, the one person the daemon knows.
+
+**A mechanical overview is hidden.** `is_overview_mechanical` marks a generated one-liner that
+restates the title; only a summarizer overview earns the paragraph under the title.
+
+The no-repository note no longer says breakdown and blockers come with the repository: the server
+dropped its same-repository rule for structure, though a work item itself still requires one.
+
 ## The SessionStart index names the repo's projects
 
 An agent can only land a memory at project scope by passing a slug, and nothing in a session told it
@@ -547,7 +587,8 @@ text, system note) closes the run. **The fold is uniform** — a lone settled ca
 command" — and **folding never hides an error**: a failed call inside a folded group puts the danger
 `✕` on the summary line. The group binds ONE inner list whose source swaps on toggle, because a
 hidden `ItemsControl` keeps its containers; expanding a group realizes every row and folding releases
-them. Expanding holds follow-tail once, so the clicked summary stays in view. Summary wording keys on
+them. Expanding is the reader's own gesture, so follow-tail leaves the clicked summary in view until
+the reader returns to the bottom. Summary wording keys on
 the transcript's tool name (Codex's rollout says `shell`, its hook says `Bash`), with Codex shell
 commands classified by `CodexCommandClassifier`, ported verbatim from the server into Core so the
 server can delete its copy on the next submodule bump. A row waiting on a permission shows an accent
@@ -755,3 +796,22 @@ client by lease so overlapping reads never see it disposed, retires it on sign-o
 with the launch client through a holder that memoizes the cleanup, so both teardown paths reach it
 and nothing is disposed twice. The window gains a minimum width equal to its default: 310 of rail plus
 400 of pane must never squeeze the terminal column to nothing.
+
+## Transcript normalization has one home
+
+**AI-2265** (spec: `docs/superpowers/specs/2026-09-04-ai2265-transcript-normalization-leaf-design.md`)
+moves transcript-to-canonical projection into `Capacitor.Models.Transcripts`, a leaf with the
+`Kurrent.Agent.Schema` package and nothing else, so the desktop chat and, from the server's
+adoption step onward, the server read one implementation. **Projections emit the schema's own
+messages**, because that is what the server persists and the package is AOT-clean; the chat keeps
+its `AcpEventEnvelope` renderer through an adapter in Core, with each vendor's display rules
+(Claude's wrapper stripping and task-notification note, Codex's injected-prelude skip) beside it
+under `Harness/<Vendor>/`. **A projection never mutates an event it has returned**: anything the
+server stamps in place today arrives as an explicit amendment or a `UsageApplied` instruction.
+**Every id derivation is a persistence contract** pinned by fixed vectors; the server dedups by
+them. This first step carries the chat's coverage only; Claude and Codex parity with the server's
+normalizers follow, one PR each. Five things the chat shows differently after this step, all
+narrower than before: several text blocks in one Claude user record are one bubble; text beside
+tool results is not shown; the envelope carries no model; a user record opening with an
+available-deferred-tools injection is dropped, as the server drops it; and a meta record's tool
+results settle their tool rows instead of vanishing with the record.

@@ -1,6 +1,6 @@
-using Capacitor.Cli.Core.Harness.Codex;
+using Capacitor.Models.Transcripts.Harness.Codex;
 
-namespace Capacitor.Cli.Core.Tests.Unit.Harness.Codex;
+namespace Capacitor.Models.Transcripts.Tests.Unit.Harness.Codex;
 
 /// The classifier's verdicts, pinned so the same command labels the same way wherever it is
 /// classified: the dashboard and the desktop chat must never disagree about one shell line.

@@ -986,6 +986,7 @@ public sealed record CurationApplyResponse {
 [JsonSerializable(typeof(CliProjectError))]
 [JsonSerializable(typeof(List<WorkItems.SessionWorkItemAssignmentDto>))]
 [JsonSerializable(typeof(WorkItems.WorkItemTopologyDto))]
+[JsonSerializable(typeof(WorkItems.WorkItemDto))]
 [JsonSerializable(typeof(WorkItems.SessionSummaryDto))]
 [JsonSerializable(typeof(WorkItems.WorkItemErrorDto))]
 [JsonSerializable(typeof(RepositoryPayload))]
@@ -1295,8 +1296,9 @@ public static class AcpEventKind {
     public const string Usage              = "usage";
 
     /// <summary>Daemon-synthesized informational note rendered as system-attributed text (never as
-    /// user or assistant speech) — today emitted only by the ACP reconnect path after a successful
-    /// resume. Additive: a server that predates this kind skips it while still advancing its ack
+    /// user or assistant speech) — emitted by the ACP reconnect path after a successful resume and
+    /// by the chat's Claude display rules for a finished-background-task record. Additive: a server
+    /// that predates this kind skips it while still advancing its ack
     /// cursor (verified against <c>CapacitorHub.AcpSessionEvents</c>'s unrecognised-Kind branch), so
     /// a newer daemon degrades to log-only rather than wedging the forwarder.</summary>
     public const string SystemNote         = "system_note";

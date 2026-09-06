@@ -72,6 +72,15 @@ public class ChatTabViewSmokeTests {
         host.Settle();
     }
 
+    /// A wheel gesture over the list, big enough to reach the top. The reader's own scrolling has to
+    /// arrive as input: follow-tail tells the reader apart from layout by the gesture, so a bare
+    /// Offset assignment reads as the panel's doing and is followed.
+    static void WheelUp(Host host) {
+        var list = host.View.FindControl<ItemsControl>("ChatItems")!;
+        var center = list.TranslatePoint(new Point(list.Bounds.Width / 2, list.Bounds.Height / 2), host.Window)!.Value;
+        host.Window.MouseWheel(center, new Vector(0, 100_000));
+    }
+
     sealed class Host {
         bool _shown;
 
@@ -93,7 +102,7 @@ public class ChatTabViewSmokeTests {
         /// first read starts before the workspace view exists.
         public Host(bool show = true) {
             Terminal = new TerminalTabViewModel("a1", Daemon, Attach.Factory, () => new FakeTerminalSurface(), Time);
-            Chat = new ChatTabViewModel("a1", Daemon, Terminal, TranscriptProjection.For("claude"), Opener, Time, Permissions);
+            Chat = new ChatTabViewModel("a1", Daemon, Terminal, TranscriptChat.For("claude"), Opener, Time, Permissions);
             View = new ChatTabView { DataContext = Chat };
             Window = new Window { Content = View, Width = 800, Height = 600 };
             if (!show) return;
@@ -189,8 +198,9 @@ public class ChatTabViewSmokeTests {
         });
     }
 
-    /// Pins follow-tail's whole contract: it tracks the bottom, leaves a scrolled-up reader where
-    /// they are, and abandons a scroll it had already decided on if the reader moves first.
+    /// Pins follow-tail's whole contract: it tracks the bottom, leaves a reader who scrolled up
+    /// where they are, and does not follow an append that lands in the same layout pass as the
+    /// reader's scroll.
     [Test]
     [NotInParallel("AvaloniaSession")]
     public async Task Follow_tail_tracks_the_bottom_and_leaves_a_scrolled_up_reader_alone() {
@@ -206,21 +216,21 @@ public class ChatTabViewSmokeTests {
             Dispatcher.UIThread.RunJobs();
             await Assert.That(host.AtBottom()).IsTrue();
 
-            host.Scroll.Offset = new Vector(0, 0);
-            host.Window.UpdateLayout();
+            WheelUp(host);
+            host.Settle();
+            await Assert.That(host.Scroll.Offset.Y).IsEqualTo(0);
             await host.AppendAndTickAsync(path, 20);
             Dispatcher.UIThread.RunJobs();
             host.Window.UpdateLayout();
             Dispatcher.UIThread.RunJobs();
             await Assert.That(host.Scroll.Offset.Y).IsEqualTo(0);
 
-            // At the bottom, append, then scroll up before the layout pass completes. The view
-            // subscribes first, so this handler runs after it has decided to follow and captured
-            // the offset — the one ordering that reaches the abandon path.
+            // At the bottom, append, then wheel up before the layout pass runs: the one change
+            // carries both, and the reader's gesture wins.
             host.Scroll.ScrollToEnd();
             host.Window.UpdateLayout();
             await Assert.That(host.AtBottom()).IsTrue();
-            void ScrollUp(object? sender, NotifyCollectionChangedEventArgs e) => host.Scroll.Offset = new Vector(0, 0);
+            void ScrollUp(object? sender, NotifyCollectionChangedEventArgs e) => WheelUp(host);
             ((INotifyCollectionChanged)host.Chat.Items).CollectionChanged += ScrollUp;
             await host.AppendAndTickAsync(path, 20);
             ((INotifyCollectionChanged)host.Chat.Items).CollectionChanged -= ScrollUp;
@@ -604,19 +614,21 @@ public class ChatTabViewSmokeTests {
             await host.AppendLinesAndTickAsync(path, ResultLine(1));
             await Assert.That(host.AtBottom()).IsTrue();
 
-            host.Scroll.Offset = new Vector(0, 0);
-            host.Window.UpdateLayout();
+            WheelUp(host);
+            host.Settle();
+            await Assert.That(host.Scroll.Offset.Y).IsEqualTo(0);
             await host.AppendLinesAndTickAsync(path, CallLine(4), ResultLine(2));
             await Assert.That(host.Scroll.Offset.Y).IsEqualTo(0);
             await host.CloseAsync();
         });
     }
 
-    /// Expanding keeps the viewport: the hold is one-shot, so a reader who returns to the bottom is
-    /// followed again on the next append.
+    /// Expanding keeps the viewport: the click is the reader's gesture and it lands above the
+    /// bottom, so following stops until the reader returns to the bottom, when the next append
+    /// follows again.
     [Test]
     [NotInParallel("AvaloniaSession")]
-    public async Task Expanding_the_trailing_group_keeps_the_offset_and_the_hold_is_one_shot() {
+    public async Task Expanding_the_trailing_group_keeps_the_offset_and_returning_to_the_bottom_resumes_following() {
         await RunOnUiAsync(async () => {
             var host = new Host();
             var lines = new List<string>(Enumerable.Repeat(UserLine, 60));
@@ -644,11 +656,12 @@ public class ChatTabViewSmokeTests {
         });
     }
 
-    /// An append that lands in the same dispatcher turn as the click is held with the expansion:
-    /// the reader stays put, and only a later append, after they return to the bottom, follows.
+    /// An append that lands in the same dispatcher turn as the click shares its layout pass, so it
+    /// is the reader's change too: the reader stays put, and only a later append, after they return
+    /// to the bottom, follows.
     [Test]
     [NotInParallel("AvaloniaSession")]
-    public async Task An_append_queued_behind_the_expansion_click_does_not_steal_the_hold() {
+    public async Task An_append_queued_behind_the_expansion_click_does_not_move_the_reader() {
         await RunOnUiAsync(async () => {
             var host = new Host();
             var lines = new List<string>(Enumerable.Repeat(UserLine, 60));
@@ -865,6 +878,70 @@ public class ChatTabViewSmokeTests {
             var submit = host.View.GetVisualDescendants().OfType<Button>().Single(b => b.Content as string == "Submit");
             await Assert.That(submit.IsEffectivelyVisible).IsTrue();
             await Assert.That(submit.IsEffectivelyEnabled).IsFalse();
+            await host.CloseAsync();
+        });
+    }
+
+    /// A touch pan reaches the list as a scroll gesture, which routes on the bubbling strategy only;
+    /// it must count as the reader's gesture like a wheel notch does, or every pan up is undone.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task A_scroll_gesture_up_leaves_the_reader_where_they_panned() {
+        await RunOnUiAsync(async () => {
+            var host = new Host();
+            var path = Tmp.CreateFile("pan.jsonl", Enumerable.Repeat(UserLine, 60).ToArray());
+            await host.LoadAsync(path);
+            await Assert.That(host.AtBottom()).IsTrue();
+
+            var items = host.View.FindControl<ItemsControl>("ChatItems")!;
+            var row = items.GetRealizedContainers().First();
+            row.RaiseEvent(new ScrollGestureEventArgs(ScrollGestureEventArgs.GetNextFreeId(), new Vector(0, -300)) { RoutedEvent = InputElement.ScrollGestureEvent });
+            host.Settle();
+            var panned = host.Scroll.Offset.Y;
+            await Assert.That(host.AtBottom()).IsFalse();
+
+            await host.AppendAndTickAsync(path, 20);
+            host.Settle();
+            await Assert.That(host.Scroll.Offset.Y).IsEqualTo(panned);
+            await host.CloseAsync();
+        });
+    }
+
+    /// Pins the reader at the bottom across a question card's life. Marking the awaiting row
+    /// changes its height, which makes the virtualizing panel drop its anchor and re-place every
+    /// row from the average realized size; with tall prose above short rows that estimate is far
+    /// off, so the extent collapses and the presenter clamps and anchor-shifts the offset. Neither
+    /// move is the reader's, so the view must keep following through both the card's arrival and
+    /// its retirement. The prose rows genuinely have to be tall — with uniform rows the estimate is
+    /// exact and this test proves nothing.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task A_question_card_arriving_and_retiring_keeps_the_reader_at_the_bottom() {
+        await RunOnUiAsync(async () => {
+            var host = new Host();
+            var prose = string.Join("\\n\\n", Enumerable.Range(1, 60).Select(i => $"Paragraph {i} of a long reply that wraps across the column."));
+            var tall = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"" + prose + "\"}]}}";
+            const string question = """{"questions":[{"question":"Pick","options":[{"label":"A"},{"label":"B"}]}]}""";
+            var ask = $$$"""{"type":"assistant","message":{"content":[{"type":"tool_use","id":"q-tool","name":"AskUserQuestion","input":{{{question}}}}]}}""";
+            var path = Tmp.CreateFile("card.jsonl", [tall, tall, tall, .. Enumerable.Repeat(UserLine, 20), ask]);
+            await host.LoadAsync(path);
+            await Assert.That(host.AtBottom()).IsTrue();
+
+            host.Permissions.Add(PermissionEntries.Entry("q1", "a1", "claude", ClaudeElicitation.ToolName, question, toolUseId: "q-tool"));
+            await WaitUntilAsync(() => host.Chat.PendingCards.Count == 1, what: "the card");
+            host.Settle();
+            await Assert.That(host.AtBottom()).IsTrue();
+
+            host.Permissions.Queue(PermissionResolveKind.Applied);
+            var option = host.View.GetVisualDescendants().OfType<Button>().First(b => b.Classes.Contains("option"));
+            // Headless pointer events do not focus, so the focus a real click gives the button is applied by hand.
+            option.Focus(NavigationMethod.Pointer);
+            Click(host, option);
+            await WaitUntilAsync(() => host.Chat.PendingCards.Count == 0, what: "the card retired");
+            host.Settle();
+            host.Settle();
+
+            await Assert.That(host.AtBottom()).IsTrue();
             await host.CloseAsync();
         });
     }

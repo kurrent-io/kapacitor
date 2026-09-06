@@ -1,6 +1,6 @@
 using System.Text.Json;
 
-namespace Capacitor.Cli.Core.Harness.Claude;
+namespace Capacitor.Models.Transcripts.Harness.Claude;
 
 /// <summary>
 /// Extracts Claude Code's own session title from a project transcript: the last non-blank
