@@ -1,6 +1,7 @@
 namespace Capacitor.Cli.Core.Harness.Codex;
 
-/// Codex writes its injected preludes as user messages; the chat shows none of them.
+/// Codex writes its injected preludes as user messages; the chat shows none of them. A tool call
+/// gains the vendor-neutral kind its raw name alone does not carry.
 public sealed class CodexChatRules : IChatDisplayRules {
     public static readonly CodexChatRules Instance = new();
 
@@ -10,8 +11,11 @@ public sealed class CodexChatRules : IChatDisplayRules {
 
     CodexChatRules() { }
 
-    public AcpEventEnvelope? Filter(CanonicalEvent evt, AcpEventEnvelope envelope) =>
-        envelope.Kind == AcpEventKind.UserMessage && IsInjectedPrelude(envelope.Text ?? "") ? null : envelope;
+    public AcpEventEnvelope? Filter(CanonicalEvent evt, AcpEventEnvelope envelope) => envelope.Kind switch {
+        AcpEventKind.UserMessage when IsInjectedPrelude(envelope.Text ?? "") => null,
+        AcpEventKind.ToolCall => envelope with { ToolKind = CodexToolKinds.Of(envelope.ToolName, envelope.ToolInputJson) },
+        _                     => envelope,
+    };
 
     static bool IsInjectedPrelude(string text) {
         var trimmed = text.TrimStart();

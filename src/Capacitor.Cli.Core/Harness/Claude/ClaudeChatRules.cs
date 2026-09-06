@@ -22,6 +22,8 @@ public sealed partial class ClaudeChatRules : IChatDisplayRules {
                 var text = StripWrappers(envelope.Text ?? "");
                 return text.Length == 0 ? null : envelope with { Text = text };
             }
+            case AcpEventKind.ToolCall:
+                return envelope with { ToolKind = ClaudeToolKinds.Of(envelope.ToolName) };
             case AcpEventKind.ToolResult:
                 return envelope with { ToolIsError = SchemaExtensions.Flag(slug, ClaudeCodeExtension.IsError) };
             default:

@@ -909,3 +909,28 @@ shell call did run something.
 completed item carries both halves, the same rule `fileChange` follows — an orphan tool call renders
 as running forever, since a result is what settles one. It is `fetch`, the kind a web tool gets
 wherever it appears, so the hosted lane and a later import of the same session cannot disagree.
+
+## Codex web and tool searches reach the transcript
+
+**#794** projects two `response_item` payloads the Codex rollout projection dropped, so a Codex web
+search no longer disappears: `web_search_call` and the `tool_search_call` / `tool_search_output` pair.
+Until now `fetch` was unreachable for Codex while Claude's `WebSearch` mapped straight to it, so the
+vocabulary was populated asymmetrically across vendors.
+
+**A web search projects as a synthesized pair.** It is written already settled, carries no id of its
+own — its payload is exactly `action` / `status` / `type` — and keeps its results in the `event_msg`
+lane this projection does not read. So the record supplies the call id for both halves, and the two
+events take the record id and its `result` sibling. A call with no result never settles for a consumer
+that pairs by id; the status is the only outcome available. A tool-registry lookup needs none of that:
+it has a `call_id` and its own output record.
+
+**`tool_search` is `other`, not `search`.** The ACP kind means searching for content, and counting a
+tool-registry lookup as one would skew every consumer measuring how much the agent searched the
+workspace.
+
+**The kind for an imported transcript is stamped by the vendor's chat rules**, which already rewrite
+envelopes and already live per vendor. That gives an import the same kinds the hosted lane carries
+without waiting on the canonical schema, which has no field for it — a projected tool call is a
+`Kurrent.Agent.Schema` `ToolCallInfo`, so the persisted event stays kind-less until the package gains
+one. The shell-command rule is shared with the daemon rather than written twice: a hosted session and
+an import of it must not answer differently for the same call.
