@@ -54,7 +54,7 @@ internal partial class AgentOrchestrator {
                 // unchanged) — but the wire contract pins absent = null. Normalize here, at the
                 // wire boundary, rather than changing what AgentInstance stores.
                 string.IsNullOrWhiteSpace(a.Model) ? null : a.Model, a.RequesterDisplay,
-                HasTerminal: a.Runtime.EmitsTerminalOutput, Title: a.Title, TranscriptPath: a.TranscriptPath,
+                HasTerminal: a.Runtime.EmitsTerminalOutput, Title: a.ResolvedTitle ?? a.Title, TranscriptPath: a.TranscriptPath,
                 WorktreePath: a.Checkout.Worktree,
                 WorkLocation: a.Checkout.BorrowedFrom is null ? WorkLocationText.Owned : WorkLocationText.Borrowed,
                 BorrowedFrom: a.Checkout.BorrowedFrom,

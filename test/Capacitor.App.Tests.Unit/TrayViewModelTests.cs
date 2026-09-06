@@ -338,6 +338,34 @@ public class TrayViewModelTests {
 
     [Test]
     [NotInParallel("AvaloniaSession")]
+    public async Task Entries_prefix_the_session_title_when_present() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var service = new FakeDaemonClientService();
+            var pause = new FakePauseController();
+            var actions = NewActions(service);
+            var consent = new FakeConsentService();
+            using var vm = new TrayViewModel(service, pause, actions, consent);
+
+            var t0 = new DateTime(2026, 8, 6, 10, 0, 0, DateTimeKind.Utc);
+            var agents = new List<AgentStatusDto> {
+                new("a", "agent", "claude", "/repos/kcap-cli", "Running", null, null, null, t0, null, null,
+                    Title: "Fix the login flow"),
+                new("b", "agent", "claude", "/repos/kcap-cli", "Running", null, null, null, t0.AddMinutes(1), null, null,
+                    Title: new string('x', 60)),
+            };
+
+            service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, []));
+            service.SnapshotsSubject.OnNext(Snap("connected", 2, agents));
+
+            var entries = vm.MenuModel.Agents;
+            await Assert.That(entries[0].Label).IsEqualTo("Fix the login flow · agent · claude · kcap-cli");
+            // A menu row cannot ellipsize itself — long titles are cut before the separator.
+            await Assert.That(entries[1].Label).IsEqualTo(new string('x', 39) + "… · agent · claude · kcap-cli");
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
     public async Task Entries_tiebreak_by_id_ordinal_when_created_at_equal() {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var service = new FakeDaemonClientService();

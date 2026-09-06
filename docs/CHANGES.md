@@ -6,6 +6,30 @@ diff. `CLAUDE.md` holds the invariants; `docs/superpowers/specs/` holds the full
 Not release notes. Each entry is written as of the change that produced it and is not revised as the
 code moves on; where an entry disagrees with the code, the code wins.
 
+## The desktop app shows the same session titles as the web
+
+The daemon resolves a title per hosted agent and carries it in the existing `AgentStatusDto.Title`
+field, so every status consumer — rail, Home cards, tray, remote clients — upgrades without a wire
+change. Resolution is a ladder in `TitleResolveLoop`: the vendor's native transcript title (Claude
+writes `ai-title` lines; the older `summary` shape must keep being accepted), then the server's
+title, then at most one local generation per agent.
+
+**A server title that prefixes the launch prompt counts as no title.** The watcher's initial title
+and the daemon's own seed are both prefix-truncations of the prompt's first line, so adopting the
+echo would overwrite a better native title with what the seed already shows — and treating it as
+real would block both the convergence push and the generation fallback.
+
+**An unreadable server is not a silent one.** Generation costs an LLM call, and for a recorded
+session the watcher is already making that call; a fetch failure (auth lapse, outage) must not be
+read as "the watcher produced nothing" and trigger a second spend. The port throws on failure so
+the loop can tell the two apart, and generation waits out a grace period for the watcher's title
+to land.
+
+**Locally resolved titles converge via `/hooks/set-title`.** The watcher stays a legitimate
+concurrent writer — last writer wins on the server, and the loop adopts the server's title whenever
+it differs, so web and desktop settle on the identical string. A private agent's view carries no
+session id at all: its contract is no per-agent server calls, so only the local lanes apply.
+
 ## Declared work structure is bounded by visibility, not by repository
 
 The server takes a breakdown or a relation whose other end lives in another repository — it bounds
