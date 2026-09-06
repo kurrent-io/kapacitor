@@ -224,7 +224,11 @@ The daemon is the only party that knows both ids of a dual-lane PTY prompt, so i
 mapping: the local permission wire's pending DTO gains a trailing nullable `server_request_id`,
 set by the daemon's server leg once the server accepts the request (an updated pending
 notification when it becomes known later). Additive trailing field per the local-IPC convention;
-older daemons simply never set it. The rules:
+older daemons simply never set it. That late notification is a **metadata-only update**: it
+must be applied to the existing pending item in place — same item identity, same card — never
+through the replace-the-card upsert path, so a mapping arriving mid-edit or mid-submit changes
+dedup state without erasing draft selections, free text, the navigation step, or cancelling an
+in-flight answer. The rules:
 
 - A server-lane `PermissionRequested` is suppressed only when a live local-lane item claims it
   (`server_request_id` equal). No claim — because the daemon is older, the local permission
@@ -240,17 +244,21 @@ older daemons simply never set it. The rules:
 
 ### Settlement is lane-authoritative; correlation extends it
 
-A settlement clears its own lane's item always, and the *correlated* twin only when the
-correlation is proven: `PermissionResponded(sessionId, requestId)` clears the server-lane item
-and any local item claiming that `server_request_id`; a local resolution clears the local item,
-and its server twin is cleared by the server's own broadcast when the daemon's settlement relay
-lands — the relay can fail and merely log, so the twin may linger until the next server-lane
-event or an HTTP answer's 404 drops it. A session-scoped `PermissionResponded(sessionId, null)`
-clears that session's server-lane items and only those local items with a proven
-`server_request_id` claim — a local request the daemon hasn't relayed yet has no twin in the
-server's "all cleared" and must remain pending. A resolution always wins a race with an
-in-flight seed or reconciliation fetch — a settled request id is never resurrected by late
-fetch results.
+A settlement clears its own lane's item always. Across lanes, only a *request-specific* signal
+reaches the twin: `PermissionResponded(sessionId, requestId)` clears the server-lane item and
+any local item claiming that `server_request_id` — the id names exactly one request, so it
+cannot retire a different one. A session-scoped `PermissionResponded(sessionId, null)` clears
+**server-lane items only**, never local items, claims or no claims: the bulk clear is
+unversioned, and the app's two connections have no cross-ordering, so a clear emitted before
+the server accepted a newer request can arrive after that request's correlation did — retiring
+by claim would erase a genuinely pending card. Local items are otherwise settled solely by
+their own lane; that loses nothing, because the daemon's broker is the source of local truth —
+a request settled server-side reaches the daemon as its own resolution and the local lane
+clears it from there. In the reverse direction, a local resolution's server twin is cleared by
+the server's own broadcast when the daemon's settlement relay lands — the relay can fail and
+merely log, so the twin may linger until the next server-lane event or an HTTP answer's 404
+drops it. A resolution always wins a race with an in-flight seed or reconciliation fetch — a
+settled request id is never resurrected by late fetch results.
 
 ### Pending discovery and recovery
 
@@ -260,11 +268,17 @@ Pending ping names no request id, so a per-session boolean cannot count truthful
 for an *unopened* session is a per-session set of pending server request ids, populated by a
 headless reconciliation of that session's event stream (`InterruptIssued`/`InterruptResolved` —
 the same reconciliation the MAUI client performs on open, run without UI), triggered debounced
-by each `PermissionPending` ping; thereafter `PermissionResponded(sessionId, requestId)` removes
-one id (the pip clears when the set empties, not on the first response), null-requestId empties
-the set, and after every reconnect sessions with non-empty sets re-reconcile, so a response
-missed while disconnected cannot leave a pip on forever. Full card detail materializes when a
-session's workspace opens: the app joins `chat:{sessionId}` (live payloads) and runs the same
+by each `PermissionPending` ping. A ping marks the session *dirty*, and the dirty mark is a
+separate durable state from the set: it clears only when a reconciliation completes
+authoritatively (including with an empty result), survives disconnects, and drives retry with
+backoff after a transient fetch failure — so a session whose first reconciliation never
+finished (connection dropped mid-debounce or mid-fetch, or the fetch failed while the hub
+stayed up) is not skipped just because its set is still empty. Thereafter
+`PermissionResponded(sessionId, requestId)` removes one id (the pip clears when the set
+empties, not on the first response), null-requestId empties the set, and after every reconnect
+sessions that are dirty *or* have non-empty sets re-reconcile, so a response missed while
+disconnected cannot leave a pip on forever. Full card detail materializes when a session's
+workspace opens: the app joins `chat:{sessionId}` (live payloads) and runs the same
 reconciliation for the cards themselves.
 
 What pings-plus-reconciliation cannot cover is a prompt raised *before* the lane connected in a
@@ -408,12 +422,18 @@ sessions (cards must render without a terminal, §9 slice 2).
   over HTTP; answers always use the item's own response handle across Local→Remote→Local
   transitions with a card open — never the other transport's id — and an own-lane
   no-longer-pending result drops the card without being mistaken for settlement elsewhere;
-  a server all-cleared arriving after a new local request was registered but before its server
-  leg started leaves that request pending; resolution racing a reconciliation fetch never
-  resurrects; 404-as-not-pending.
+  a session-wide all-cleared never retires a local item — including one whose
+  `server_request_id` correlation arrived *after* the (stale) clear was emitted: that item is
+  neither removed nor tombstoned; a correlation-only pending update preserves card identity,
+  draft selections/free text, the navigation step, and an in-flight answer, both mid-edit and
+  mid-submission; resolution racing a reconciliation fetch never resurrects;
+  404-as-not-pending.
 - **Attention counting**: two prompts in an unopened session — the first `PermissionResponded`
   leaves the pip on, the last clears it; a response missed while disconnected clears via
-  reconnect re-reconciliation.
+  reconnect re-reconciliation; a disconnect after a `PermissionPending` ping but before the
+  first reconciliation completes still populates attention after reconnect (dirty mark, empty
+  set); a single transient reconciliation failure with no further ping retries to an
+  authoritative result.
 - **ACP question cards**: options with identical labels but distinct ids stay distinct;
   min/max selection bounds gate `IsAnswered`; free-text answers; the Claude PTY card's
   `updated_input` encoding unchanged.
