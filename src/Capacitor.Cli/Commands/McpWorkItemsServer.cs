@@ -141,7 +141,9 @@ sealed class McpWorkItemsServer(ConfigRoot config, ProfileContext profiles) {
         "(declare_work_relation — 'blocks'/'blocked_by'). Breakdown and relations are DECLARED, never " +
         "inferred: if you don't declare them the work item's topology stays empty. Declare only real " +
         "structure you're confident of, keep every item in the same repository, and use the retract_* " +
-        "tools when it changes.";
+        "tools when it changes. Two items for the same work — a title-only item you created and the issue/PR-" +
+        "keyed item the server minted — are a duplicate: merge yours into the keyed one with merge_work_item. " +
+        "A wrong attach is undone with detach_work_item, never papered over with a breakdown.";
 
     static string BuildInitializeResponse(JsonNode id, JsonObject request) =>
         ToResponse<McpInitResult>(
@@ -185,6 +187,13 @@ sealed class McpWorkItemsServer(ConfigRoot config, ProfileContext profiles) {
                     ItemUrl(baseUrl, arguments, "from_id", "relations/retract"), ToJsonContent(BuildRelationBody(arguments)))),
                 "get_work_item_topology" => await SendWithRefreshRetryAsync(client, baseUrl, c => c.GetAsync(
                     ItemUrl(baseUrl, arguments, "work_item_id", "topology"))),
+
+                // The corrections: the merged-away / detached item is the route, like the topology
+                // verbs; the survivor and the session ride in the body.
+                "merge_work_item"        => await SendWithRefreshRetryAsync(client, baseUrl, c => c.PostAsync(
+                    ItemUrl(baseUrl, arguments, "work_item_id", "merge"), ToJsonContent(BuildMergeBody(arguments)))),
+                "detach_work_item"       => await SendWithRefreshRetryAsync(client, baseUrl, c => c.PostAsync(
+                    ItemUrl(baseUrl, arguments, "work_item_id", "detach"), ToJsonContent(BuildDetachBody(arguments)))),
 
                 _                        => throw new ArgumentException($"Unknown tool: {toolName}")
             };
@@ -364,6 +373,15 @@ sealed class McpWorkItemsServer(ConfigRoot config, ProfileContext profiles) {
     /// all. An empty string is a supplied value and is forwarded; an explicit null or a non-string is
     /// a wrong shape and throws; an absent key is left absent so the server's own "required" error
     /// surfaces rather than a local guess.</summary>
+    /// <summary>The survivor travels under the server's name for it (<c>target_id</c>); the tool
+    /// names it <c>into_work_item_id</c> so the direction reads unambiguously beside
+    /// <c>work_item_id</c>.</summary>
+    internal static JsonObject BuildMergeBody(JsonObject? args) =>
+        new() { ["target_id"] = RequireString(args, "into_work_item_id") };
+
+    internal static JsonObject BuildDetachBody(JsonObject? args) =>
+        new() { ["session_id"] = ResolveSessionId(args) };
+
     static void CopySuppliedString(JsonObject? args, string key, JsonObject body) {
         if (args is null || !args.TryGetPropertyValue(key, out var node)) return;
 
@@ -529,6 +547,27 @@ sealed class McpWorkItemsServer(ConfigRoot config, ProfileContext profiles) {
           + "placeholders.",
             new("object", new() {
                 ["work_item_id"] = new("string", "The work item whose topology to read.")
+            }, ["work_item_id"])),
+
+        new("merge_work_item",
+            "Merge a work item INTO another so both read as the survivor: the merged item's sessions and links "
+          + "move to the target and it stops appearing on its own. Use it to collapse a duplicate — typically a "
+          + "title-only item you created into the issue- or PR-keyed item for the same work (keep the keyed item "
+          + "as the target). Repeating a landed merge is a no-op. The server refuses when a user marked either "
+          + "item standalone, rejected the pairing, or the items belong to different tracker hierarchies; then "
+          + "stop and tell the user rather than retrying — they can merge from the dashboard.",
+            new("object", new() {
+                ["work_item_id"]      = new("string", "The work item to merge away (the duplicate)."),
+                ["into_work_item_id"] = new("string", "The work item that survives (prefer the issue- or PR-keyed one).")
+            }, ["work_item_id", "into_work_item_id"])),
+
+        new("detach_work_item",
+            "Detach a session from a work item it was wrongly attached to. The removal is durable: automated "
+          + "correlation cannot re-attach the pair afterwards; only an explicit declare_work_item can. An "
+          + "attachment a user pinned in the dashboard cannot be removed by an agent.",
+            new("object", new() {
+                ["work_item_id"] = new("string", "The work item to detach the session from."),
+                ["session_id"]   = new("string", "Session id to detach. Defaults to the current kcap-hooked session (KCAP_SESSION_ID) when omitted.")
             }, ["work_item_id"]))
     ];
 }

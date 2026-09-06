@@ -61,6 +61,15 @@ public class WorkItemsNudgeEmitterTests {
             "[mcp_servers.kcap-workitems]\ncommand = \"kcap\"\nargs = [\"mcp\", \"workitems\"]\n");
 
     [Test]
+    public async Task Build_steers_duplicates_to_merge_rather_than_breakdown() {
+        var nudge = WorkItemsNudgeEmitter.Build("s1")!;
+
+        await Assert.That(nudge).Contains("merge_work_item");
+        await Assert.That(nudge).Contains("detach_work_item");
+        await Assert.That(nudge).Contains("never by declaring a breakdown");
+    }
+
+    [Test]
     public async Task Resolve_returns_null_when_opted_out() {
         using var tmp = new TempDir();
 

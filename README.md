@@ -653,7 +653,7 @@ kcap mcp workitems
 
 Stdio MCP server that lets coding agents correlate the current session to the SDLC work item (issue/PR) it belongs to, **declare that work item's structure** — its breakdown into parts and its blocks/blocked-by dependencies — and read that structure back. Registered for every supported harness by `kcap setup` / `kcap plugin install` (Claude Code reads it from the plugin's bundled `.mcp.json`).
 
-It provides seven tools:
+It provides nine tools:
 
 - **`declare_work_item`** — attach the current session (and its continuation chain) to a work item. Pass exactly one of `issue_key` (e.g. `"AI-1234"`), `pr_number`, `work_item_id`, or `new_title` (creates a brand-new work item).
 - **`get_session_work_items`** — list the work items the current session is attached to.
@@ -662,8 +662,10 @@ It provides seven tools:
 - **`declare_work_relation`** — declare a dependency between two items (`from_id`, `to_id`, `relation_kind` `"blocks"` or `"blocked_by"`). Same repository, no self-relation.
 - **`retract_work_relation`** — retract a previously declared dependency.
 - **`get_work_item_topology`** — read a work item's parent, parts, and dependencies (scoped to what the caller can see).
+- **`merge_work_item`** — merge a duplicate item into another (`work_item_id` → `into_work_item_id`): its sessions and links move to the survivor. Refused when a user marked either item standalone, rejected the pairing, or the items sit in different tracker hierarchies.
+- **`detach_work_item`** — detach a session from a work item it was wrongly attached to; durable against automated re-attach, and unable to remove a user-pinned attachment.
 
-`declare_work_item` / `get_session_work_items` default `session_id` to the current kcap-hooked session (`KCAP_SESSION_ID`) when omitted. This is the manual path alongside the server's own mechanical and LLM-assisted correlation — use it when an agent already knows which issue or PR a session belongs to, and to record a breakdown/dependency structure the server can't infer (Home's blockers & dependencies and progress figures render only from declared parts and relations).
+`declare_work_item` / `get_session_work_items` / `detach_work_item` default `session_id` to the current kcap-hooked session (`KCAP_SESSION_ID`) when omitted. This is the manual path alongside the server's own mechanical and LLM-assisted correlation — use it when an agent already knows which issue or PR a session belongs to, and to record a breakdown/dependency structure the server can't infer (Home's blockers & dependencies and progress figures render only from declared parts and relations).
 
 ### Analytics MCP server (for agents)
 
