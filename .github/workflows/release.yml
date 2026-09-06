@@ -656,6 +656,7 @@ jobs:
     name: Build and sign the desktop app
     needs: build
     runs-on: macos-latest
+    timeout-minutes: 90
     env:
       DOTNET_ROLL_FORWARD: Major
     steps:
@@ -790,7 +791,7 @@ jobs:
           DMG="releases/Kurrent-Capacitor-${{ steps.version.outputs.VERSION }}-osx-arm64.dmg"
           bash scripts/build-dmg.sh "extracted/Kurrent Capacitor.app" "$DMG"
           codesign --force --timestamp --sign "${{ secrets.APPLE_SIGNING_IDENTITY }}" --keychain "$KEYCHAIN" "$DMG"
-          xcrun notarytool submit "$DMG" --keychain-profile kcap-notary --keychain "$KEYCHAIN" --wait
+          xcrun notarytool submit "$DMG" --keychain-profile kcap-notary --keychain "$KEYCHAIN" --wait --timeout 45m
           xcrun stapler staple "$DMG"
           spctl --assess -t open --context context:primary-signature -v "$DMG"
           cp trio/bin/daemon.sha256 trio/bin/kcap.sha256 releases/
@@ -805,6 +806,7 @@ jobs:
     name: Publish the desktop app
     needs: [app-macos, publish-npm, github-release]
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     # Every publication into the bucket runs alone: the feed manifest is read-merge-write.
     concurrency:
       group: desktop-publish
