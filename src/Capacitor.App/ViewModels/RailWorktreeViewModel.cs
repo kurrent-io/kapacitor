@@ -83,7 +83,7 @@ public sealed class RailWorktreeViewModel : ReactiveObject, IDisposable {
 
         _needsYou = sessionsCache.Connect().QueryWhenChanged()
             .CombineLatest(agentsWithPending, (q, set) =>
-                q.Items.Any(d => SessionStatusDots.NeedsAttention(d.Status)) || q.Keys.Any(set.Contains))
+                q.Items.Any(SessionStatusDots.NeedsAttention) || q.Keys.Any(set.Contains))
             .ToProperty(this, x => x.NeedsYou, initialValue: false)
             .DisposeWith(_disposables);
 

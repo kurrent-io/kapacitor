@@ -6,6 +6,46 @@ diff. `CLAUDE.md` holds the invariants; `docs/superpowers/specs/` holds the full
 Not release notes. Each entry is written as of the change that produced it and is not revised as the
 code moves on; where an entry disagrees with the code, the code wins.
 
+## The desktop app shows a session waiting for input
+
+The web already marked a session whose turn was over; the desktop app lit its needs-you pip only
+for a failed status or a pending ask, because the local status payload carried nothing about turn
+boundaries. Both of the web's sources bypass the app: the Claude Stop hook posts to the server, and
+the daemon's turn attestation (`TurnInFlight`) rode only the server-bound status report.
+
+**The daemon owns the verdict, on the agent's activity clock.** The clock already brackets every
+runtime-attested turn (ACP vendors, Pi, Codex app-server, Antigravity), so its falling edge is the
+one place "the turn ended" is known, and the rising edge, a delivered input, or a relayed prompt
+submit clears it. A delivered input is the server's send or a local client's Enter on the attach
+socket: the desktop composer and terminal both arrive as raw PTY bytes there, never through the
+server's send path, and the plugin routes Claude's prompt-submit hook to a title script rather
+than to kcap. A delivery clears only the wait it answered: the clock counts every observed turn
+end — a second Stop on a flag already set counts, since a PTY vendor relays nothing else — the
+sender samples the count before writing and clears against it afterwards, because Codex can
+complete a turn before the send that started it returns, and a PTY submit spray runs for seconds
+in which a short turn's Stop lands. The flag is deliberately not activity: it never moves `ActivitySeq` or
+`IdleForMs`, which the reaper and the server's idle episodes read, so a display hint cannot delay a
+reap or open a durable idle marker. The payload emits `awaiting_input` only while Running — a
+terminal agent keeps whatever its clock last saw, and that must not read as a pending ask — and
+null from an older daemon, which a client reads as unknown, never as working.
+
+**PTY vendors relay their hooks to the daemon's loopback bridge.** PTY silence attests nothing, so
+Claude and Codex report their own turn boundaries: Stop marks the wait, prompt submit and a tool
+call clear it, on `/{token}/{vendor}/input-wait` beside the permission route. The relay runs ahead
+of every gate in the hook — client creation, auth, exclusion — because it is local display state
+and a server outage is exactly when the app is the surface that matters; it is best effort on a
+one-second cap, bounded further by the hook's own remaining budget, so a wedged daemon cannot push
+a policy decision past the host's kill. Only a daemon-spawned agent has both `KCAP_AGENT_ID` and a
+loopback `KCAP_DAEMON_URL`; anything else relays nothing, and neither does a subagent's tool
+call (`agent_id` set), which runs the same hook with the parent's environment but is not the
+parent's turn. The route trusts the same shared token
+and attribution ladder as the permission route, on the same footing: every caller is one of the
+owner's own hosted processes, and the verdict moves nothing but a display hint.
+
+**The app folds the flag into the existing pip**, gated on an answerable kind: a flow participant
+between rounds waits on the flow, not the user. The card and chat footer read "Waiting for input"
+over the running dot, since the process is live. The tray is unchanged.
+
 ## The desktop app shows the same session titles as the web
 
 The daemon resolves a title per hosted agent and carries it in the existing `AgentStatusDto.Title`
