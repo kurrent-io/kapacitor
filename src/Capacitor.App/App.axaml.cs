@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Reactive.Subjects;
 using Avalonia;
 using Avalonia.Controls;
@@ -10,6 +11,7 @@ using Avalonia.Threading;
 using Capacitor.App.Services;
 using Capacitor.App.Services.Mutation;
 using Capacitor.App.Services.Onboarding;
+using Capacitor.App.Services.Update;
 using Capacitor.App.ViewModels;
 using Capacitor.App.ViewModels.Onboarding;
 using Capacitor.App.Views;
@@ -70,6 +72,12 @@ public partial class App : Application {
     ShimOfferCoordinator? _shimOffer;
     // No disposal needed — its Status subscription dies with _service's own subject disposal below.
     ConsentFlipCoordinator? _consentFlip;
+    // Inert outside a packed bundle (CreateUpdater degrades a construction failure the same way);
+    // replaced by CreateUpdater in StartAsync before any graph exists.
+    IAppUpdater _updater = InertAppUpdater.Instance;
+    // No disposal needed — its schedule loop exits on _shutdown; ApplyPendingOnExit is called
+    // explicitly at shutdown rather than through Dispose.
+    UpdateCoordinator? _updates;
     // Assigned by StartAsync's success path only; every one is still null on a startup failure
     // (and cleared again by the catch, which disposes whatever had been built). Teardown —
     // shutdown and startup-failure alike — disposes them in reverse creation order, tray icon
@@ -130,6 +138,17 @@ public partial class App : Application {
     // default of 0 silently overwriting it.
     int _exitCode;
 
+    // Outside a packed bundle Velopack reports not-installed and the coordinator stays inert; a
+    // constructor failure degrades the same way rather than taking startup down.
+    static IAppUpdater CreateUpdater() {
+        try {
+            return new VelopackAppUpdater(Environment.GetEnvironmentVariable);
+        } catch (Exception ex) {
+            Console.Error.WriteLine($"kcap app: updater unavailable: {ex.Message}");
+            return InertAppUpdater.Instance;
+        }
+    }
+
     public override void Initialize() => AvaloniaXamlLoader.Load(this);
 
     public override void OnFrameworkInitializationCompleted() {
@@ -153,6 +172,10 @@ public partial class App : Application {
     // surface (stderr is invisible for a GUI-launched WinExe) — it must fail loudly instead.
     async Task StartAsync(IClassicDesktopStyleApplicationLifetime desktop) {
         try {
+            if (RunInstallLocationGuard(desktop)) return; // the guard window owns the rest of this run
+            _updater = CreateUpdater();
+            if (UpdateCoordinator.TryApplyPendingAtStartup(_updater, Program.UpdateRelaunch)) return; // the process is being replaced
+
             // The lane is constructed first — every daemon mutation routes through this one instance, and its dependencies need neither a resolved profile nor a live service.
             var laneRunner = new ProcessRunner();
             var laneProbe  = new LoginShellProbe(laneRunner, Environment.GetEnvironmentVariable);
@@ -230,6 +253,76 @@ public partial class App : Application {
         }
     }
 
+    // macOS only: elsewhere there is no bundle. Returns true when a window was shown and startup
+    // must stop here; the window's buttons end the process.
+    bool RunInstallLocationGuard(IClassicDesktopStyleApplicationLifetime desktop) {
+        if (!OperatingSystem.IsMacOS()) return false;
+        var root = InstallLocation.BundleRoot(Environment.ProcessPath);
+        var kind = InstallLocation.Classify(root, _userHome.Path);
+        if (InstallLocation.Passes(kind)) return false;
+
+        var mover = new ApplicationsMover(new ProcessRunner(), ApplicationsMover.PromoteExclusive);
+        var window = BuildInstallLocationWindow(
+            kind,
+            move: async () => {
+                var outcome = await mover.MoveAsync(root!, _shutdown.Token);
+                if (outcome.Moved) {
+                    Process.Start(new ProcessStartInfo("open") { ArgumentList = { "-n", outcome.InstalledPath! }, UseShellExecute = false });
+                    desktop.Shutdown(0);
+                }
+                return outcome;
+            },
+            quit: () => desktop.Shutdown(0));
+        desktop.MainWindow = window;
+        window.Show();
+        return true;
+    }
+
+    internal static Window BuildInstallLocationWindow(InstallLocationKind kind, Func<Task<MoveOutcome>> move, Action quit) {
+        var where = kind switch {
+            InstallLocationKind.DmgVolume   => "It is running from the disk image.",
+            InstallLocationKind.Translocated => "It is running from a temporary location.",
+            _                                => "It is not in the Applications folder.",
+        };
+        var error = new TextBlock { TextWrapping = TextWrapping.Wrap, Foreground = Brushes.OrangeRed, IsVisible = false };
+        var moveButton = new Button { Content = "Move to Applications", IsDefault = true };
+        var quitButton = new Button { Content = "Quit", IsCancel = true };
+        moveButton.Click += async (_, _) => {
+            moveButton.IsEnabled = false;
+            try {
+                var outcome = await move();
+                if (!outcome.Moved) {
+                    error.Text = outcome.Error;
+                    error.IsVisible = true;
+                    moveButton.IsEnabled = true;
+                }
+            } catch (Exception ex) {
+                error.Text = ex.Message;
+                error.IsVisible = true;
+                moveButton.IsEnabled = true;
+            }
+        };
+        quitButton.Click += (_, _) => quit();
+
+        return new Window {
+            Title = "Kurrent Capacitor",
+            Icon = ProductIcon.WindowIcon,
+            Width = 460,
+            Height = 220,
+            CanResize = false,
+            Content = new StackPanel {
+                Margin = new Thickness(24),
+                Spacing = 12,
+                Children = {
+                    new TextBlock { Text = "Move Kurrent Capacitor to your Applications folder to continue.", FontWeight = FontWeight.Bold, TextWrapping = TextWrapping.Wrap },
+                    new TextBlock { Text = $"{where} The command-line tool and the background service need a permanent location.", TextWrapping = TextWrapping.Wrap },
+                    error,
+                    new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right, Children = { quitButton, moveButton } },
+                },
+            },
+        };
+    }
+
     // The ONE resolve+evaluate composition (OnboardingGate.EvaluateAsync), wrapped in the
     // never-brick degrade: the verdict and the resolution come back together, so the daemon identity
     // cannot be read off a second one, and the post-wizard build re-runs this rather than reusing a
@@ -278,6 +371,11 @@ public partial class App : Application {
 
         consentFlip.Start();
         _consentFlip = consentFlip;
+
+        // After the graph, never during the wizard: the first check waits its own delay, and every
+        // dialog goes through the same serialized surface as the skew and shim dialogs.
+        _updates = new UpdateCoordinator(_updater, lifecycleSurface, TimeProvider.System, quit: () => desktop.TryShutdown(), _shutdown.Token);
+        _updates.Start();
 
         // Said once, here, because nothing else in the app would: the graph is up but deliberately degraded.
         AnnounceUnquiescedLane(lifecycleSurface, laneQuiesced);
@@ -372,7 +470,8 @@ public partial class App : Application {
             service, _pause, actions, consent, openMainWindow: _coordinator.ShowMainWindow,
             quit: () => desktop.TryShutdown(), openReviewPrompts: _promptCoordinator.ShowPromptWindow,
             lifecycleAttention: lifecycleAttention, shimOfferable: shimOffer.Offerable,
-            installShim: shimOffer.RunManualInstallAsync, permissions: permissions);
+            installShim: shimOffer.RunManualInstallAsync, permissions: permissions,
+            updateMenu: _updates.MenuItem, updateAction: _updates.RunMenuActionAsync);
         _tray = new TrayIconManager(this, _trayVm);
     }
 
@@ -806,7 +905,7 @@ public partial class App : Application {
 
         var lifecycle = new DaemonLifecycleController(
             service, cli, probe, store, surface, () => Task.FromResult(ValidProfileName(profile)), TimeProvider.System,
-            canonicalServer, runMutation, autoActionsPermanentlyClosed);
+            canonicalServer, runMutation, autoActionsPermanentlyClosed, holdSkewForUpdate: Program.UpdateRelaunch);
 
         // The shim links to the RESOLVED ABSOLUTE path only — CliResolver's bare "kcap" fallback
         // (no override set, or the not-yet-landed bundle-relative arm) means there is
@@ -1283,7 +1382,8 @@ public partial class App : Application {
             // OnShutdownRequested and settles on the ViewModel's silent-abort path.
             await DisposeUiThenConfirmShutdownAsync(
                 [_tray, _trayVm, _promptCoordinator, _consent, _permissions, _activity, _home, _rail, _pause],
-                DisposeLifecycleAndServiceAsync, () => _shutdownConfirmed = true, desktop, _exitCode);
+                DisposeLifecycleAndServiceAsync, () => _shutdownConfirmed = true, desktop, _exitCode,
+                applyOnExit: () => _updates?.ApplyPendingOnExit());
         } else {
             await DisposeLifecycleAndServiceAsync();
             _shutdownConfirmed = true;
