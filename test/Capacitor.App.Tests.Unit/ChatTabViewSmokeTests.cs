@@ -882,6 +882,31 @@ public class ChatTabViewSmokeTests {
         });
     }
 
+    /// A touch pan reaches the list as a scroll gesture, which routes on the bubbling strategy only;
+    /// it must count as the reader's gesture like a wheel notch does, or every pan up is undone.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task A_scroll_gesture_up_leaves_the_reader_where_they_panned() {
+        await RunOnUiAsync(async () => {
+            var host = new Host();
+            var path = Tmp.CreateFile("pan.jsonl", Enumerable.Repeat(UserLine, 60).ToArray());
+            await host.LoadAsync(path);
+            await Assert.That(host.AtBottom()).IsTrue();
+
+            var items = host.View.FindControl<ItemsControl>("ChatItems")!;
+            var row = items.GetRealizedContainers().First();
+            row.RaiseEvent(new ScrollGestureEventArgs(ScrollGestureEventArgs.GetNextFreeId(), new Vector(0, -300)) { RoutedEvent = InputElement.ScrollGestureEvent });
+            host.Settle();
+            var panned = host.Scroll.Offset.Y;
+            await Assert.That(host.AtBottom()).IsFalse();
+
+            await host.AppendAndTickAsync(path, 20);
+            host.Settle();
+            await Assert.That(host.Scroll.Offset.Y).IsEqualTo(panned);
+            await host.CloseAsync();
+        });
+    }
+
     /// Pins the reader at the bottom across a question card's life. Marking the awaiting row
     /// changes its height, which makes the virtualizing panel drop its anchor and re-place every
     /// row from the average realized size; with tall prose above short rows that estimate is far
