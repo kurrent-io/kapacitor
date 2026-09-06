@@ -771,8 +771,14 @@ public partial class App : Application {
             requestSignIn: requestSignIn);
         // Same knot as home above, over the SAME `service` instance — its own openSession
         // callback closes over `vm`, not a local, so no two-step forward-declaration is needed.
+        // Local-only until the remote lane is wired here (a later task): NoRemoteAgents/
+        // NoServerLane never report a remote agent, so this directory just mirrors `service`.
+        var directory = new AgentDirectory(
+            service, new NoRemoteAgents(), new NoServerLane(), new RepoIdentityResolver(),
+            GitRepository.ResolveMainRepoRoot, localMachineId: null, appServerUrl: null);
         var rail = new SessionRailViewModel(
-            service, openSession: agentId => vm?.OpenSession(agentId), agentsWithPending: agentsWithPending);
+            directory, service, openLocalSession: agentId => vm?.OpenSession(agentId),
+            openRemoteInWeb: _ => { }, agentsWithPending: agentsWithPending);
         vm = new MainWindowViewModel(
             service, shutdownToken, activity, startAction, lifecycleStatus, home: home,
             navigation: navigation, trackWorkspaceTeardown: trackWorkspaceTeardown, workspaceFactory: workspaceFactory,

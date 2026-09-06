@@ -8,14 +8,6 @@ namespace Capacitor.App.Tests.Unit;
 public class AgentDirectoryTests {
     const string Server = "http://localhost:9999"; // FakeDaemonClientService.Snap's default ServerUrl
 
-    sealed class FakeRemoteAgents : IRemoteAgentsService, IDisposable {
-        public readonly SourceCache<AgentInstanceDto, string> Cache = new(a => a.AgentId);
-        public readonly System.Reactive.Subjects.BehaviorSubject<IReadOnlyList<DaemonInfo>> DaemonsSubject = new([]);
-        public IObservableCache<AgentInstanceDto, string> Agents => Cache.AsObservableCache();
-        public IObservable<IReadOnlyList<DaemonInfo>> Daemons => DaemonsSubject;
-        public void Dispose() => Cache.Dispose();
-    }
-
     static AgentInstanceDto Remote(string id, string daemon = "work-mac", string owner = "u1", string status = "Running") =>
         new() { AgentId = id, Status = status, DaemonName = daemon, OwnerUserId = owner, Vendor = "claude", RepoOwner = "o", RepoName = "r" };
 

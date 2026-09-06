@@ -1,5 +1,7 @@
+using Capacitor.App.Services;
 using Capacitor.App.ViewModels;
 using Capacitor.Cli.Core.LocalIpc;
+using Capacitor.Remote.Models;
 using DynamicData;
 using TUnit.Assertions.Enums;
 
@@ -16,16 +18,31 @@ public class SessionRailViewModelTests {
     static AgentStatusDto Dto(string id, string? repoPath, string status = "Running", DateTime? created = null) =>
         new(id, "agent", "claude", repoPath, status, null, null, null, created ?? DateTime.UtcNow, null, null);
 
-    static (FakeDaemonClientService Service, SessionRailViewModel Rail) Build(Action<string>? open = null) {
+    static AgentInstanceDto RemoteDto(string id, string owner, string repo, string daemon = "work-mac") => new() {
+        AgentId = id, Status = "Running", DaemonName = daemon, OwnerUserId = "u1", Vendor = "claude",
+        RepoOwner = owner, RepoName = repo,
+    };
+
+    /// Builds the rail over a fresh AgentDirectory — daemon and remote fed by the fakes, repo
+    /// identity resolved by originUrl (null unless a test needs merged remote/local groups).
+    static (FakeDaemonClientService Service, FakeRemoteAgents Remote, SessionRailViewModel Rail) Build(
+            Action<string>? open = null, Action<string>? openRemote = null,
+            Func<string, string>? resolveRepoRoot = null, Func<string, string?>? originUrl = null) {
         var service = new FakeDaemonClientService();
-        return (service, new SessionRailViewModel(service, open ?? (_ => { }), Resolve));
+        var remote = new FakeRemoteAgents();
+        var directory = new AgentDirectory(
+            service, remote, new FakeServerLane(), new RepoIdentityResolver(originUrl ?? (_ => null)),
+            resolveRepoRoot ?? Resolve, null, null);
+        var rail = new SessionRailViewModel(
+            directory, service, open ?? (_ => { }), openRemote ?? (_ => { }), resolveRepoRoot ?? Resolve);
+        return (service, remote, rail);
     }
 
     [Test]
     [NotInParallel("AvaloniaSession")]
     public async Task Groups_repo_worktree_session_with_no_repository_last() {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
-            var (service, rail) = Build();
+            var (service, _, rail) = Build();
             using (rail) {
                 service.Agents.AddOrUpdate(Dto("a1", "/dev/zeta"));
                 service.Agents.AddOrUpdate(Dto("a2", "/dev/alpha/wt/feature-x"));
@@ -53,13 +70,13 @@ public class SessionRailViewModelTests {
     [NotInParallel("AvaloniaSession")]
     public async Task Trailing_separators_do_not_split_a_repository_group() {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
-            var (service, rail) = Build();
+            var (service, _, rail) = Build();
             using (rail) {
                 service.Agents.AddOrUpdate(Dto("a1", "/dev/alpha"));
                 service.Agents.AddOrUpdate(Dto("a2", "/dev/alpha/"));
 
                 await Assert.That(rail.Repos).Count().IsEqualTo(1);
-                await Assert.That(rail.Repos[0].RootPath).IsEqualTo("/dev/alpha");
+                await Assert.That(rail.Repos[0].RootPath).IsEqualTo("path:/dev/alpha");
                 await Assert.That(rail.Repos[0].Worktrees).Count().IsEqualTo(1);
                 await Assert.That(rail.Repos[0].Worktrees[0].Sessions.Select(s => s.Id))
                     .IsEquivalentTo(["a1", "a2"]);
@@ -74,7 +91,7 @@ public class SessionRailViewModelTests {
     [NotInParallel("AvaloniaSession")]
     public async Task A_borrowed_reviewer_files_under_the_worktree_it_reviews() {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
-            var (service, rail) = Build();
+            var (service, _, rail) = Build();
             using (rail) {
                 const string worktree = "/dev/alpha/wt/agent-1";
                 service.Agents.AddOrUpdate(Dto("p1", "/dev/alpha") with { WorktreePath = worktree, WorkLocation = "owned" });
@@ -99,7 +116,7 @@ public class SessionRailViewModelTests {
     [NotInParallel("AvaloniaSession")]
     public async Task Counts_and_hosted_text_track_the_cache() {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
-            var (service, rail) = Build();
+            var (service, _, rail) = Build();
             using (rail) {
                 await Assert.That(rail.IsEmpty).IsTrue();
                 service.Agents.AddOrUpdate(Dto("a1", "/dev/alpha"));
@@ -118,7 +135,7 @@ public class SessionRailViewModelTests {
     [NotInParallel("AvaloniaSession")]
     public async Task Empty_repo_group_disappears_and_collapse_survives_recreation() {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
-            var (service, rail) = Build();
+            var (service, _, rail) = Build();
             using (rail) {
                 service.Agents.AddOrUpdate(Dto("a1", "/dev/alpha"));
                 rail.Repos[0].Worktrees[0].ToggleCommand.Execute().Subscribe(); // explicit collapse
@@ -136,7 +153,7 @@ public class SessionRailViewModelTests {
     [NotInParallel("AvaloniaSession")]
     public async Task NotifySessionOpened_expands_the_collapsed_worktree_and_selects() {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
-            var (service, rail) = Build();
+            var (service, _, rail) = Build();
             using (rail) {
                 service.Agents.AddOrUpdate(Dto("a1", "/dev/alpha"));
                 rail.Repos[0].Worktrees[0].ToggleCommand.Execute().Subscribe(); // explicit collapse
@@ -157,7 +174,7 @@ public class SessionRailViewModelTests {
     [NotInParallel("AvaloniaSession")]
     public async Task Dispose_stops_tracking() {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
-            var (service, rail) = Build();
+            var (service, _, rail) = Build();
             service.Agents.AddOrUpdate(Dto("a1", "/dev/alpha"));
             rail.Dispose();
             service.Agents.AddOrUpdate(Dto("a2", "/dev/zeta"));
@@ -169,12 +186,54 @@ public class SessionRailViewModelTests {
     [NotInParallel("AvaloniaSession")]
     public async Task Repo_pip_reaches_the_worktree_row_when_a_session_fails() {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
-            var (service, rail) = Build();
+            var (service, _, rail) = Build();
             using (rail) {
                 service.Agents.AddOrUpdate(Dto("a1", "/dev/alpha/wt/feature-x"));
                 await Assert.That(rail.Repos[0].Worktrees[0].NeedsYou).IsFalse();
                 service.Agents.AddOrUpdate(Dto("a1", "/dev/alpha/wt/feature-x", status: "Failed"));
                 await Assert.That(rail.Repos[0].Worktrees[0].NeedsYou).IsTrue();
+            }
+        });
+    }
+
+    /// A local checkout and a remote agent on the same GitHub repo land in one repo group — the
+    /// remote session carries the machine badge, the local one doesn't.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task RemoteRowsGroupWithLocalRowsOfTheSameRepository() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var (service, remote, rail) = Build(originUrl: _ => "git@github.com:kurrent-io/kcap-cli.git");
+            using (rail) {
+                service.Agents.AddOrUpdate(Dto("a1", "/dev/alpha"));
+                remote.Cache.AddOrUpdate(RemoteDto("b1", "kurrent-io", "kcap-cli"));
+
+                await Assert.That(rail.Repos).Count().IsEqualTo(1);
+                var sessions = rail.Repos.Single().Worktrees.SelectMany(w => w.Sessions).ToList();
+                await Assert.That(sessions).Count().IsEqualTo(2);
+
+                var local = sessions.Single(s => s.Id == "a1");
+                var remoteSession = sessions.Single(s => s.Id == "b1");
+                await Assert.That(local.MachineBadge).IsNull();
+                await Assert.That(remoteSession.MachineBadge).IsEqualTo("work-mac");
+            }
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task RemoteRowOpensInWebNotInWorkspace() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            string? openedLocal = null;
+            string? openedRemote = null;
+            var (_, remote, rail) = Build(open: id => openedLocal = id, openRemote: id => openedRemote = id);
+            using (rail) {
+                remote.Cache.AddOrUpdate(RemoteDto("b1", "o", "r"));
+
+                var session = rail.Repos.Single().Worktrees.Single().Sessions.Single();
+                session.OpenCommand.Execute().Subscribe();
+
+                await Assert.That(openedRemote).IsEqualTo("b1");
+                await Assert.That(openedLocal).IsNull();
             }
         });
     }
