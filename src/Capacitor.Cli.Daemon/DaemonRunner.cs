@@ -38,7 +38,17 @@ public static partial class DaemonRunner {
             .GetCustomAttribute<AssemblyInformationalVersionAttribute>()
             ?.InformationalVersion ?? "unknown";
 
+    /// Answers `--version` before any config, environment or profile work, so a signed binary can
+    /// be smoke-run on a machine with no daemon setup.
+    internal static bool TryHandleVersionFlag(string[] args, TextWriter stdout) {
+        if (args.Length != 1 || args[0] != "--version") return false;
+        stdout.WriteLine($"kcap-daemon {ResolveDaemonVersion()}");
+        return true;
+    }
+
     public static async Task<int> RunAsync(string[] args) {
+        if (TryHandleVersionFlag(args, Console.Out)) return 0;
+
         string?    logFile     = null;
         string?    stderrFile  = null;
         LogLevel?  logLevelArg = null;
