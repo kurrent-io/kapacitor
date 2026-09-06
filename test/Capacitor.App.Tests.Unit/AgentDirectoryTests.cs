@@ -98,6 +98,24 @@ public class AgentDirectoryTests {
     }
 
     [Test]
+    public async Task NoOpRecomputeSkipsUpdateChanges() {
+        var (_, remote, _, dir) = Build();
+        using var _d = dir;
+        remote.Cache.AddOrUpdate(Remote("b1"));
+        await Assert.That(dir.Rows.Lookup("remote:b1").HasValue).IsTrue();
+
+        var updateCount = 0;
+        using var sub = dir.Rows.Connect().Subscribe(changes => {
+            foreach (var change in changes)
+                if (change.Reason == ChangeReason.Update) updateCount++;
+        });
+
+        remote.DaemonsSubject.OnNext([]); // recompute runs again; b1's row is unchanged
+
+        await Assert.That(updateCount).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task RemoteStaleTracksLane() {
         var (_, _, lane, dir) = Build();
         using var _d = dir;

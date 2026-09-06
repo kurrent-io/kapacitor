@@ -84,22 +84,28 @@ public sealed class AgentDirectory : IAgentDirectory, IDisposable {
         return AgentRow.FromLocal(dto, repo);
     }
 
+    // The compute-then-edit pair must be one atomic unit under _lock: two triggers (e.g. a
+    // socket-thread Status flip racing a SignalR-thread Daemons refresh) that read-then-edit as
+    // separate critical sections can land their _rows.Edit calls out of read order, letting a
+    // stale edit overwrite a fresher one. DynamicData's own cache lock is separate, so nesting
+    // _rows.Edit inside _lock is deadlock-free.
     void RecomputeRemote() {
-        List<AgentRow> next;
         lock (_lock) {
             var twin = LocalDaemonTwin.Find(_daemons, _localMachineId, _local.DaemonName, _localServerUrl, _appServerUrl);
-            next = _remoteAgents
+            var next = _remoteAgents
                 .Where(a => a.Status is "Starting" or "Running")
                 .Where(a => !(twin is { } t && _localConnected
                               && a.OwnerUserId == t.OwnerUserId && a.DaemonName == t.DaemonName))
                 .Select(AgentRow.FromRemote)
                 .ToList();
+            _rows.Edit(cache => {
+                foreach (var key in cache.Keys.Where(k => k.StartsWith("remote:", StringComparison.Ordinal)).ToList())
+                    if (!next.Any(r => r.Key == key)) cache.RemoveKey(key);
+                foreach (var row in next)
+                    if (cache.Lookup(row.Key) is not { HasValue: true, Value: var existing } || existing != row)
+                        cache.AddOrUpdate(row);
+            });
         }
-        _rows.Edit(cache => {
-            foreach (var key in cache.Keys.Where(k => k.StartsWith("remote:", StringComparison.Ordinal)).ToList())
-                if (!next.Any(r => r.Key == key)) cache.RemoveKey(key);
-            foreach (var row in next) cache.AddOrUpdate(row);
-        });
     }
 
     public void Dispose() {
