@@ -312,7 +312,7 @@ public sealed class ChatTabViewModel : ReactiveObject {
         _rootSubject.OnNext(root);
         VendorLabel = HostedHarnessCatalog.LabelFor(_options, dto.Vendor);
         ModelLabel = HostedHarnessCatalog.ModelLabelFor(dto.Vendor, dto.Model ?? "");
-        StatusText = dto.Status;
+        StatusText = SessionStatusDots.Label(dto);
         StatusDot = SessionStatusDots.For(dto.Status);
         if (_projection is not null && dto.TranscriptPath is { } path && path != _path) SwitchPath(path);
     }

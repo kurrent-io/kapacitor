@@ -76,6 +76,11 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
             agentId        = node?["agent_id"]?.GetValue<string>();
         } catch { }
 
+        // Ahead of every gate below: the hosting daemon's turn-boundary hint is local, so neither
+        // the server's reachability nor the credential may hold it back.
+        if (command switch { "stop" => true, "user-prompt-submit" or "pre-tool-use" => false, _ => (bool?) null } is { } waiting)
+            await DaemonInputWaitRelay.NotifyAsync("claude", sessionId, cwd, waiting);
+
         var budget    = clock.Budget(Ceiling(command));
         var clientCap = budget.Remaining;
 

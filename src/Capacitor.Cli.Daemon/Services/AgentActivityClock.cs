@@ -25,6 +25,7 @@ internal sealed class AgentActivityClock(TimeProvider time) {
     long    _lastAdvanceTimestamp = time.GetTimestamp();
     ulong   _activitySeq = 1;
     bool    _turnInFlight;
+    bool    _awaitingInput;
     string? _launchStage;
 
     /// <summary>Starts at 1 on spawn (spec §0) — a freshly-launched agent is never "already idle";
@@ -38,6 +39,19 @@ internal sealed class AgentActivityClock(TimeProvider time) {
     public bool TurnInFlight {
         get { lock (_gate) return _turnInFlight; }
     }
+
+    /// <summary>The agent finished a turn and nothing has been handed to it since — the state a
+    /// user surface renders as "waiting for you". Set on the turn gate's falling edge and by the
+    /// hook relay of a PTY vendor's Stop; cleared on the rising edge, on a delivered input, and by
+    /// the relay of a prompt submit or tool call. Deliberately NOT activity: a flip never moves
+    /// <see cref="ActivitySeq"/> or <see cref="IdleForMs"/>, which the reaper reads.</summary>
+    public bool AwaitingInput {
+        get { lock (_gate) return _awaitingInput; }
+    }
+
+    /// <summary>Fires outside <see cref="_gate"/> on every genuine <see cref="AwaitingInput"/>
+    /// change, with the new value.</summary>
+    public Action<bool>? OnAwaitingInputChanged { get; set; }
 
     /// <summary><c>Starting</c>-only stage stamp (spawned/initialized/session_created/model_set, per
     /// the ACP handshake — wired in a later task); null once the agent reaches Running. Deliberately
@@ -116,15 +130,32 @@ internal sealed class AgentActivityClock(TimeProvider time) {
     /// <summary>Turn start/end — also counts as activity, independent of accompanying envelope
     /// traffic.</summary>
     public void SetTurnInFlight(bool value) {
-        bool ended;
+        bool ended, awaitingChanged;
         lock (_gate) {
             ended = _turnInFlight && !value;
             _turnInFlight = value;
+            // Only a genuine falling edge means a turn finished; a gate cleared without ever being
+            // held (a runtime going terminal) says nothing about waiting.
+            var awaiting = value ? false : ended || _awaitingInput;
+            awaitingChanged = awaiting != _awaitingInput;
+            _awaitingInput  = awaiting;
             AdvanceLocked();
         }
         // Outside the lock, same rule as OnLaunchStageChanged: the callback's send reads this
         // clock's own (independently guarded) properties.
         if (ended) OnTurnEnded?.Invoke();
+        if (awaitingChanged) OnAwaitingInputChanged?.Invoke(!value);
+    }
+
+    /// <summary>The explicit path for sources that see no turn gate: a PTY vendor's hook relay
+    /// and a delivered input. Moves the flag alone — see <see cref="AwaitingInput"/>.</summary>
+    public void SetAwaitingInput(bool value) {
+        bool changed;
+        lock (_gate) {
+            changed        = _awaitingInput != value;
+            _awaitingInput = value;
+        }
+        if (changed) OnAwaitingInputChanged?.Invoke(value);
     }
 
     /// <summary>A handshake stage transition (spawned → initialized → session_created → model_set) —

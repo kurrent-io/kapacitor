@@ -24,7 +24,7 @@ public sealed class SessionCardViewModel {
         Vendor = dto.Vendor;
         RepoFull = dto.RepoPath ?? "";
         Title = $"{RepoLabel.Leaf(dto.RepoPath)} · {dto.Vendor}";
-        StatusText = dto.Status;
+        StatusText = SessionStatusDots.Label(dto);
         StatusDot = SessionStatusDots.For(dto.Status);
         CreatedAt = dto.CreatedAt;
 

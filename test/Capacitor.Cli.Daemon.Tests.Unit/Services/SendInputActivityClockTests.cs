@@ -68,6 +68,20 @@ public class SendInputActivityClockTests {
         await Assert.That(agent.ActivityClock.IdleForMs).IsEqualTo(0UL);
     }
 
+    /// Handing the agent a message ends its wait, whichever source raised the flag.
+    [Test]
+    public async Task Delivered_input_clears_awaiting_input() {
+        var clock = new AgentActivityClock(new FakeTimeProvider());
+        clock.SetAwaitingInput(true);
+
+        await using var orch  = AgentOrchestratorHarness.BuildOrchestrator(new CaptureServerConnection(), new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+        var             agent = orch.SeedAgentForTest("send-input-wait", pty: new RecordingPtyProcess(), activityClock: clock);
+
+        await orch.HandleSendInputForTest(new SendInputCommand(agent.Id, "hello", null));
+
+        await Assert.That(agent.ActivityClock.AwaitingInput).IsFalse();
+    }
+
     [Test]
     public async Task Failed_delivery_advances_nothing() {
         var server = new CaptureServerConnection();

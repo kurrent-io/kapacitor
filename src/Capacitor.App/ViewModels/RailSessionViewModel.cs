@@ -44,13 +44,14 @@ public sealed class RailSessionViewModel : ReactiveObject, IDisposable {
             ? Join(dto.Model, age)
             : Join(vendorLine, dto.Model, age);
         StatusDot = SessionStatusDots.For(dto.Status);
-        Tooltip = Join(dto.Id, dto.Status, dto.RequesterDisplay, dto.BorrowedFrom is null ? null : $"borrowed {dto.BorrowedFrom}");
+        Tooltip = Join(dto.Id, dto.Status, dto.AwaitingInput == true ? "waiting for input" : null,
+            dto.RequesterDisplay, dto.BorrowedFrom is null ? null : $"borrowed {dto.BorrowedFrom}");
 
         _isSelected = selectedAgentId.Select(sel => sel == dto.Id)
             .ToProperty(this, x => x.IsSelected, initialValue: false)
             .DisposeWith(_disposables);
 
-        var byStatus = SessionStatusDots.NeedsAttention(dto.Status);
+        var byStatus = SessionStatusDots.NeedsAttention(dto);
         _needsYou = agentsWithPending.Select(set => byStatus || set.Contains(dto.Id))
             .ToProperty(this, x => x.NeedsYou, initialValue: byStatus)
             .DisposeWith(_disposables);

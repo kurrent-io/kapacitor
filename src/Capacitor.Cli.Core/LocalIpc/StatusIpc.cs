@@ -69,7 +69,11 @@ public sealed record AgentStatusDto(
     string? SessionId = null,
     // The branch of the checkout the agent runs in; null from an older daemon or a launch that
     // recorded none (a borrowed in-place checkout).
-    string? Branch = null);
+    string? Branch = null,
+    // The daemon's verdict that the agent finished a turn and waits on the user: true only while
+    // Running, from a runtime-attested turn end or a PTY vendor's relayed Stop hook. Trailing +
+    // nullable: null is an older daemon, which a client must read as unknown, never as working.
+    bool? AwaitingInput = null);
 
 /// Wire tokens for <see cref="AgentStatusDto.WorkLocation"/>, compared literally by every
 /// client, so they never change.

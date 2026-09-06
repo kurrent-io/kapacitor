@@ -98,6 +98,50 @@ public class ClaudeHookCommandTests {
         await Assert.That(stdout.Attempted).IsTrue();
     }
 
+    // ── Input-wait relay: a daemon-hosted agent tells its daemon where its turn stands ──
+
+    /// <summary>The relay rides ahead of client creation, so it is exercised through
+    /// <c>HandleWithDeps</c> and asserted on the bridge itself, never on the server.</summary>
+    [Test, NotInParallel]
+    [Arguments("Stop", true)]
+    [Arguments("UserPromptSubmit", false)]
+    [Arguments("PreToolUse", false)]
+    public async Task hosted_turn_boundaries_relay_to_the_daemon_bridge(string eventName, bool waiting) {
+        using var bridge = WireMockServer.Start();
+        bridge.Given(Request.Create().WithPath("/tok/claude/input-wait").UsingPost())
+            .RespondWith(Response.Create().WithStatusCode(204));
+        using var daemonUrl = EnvScope.Exclusive("KCAP_DAEMON_URL", $"http://127.0.0.1:{bridge.Ports[0]}/tok");
+        using var agentId   = EnvScope.Exclusive("KCAP_AGENT_ID", "agent-1");
+        using var fx = new Fixture(Config.Root);
+
+        var exit = await new ClaudeHookCommand(Config.Root, fx.Profiles, new HookClock(TimeProvider.System), Home)
+            .HandleWithDeps(fx.Spool, new StringReader(
+                $$$"""{"hook_event_name":"{{{eventName}}}","session_id":"{{{Sid}}}","cwd":"/tmp","tool_name":"Bash","tool_input":{"command":"ls"}}"""),
+                () => Task.FromResult((fx.Client, AuthStatus.Ok)), new StringWriter());
+
+        await Assert.That(exit).IsEqualTo(0);
+        var relayed = bridge.LogEntries.Single(e => e.RequestMessage.Path == "/tok/claude/input-wait");
+        var body    = JsonNode.Parse(relayed.RequestMessage.Body!)!;
+        await Assert.That(body["waiting"]!.GetValue<bool>()).IsEqualTo(waiting);
+        await Assert.That(body["agent_id"]!.GetValue<string>()).IsEqualTo("agent-1");
+        await Assert.That(body["session_id"]!.GetValue<string>()).IsEqualTo(Sid);
+        await Assert.That(body["cwd"]!.GetValue<string>()).IsEqualTo("/tmp");
+    }
+
+    /// <summary>A session the user runs themselves has a daemon URL only by accident of environment
+    /// inheritance; without the agent id nothing identifies it to a daemon.</summary>
+    [Test, NotInParallel]
+    public async Task an_unhosted_stop_relays_nothing() {
+        using var bridge = WireMockServer.Start();
+        using var daemonUrl = EnvScope.Exclusive("KCAP_DAEMON_URL", $"http://127.0.0.1:{bridge.Ports[0]}/tok");
+        using var agentId   = EnvScope.Exclusive("KCAP_AGENT_ID", null);
+        using var fx = new Fixture(Config.Root);
+
+        await fx.HandleAsync($$"""{"hook_event_name":"Stop","session_id":"{{Sid}}","cwd":"/tmp"}""");
+
+        await Assert.That(bridge.LogEntries.Count).IsEqualTo(0);
+    }
+
     // ── Approval-policy lifecycle: build at session-start, expire per turn, evict at session-end ──
 
     /// <summary>The snapshot is built eagerly at session-start and a loss surfaces on the hook's own

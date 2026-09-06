@@ -6,6 +6,34 @@ diff. `CLAUDE.md` holds the invariants; `docs/superpowers/specs/` holds the full
 Not release notes. Each entry is written as of the change that produced it and is not revised as the
 code moves on; where an entry disagrees with the code, the code wins.
 
+## The desktop app shows a session waiting for input
+
+The web already marked a session whose turn was over; the desktop app lit its needs-you pip only
+for a failed status or a pending ask, because the local status payload carried nothing about turn
+boundaries. Both of the web's sources bypass the app: the Claude Stop hook posts to the server, and
+the daemon's turn attestation (`TurnInFlight`) rode only the server-bound status report.
+
+**The daemon owns the verdict, on the agent's activity clock.** The clock already brackets every
+runtime-attested turn (ACP vendors, Pi, Codex app-server, Antigravity), so its falling edge is the
+one place "the turn ended" is known, and the rising edge, a delivered input, or a relayed prompt
+submit clears it. The flag is deliberately not activity: it never moves `ActivitySeq` or
+`IdleForMs`, which the reaper and the server's idle episodes read, so a display hint cannot delay a
+reap or open a durable idle marker. The payload emits `awaiting_input` only while Running — a
+terminal agent keeps whatever its clock last saw, and that must not read as a pending ask — and
+null from an older daemon, which a client reads as unknown, never as working.
+
+**PTY vendors relay their hooks to the daemon's loopback bridge.** PTY silence attests nothing, so
+Claude and Codex report their own turn boundaries: Stop marks the wait, prompt submit and a tool
+call clear it, on `/{token}/{vendor}/input-wait` beside the permission route. The relay runs ahead
+of every gate in the hook — client creation, auth, exclusion — because it is local display state
+and a server outage is exactly when the app is the surface that matters; it is best effort on a
+one-second cap so a wedged daemon cannot eat the hook's budget. Only a daemon-spawned agent has
+both `KCAP_AGENT_ID` and a loopback `KCAP_DAEMON_URL`; anything else relays nothing.
+
+**The app folds the flag into the existing pip**, gated on an answerable kind: a flow participant
+between rounds waits on the flow, not the user. The card and chat footer read "Waiting for input"
+over the running dot, since the process is live. The tray is unchanged.
+
 ## The SessionStart index names the repo's projects
 
 An agent can only land a memory at project scope by passing a slug, and nothing in a session told it
