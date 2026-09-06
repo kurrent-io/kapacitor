@@ -13,7 +13,7 @@
 
 - [Why Capacitor](#why-capacitor)
 - [Requirements](#requirements)
-- [Getting started](#getting-started) — [Install](#1-install-the-cli) · [Setup](#2-run-setup) · [Import](#3-import-existing-sessions-optional) · [Dashboard](#4-open-the-dashboard) · [MCP servers](#sessions-and-flows-mcp-servers-for-agents)
+- [Getting started](#getting-started) — [Install](#1-install-the-cli) · [Desktop app](#desktop-app-macos) · [Setup](#2-run-setup) · [Import](#3-import-existing-sessions-optional) · [Dashboard](#4-open-the-dashboard) · [MCP servers](#sessions-and-flows-mcp-servers-for-agents)
 - [What it records](#what-it-records)
 - [CLI commands](#cli-commands)
   - Approvals: [policy](#approval-policy)
