@@ -262,17 +262,27 @@ public partial class App : Application {
         if (InstallLocation.Passes(kind)) return false;
 
         var mover = new ApplicationsMover(new ProcessRunner(), ApplicationsMover.PromoteExclusive);
+        // Shutdown(0) closes this window as a side effect, which the window's own Closed handler
+        // below turns back into a Quit call — this flag is what keeps that reentry from calling
+        // Shutdown twice, whichever of the three paths (Quit, a successful move, or the titlebar
+        // close) got there first.
+        var quitting = false;
+        void Quit() {
+            if (quitting) return;
+            quitting = true;
+            desktop.Shutdown(0);
+        }
         var window = BuildInstallLocationWindow(
             kind,
             move: async () => {
                 var outcome = await mover.MoveAsync(root!, _shutdown.Token);
                 if (outcome.Moved) {
                     Process.Start(new ProcessStartInfo("open") { ArgumentList = { "-n", outcome.InstalledPath! }, UseShellExecute = false });
-                    desktop.Shutdown(0);
+                    Quit();
                 }
                 return outcome;
             },
-            quit: () => desktop.Shutdown(0));
+            quit: Quit);
         desktop.MainWindow = window;
         window.Show();
         return true;
@@ -304,7 +314,7 @@ public partial class App : Application {
         };
         quitButton.Click += (_, _) => quit();
 
-        return new Window {
+        var window = new Window {
             Title = "Kurrent Capacitor",
             Icon = ProductIcon.WindowIcon,
             Width = 460,
@@ -321,6 +331,10 @@ public partial class App : Application {
                 },
             },
         };
+        // The titlebar close / Cmd+W leaves no other path to shutdown — OnExplicitShutdown means
+        // Avalonia never ends the process on its own just because the last window closed.
+        window.Closed += (_, _) => quit();
+        return window;
     }
 
     // The ONE resolve+evaluate composition (OnboardingGate.EvaluateAsync), wrapped in the
