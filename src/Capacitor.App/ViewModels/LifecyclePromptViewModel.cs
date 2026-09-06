@@ -24,7 +24,7 @@ public sealed class LifecyclePromptViewModel : ReactiveObject {
     public string Disclosure { get; }
     public bool PathDegraded { get; }
 
-    /// False only for KindQuarantine: a confirm-only acknowledgment, never a destructive/declinable action.
+    /// False for the acknowledge-only kinds (quarantine, update info).
     public bool ShowDeclineButton { get; }
 
     public string AcceptButtonText { get; }
@@ -45,8 +45,13 @@ public sealed class LifecyclePromptViewModel : ReactiveObject {
         Title             = TitleFor(prompt.Kind);
         Disclosure        = prompt.Disclosure;
         PathDegraded      = prompt.PathDegraded;
-        ShowDeclineButton = prompt.Kind != LifecyclePrompt.KindQuarantine;
-        AcceptButtonText  = prompt.Kind == LifecyclePrompt.KindQuarantine ? "Acknowledge" : "Continue";
+        ShowDeclineButton = prompt.Kind is not (LifecyclePrompt.KindQuarantine or LifecyclePrompt.KindUpdateInfo);
+        AcceptButtonText  = prompt.Kind switch {
+            LifecyclePrompt.KindQuarantine  => "Acknowledge",
+            LifecyclePrompt.KindUpdateInfo  => "OK",
+            LifecyclePrompt.KindUpdateReady => "Restart now",
+            _                               => "Continue",
+        };
 
         AcceptCommand  = ReactiveCommand.Create(() => Resolve(tcs, true));
         DeclineCommand = ReactiveCommand.Create(() => Resolve(tcs, false));
@@ -66,6 +71,8 @@ public sealed class LifecyclePromptViewModel : ReactiveObject {
         LifecyclePrompt.KindTakeover      => "Take over daemon management",
         LifecyclePrompt.KindShim          => "Install command-line tool",
         LifecyclePrompt.KindQuarantine    => "Corrupted consent claims file",
+        LifecyclePrompt.KindUpdateReady   => "Update ready",
+        LifecyclePrompt.KindUpdateInfo    => "Software update",
         _                                 => "Repair daemon service", // KindRepair and any future kind
     };
 }
