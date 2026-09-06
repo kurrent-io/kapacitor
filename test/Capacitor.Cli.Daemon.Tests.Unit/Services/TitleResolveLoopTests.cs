@@ -342,6 +342,69 @@ public class TitleResolveLoopTests {
     }
 
     [Test]
+    public async Task Attempt_history_evicts_oldest_only_at_capacity() {
+        var h = new Harness();
+        h.Agents.Add(Agent());
+        var native = "Cut 01";
+        h.Native = _ => native;
+        h.Server.PushResult = false;
+        h.Server.Get = _ => null;
+        var loop = h.Build();
+
+        for (var i = 1; i <= 33; i++) {
+            native = $"Cut {i:D2}";
+            await loop.TickAsync(CancellationToken.None);
+        }
+        await loop.TickAsync(CancellationToken.None); // duplicate retry of Cut 33 must not evict
+
+        // Cut 02 is within the retained window — still ours, never authority.
+        h.Server.Get = _ => "Cut 02";
+        await loop.TickAsync(CancellationToken.None);
+        await Assert.That(h.Applied.Last().Title).IsEqualTo("Cut 33");
+
+        // Cut 01 fell off the 32-entry window — the documented boundary where an echo can win.
+        h.Server.Get = _ => "Cut 01";
+        await loop.TickAsync(CancellationToken.None);
+        await Assert.That(h.Applied.Last().Title).IsEqualTo("Cut 01");
+    }
+
+    [Test]
+    public async Task A_transient_native_gap_does_not_restore_the_generated_fallback() {
+        var h = new Harness();
+        h.Agents.Add(Agent());
+        h.Generate = (_, _) => Task.FromResult<string?>("Generated title");
+        h.Time.Advance(TimeSpan.FromMinutes(6));
+        var loop = h.Build();
+
+        await loop.TickAsync(CancellationToken.None);
+        h.Native = _ => "Native title";
+        await loop.TickAsync(CancellationToken.None);
+        h.Native = _ => null;
+        await loop.TickAsync(CancellationToken.None);
+
+        await Assert.That(h.Applied.Select(a => a.Title)).IsEquivalentTo(["Generated title", "Native title"]);
+        await Assert.That(h.Server.Pushed.Select(p => p.Title)).IsEquivalentTo(["Generated title", "Native title"]);
+    }
+
+    [Test]
+    public async Task A_title_landing_during_generation_wins_over_the_generated_one() {
+        var h = new Harness();
+        h.Agents.Add(Agent());
+        h.Generate = (_, _) => {
+            // An independent watcher title lands while the model call runs.
+            h.Server.Get = _ => "Watcher generated title";
+            return Task.FromResult<string?>("Generated title");
+        };
+        h.Time.Advance(TimeSpan.FromMinutes(6));
+        var loop = h.Build();
+
+        await loop.TickAsync(CancellationToken.None);
+
+        await Assert.That(h.Applied).IsEquivalentTo([("a1", "Watcher generated title")]);
+        await Assert.That(h.Server.Pushed).IsEmpty();
+    }
+
+    [Test]
     public async Task A_failed_push_is_retried_on_the_next_tick() {
         var h = new Harness();
         h.Agents.Add(Agent());
