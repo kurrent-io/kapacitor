@@ -19,7 +19,9 @@ public static class JwtClaims {
                 _ => payload,
             };
             using var doc = JsonDocument.Parse(Convert.FromBase64String(payload));
-            return doc.RootElement.TryGetProperty(claimName, out var value) && value.ValueKind == JsonValueKind.String
+            return doc.RootElement.ValueKind == JsonValueKind.Object
+                && doc.RootElement.TryGetProperty(claimName, out var value)
+                && value.ValueKind == JsonValueKind.String
                 ? value.GetString()
                 : null;
         } catch (Exception e) when (e is FormatException or JsonException) {

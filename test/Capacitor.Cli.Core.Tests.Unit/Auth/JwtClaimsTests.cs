@@ -34,7 +34,14 @@ public class JwtClaimsTests {
     [Test]
     public async Task PayloadNeedingBase64PaddingParses() {
         // A payload whose base64url length % 4 == 2 exercises the padding branch.
-        var token = Token("""{"sub":"ab"}""");
-        await Assert.That(JwtClaims.TryGetString(token, "sub")).IsEqualTo("ab");
+        var token = Token("""{"sub":"abc"}""");
+        await Assert.That(JwtClaims.TryGetString(token, "sub")).IsEqualTo("abc");
     }
+
+    [Test]
+    [Arguments("42")]
+    [Arguments("[1]")]
+    [Arguments("null")]
+    public async Task NonObjectPayloadIsNullNeverThrows(string payload) =>
+        await Assert.That(JwtClaims.TryGetString(Token(payload), "sub")).IsNull();
 }
