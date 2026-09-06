@@ -6,6 +6,46 @@ diff. `CLAUDE.md` holds the invariants; `docs/superpowers/specs/` holds the full
 Not release notes. Each entry is written as of the change that produced it and is not revised as the
 code moves on; where an entry disagrees with the code, the code wins.
 
+## The work-context pane reads the work item from one endpoint
+
+**AI-2521** fills the sidebar's SOON slots — the item's state, its overview, per-part completion,
+the linked issue and who is on it — from the server's one read per work item,
+`GET /api/work-items/{id}`. It joins the assignments, topology and summary calls as a fourth read:
+it starts beside the topology read once the primary assignment is known, a final 401 or a
+plan-gate 403 on it decides the whole read like the others, and any other failure degrades its
+section the way a topology blip does.
+
+**The key is the endpoint's, not split from the label.** The assignments label packed `"KEY — title"`
+by convention; the item read carries the key, the title and the tracker's enriched title as
+separate fields, so the split and its silent failure mode are gone. When the item read fails for a
+primary the pane has not shown before, the label shows whole as the title with no key chip and the
+pane is stale.
+
+**Parts move to the item read; the topology keeps the rest.** The item's parts carry a settled flag
+the topology never had, so the parts list, its "N of M" header and the marks come from there.
+Part-of, blockers and the cycle marker still come from the topology, and each section keeps its own
+last projection when its read fails.
+
+**The card's identity is the served id.** An absorbed item is served under its survivor's id, and
+the assignments row may catch up to that id a poll later. The pane keys "same primary" on the served
+id and falls back to the requested one when a read carried no item, so neither transition drops the
+projection.
+
+**Reference-class links are ignored on purpose.** The server passes `link_class = reference` rows
+through for other consumers; the issue card is the first `kind = issue` row of class `link`, and its
+URL crosses the same `LinkPolicy` boundary as the PR cards.
+
+**Contributors render as initials.** The app has no remote image loader, so `avatar_url` is carried
+on the view model and not fetched. Collapsed, the section is an initials stack with the session
+count; expanded, a row per person with their last activity. Until an item has contributors the
+row shows this session's requester, the one person the daemon knows.
+
+**A mechanical overview is hidden.** `is_overview_mechanical` marks a generated one-liner that
+restates the title; only a summarizer overview earns the paragraph under the title.
+
+The no-repository note no longer says breakdown and blockers come with the repository: the server
+dropped its same-repository rule for structure, though a work item itself still requires one.
+
 ## The SessionStart index names the repo's projects
 
 An agent can only land a memory at project scope by passing a slug, and nothing in a session told it
