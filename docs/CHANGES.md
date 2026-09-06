@@ -563,7 +563,8 @@ text, system note) closes the run. **The fold is uniform** — a lone settled ca
 command" — and **folding never hides an error**: a failed call inside a folded group puts the danger
 `✕` on the summary line. The group binds ONE inner list whose source swaps on toggle, because a
 hidden `ItemsControl` keeps its containers; expanding a group realizes every row and folding releases
-them. Expanding holds follow-tail once, so the clicked summary stays in view. Summary wording keys on
+them. Expanding is the reader's own gesture, so follow-tail leaves the clicked summary in view until
+the reader returns to the bottom. Summary wording keys on
 the transcript's tool name (Codex's rollout says `shell`, its hook says `Bash`), with Codex shell
 commands classified by `CodexCommandClassifier`, ported verbatim from the server into Core so the
 server can delete its copy on the next submodule bump. A row waiting on a permission shows an accent
