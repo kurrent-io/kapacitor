@@ -651,3 +651,215 @@ jobs:
         with:
           files: release-artifacts/*
           generate_release_notes: true
+
+  app-macos:
+    name: Build and sign the desktop app
+    needs: build
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6
+
+      - name: Extract version from tag
+        id: version
+        shell: bash
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Install tools
+        run: dotnet tool install -g vpk --version 1.2.0
+
+      - name: Download the signed CLI and daemon
+        uses: actions/download-artifact@v8
+        with:
+          name: release-osx-arm64
+          path: trio/
+
+      - name: Unpack the trio
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p trio/bin && tar xzf trio/kcap-osx-arm64.tar.gz -C trio/bin
+          chmod +x trio/bin/kcap trio/bin/kcap-daemon
+          test -f trio/bin/daemon.sha256 && test -f trio/bin/kcap.sha256
+
+      - name: Import signing keychain and notary profile
+        shell: bash
+        env:
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_NOTARY_KEY_P8: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: bash scripts/import-signing-keychain.sh
+
+      # The cheap first line of the immutability rule; app-publish repeats it inside its
+      # concurrency group against the actual bytes.
+      - name: Refuse an already-published version
+        shell: bash
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+        run: |
+          set -euo pipefail
+          KEY="desktop/osx-arm64/KurrentCapacitor-${{ steps.version.outputs.VERSION }}-osx-arm64-full.nupkg"
+          if aws s3api head-object --endpoint-url "${{ secrets.R2_ENDPOINT }}" --bucket "${{ secrets.R2_BUCKET }}" --key "$KEY" >/dev/null 2>&1; then
+            echo "::error::$KEY is already published. A published desktop version is never rebuilt — cut a new version."
+            exit 1
+          fi
+
+      - name: Publish app
+        run: >
+          dotnet publish src/Capacitor.App/Capacitor.App.csproj -c Release -r osx-arm64 --self-contained
+          -p:MinVerVersionOverride=${{ steps.version.outputs.VERSION }} -o publish/app/
+
+      - name: Sign the app's binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          machos=()
+          while IFS= read -r f; do
+            if file "$f" | grep -q 'Mach-O'; then machos+=("$f"); fi
+          done < <(find publish/app -type f)
+          bash scripts/sign-macos.sh "${{ secrets.APPLE_SIGNING_IDENTITY }}" "$KEYCHAIN" src/Capacitor.App/Packaging/app.entitlements.plist "${machos[@]}"
+
+      # The trio arrives already signed; it is copied, never touched by codesign again.
+      - name: Assemble pack directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp trio/bin/kcap trio/bin/kcap-daemon trio/bin/libpty_shim.dylib publish/app/
+          chmod +x publish/app/kcap publish/app/kcap-daemon "publish/app/Kurrent Capacitor"
+          bash scripts/render-info-plist.sh "${{ steps.version.outputs.VERSION }}" publish/Info.plist
+
+      - name: Fetch the delta baseline
+        shell: bash
+        run: |
+          mkdir -p releases
+          vpk download s3 --channel osx-arm64 --outputDir releases --endpoint "${{ secrets.R2_ENDPOINT }}" --bucket "${{ secrets.R2_BUCKET }}" --prefix desktop/osx-arm64 --keyId "${{ secrets.R2_ACCESS_KEY_ID }}" --secret "${{ secrets.R2_SECRET_ACCESS_KEY }}" \
+            || echo "no previous release to diff against"
+          bash scripts/desktop-baseline.sh releases "${{ steps.version.outputs.VERSION }}"
+
+      - name: Pack, sign the bundle, notarize
+        shell: bash
+        run: >
+          vpk pack --packId KurrentCapacitor --packVersion "${{ steps.version.outputs.VERSION }}"
+          --packTitle "Kurrent Capacitor" --packAuthors Kurrent --mainExe "Kurrent Capacitor"
+          --packDir publish/app --plist publish/Info.plist --icon src/Capacitor.App/Assets/kcap-icon.icns
+          --channel osx-arm64 --noInst --outputDir releases
+          --signAppIdentity "${{ secrets.APPLE_SIGNING_IDENTITY }}" --signEntitlements src/Capacitor.App/Packaging/app.entitlements.plist
+          --signDisableDeep --notaryProfile kcap-notary --keychain "$KEYCHAIN"
+
+      - name: Assert and smoke the packed bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p extracted
+          ditto -x -k releases/KurrentCapacitor-osx-arm64-Portable.zip extracted
+          APP="extracted/Kurrent Capacitor.app"
+          bash scripts/assert-app-cli-version.sh "$APP/Contents/MacOS/kcap" "${{ steps.version.outputs.VERSION }}"
+          bash scripts/assert-bundle-digest.sh "$APP" trio/bin/daemon.sha256
+          "$APP/Contents/MacOS/kcap" --version --no-update-check
+          "$APP/Contents/MacOS/kcap-daemon" --version
+          # JIT under hardened runtime: the signed app must still be alive after 15 s.
+          SCRATCH="$(mktemp -d)"
+          KCAP_CONFIG_DIR="$SCRATCH" KCAP_APP_UPDATE_URL="http://127.0.0.1:9/" "$APP/Contents/MacOS/Kurrent Capacitor" &
+          APP_PID=$!
+          sleep 15
+          kill -0 "$APP_PID" || { echo "::error::the signed app exited within 15 s"; exit 1; }
+          kill "$APP_PID"; wait "$APP_PID" || true
+
+      - name: Build, sign, notarize and staple the DMG
+        shell: bash
+        run: |
+          set -euo pipefail
+          DMG="releases/Kurrent-Capacitor-${{ steps.version.outputs.VERSION }}-osx-arm64.dmg"
+          bash scripts/build-dmg.sh "extracted/Kurrent Capacitor.app" "$DMG"
+          codesign --force --timestamp --sign "${{ secrets.APPLE_SIGNING_IDENTITY }}" --keychain "$KEYCHAIN" "$DMG"
+          xcrun notarytool submit "$DMG" --keychain-profile kcap-notary --keychain "$KEYCHAIN" --wait
+          xcrun stapler staple "$DMG"
+          spctl --assess -t open --context context:primary-signature -v "$DMG"
+          cp trio/bin/daemon.sha256 trio/bin/kcap.sha256 releases/
+
+      - name: Upload the signed release set
+        uses: actions/upload-artifact@v7
+        with:
+          name: app-osx-arm64-signed
+          path: releases/
+
+  app-publish:
+    name: Publish the desktop app
+    needs: [app-macos, publish-npm, github-release]
+    runs-on: ubuntu-latest
+    # Every publication into the bucket runs alone: the feed manifest is read-merge-write.
+    concurrency:
+      group: desktop-publish
+      cancel-in-progress: false
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      R2: --endpoint-url ${{ secrets.R2_ENDPOINT }}
+      DEST: s3://${{ secrets.R2_BUCKET }}/desktop/osx-arm64
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6
+
+      - name: Install vpk
+        run: dotnet tool install -g vpk --version 1.2.0
+
+      - name: Extract version from tag
+        id: version
+        shell: bash
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Download the signed release set
+        uses: actions/download-artifact@v8
+        with:
+          name: app-osx-arm64-signed
+          path: releases/
+
+      # The app ships only the trio npm shipped: a run that lost the npm race stops here.
+      - name: Verify the npm trio
+        run: bash scripts/verify-npm-trio.sh "${{ steps.version.outputs.VERSION }}" releases/kcap.sha256 releases/daemon.sha256
+
+      - name: Verify immutable objects
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > fetch.sh <<'EOF'
+          #!/usr/bin/env bash
+          aws s3 cp $R2 "$DEST/$1" "$2" >/dev/null 2>&1
+          EOF
+          chmod +x fetch.sh
+          bash scripts/verify-desktop-immutables.sh releases "${{ steps.version.outputs.VERSION }}" ./fetch.sh
+
+      - name: Upload the feed and packages
+        run: >
+          vpk upload s3 --channel osx-arm64 --outputDir releases --endpoint "${{ secrets.R2_ENDPOINT }}"
+          --bucket "${{ secrets.R2_BUCKET }}" --prefix desktop/osx-arm64
+          --keyId "${{ secrets.R2_ACCESS_KEY_ID }}" --secret "${{ secrets.R2_SECRET_ACCESS_KEY }}"
+
+      - name: Upload the DMG and promote aliases
+        shell: bash
+        run: |
+          set -euo pipefail
+          V="${{ steps.version.outputs.VERSION }}"
+          DMG="releases/Kurrent-Capacitor-$V-osx-arm64.dmg"
+          aws s3 cp $R2 "$DMG" "$DEST/Kurrent-Capacitor-$V-osx-arm64.dmg" --cache-control "public, max-age=31536000, immutable"
+          aws s3 cp $R2 "$DEST/releases.osx-arm64.json" merged.json
+          for alias in $(bash scripts/promote-desktop-aliases.sh merged.json "$V"); do
+            case "$alias" in
+              beta)   aws s3 cp $R2 "$DMG" "$DEST/Kurrent-Capacitor-osx-arm64-beta.dmg" --cache-control "public, max-age=300" ;;
+              stable) aws s3 cp $R2 "$DMG" "$DEST/Kurrent-Capacitor-osx-arm64.dmg" --cache-control "public, max-age=300" ;;
+            esac
+          done
+
+      - name: Attach the DMG to the GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ github.ref_name }}" "releases/Kurrent-Capacitor-${{ steps.version.outputs.VERSION }}-osx-arm64.dmg" --clobber
