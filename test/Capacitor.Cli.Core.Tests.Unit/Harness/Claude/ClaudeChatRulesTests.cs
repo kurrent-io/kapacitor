@@ -111,4 +111,31 @@ public class ClaudeChatRulesTests {
         var human = P("""{"type":"user","origin":{"kind":"human"},"promptSource":"typed","message":{"content":"hello"}}""");
         await Assert.That(human[0].Kind).IsEqualTo(AcpEventKind.UserMessage);
     }
+
+    /// Pins the vendor-neutral kind beside the raw name. Every tool gets one — an unlisted tool is
+    /// `other`, never null, so a null kind can only mean a lane that classifies nothing.
+    [Test]
+    public async Task Every_tool_call_carries_a_kind_and_an_unlisted_tool_is_other() {
+        foreach (var (name, kind) in new[] {
+            ("Read", AcpToolKind.Read), ("NotebookRead", AcpToolKind.Read),
+            ("Edit", AcpToolKind.Edit), ("MultiEdit", AcpToolKind.Edit), ("Write", AcpToolKind.Edit), ("NotebookEdit", AcpToolKind.Edit),
+            ("Bash", AcpToolKind.Execute), ("BashOutput", AcpToolKind.Execute), ("KillShell", AcpToolKind.Execute),
+            ("Grep", AcpToolKind.Search), ("Glob", AcpToolKind.Search), ("LS", AcpToolKind.Search),
+            ("WebFetch", AcpToolKind.Fetch), ("WebSearch", AcpToolKind.Fetch),
+            ("Task", AcpToolKind.Other), ("Skill", AcpToolKind.Other), ("TodoWrite", AcpToolKind.Other),
+            ("mcp__linear__get_issue", AcpToolKind.Other), ("SomeFutureTool", AcpToolKind.Other),
+        }) {
+            var e = P($$$"""{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t","name":"{{{name}}}","input":{}}]}}""");
+            await Assert.That(e[0].ToolName).IsEqualTo(name);
+            await Assert.That(e[0].ToolKind).IsEqualTo(kind).Because(name);
+        }
+    }
+
+    /// A shell call keeps `execute` whatever the command reads like: Claude has real Read and Grep
+    /// tools, so classifying the command would misreport the tool the model actually chose.
+    [Test]
+    public async Task A_bash_call_that_reads_a_file_is_still_execute() {
+        var e = P("""{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t","name":"Bash","input":{"command":"sed -n '1,20p' src/Program.cs"}}]}}""");
+        await Assert.That(e[0].ToolKind).IsEqualTo(AcpToolKind.Execute);
+    }
 }

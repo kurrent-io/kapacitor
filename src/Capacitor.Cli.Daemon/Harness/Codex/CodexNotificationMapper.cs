@@ -2,7 +2,7 @@ using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using Capacitor.Cli.Core;
-using Capacitor.Models.Transcripts.Harness.Codex;
+using Capacitor.Cli.Core.Harness.Codex;
 using Microsoft.Extensions.Logging;
 
 namespace Capacitor.Cli.Daemon.Harness.Codex;
@@ -172,7 +172,7 @@ internal sealed partial class CodexNotificationMapper {
             case "commandExecution":
                 return One(new AcpEventEnvelope(
                     Kind: AcpEventKind.ToolCall, ToolCallId: id, ToolName: "shell",
-                    ToolInputJson: RenderCommandOpen(item), ToolKind: ShellKind(item.Str("command")),
+                    ToolInputJson: RenderCommandOpen(item), ToolKind: CodexToolKinds.Shell(item.Str("command")),
                     ItemId: id, TimestampIso: ts));
 
             case "mcpToolCall":
@@ -255,15 +255,6 @@ internal sealed partial class CodexNotificationMapper {
             ToolInputJson: item.GetRawText(), ToolKind: AcpToolKind.Other,
             ItemId: id, TimestampIso: ts));
     }
-
-    /// A codex shell call has no name of its own for a read or a search — `sed -n`, `cat` and `rg` all
-    /// arrive as the same tool — so the command itself decides. An unclassifiable command is
-    /// `execute`: a shell call did run something.
-    static string ShellKind(string? command) => CodexCommandClassifier.Classify(command)?.Type switch {
-        "read"                   => AcpToolKind.Read,
-        "search" or "list_files" => AcpToolKind.Search,
-        _                        => AcpToolKind.Execute,
-    };
 
     // ── Rendering helpers (pure) ──────────────────────────────────────────────────────────────────
     static IReadOnlyList<AcpEventEnvelope> One(AcpEventEnvelope e) => [e];
