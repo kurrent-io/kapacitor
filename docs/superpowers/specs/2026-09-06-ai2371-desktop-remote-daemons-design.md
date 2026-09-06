@@ -125,11 +125,15 @@ app holds exactly one server connection instead of one per launch.
 - a daemons cache from hub `GetConnectedDaemons()` refreshed on `DaemonsChanged`.
 
 `AgentDirectory` merges the local `DaemonClientService.Agents` cache and the remote cache into
-one keyed stream all surfaces consume. The canonical row key is the agent id, stable across
-origin changes. Rows are a common projection (`AgentRow`) with an `Origin` (`Local`/`Remote`),
-the shared fields both wires carry, and nullable rich fields only the local wire has
-(`worktree_path`, `work_location`, `borrowed_from`, `has_terminal`, `title`, `transcript_path`,
-`branch`).
+one stream all surfaces consume. Entries are keyed per source — `(lane, agentId)` — so the two
+lanes can never clobber each other, and a *logical* row identity is layered on top: when the
+twin match below proves the two entries describe one agent, they bind into one logical row
+(precedence per "Origin changes" below) and workspaces/navigation address that logical row,
+stable across origin changes; when twin identity is unproven, the entries render as separate
+rows, each acting only through its own lane — the fail-open duplicates. Rows are a common
+projection (`AgentRow`) with an `Origin` (`Local`/`Remote`), the shared fields both wires
+carry, and nullable rich fields only the local wire has (`worktree_path`, `work_location`,
+`borrowed_from`, `has_terminal`, `title`, `transcript_path`, `branch`).
 
 ### Local-daemon identity and suppression
 
@@ -180,11 +184,12 @@ explicit precedence: while the local lane is `Connected`, the local row wins; wh
 the server row (if any) wins and the retained local row is display-only history. A session ends
 only when the winning authority says so (server `EndedAt`/terminal status, or local terminal
 status) — a local cache removal while a live server row exists must not mark the workspace
-ended. Open workspaces bind by agent id and observe the row's origin: on a transition the
+ended. Open workspaces bind to the logical row and observe its origin: on a transition the
 origin-bound adapters (transcript feed, terminal transport, composer target) are torn down and
-rebuilt for the new origin; actions (stop, permission answers, sends) route against the row's
-origin *at invocation time*, and an in-flight action that loses its lane fails visibly rather
-than silently.
+rebuilt for the new origin; actions (stop, sends) route against the row's origin *at invocation
+time*, and an in-flight action that loses its lane fails visibly rather than silently.
+Permission and question answers are the exception: they never route by row origin — each pending
+request carries its own response handle bound to the lane that delivered it (§4).
 
 ## 4. Aggregated attention
 
@@ -200,35 +205,67 @@ re-seed replaces server-lane items only. (Today's whole-cache clears on `Subscri
 are re-scoped — the local lane's lifecycle must never erase remote pending state, or vice
 versa.)
 
-### Cross-lane dedup is per session, not per request id
+### Response handles: a request is answered on the lane that delivered it
 
-The same prompt legitimately has two ids (the daemon's local GUID and the server's request id),
-so request-id keying cannot deduplicate across lanes. The rule:
+Every pending item carries a response handle — the delivering lane plus that lane's request id —
+and is answered only through it: a local-lane item via `LocalControlOps.ResolvePermissionAsync`
+with the local id, a server-lane item via the HTTP permission-response POST with the server
+request id. The two ids for one prompt are independently allocated and each transport rejects
+the other's, so ids are never cross-submitted, whatever the agent row's origin says (an ACP
+question on a *local* agent is a server-lane item and is answered over HTTP). A "no longer
+pending" rejection from an item's *own* lane (local no-pending reply, HTTP 404) means it was
+settled elsewhere — drop the card. Local-lane items live only as long as the local permission
+subscription that delivered them: on subscription loss they are dropped, not answerable — the
+server twins, no longer suppressed, surface with their own valid handles.
 
-- **PTY permission prompts** (`PermissionRequested` on the server lane): suppressed for sessions
-  belonging to the local daemon's twin (§3 identity) while the local lane is `Connected` — the
-  local lane is authoritative there and already carries them. For every other daemon, and for
-  the local daemon while its socket is down, the server-lane item stands.
+### Cross-lane dedup is per request, by proven correlation
+
+The daemon is the only party that knows both ids of a dual-lane PTY prompt, so it exposes the
+mapping: the local permission wire's pending DTO gains a trailing nullable `server_request_id`,
+set by the daemon's server leg once the server accepts the request (an updated pending
+notification when it becomes known later). Additive trailing field per the local-IPC convention;
+older daemons simply never set it. The rules:
+
+- A server-lane `PermissionRequested` is suppressed only when a live local-lane item claims it
+  (`server_request_id` equal). No claim — because the daemon is older, the local permission
+  subscription is down or the capability is absent, the daemon took its server-only path for
+  bounds the local wire cannot express, or the local item simply hasn't arrived yet — means the
+  server-lane item stands. A mere `Connected` status socket is never evidence. The only
+  duplicate window is the brief gap before a claiming local item lands, and it converges;
+  fail-open, per the sub-decision.
 - **ACP elicitations** (`AcpElicitationRequested`) are server-lane-only for *every* daemon —
   the daemon's ACP interaction bridge has no local broker — so they are never suppressed, local
   agents included. (This closes a live gap: today the desktop app never shows local ACP-hosted
   agents' questions at all.)
-- **Settlement clears both twins**: a local answer settles the local item, and the daemon's own
-  settlement relay produces `PermissionResponded`, which tombstones the server twin; a remote
-  answer (HTTP) produces the daemon-side resolution that settles the local item. Tombstones are
-  per lane; the merged view drops an item when either lane settles it, and a session-scoped
-  `PermissionResponded(sessionId, null)` clears all of that session's items in both lanes.
-  A resolution always wins a race with an in-flight seed or reconciliation fetch — a settled
-  request id is never resurrected by late fetch results.
+
+### Settlement is lane-authoritative; correlation extends it
+
+A settlement clears its own lane's item always, and the *correlated* twin only when the
+correlation is proven: `PermissionResponded(sessionId, requestId)` clears the server-lane item
+and any local item claiming that `server_request_id`; a local resolution clears the local item,
+and its server twin is cleared by the server's own broadcast when the daemon's settlement relay
+lands — the relay can fail and merely log, so the twin may linger until the next server-lane
+event or an HTTP answer's 404 drops it. A session-scoped `PermissionResponded(sessionId, null)`
+clears that session's server-lane items and only those local items with a proven
+`server_request_id` claim — a local request the daemon hasn't relayed yet has no twin in the
+server's "all cleared" and must remain pending. A resolution always wins a race with an
+in-flight seed or reconciliation fetch — a settled request id is never resurrected by late
+fetch results.
 
 ### Pending discovery and recovery
 
 The org-wide `PermissionPending(sessionId)`/`PermissionResponded(sessionId, requestId?)` pings
-arrive without any group join and drive a session-level attention flag — enough for truthful
-rail pips and tray state without card payloads. Full card detail materializes when a session's
-workspace opens: the app joins `chat:{sessionId}` (live payloads) and reconciles already-pending
-prompts from the session's event stream (`InterruptIssued`/`InterruptResolved`), the same
-reconciliation the MAUI client performs.
+arrive without any group join, but a session can hold several unresolved requests and the
+Pending ping names no request id, so a per-session boolean cannot count truthfully. Attention
+for an *unopened* session is a per-session set of pending server request ids, populated by a
+headless reconciliation of that session's event stream (`InterruptIssued`/`InterruptResolved` —
+the same reconciliation the MAUI client performs on open, run without UI), triggered debounced
+by each `PermissionPending` ping; thereafter `PermissionResponded(sessionId, requestId)` removes
+one id (the pip clears when the set empties, not on the first response), null-requestId empties
+the set, and after every reconnect sessions with non-empty sets re-reconcile, so a response
+missed while disconnected cannot leave a pip on forever. Full card detail materializes when a
+session's workspace opens: the app joins `chat:{sessionId}` (live payloads) and runs the same
+reconciliation for the cards themselves.
 
 What pings-plus-reconciliation cannot cover is a prompt raised *before* the lane connected in a
 session the user never opens: cold-start pips for those need a pending-interrupts summary from
@@ -239,7 +276,8 @@ open, and the limitation is documented in the slice.
 
 ### Answering
 
-Resolution routes per origin: local → `LocalControlOps.ResolvePermissionAsync`; remote → HTTP
+Resolution goes through the item's response handle (above): local-lane →
+`LocalControlOps.ResolvePermissionAsync`; server-lane → HTTP
 `POST /api/sessions/{sessionId}/permission-response/{requestId}`. The HTTP seam is mandatory,
 not a preference: the hub's `RespondToPermission` arity is frozen at 7 arguments and cannot
 express multi-select or free-text answers; a 404 means no longer pending.
@@ -353,17 +391,29 @@ sessions (cards must render without a terminal, §9 slice 2).
   contract is the property name.
 - **Merge/dedup**: unit tests over fake local and remote sources — twin match by
   `(MachineId, Name)` with server-URL scoping; fail-open on zero/multiple matches (same-named
-  daemons under different owners on one machine stay visible twice, never hidden); suppression
-  lift on unreachable; local daemon bound to a different server suppresses nothing; origin
-  precedence and no-false-ended on local removal with a live server row.
+  daemons under different owners on one machine stay visible twice, never hidden); the same
+  agent id fed from both lanes with unproven twin identity yields two source-scoped rows each
+  routing through its own lane, and a proven match binds them into one logical row preserving
+  the open workspace; suppression lift on unreachable; local daemon bound to a different server
+  suppresses nothing; origin precedence and no-false-ended on local removal with a live server
+  row.
 - **Grouping**: local+remote checkouts of one repository form one group; two machines both
   advertising the same path do not; identity-less local repos stay path-scoped; group keys are
   not treated as local directories.
 - **Permissions**: lane-scoped snapshot replacement (local `Subscribed` never clears remote
-  items); a mirrored PTY prompt with two ids renders one card and settles both twins whichever
-  side answers; ACP elicitations for a local agent are not suppressed; resolution racing a
-  reconciliation fetch never resurrects; null-requestId clears session-wide; origin dispatch
-  (local op vs HTTP POST), 404-as-not-pending.
+  items); a mirrored PTY prompt correlates by `server_request_id`, renders one card, and
+  settles both twins whichever side answers; a server PTY prompt with no local claim stays
+  visible and answerable when the daemon lacks the mapping field, the local permission
+  subscription is down, or the daemon took its server-only path; a local ACP question answers
+  over HTTP; answers always use the item's own response handle across Local→Remote→Local
+  transitions with a card open — never the other transport's id — and an own-lane
+  no-longer-pending result drops the card without being mistaken for settlement elsewhere;
+  a server all-cleared arriving after a new local request was registered but before its server
+  leg started leaves that request pending; resolution racing a reconciliation fetch never
+  resurrects; 404-as-not-pending.
+- **Attention counting**: two prompts in an unopened session — the first `PermissionResponded`
+  leaves the pip on, the last clears it; a response missed while disconnected clears via
+  reconnect re-reconciliation.
 - **ACP question cards**: options with identical labels but distinct ids stay distinct;
   min/max selection bounds gate `IsAnswered`; free-text answers; the Claude PTY card's
   `updated_input` encoding unchanged.
@@ -377,8 +427,10 @@ sessions (cards must render without a terminal, §9 slice 2).
   rebuilding both transports, identity change invalidating caches.
 - **App view models**: headless Avalonia tests for the machine badge, machine picker, tray
   aggregate states (local stopped + server healthy + remote prompt pending, and the inverse
-  outage with local controls still usable), and aggregated NEEDS YOU, following the existing
-  suite's session/thread conventions.
+  outage with local controls still usable), aggregated NEEDS YOU, and the slice-2 card host
+  lifecycle: revoking session access with a question card open removes/disables the card and
+  stops the session's subscriptions, and a reconnect rechecks access before restoring them —
+  following the existing suite's session/thread conventions.
 
 ## 9. Delivery slices
 
@@ -389,11 +441,17 @@ sessions (cards must render without a terminal, §9 slice 2).
    feedback ships with launch, not later. Otherwise read-only; remote row actions deep-link to
    the web.
 2. **Control**: `RequestStopAgent`, remote permission and question cards through
-   `PermissionService`'s lane-scoped stores and origin-aware responder, the id-preserving ACP
-   card model, and a minimal remote card host: opening a remote session shows the pending-cards
-   pane (the shared card shell without transcript or terminal, chat construction decoupled from
-   terminal capability) so a remote ACP question is answerable entirely in the app before
-   slice 3. Cold-start pips depend on the §7 required seed; until it lands the documented scope
-   is prompts raised while the lane is up plus on-open reconciliation.
-3. **Remote workspace**: chat read/write path, read-only terminal with resize reporting, access
-   watches and the §6 authorization signals, origin-transition rebinding for open workspaces.
+   `PermissionService`'s lane-scoped stores and response handles, the id-preserving ACP card
+   model, the daemon's `server_request_id` addition to the local permission wire (the §4
+   correlation field), and a minimal remote card host: opening a remote session shows the
+   pending-cards pane (the shared card shell without transcript or terminal, chat construction
+   decoupled from terminal capability) so a remote ACP question is answerable entirely in the
+   app before slice 3. The card host is a session-scoped remote surface, so the session
+   authorization lifecycle ships with it, not later: `RegisterSessionAccessWatch` +
+   `SessionAccessChanged` and the reconnect access recheck (§6) — a revocation removes the
+   session's cards and stops its subscriptions. Cold-start pips depend on the §7 required
+   seed; until it lands the documented scope is prompts raised while the lane is up plus
+   on-open reconciliation.
+3. **Remote workspace**: chat read/write path, read-only terminal with resize reporting, the
+   remaining §6 authorization signals for the transcript/terminal surfaces, origin-transition
+   rebinding for open workspaces.
