@@ -231,6 +231,22 @@ public class McpWorkItemsServerTests {
     }
 
     [Test]
+    public async Task Declared_structure_is_bounded_by_visibility_not_by_repository() {
+        // The server accepts a part or a relation whose other end lives in another repository; only
+        // visibility to the caller bounds it. Text claiming otherwise makes agents skip declarations
+        // the server would take, so the preamble and both declare tools must not restate a repository
+        // rule.
+        var byName = McpWorkItemsServer.BuildToolsList().ToDictionary(t => t.Name);
+
+        foreach (var name in (string[])["declare_work_breakdown", "declare_work_relation"]) {
+            await Assert.That(byName[name].Description).Contains("visible");
+            await Assert.That(byName[name].Description).DoesNotContain("same repository");
+        }
+
+        await Assert.That(McpWorkItemsServer.ServerInstructions).DoesNotContain("same repository");
+    }
+
+    [Test]
     public async Task Every_breakdown_tool_declares_its_ids_required() {
         // Unlike session_id, these ids have no ambient fallback — a schema that marked them optional
         // would invite a call with no id at all.

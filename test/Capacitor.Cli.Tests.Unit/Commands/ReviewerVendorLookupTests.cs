@@ -143,6 +143,55 @@ public class ReviewerVendorLookupTests {
         await Assert.That(r.Diagnostics.Reason).IsNull();
     }
 
+    /// A daemon advertises the MAIN repository root (RepoPathStore collapses a linked worktree before
+    /// storing it), so a session running inside a linked worktree must collapse the same way or it
+    /// reads as no_repo_hosting_daemon for a repository the daemon does host.
+    [Test]
+    public async Task Linked_worktree_root_matches_a_daemon_advertising_the_main_repository() {
+        using var tmp = new TempDir();
+        var main = tmp.CreateDir("main");
+        tmp.CreateDir("main", ".git", "worktrees", "wt1");
+        var worktree = tmp.PathTo("main", ".capacitor", "worktrees", "agent-1");
+        tmp.CreateFile(["main", ".capacitor", "worktrees", "agent-1", ".git"], "gitdir: ../../../.git/worktrees/wt1\n");
+
+        var r = ReviewerVendorLookup.Aggregate([Daemon([main], "m1", ["codex"])], worktree, "m1", null);
+
+        await Assert.That(r.Diagnostics.RepoHostingDaemons).IsEqualTo(1);
+        await Assert.That(r.Diagnostics.Reason).IsNull();
+        await Assert.That(r.Reviewers.Single().Vendor).IsEqualTo("codex");
+    }
+
+    /// The other origin of a daemon's RepoPaths: an AllowedRepoPaths entry is advertised as the
+    /// operator wrote it, so an allowlisted worktree root reaches the wire uncollapsed and must still
+    /// match the session standing in it.
+    [Test]
+    public async Task Linked_worktree_root_matches_a_daemon_advertising_that_worktree_path() {
+        using var tmp = new TempDir();
+        tmp.CreateDir("main", ".git", "worktrees", "wt1");
+        var worktree = tmp.PathTo("main", ".capacitor", "worktrees", "agent-1");
+        tmp.CreateFile(["main", ".capacitor", "worktrees", "agent-1", ".git"], "gitdir: ../../../.git/worktrees/wt1\n");
+
+        var r = ReviewerVendorLookup.Aggregate([Daemon([worktree], "m1", ["codex"])], worktree, "m1", null);
+
+        await Assert.That(r.Diagnostics.RepoHostingDaemons).IsEqualTo(1);
+        await Assert.That(r.Diagnostics.Reason).IsNull();
+    }
+
+    /// The collapse must not merge two genuinely distinct repositories: a submodule's .git file points
+    /// into .git/modules, and a submodule is a repository of its own.
+    [Test]
+    public async Task Submodule_checkout_does_not_match_the_superproject_daemon_path() {
+        using var tmp = new TempDir();
+        var super = tmp.CreateDir("super");
+        tmp.CreateDir("super", ".git", "modules", "sub");
+        var sub = tmp.PathTo("super", "sub");
+        tmp.CreateFile(["super", "sub", ".git"], "gitdir: ../.git/modules/sub\n");
+
+        var r = ReviewerVendorLookup.Aggregate([Daemon([super], "m1", ["codex"])], sub, "m1", null);
+
+        await Assert.That(r.Diagnostics.Reason).IsEqualTo("no_repo_hosting_daemon");
+    }
+
     // --- ParseDaemons ---
 
     [Test]
