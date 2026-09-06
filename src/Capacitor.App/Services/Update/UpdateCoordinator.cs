@@ -62,8 +62,15 @@ public sealed class UpdateCoordinator {
         if (!updater.IsAvailable || updateRelaunch) return false;
         if (updater.PendingRestart is not { } pending || !IsEligible(updater, pending)) return false;
 
-        updater.ApplyNow(pending);
-        return true;
+        // A failed apply must fall through to the normal UI, where the schedule re-offers the
+        // update visibly, rather than bricking every launch behind a repeating startup failure.
+        try {
+            updater.ApplyNow(pending);
+            return true;
+        } catch (Exception ex) {
+            Console.Error.WriteLine($"kcap app: applying the pending update failed: {ex.Message}");
+            return false;
+        }
     }
 
     internal static bool IsEligible(IAppUpdater updater, UpdateCandidate candidate) {

@@ -110,8 +110,6 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
         _canonicalServer               = canonicalServer;
         _runMutation                   = runMutation;
         _autoActionsPermanentlyClosed  = autoActionsPermanentlyClosed;
-        // After an update relaunch the daemon restarts itself within a poll interval once idle;
-        // offering a restart before that would ask for something already under way.
         _skewHoldUntil = holdSkewForUpdate ? time.GetUtcNow() + SkewHoldAfterUpdate : null;
     }
 

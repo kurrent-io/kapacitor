@@ -388,7 +388,9 @@ public partial class App : Application {
 
         // After the graph, never during the wizard: the first check waits its own delay, and every
         // dialog goes through the same serialized surface as the skew and shim dialogs.
-        _updates = new UpdateCoordinator(_updater, lifecycleSurface, TimeProvider.System, quit: () => desktop.TryShutdown(), _shutdown.Token);
+        // The ready dialog's TCS resolves on the thread pool, so its accept continuation (and
+        // therefore this quit) can run off the UI thread — post it back before shutting down.
+        _updates = new UpdateCoordinator(_updater, lifecycleSurface, TimeProvider.System, quit: () => Dispatcher.UIThread.Post(() => desktop.TryShutdown()), _shutdown.Token);
         _updates.Start();
 
         // Said once, here, because nothing else in the app would: the graph is up but deliberately degraded.
@@ -921,9 +923,9 @@ public partial class App : Application {
             service, cli, probe, store, surface, () => Task.FromResult(ValidProfileName(profile)), TimeProvider.System,
             canonicalServer, runMutation, autoActionsPermanentlyClosed, holdSkewForUpdate: Program.UpdateRelaunch);
 
-        // The shim links to the RESOLVED ABSOLUTE path only — CliResolver's bare "kcap" fallback
-        // (no override set, or the not-yet-landed bundle-relative arm) means there is
-        // nothing to link, so the offer and the menu item both stay off for the whole run.
+        // The shim links to the RESOLVED ABSOLUTE path only — CliResolver's bare "kcap" PATH
+        // fallback means there is nothing to link, so the offer and the menu item both stay off
+        // for the whole run.
         var shimTarget = cliPath is not null && Path.IsPathRooted(cliPath) ? cliPath : null;
         // autoOfferSuppressed: Start() always runs — Offerable/manual install must keep working in Incomplete mode; only the once-ever auto-offer dialog is skipped.
         var shimOffer = new ShimOfferCoordinator(

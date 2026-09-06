@@ -204,4 +204,11 @@ public class UpdateCoordinatorTests {
 
         await Assert.That(UpdateCoordinator.TryApplyPendingAtStartup(updater, updateRelaunch: false)).IsFalse();
     }
+
+    [Test]
+    public async Task Startup_pending_apply_survives_a_throwing_apply() {
+        var updater = new FakeAppUpdater { PendingRestart = Beta3, ApplyNowFailure = new InvalidOperationException("boom") };
+
+        await Assert.That(UpdateCoordinator.TryApplyPendingAtStartup(updater, updateRelaunch: false)).IsFalse();
+    }
 }

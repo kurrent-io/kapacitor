@@ -16,6 +16,7 @@ sealed class FakeAppUpdater : IAppUpdater {
     public TaskCompletionSource? HoldDownload;
     public readonly List<UpdateCandidate> ApplyOnExitCalls = [];
     public readonly List<UpdateCandidate> ApplyNowCalls = [];
+    public Exception? ApplyNowFailure;
 
     public Task<UpdateCandidate?> CheckAsync(CancellationToken ct) {
         CheckCalls++;
@@ -30,5 +31,9 @@ sealed class FakeAppUpdater : IAppUpdater {
     }
 
     public void ApplyOnExit(UpdateCandidate candidate) => ApplyOnExitCalls.Add(candidate);
-    public void ApplyNow(UpdateCandidate candidate) => ApplyNowCalls.Add(candidate);
+
+    public void ApplyNow(UpdateCandidate candidate) {
+        if (ApplyNowFailure is { } failure) throw failure;
+        ApplyNowCalls.Add(candidate);
+    }
 }
