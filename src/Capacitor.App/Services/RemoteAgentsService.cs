@@ -9,7 +9,7 @@ using DynamicData;
 namespace Capacitor.App.Services;
 
 public interface IRemoteAgentsService {
-    /// Keyed by AgentId. Retained across lane loss — staleness is presentation (spec §6).
+    /// Keyed by AgentId. Retained across lane loss — staleness is presentation.
     IObservableCache<AgentInstanceDto, string> Agents { get; }
     /// Replay-1, seeded with an empty list.
     IObservable<IReadOnlyList<DaemonInfo>> Daemons { get; }
@@ -23,6 +23,8 @@ public sealed class RemoteAgentsService : IRemoteAgentsService, IDisposable {
     readonly IDisposable _subscriptions;
     readonly SemaphoreSlim _agentsFlight = new(1, 1);
     readonly SemaphoreSlim _daemonsFlight = new(1, 1);
+    bool _agentsRerun;
+    bool _daemonsRerun;
 
     public RemoteAgentsService(
             IServerLane lane, Func<CancellationToken, Task<AgentInstanceDto[]?>> fetchAgents,
@@ -34,13 +36,15 @@ public sealed class RemoteAgentsService : IRemoteAgentsService, IDisposable {
             .Where(c => c)
             .Select(_ => System.Reactive.Unit.Default);
 
+        // Merge, not Concat: triggers must reach the refresh methods concurrently so a busy
+        // refresh's WaitAsync(0) can actually observe contention and coalesce.
         var refreshAgents = connected.Merge(lane.AgentInstancesChanged.Throttle(wait))
             .Select(_ => Observable.FromAsync(async () => await RefreshAgentsAsync(fetchAgents)))
-            .Concat()
+            .Merge()
             .Subscribe();
         var refreshDaemons = connected.Merge(lane.DaemonsChanged.Throttle(wait))
             .Select(_ => Observable.FromAsync(async () => await RefreshDaemonsAsync(lane)))
-            .Concat()
+            .Merge()
             .Subscribe();
         _subscriptions = new System.Reactive.Disposables.CompositeDisposable(refreshAgents, refreshDaemons);
     }
@@ -49,10 +53,13 @@ public sealed class RemoteAgentsService : IRemoteAgentsService, IDisposable {
     public IObservable<IReadOnlyList<DaemonInfo>> Daemons => _daemons.AsObservable();
 
     async Task RefreshAgentsAsync(Func<CancellationToken, Task<AgentInstanceDto[]?>> fetch) {
-        if (!await _agentsFlight.WaitAsync(0)) return;
+        if (!await _agentsFlight.WaitAsync(0)) { Volatile.Write(ref _agentsRerun, true); return; }
         try {
-            var result = await fetch(CancellationToken.None).ConfigureAwait(false);
-            if (result is not null) _agents.EditDiff(result, EqualityComparer<AgentInstanceDto>.Default);
+            do {
+                Volatile.Write(ref _agentsRerun, false);
+                var result = await fetch(CancellationToken.None).ConfigureAwait(false);
+                if (result is not null) _agents.EditDiff(result, EqualityComparer<AgentInstanceDto>.Default);
+            } while (Volatile.Read(ref _agentsRerun));
         } catch (Exception) {
             // Data-plane refresh: a throw here is a missed refresh, never an app fault.
         } finally {
@@ -61,10 +68,13 @@ public sealed class RemoteAgentsService : IRemoteAgentsService, IDisposable {
     }
 
     async Task RefreshDaemonsAsync(IServerLane lane) {
-        if (!await _daemonsFlight.WaitAsync(0)) return;
+        if (!await _daemonsFlight.WaitAsync(0)) { Volatile.Write(ref _daemonsRerun, true); return; }
         try {
-            var result = await lane.GetConnectedDaemonsAsync(CancellationToken.None).ConfigureAwait(false);
-            if (result is not null) _daemons.OnNext(result);
+            do {
+                Volatile.Write(ref _daemonsRerun, false);
+                var result = await lane.GetConnectedDaemonsAsync(CancellationToken.None).ConfigureAwait(false);
+                if (result is not null) _daemons.OnNext(result);
+            } while (Volatile.Read(ref _daemonsRerun));
         } catch (Exception) {
         } finally {
             _daemonsFlight.Release();

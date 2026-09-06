@@ -57,4 +57,37 @@ public class RemoteAgentsServiceTests {
         await Task.Delay(100);
         await Assert.That(svc.Agents.Count).IsEqualTo(1);
     }
+
+    // Drives the coalescing case through repeated Connected/Retrying status edges rather than
+    // AgentInstancesChanged pings: the latter go through Throttle, whose real scheduler makes
+    // whether a rapid burst reaches RefreshAgentsAsync as one or several attempts a timing race
+    // — the same race either way it lands. Status flows through no Throttle, so each edge below
+    // deterministically re-enters RefreshAgentsAsync on the calling thread while call #1 still
+    // holds the semaphore, exercising the exact contended path the WaitAsync(0)/rerun-flag pair
+    // exists for.
+    [Test]
+    public async Task OverlappingRefreshesCoalesceIntoOneTrailingRun() {
+        var callCount = 0;
+        var gate = new TaskCompletionSource<AgentInstanceDto[]?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var trailing = new[] { Agent("a2") };
+        var lane = new FakeServerLane();
+        using var svc = new RemoteAgentsService(lane, async _ => {
+            var n = Interlocked.Increment(ref callCount);
+            return n == 1 ? await gate.Task : trailing;
+        }, TimeSpan.Zero);
+
+        lane.StatusSubject.OnNext(new(ServerLaneState.Connected)); // call #1 starts, blocks on gate
+
+        // Six edges while call #1 is still in flight: every one must coalesce into the same
+        // pending rerun instead of queuing its own sequential re-fetch.
+        for (var i = 0; i < 3; i++) {
+            lane.StatusSubject.OnNext(new(ServerLaneState.Retrying));
+            lane.StatusSubject.OnNext(new(ServerLaneState.Connected));
+        }
+
+        gate.SetResult([Agent("a1")]);
+
+        await Eventually(() => svc.Agents.Lookup("a2").HasValue);
+        await Assert.That(Volatile.Read(ref callCount)).IsEqualTo(2);
+    }
 }
