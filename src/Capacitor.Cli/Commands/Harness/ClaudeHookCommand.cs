@@ -76,12 +76,14 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
             agentId        = node?["agent_id"]?.GetValue<string>();
         } catch { }
 
-        // Ahead of every gate below: the hosting daemon's turn-boundary hint is local, so neither
-        // the server's reachability nor the credential may hold it back.
-        if (command switch { "stop" => true, "user-prompt-submit" or "pre-tool-use" => false, _ => (bool?) null } is { } waiting)
-            await DaemonInputWaitRelay.NotifyAsync("claude", sessionId, cwd, waiting);
+        var budget = clock.Budget(Ceiling(command));
 
-        var budget    = clock.Budget(Ceiling(command));
+        // Ahead of every gate below: the hosting daemon's turn-boundary hint is local, so neither
+        // the server's reachability nor the credential may hold it back. Spends this hook's own
+        // budget, which the clock has been counting since the process started.
+        if (command switch { "stop" => true, "user-prompt-submit" or "pre-tool-use" => false, _ => (bool?) null } is { } waiting)
+            await DaemonInputWaitRelay.NotifyAsync("claude", sessionId, cwd, waiting, budget.Remaining);
+
         var clientCap = budget.Remaining;
 
         // Approval policy is decided before any client exists. The seam only appends its events to

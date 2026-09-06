@@ -943,10 +943,10 @@ internal sealed partial class LocalPermissionBridge(
             return;
         }
 
-        JsonNode? node;
+        JsonObject? node;
 
         try {
-            node = JsonNode.Parse(body);
+            node = JsonNode.Parse(body) as JsonObject;
         } catch (JsonException) {
             node = null;
         }
@@ -966,7 +966,7 @@ internal sealed partial class LocalPermissionBridge(
         Close(context, 204);
     }
 
-    static string? Str(JsonNode? node, string field) =>
+    static string? Str(JsonObject? node, string field) =>
         node?[field] is JsonValue v && v.TryGetValue<string>(out var s) ? s : null;
 
     static void Close(HttpListenerContext context, int status) {

@@ -342,6 +342,10 @@ internal partial class AgentOrchestrator {
 
                         try {
                             await agent.Runtime.SendRawInputAsync(f.Bytes);
+                            // A local client's Enter is the input-delivery edge for a PTY agent: the
+                            // desktop composer and terminal both arrive here, never through
+                            // HandleSendInput, and a hook may not report the submit at all.
+                            if (IsSubmit(f.Bytes)) agent.ActivityClock.SetAwaitingInput(false);
                         } catch (NotSupportedException) {
                             // ACP-backed runtimes (e.g. cursor) have no raw-input surface —
                             // AcpHostedAgentRuntime.SendRawInputAsync throws by design. Tell the
@@ -385,6 +389,8 @@ internal partial class AgentOrchestrator {
             if (!agent.IsPrivate) _ = SafeSendDimsAsync(agent);
         }
     }
+
+    static bool IsSubmit(byte[] input) => Array.IndexOf(input, (byte) '\r') >= 0 || Array.IndexOf(input, (byte) '\n') >= 0;
 
     void ApplyResizeClamp(AgentInstance agent, ITerminalSink sink, ushort cols, ushort rows) {
         lock (agent.SinksLock) {

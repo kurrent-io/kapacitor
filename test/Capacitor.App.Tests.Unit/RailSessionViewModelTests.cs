@@ -104,6 +104,7 @@ public class RailSessionViewModelTests {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             using var row = new RailSessionViewModel(Dto(kind: "review-flow") with { AwaitingInput = true }, new BehaviorSubject<string?>(null), NoPending, _ => { });
             await Assert.That(row.NeedsYou).IsFalse();
+            await Assert.That(row.Tooltip).DoesNotContain("waiting for input");
         });
     }
 

@@ -44,7 +44,7 @@ public sealed class RailSessionViewModel : ReactiveObject, IDisposable {
             ? Join(dto.Model, age)
             : Join(vendorLine, dto.Model, age);
         StatusDot = SessionStatusDots.For(dto.Status);
-        Tooltip = Join(dto.Id, dto.Status, dto.AwaitingInput == true ? "waiting for input" : null,
+        Tooltip = Join(dto.Id, dto.Status, SessionStatusDots.WaitsOnUser(dto) ? "waiting for input" : null,
             dto.RequesterDisplay, dto.BorrowedFrom is null ? null : $"borrowed {dto.BorrowedFrom}");
 
         _isSelected = selectedAgentId.Select(sel => sel == dto.Id)

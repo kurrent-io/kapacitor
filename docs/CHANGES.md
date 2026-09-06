@@ -16,7 +16,10 @@ the daemon's turn attestation (`TurnInFlight`) rode only the server-bound status
 **The daemon owns the verdict, on the agent's activity clock.** The clock already brackets every
 runtime-attested turn (ACP vendors, Pi, Codex app-server, Antigravity), so its falling edge is the
 one place "the turn ended" is known, and the rising edge, a delivered input, or a relayed prompt
-submit clears it. The flag is deliberately not activity: it never moves `ActivitySeq` or
+submit clears it. A delivered input is the server's send or a local client's Enter on the attach
+socket: the desktop composer and terminal both arrive as raw PTY bytes there, never through the
+server's send path, and the plugin routes Claude's prompt-submit hook to a title script rather
+than to kcap. The flag is deliberately not activity: it never moves `ActivitySeq` or
 `IdleForMs`, which the reaper and the server's idle episodes read, so a display hint cannot delay a
 reap or open a durable idle marker. The payload emits `awaiting_input` only while Running — a
 terminal agent keeps whatever its clock last saw, and that must not read as a pending ask — and
@@ -27,8 +30,11 @@ Claude and Codex report their own turn boundaries: Stop marks the wait, prompt s
 call clear it, on `/{token}/{vendor}/input-wait` beside the permission route. The relay runs ahead
 of every gate in the hook — client creation, auth, exclusion — because it is local display state
 and a server outage is exactly when the app is the surface that matters; it is best effort on a
-one-second cap so a wedged daemon cannot eat the hook's budget. Only a daemon-spawned agent has
-both `KCAP_AGENT_ID` and a loopback `KCAP_DAEMON_URL`; anything else relays nothing.
+one-second cap, bounded further by the hook's own remaining budget, so a wedged daemon cannot push
+a policy decision past the host's kill. Only a daemon-spawned agent has both `KCAP_AGENT_ID` and a
+loopback `KCAP_DAEMON_URL`; anything else relays nothing. The route trusts the same shared token
+and attribution ladder as the permission route, on the same footing: every caller is one of the
+owner's own hosted processes, and the verdict moves nothing but a display hint.
 
 **The app folds the flag into the existing pip**, gated on an answerable kind: a flow participant
 between rounds waits on the flow, not the user. The card and chat footer read "Waiting for input"

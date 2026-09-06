@@ -23,15 +23,18 @@ public static class SessionStatusDots {
         _          => NeutralDot,
     };
 
+    /// The daemon's finished-turn verdict, for an agent the user can answer: a flow participant
+    /// between rounds waits on the flow, so nothing here may describe it as waiting on the user.
+    public static bool WaitsOnUser(AgentStatusDto dto) =>
+        dto.AwaitingInput == true && !AgentActionService.IsProtectedKind(dto.Kind);
+
     /// The needs-you pip's rule from the dto alone (a pending ask is the other source), held
-    /// beside the dot vocabulary so the two can never disagree. A finished turn counts only for an
-    /// agent the user can answer: a flow participant between rounds waits on the flow.
-    public static bool NeedsAttention(AgentStatusDto dto) =>
-        dto.Status == "Failed" || (dto.AwaitingInput == true && !AgentActionService.IsProtectedKind(dto.Kind));
+    /// beside the dot vocabulary so the two can never disagree.
+    public static bool NeedsAttention(AgentStatusDto dto) => dto.Status == "Failed" || WaitsOnUser(dto);
 
     /// Display text for the status: the daemon's own word, except for the one state its
     /// vocabulary does not spell, a live agent whose turn is over.
-    public static string Label(AgentStatusDto dto) => dto.AwaitingInput == true ? "Waiting for input" : dto.Status;
+    public static string Label(AgentStatusDto dto) => WaitsOnUser(dto) ? "Waiting for input" : dto.Status;
 
     /// Process is gone — Completed/Failed stay in the snapshot until teardown removes the agent.
     public static bool IsTerminal(string? status) => status is "Completed" or "Failed";

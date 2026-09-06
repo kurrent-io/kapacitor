@@ -80,6 +80,19 @@ public class LocalPermissionBridgeInputWaitTests {
         await Assert.That(h.Seen).IsEmpty();
     }
 
+    [Test, NotInParallel(nameof(LocalPermissionBridgeInputWaitTests))]
+    public async Task A_body_that_is_not_an_object_is_a_bad_request() {
+        await using var h = new Harness();
+        await h.StartAsync();
+
+        var array  = await h.PostAsync(new[] { 1 });
+        var scalar = await h.PostAsync(true);
+
+        await Assert.That(array.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await Assert.That(scalar.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await Assert.That(h.Seen).IsEmpty();
+    }
+
     /// Only the PTY vendors relay through hooks; every other runtime attests its own turns.
     [Test, NotInParallel(nameof(LocalPermissionBridgeInputWaitTests))]
     public async Task A_vendor_that_attests_its_own_turns_has_no_relay_route() {
