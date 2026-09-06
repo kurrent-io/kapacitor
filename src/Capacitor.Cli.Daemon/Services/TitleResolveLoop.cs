@@ -102,7 +102,13 @@ internal sealed class TitleResolveLoop {
                 var serverTitle = Normalize(await _server.GetTitleAsync(sessionId, ct));
                 serverReadOk = true;
 
-                if (serverTitle is not null && !IsPromptEcho(serverTitle, agent.Prompt)) serverReal = serverTitle;
+                // A title the loop itself pushed coming back is not an independent server
+                // title: treating it as one would freeze the ladder on our own echo and a
+                // later native revision could never advance past it.
+                if (serverTitle is not null && serverTitle != state.PushedTitle
+                 && !IsPromptEcho(serverTitle, agent.Prompt)) {
+                    serverReal = serverTitle;
+                }
             } catch (Exception ex) {
                 // An unreadable server is not a silent one: generation must not spend an LLM
                 // call on a session whose watcher-made title merely couldn't be fetched.
@@ -128,9 +134,12 @@ internal sealed class TitleResolveLoop {
             state.Applied = best;
         }
 
-        // Converge: a locally resolved title reaches the server while it has no real one.
+        // Converge: a locally resolved title reaches the server while it verifiably has no real
+        // one. A failed read blocks the push too — an authoritative title whose presence merely
+        // couldn't be checked must not be overwritten.
         var local = native ?? state.Generated;
-        if (serverReal is null && local is not null && local != state.PushedTitle && agent.SessionId is { } sid) {
+        if (serverReadOk && serverReal is null && local is not null && local != state.PushedTitle
+         && agent.SessionId is { } sid) {
             var pushed = false;
             try {
                 pushed = await _server.PushTitleAsync(sid, local, ct);
@@ -149,16 +158,19 @@ internal sealed class TitleResolveLoop {
     }
 
     /// <summary>
-    /// The watcher's initial title and the daemon's seed are both prefix-truncations of the
-    /// launch prompt's first non-blank line, so a server title that (ellipsis stripped) prefixes
-    /// that line carries no information the seed doesn't already show.
+    /// The watcher's initial title and the daemon's seed take exactly two forms: the launch
+    /// prompt's first non-blank line verbatim (when short enough), or a prefix of it with a
+    /// trailing ellipsis marking the cut. Only those forms are echoes — a bare prefix without
+    /// the ellipsis can be a genuine generated title that happens to open like the prompt, and
+    /// discarding it would trigger a duplicate local generation.
     /// </summary>
     internal static bool IsPromptEcho(string title, string? prompt) {
         if (string.IsNullOrWhiteSpace(prompt)) return false;
 
-        var t = title.TrimEnd();
-        if (t.EndsWith('…')) t = t[..^1];
-        else if (t.EndsWith("...", StringComparison.Ordinal)) t = t[..^3];
+        var t         = title.TrimEnd();
+        var truncated = false;
+        if (t.EndsWith('…')) { t = t[..^1]; truncated = true; }
+        else if (t.EndsWith("...", StringComparison.Ordinal)) { t = t[..^3]; truncated = true; }
         t = t.TrimEnd();
 
         if (t.Length == 0) return true;
@@ -167,7 +179,7 @@ internal sealed class TitleResolveLoop {
             var line = raw.Trim();
             if (line.Length == 0) continue;
 
-            return line.StartsWith(t, StringComparison.Ordinal);
+            return truncated ? line.StartsWith(t, StringComparison.Ordinal) : line == t;
         }
 
         return false;

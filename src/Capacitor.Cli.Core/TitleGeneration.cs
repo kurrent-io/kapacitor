@@ -62,12 +62,13 @@ static partial class TitleGeneration {
     /// model produced a refusal rather than a title).
     /// </summary>
     internal static async Task<ClaudeCliResult?> GenerateAsync(
-            string         userText,
-            string?        assistantText,
-            Action<string> log,
-            Profile?       profile,
-            UserHome       home,
-            string         vendor = "claude"
+            string            userText,
+            string?           assistantText,
+            Action<string>    log,
+            Profile?          profile,
+            UserHome          home,
+            string            vendor = "claude",
+            CancellationToken ct     = default
         ) {
         var prompt = BuildPrompt(userText, assistantText);
 
@@ -77,8 +78,8 @@ static partial class TitleGeneration {
         // last-message gives us a single text response with no token usage,
         // mirroring ClaudeCliResult's shape with zeros for the metric fields.
         var result = vendor == "codex"
-            ? await CodexCliRunner.RunAsync(prompt, TimeSpan.FromSeconds(30), log, profile)
-            : await ClaudeCliRunner.RunAsync(prompt, TimeSpan.FromSeconds(15), log, profile, home, systemPrompt: HeadlessSummarizerSystemPrompt);
+            ? await CodexCliRunner.RunAsync(prompt, TimeSpan.FromSeconds(30), log, profile, ct: ct)
+            : await ClaudeCliRunner.RunAsync(prompt, TimeSpan.FromSeconds(15), log, profile, home, systemPrompt: HeadlessSummarizerSystemPrompt, ct: ct);
 
         if (result is null) {
             return null;

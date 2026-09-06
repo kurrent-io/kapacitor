@@ -32,7 +32,11 @@ internal sealed class TitleServerPort(ConfigRoot configRoot, ProfileContext prof
             var outcome = await new WorkContextClient(client, _baseUrl).GetSessionSummaryAsync(sessionId, ct);
 
             return outcome.StatusCode switch {
-                >= 200 and < 300 => outcome.Body?.Title,
+                // A 2xx whose body didn't deserialize is an unreadable answer, not a session
+                // without a title — WorkContextClient degrades that to a null body.
+                >= 200 and < 300 => outcome.Body is { } body
+                    ? body.Title
+                    : throw new HttpRequestException("session summary body unreadable"),
                 404              => null, // not registered server-side (yet): silence, not failure
                 _                => throw new HttpRequestException($"session summary read failed: {outcome.StatusCode}"),
             };
@@ -40,7 +44,10 @@ internal sealed class TitleServerPort(ConfigRoot configRoot, ProfileContext prof
     }
 
     public async Task<bool> PushTitleAsync(string sessionId, string title, CancellationToken ct) {
-        if (WorkContextIds.CanonicalSessionId(sessionId) is null) return true; // nothing to converge with
+        // The server files sessions under the canonical (trimmed, dashless) key — the raw id
+        // must not ride the payload or a dashed runtime id would update a different key than
+        // the one the summary read used.
+        if (WorkContextIds.CanonicalSessionId(sessionId) is not { } canonical) return true; // nothing to converge with
 
         var (client, status) = await HttpClientExtensions.CreateClientWithAuthStatusAsync(configRoot, profiles, _baseUrl, ct);
 
@@ -48,7 +55,7 @@ internal sealed class TitleServerPort(ConfigRoot configRoot, ProfileContext prof
             if (status is AuthStatus.Expired or AuthStatus.NotAuthenticated or AuthStatus.WrongServer) return false;
 
             var payload = new JsonObject {
-                ["session_id"] = sessionId,
+                ["session_id"] = canonical,
                 ["title"]      = title,
             };
 

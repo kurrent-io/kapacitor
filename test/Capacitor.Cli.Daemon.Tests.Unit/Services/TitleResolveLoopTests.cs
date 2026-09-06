@@ -185,6 +185,80 @@ public class TitleResolveLoopTests {
     }
 
     [Test]
+    public async Task A_failed_server_read_blocks_the_push_too() {
+        var h = new Harness();
+        h.Agents.Add(Agent());
+        h.Native = _ => "Native title";
+        h.Server.Get = _ => throw new HttpRequestException("outage");
+        var loop = h.Build();
+
+        await loop.TickAsync(CancellationToken.None);
+
+        // The native title still shows locally, but nothing may overwrite a server title
+        // whose presence could not be checked.
+        await Assert.That(h.Applied).IsEquivalentTo([("a1", "Native title")]);
+        await Assert.That(h.Server.Pushed).IsEmpty();
+    }
+
+    [Test]
+    public async Task The_loops_own_pushed_title_does_not_block_a_native_revision() {
+        var h = new Harness();
+        h.Agents.Add(Agent());
+        var native = "First cut";
+        h.Native = _ => native;
+        var loop = h.Build();
+
+        await loop.TickAsync(CancellationToken.None);
+        h.Server.Get = _ => "First cut"; // the server now echoes what the loop itself pushed
+        native = "Second cut";
+        await loop.TickAsync(CancellationToken.None);
+
+        await Assert.That(h.Applied.Select(a => a.Title)).IsEquivalentTo(["First cut", "Second cut"]);
+        await Assert.That(h.Server.Pushed.Select(p => p.Title)).IsEquivalentTo(["First cut", "Second cut"]);
+    }
+
+    [Test]
+    public async Task An_independent_server_title_still_wins_over_a_native_revision() {
+        var h = new Harness();
+        h.Agents.Add(Agent());
+        var native = "First cut";
+        h.Native = _ => native;
+        var loop = h.Build();
+
+        await loop.TickAsync(CancellationToken.None);
+        h.Server.Get = _ => "Watcher generated title"; // someone else's title, not our push
+        native = "Second cut";
+        await loop.TickAsync(CancellationToken.None);
+
+        await Assert.That(h.Applied.Last().Title).IsEqualTo("Watcher generated title");
+        await Assert.That(h.Server.Pushed.Select(p => p.Title)).IsEquivalentTo(["First cut"]);
+    }
+
+    [Test]
+    public async Task A_short_real_title_that_prefixes_the_prompt_is_still_adopted() {
+        var h = new Harness();
+        h.Agents.Add(Agent(prompt: "Fix login timeout by adding retries"));
+        h.Server.Get = _ => "Fix login timeout"; // a genuine title, not a truncation
+        var loop = h.Build();
+
+        await loop.TickAsync(CancellationToken.None);
+
+        await Assert.That(h.Applied).IsEquivalentTo([("a1", "Fix login timeout")]);
+    }
+
+    [Test]
+    public async Task A_full_first_line_echo_is_still_not_adopted() {
+        var h = new Harness();
+        h.Agents.Add(Agent(prompt: "Fix login timeout by adding retries\nmore detail"));
+        h.Server.Get = _ => "Fix login timeout by adding retries";
+        var loop = h.Build();
+
+        await loop.TickAsync(CancellationToken.None);
+
+        await Assert.That(h.Applied).IsEmpty();
+    }
+
+    [Test]
     public async Task A_failed_push_is_retried_on_the_next_tick() {
         var h = new Harness();
         h.Agents.Add(Agent());

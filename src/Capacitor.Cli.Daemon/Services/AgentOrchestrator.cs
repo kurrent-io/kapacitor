@@ -4839,7 +4839,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         var result = await TitleGeneration.GenerateAsync(
             agent.Prompt!, null, msg => _logger.LogDebug("Title generation ({AgentId}): {Message}", agent.Id, msg),
             _config.Profiles.Resolution.Profile, _home,
-            vendor: agent.Vendor == "codex" ? "codex" : "claude");
+            vendor: agent.Vendor == "codex" ? "codex" : "claude", ct: ct);
 
         return result?.Result;
     }
