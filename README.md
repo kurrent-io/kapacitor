@@ -46,6 +46,7 @@
   | Linux | x64, ARM64 |
   | Linux (Alpine/musl) | x64, ARM64 |
   | Windows | x64 |
+- Desktop app: macOS 15 (Sequoia) or later on Apple silicon.
 
 ## Getting started
 
@@ -86,6 +87,14 @@ npm automatically selects the right native binary for your [platform](#requireme
 > **Internal-tenant testers:** opt into pre-release builds with `kcap update
 > --beta`; everyone else should stay on the default stable channel. See
 > [`kcap update`](#other-commands) below.
+
+### Desktop app (macOS)
+
+Download `Kurrent-Capacitor-osx-arm64.dmg` from https://www.kurrent.io/download/mac (Apple silicon, macOS 15 or later), open it and drag **Kurrent Capacitor** to **Applications**. The app bundles its own `kcap` CLI and daemon: you do not need the npm install as well, and the first run offers to link `kcap` onto your terminal PATH and to install the daemon as a background service.
+
+The app must run from the Applications folder — launched from the disk image or from Downloads it offers to move itself there first, because the terminal link and the background service point at its location.
+
+Updates arrive through the app: it checks a few times a day, downloads in the background and asks before restarting ("Check for Updates…" in the menu bar checks now). A bundled `kcap update` reports this and does nothing else. The bundled CLI follows the app's channel; the npm package stays the headless/CI channel.
 
 ### 2. Run setup
 
