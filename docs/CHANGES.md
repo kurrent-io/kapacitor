@@ -887,3 +887,25 @@ narrower than before: several text blocks in one Claude user record are one bubb
 tool results is not shown; the envelope carries no model; a user record opening with an
 available-deferred-tools injection is dropped, as the server drops it; and a meta record's tool
 results settle their tool rows instead of vanishing with the record.
+
+## A vendor-neutral tool kind on canonical tool-call events
+
+**#746** puts an `AcpToolKind` beside `ToolName` on `AcpEventEnvelope`, so a consumer that wants to
+know what a tool call *did* reads one closed vocabulary — the ten ACP `ToolKind` tokens — instead of
+keeping a per-vendor name table. `ToolName` stays raw vendor fidelity: the server's Codex handling
+pairs `exec_command` with `write_stdin` and reaches into `apply_patch` results by that name, so the
+name is not ours to normalise. The field is nullable and additive; `ContractVersion` stays 1.
+
+**A null kind means no lane classified the call, never "none of the above."** `AcpToolKind.Normalize`
+is what keeps the set closed — an agent-supplied token outside the vocabulary becomes `other` rather
+than reaching a consumer that switches on it — while an absent one stays absent. That leaves null free
+to say something else: the lanes that carry no kind yet.
+
+**A codex shell call is classified by its command, because it has no name of its own for a read or a
+search** — `sed -n`, `cat` and `rg` all arrive as one tool. An unclassifiable command is `execute`: a
+shell call did run something.
+
+**A hosted web search surfaces as a paired call and result.** It has no `item/started` row, so the
+completed item carries both halves, the same rule `fileChange` follows — an orphan tool call renders
+as running forever, since a result is what settles one. It is `fetch`, the kind a web tool gets
+wherever it appears, so the hosted lane and a later import of the same session cannot disagree.
