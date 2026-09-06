@@ -30,12 +30,13 @@ public sealed class UpdateCoordinator {
     UpdateCandidate? _ready;
     UpdateCandidate? _pendingApply;
 
-    /// The one field `RunCheckAsync` writes without owning the single-flight lane (it always runs
-    /// alone, guarded by `_inflight`), yet `RunMenuActionAsync` and `RunScheduleAsync` read it from
-    /// whatever thread called them — so the read and the write both go through `_lock`.
+    /// The single-flight lane (`_inflight`) guarantees only one check ever writes this. Readers run
+    /// on the UI thread via `RunMenuActionAsync`, and `RunCheckAsync` holds `_lock` across its
+    /// synchronous prefix (through `_menu.OnNext` and into `ConfirmAsync`) — so this must never
+    /// block on `_lock`, or a UI-thread caller blocked on the same dialog deadlocks against it.
     UpdateCandidate? Ready {
-        get { lock (_lock) return _ready; }
-        set { lock (_lock) _ready = value; }
+        get => Volatile.Read(ref _ready);
+        set => Volatile.Write(ref _ready, value);
     }
 
     public UpdateCoordinator(
