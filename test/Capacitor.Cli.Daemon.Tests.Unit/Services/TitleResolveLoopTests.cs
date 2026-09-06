@@ -14,15 +14,20 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 public class TitleResolveLoopTests {
     static readonly DateTime T0 = new(2026, 9, 1, 10, 0, 0, DateTimeKind.Utc);
 
+    /// By default behaves like the real server: a successfully pushed title is what the next
+    /// GET returns. Assign <see cref="Get"/> to script the read side explicitly.
     sealed class FakeServerPort : ITitleServerPort {
-        public Func<string, string?> Get { get; set; } = _ => null;
+        public Func<string, string?>? Get { get; set; }
+        public string? Committed { get; private set; }
         public List<(string SessionId, string Title)> Pushed { get; } = [];
         public bool PushResult { get; set; } = true;
 
-        public Task<string?> GetTitleAsync(string sessionId, CancellationToken ct) => Task.FromResult(Get(sessionId));
+        public Task<string?> GetTitleAsync(string sessionId, CancellationToken ct) =>
+            Task.FromResult(Get is not null ? Get(sessionId) : Committed);
 
         public Task<bool> PushTitleAsync(string sessionId, string title, CancellationToken ct) {
             Pushed.Add((sessionId, title));
+            if (PushResult) Committed = title;
             return Task.FromResult(PushResult);
         }
     }
@@ -296,6 +301,44 @@ public class TitleResolveLoopTests {
 
         await Assert.That(h.Applied.Select(a => a.Title)).IsEquivalentTo(["First cut", "Second cut"]);
         await Assert.That(h.Server.Pushed.Last().Title).IsEqualTo("Second cut");
+    }
+
+    [Test]
+    public async Task A_confirmed_silent_server_gets_the_local_title_re_pushed() {
+        var h = new Harness();
+        h.Agents.Add(Agent());
+        h.Native = _ => "Native title";
+        var loop = h.Build();
+
+        await loop.TickAsync(CancellationToken.None); // pushes and confirms Native title
+        h.Server.Get = _ => "Watcher generated title";
+        await loop.TickAsync(CancellationToken.None); // independent authority adopted
+        h.Server.Get = _ => null; // the server's title is later confirmed gone
+        await loop.TickAsync(CancellationToken.None);
+
+        // The stale push confirmation must not suppress reconvergence.
+        await Assert.That(h.Applied.Last().Title).IsEqualTo("Native title");
+        await Assert.That(h.Server.Pushed.Select(p => p.Title)).IsEquivalentTo(["Native title", "Native title"]);
+    }
+
+    [Test]
+    public async Task A_delayed_echo_of_an_older_attempt_is_not_authority() {
+        var h = new Harness();
+        h.Agents.Add(Agent());
+        var native = "First cut";
+        h.Native = _ => native;
+        h.Server.PushResult = false; // acks lost; either attempt may have committed
+        h.Server.Get = _ => null;
+        var loop = h.Build();
+
+        await loop.TickAsync(CancellationToken.None); // attempts First cut
+        native = "Second cut";
+        await loop.TickAsync(CancellationToken.None); // attempts Second cut
+        h.Server.Get = _ => "First cut"; // the older attempt surfaces late
+        await loop.TickAsync(CancellationToken.None);
+
+        // The superseded attempt is still ours — it must not freeze the ladder as authority.
+        await Assert.That(h.Applied.Select(a => a.Title)).IsEquivalentTo(["First cut", "Second cut"]);
     }
 
     [Test]

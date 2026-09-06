@@ -36,12 +36,17 @@ internal sealed class TitleResolveLoop {
     sealed class AgentTitleState {
         public string? Applied;
         public string? Generated;
-        /// Last title confirmed accepted by the server — suppresses re-pushes.
+        /// Last title the server was OBSERVED holding after our push — suppresses re-pushes
+        /// only while a successful read keeps confirming it; a read observing anything else
+        /// (silence included) proves the confirmation stale and re-arms the push.
         public string? PushedTitle;
-        /// Last title a push was ATTEMPTED with, confirmed or not. A push whose response was
-        /// lost may still have committed, so this too must count as "ours" when the server
-        /// echoes it back — or the loop would adopt its own title as independent authority.
-        public string? LastPushAttempt;
+        /// Every title a push was ATTEMPTED with, confirmed or not. An attempt whose response
+        /// was lost may still have committed and surface on a later read — even after newer
+        /// attempts — so each must keep counting as "ours" when the server echoes it, or the
+        /// loop would adopt its own stale title as independent authority. Bounded: a native
+        /// title revises at most once per tick, and overflow trades memory for re-opening
+        /// only a >32-revision-stale echo.
+        public readonly HashSet<string> PushAttempts = new(StringComparer.Ordinal);
         /// The authoritative server title as of the last SUCCESSFUL read. Held across failed
         /// reads so an outage tick cannot demote the applied title down the ladder; cleared
         /// only by a successful read proving the server silent.
@@ -115,13 +120,17 @@ internal sealed class TitleResolveLoop {
                 // attempt can still have committed) coming back is not an independent server
                 // title: treating it as one would freeze the ladder on our own echo and a
                 // later native revision could never advance past it.
-                if (serverTitle is not null && serverTitle != state.PushedTitle
-                 && serverTitle != state.LastPushAttempt
+                if (serverTitle is not null && !state.PushAttempts.Contains(serverTitle)
                  && !IsPromptEcho(serverTitle, agent.Prompt)) {
                     serverReal = serverTitle;
                 }
 
                 state.ServerTitle = serverReal;
+
+                // Suppression holds only while the server is observed still holding the pushed
+                // title; anything else — silence included — proves the confirmation stale, and
+                // the local title must be able to converge again.
+                if (state.PushedTitle is not null && serverTitle != state.PushedTitle) state.PushedTitle = null;
             } catch (Exception ex) {
                 // An unreadable server is not a silent one: generation must not spend an LLM
                 // call on a session whose watcher-made title merely couldn't be fetched.
@@ -155,7 +164,8 @@ internal sealed class TitleResolveLoop {
         var local = native ?? state.Generated;
         if (serverReadOk && serverReal is null && local is not null && local != state.PushedTitle
          && agent.SessionId is { } sid) {
-            state.LastPushAttempt = local;
+            if (state.PushAttempts.Count >= 32) state.PushAttempts.Clear();
+            state.PushAttempts.Add(local);
 
             var pushed = false;
             try {
