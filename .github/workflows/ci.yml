@@ -62,6 +62,10 @@ jobs:
           node npm/kcap/bin/resolve.test.js
           node npm/kcap/bin/refresh.test.js
 
+      - name: Run shell script tests
+        if: runner.os == 'Linux'
+        run: bash scripts/run-shell-tests.sh
+
       - name: Run tests
         # --max-parallel-test-modules 1 runs one assembly at a time. Two things block lifting it,
         # both measured with it off: five concurrent assemblies starve the tests that assert a
