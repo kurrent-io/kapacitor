@@ -386,7 +386,7 @@ sessions (cards must render without a terminal, §9 slice 2).
   seeded via HTTP, zero broadcasts, claim absent in the token" and surfaces a diagnostic notice
   instead of an eternally-stale view.
 
-## 7. Companion kcap-server work (Linear-only issue)
+## 7. Companion kcap-server work (AI-2537)
 
 - **Required for slice 2's cold-start attention parity**: a pending-interrupts summary a remote
   client can seed from (which sessions have unresolved prompts, with request ids), per §4 —
