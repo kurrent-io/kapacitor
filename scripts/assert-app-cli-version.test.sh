@@ -23,4 +23,9 @@ assert "kcap 0.11.38"                  "0.11.38"              1   # below the fl
 assert "kcap 0.12.0-beta.0"            "0.12.0-beta.0"        1   # a prerelease of the floor is below it
 assert $'kcap 0.12.0-beta.2\nextra'    "0.12.0-beta.2"        1   # more than one line
 assert "0.12.0-beta.2"                 "0.12.0-beta.2"        1   # missing prefix
+
+rc=0
+FAKE_VERSION_OUTPUT="kcap 1.2" bash "$sh" "$fake" "1.2" "0.12.0-beta.1" >/dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || { echo "FAIL: malformed version core 'kcap 1.2' -> rc=0 (want non-zero)"; fail=1; }
+
 [ "$fail" -eq 0 ] && echo "ok" || exit 1

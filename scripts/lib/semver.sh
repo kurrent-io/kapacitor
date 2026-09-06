@@ -10,13 +10,22 @@ semver_is_prerelease() {
   [[ "$v" == *-* ]]
 }
 
-# Prints -1, 0 or 1 for a<b, a=b, a>b.
+# A version core is exactly three non-negative integers, no leading zeros.
+semver_validate_core() {
+  [[ "$1" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+}
+
+# Prints -1, 0 or 1 for a<b, a=b, a>b. Returns 2 and prints nothing when either
+# core is malformed, so a caller can't mistake a refusal for a comparison.
 semver_cmp() {
   local a b acore bcore apre="" bpre=""
   a="$(semver_strip_build "$1")"; b="$(semver_strip_build "$2")"
   acore="${a%%-*}"; bcore="${b%%-*}"
   [ "$acore" != "$a" ] && apre="${a#*-}"
   [ "$bcore" != "$b" ] && bpre="${b#*-}"
+
+  semver_validate_core "$acore" || { echo "semver_cmp: invalid version core '$acore'" >&2; return 2; }
+  semver_validate_core "$bcore" || { echo "semver_cmp: invalid version core '$bcore'" >&2; return 2; }
 
   local a1 a2 a3 b1 b2 b3
   IFS=. read -r a1 a2 a3 <<<"$acore"

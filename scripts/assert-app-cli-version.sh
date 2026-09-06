@@ -24,7 +24,8 @@ actual="${output#kcap }"
 if [ "$(semver_strip_build "$actual")" != "$(semver_strip_build "$expected")" ]; then
   echo "bundled kcap reports $actual, expected $expected" >&2; exit 1
 fi
-if [ "$(semver_cmp "$actual" "$floor")" -lt 0 ]; then
+cmp_result="$(semver_cmp "$actual" "$floor")" || exit 1
+if [ "$cmp_result" -lt 0 ]; then
   echo "bundled kcap $actual is below the app's CLI floor $floor" >&2; exit 1
 fi
 echo "bundled kcap $actual matches $expected and satisfies floor $floor"

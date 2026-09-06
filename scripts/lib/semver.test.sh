@@ -31,4 +31,17 @@ pre "0.12.0+sha"    no
 
 [ "$(semver_strip_build "1.2.3+build.5")" = "1.2.3" ] || { echo "FAIL: strip_build"; fail=1; }
 
+refuses() {
+  local got rc
+  set +e
+  got="$(semver_cmp "$1" "$2")"; rc=$?
+  set -e
+  if [ "$rc" != 2 ] || [ -n "$got" ]; then
+    echo "FAIL: semver_cmp '$1' '$2' -> rc=$rc stdout='$got' (want rc=2, empty stdout)"; fail=1
+  fi
+}
+refuses "1.2.3.4" "1.2.3.5"   # extra component
+refuses "1.08.3"  "1.8.3"     # leading zero
+refuses "1.2"     "1.2.0"     # missing component
+
 [ "$fail" -eq 0 ] && echo "ok" || exit 1
