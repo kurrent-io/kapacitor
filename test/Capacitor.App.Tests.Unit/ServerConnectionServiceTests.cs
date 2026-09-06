@@ -98,4 +98,45 @@ public class ServerConnectionServiceTests {
         await lane.RestartAsync();
         await Next(lane.Status, s => s.State == ServerLaneState.Connected);
     }
+
+    [Test]
+    public async Task LaunchInvokesOverTheSharedConnection() {
+        await using var host = await HubTestHost.StartAsync();
+        HubTestHost.LaunchHandler = payload => {
+            // The payload arrives with the pinned snake_case names whatever the policy does.
+            if (!payload.TryGetProperty("daemon_name", out var d) || d.GetString() != "work-mac")
+                throw new InvalidOperationException("daemon_name missing");
+            return "agent-42";
+        };
+        await using var lane = Lane(host);
+        lane.Start();
+        await Next(lane.Status, s => s.State == ServerLaneState.Connected);
+
+        var outcome = await ((ILaunchClient)lane).StartAsync(
+            new LaunchRequest("work-mac", "/work/repo", "claude", "do it"), CancellationToken.None);
+        await Assert.That(outcome.Started).IsTrue();
+        await Assert.That(outcome.AgentId).IsEqualTo("agent-42");
+        await Assert.That(HubTestHost.LaunchCalls).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task LaunchWhileDisconnectedFailsWithoutThrowing() {
+        await using var lane = new ServerConnectionService("http://127.0.0.1:1", () => Task.FromResult<string?>(null));
+        lane.Start();
+        var outcome = await ((ILaunchClient)lane).StartAsync(
+            new LaunchRequest("d", "/r", "claude", null), CancellationToken.None);
+        await Assert.That(outcome.Started).IsFalse();
+        await Assert.That(outcome.Error).IsNotNull();
+    }
+
+    [Test]
+    public async Task UnauthorizedIsDetectedAnywhereInTheExceptionChain() {
+        var wrapped = new InvalidOperationException(
+            "outer", new HttpRequestException("401", null, System.Net.HttpStatusCode.Unauthorized));
+
+        await Assert.That(ServerConnectionService.IsUnauthorized(wrapped)).IsTrue();
+        await Assert.That(ServerConnectionService.IsUnauthorized(
+            new HttpRequestException("403", null, System.Net.HttpStatusCode.Forbidden))).IsFalse();
+        await Assert.That(ServerConnectionService.IsUnauthorized(new InvalidOperationException("no http"))).IsFalse();
+    }
 }

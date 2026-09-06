@@ -101,7 +101,7 @@ public partial class App : Application {
     // holder on both teardown paths, after _home — never before, or a launch still in flight would
     // lose its transport mid-invoke.
     ServerClients? _serverClients;
-    ServerLaunchClient? _launch;
+    ServerConnectionService? _serverLane;
     TrayViewModel? _trayVm;
     TrayIconManager? _tray;
     // No disposal needed — RefCount tears its Interval down with its last subscriber, and every
@@ -327,10 +327,12 @@ public partial class App : Application {
         // One launch client and one work-context source for the app, not one per window the
         // coordinator builds — each owns a live transport, and only a held instance can be
         // disposed at teardown.
-        var launch = new ServerLaunchClient(_config, profiles);
+        var serverLane = new ServerConnectionService(_config, profiles);
+        serverLane.Start();
         var workContext = new ServerWorkContextSource(_config, profiles);
-        var serverClients = new ServerClients(launch, workContext);
-        _launch = launch;
+        var serverClients = new ServerClients(serverLane, workContext);
+        _serverLane = serverLane;
+        ILaunchClient launch = serverLane;
         _serverClients = serverClients;
 
         // One attach client per attempt, dialed at the daemon's own control socket; 80x24 is a
@@ -344,8 +346,8 @@ public partial class App : Application {
 
         _coordinator = new MainWindowCoordinator(
             () => BuildAndShowMainWindow(
-                service, _config, actions, notifier, ticker, _shutdown.Token, activity, lifecycle.StartActionAsync,
-                lifecycleStatus, launch, _navigation, _workspaceTeardown.Track, BuildWorkspace,
+                service, _config, actions, notifier, ticker, _shutdown.Token, activity, launch, lifecycle.StartActionAsync,
+                lifecycleStatus, _navigation, _workspaceTeardown.Track, BuildWorkspace,
                 // The tenant slug the rail footer shows — profiles are named after it at sign-in.
                 tenantName: profiles?.Resolution?.ProfileName, agentsWithPending: permissions.AgentsWithPending,
                 requestSignIn: requestSignIn,
@@ -438,7 +440,7 @@ public partial class App : Application {
     async Task RefreshAfterReauthAsync() {
         _home?.NotifySignInCompleted();
         _serverClients?.NotifySignInCompleted();
-        if (_launch is not null) await _launch.InvalidateAsync().ConfigureAwait(true);
+        if (_serverLane is not null) await _serverLane.RestartAsync().ConfigureAwait(true);
         if (_service is not null) await _service.RestartLoopAsync().ConfigureAwait(true);
     }
 
@@ -740,8 +742,9 @@ public partial class App : Application {
     internal static MainWindow BuildAndShowMainWindow(
             IDaemonClientService service, ConfigRoot config,
             AgentActionService actions, IAppNotifier notifier, ITicker ticker,
-            CancellationToken shutdownToken, ActivityViewModel activity, Func<CancellationToken, Task>? startAction = null,
-            IObservable<string?>? lifecycleStatus = null, ILaunchClient? launch = null,
+            CancellationToken shutdownToken, ActivityViewModel activity, ILaunchClient launch,
+            Func<CancellationToken, Task>? startAction = null,
+            IObservable<string?>? lifecycleStatus = null,
             NavigationGate? navigation = null, Action<Func<Task>>? trackWorkspaceTeardown = null,
             Func<string, WorkspaceViewModel>? workspaceFactory = null, string? tenantName = null,
             IObservable<IReadOnlySet<string>>? agentsWithPending = null, Action? requestSignIn = null,
@@ -750,13 +753,9 @@ public partial class App : Application {
         // is a View-level concern (WindowNotificationManager lives on MainWindow) independent of
         // the VM's WhenActivated-scoped projections.
         //
-        // Home is built here, over the SAME `service` instance MainWindowViewModel
-        // itself uses — never a second daemon connection. AppStateStore/ServerLaunchClient are both
-        // cheap, self-contained constructions (file-path-gated I/O; a HubConnection that only opens
-        // lazily on first StartAsync), the same reasoning BuildLifecycleController's own
-        // `new AppStateStore(config.Path("app-state.json"))` already relies on. The
-        // composition root passes its held client so teardown can dispose it; a caller that passes
-        // none (a test) gets an unheld one, which owns nothing until a launch is actually made.
+        // Home is built here, over the SAME `service` instance MainWindowViewModel itself uses —
+        // never a second daemon connection. The composition root passes its held server lane so
+        // teardown can dispose it; a caller building its own graph (a test) passes a stub.
         //
         // Home's three navigation callbacks close over `vm`, which cannot exist yet (it takes Home
         // itself) — a captured local, assigned right below, is what ties the knot without a
@@ -765,7 +764,7 @@ public partial class App : Application {
         MainWindowViewModel? vm = null;
         var home = new HomeViewModel(
             service, new AppStateStore(config.Path("app-state.json")),
-            launch ?? new ServerLaunchClient(config, null), new RepoPathStore(config).GetSortedPathsAsync, shutdownToken,
+            launch, new RepoPathStore(config).GetSortedPathsAsync, shutdownToken,
             openSession: agentId => vm?.OpenSession(agentId),
             navigationGeneration: () => vm?.NavigationGeneration ?? 0,
             openSessionIfCurrent: (agentId, generation) => vm?.OpenSessionIfCurrent(agentId, generation),

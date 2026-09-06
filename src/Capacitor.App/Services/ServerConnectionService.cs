@@ -15,7 +15,7 @@ namespace Capacitor.App.Services;
 /// broadcast can slip past a fresh connection; a closed or cold-failed connection re-dials on a
 /// 1/2/5/10/30s ladder because SignalR's automatic reconnect covers neither cold-start failure
 /// nor a close it decides not to retry.
-public sealed class ServerConnectionService : IServerLane, IAsyncDisposable {
+public sealed class ServerConnectionService : IServerLane, ILaunchClient, IAsyncDisposable {
     public const string TeamClaimMissingNotice =
         "Signed-in token carries no team claim — server broadcasts may not reach this app.";
 
@@ -142,6 +142,27 @@ public sealed class ServerConnectionService : IServerLane, IAsyncDisposable {
         } catch (Exception) {
             return null;
         }
+    }
+
+    public async Task<LaunchOutcome> StartAsync(LaunchRequest request, CancellationToken ct) {
+        try {
+            var hub = _hub;
+            if (hub is not { State: HubConnectionState.Connected })
+                return new LaunchOutcome(false, null, "Not connected to the server.");
+            var agentId = await hub.InvokeAsync<string>(
+                HubMethods.RequestLaunchAgentV2, LaunchPayload.For(request), ct).ConfigureAwait(false);
+            return new LaunchOutcome(Started: true, AgentId: agentId, Error: null);
+        } catch (Exception ex) {
+            return new LaunchOutcome(false, null, ex.Message, IsUnauthorized(ex));
+        }
+    }
+
+    /// Walks the chain because SignalR surfaces the negotiate failure wrapped as often as bare.
+    internal static bool IsUnauthorized(Exception ex) {
+        for (Exception? e = ex; e is not null; e = e.InnerException) {
+            if (e is HttpRequestException { StatusCode: System.Net.HttpStatusCode.Unauthorized }) return true;
+        }
+        return false;
     }
 
     static async Task AwaitQuietly(Task t) {
