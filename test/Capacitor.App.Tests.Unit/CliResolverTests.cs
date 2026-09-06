@@ -35,28 +35,51 @@ public class CliResolverTests {
 
     [Test]
     public async Task ResolvePath_prefers_the_override_when_it_exists() {
-        var path = CliResolver.ResolvePath(_ => "/opt/kcap/kcap", p => p == "/opt/kcap/kcap");
+        var path = CliResolver.ResolvePath(_ => "/opt/kcap/kcap", p => p == "/opt/kcap/kcap", "/nowhere");
 
         await Assert.That(path).IsEqualTo("/opt/kcap/kcap");
     }
 
     [Test]
     public async Task ResolvePath_broken_override_is_null_not_a_silent_fallback() {
-        var path = CliResolver.ResolvePath(_ => "/opt/kcap/kcap", _ => false);
+        var path = CliResolver.ResolvePath(_ => "/opt/kcap/kcap", _ => false, "/nowhere");
 
         await Assert.That(path).IsNull();
     }
 
     [Test]
     public async Task ResolvePath_no_override_falls_back_to_kcap_on_path() {
-        var path = CliResolver.ResolvePath(_ => null, _ => false);
+        var path = CliResolver.ResolvePath(_ => null, _ => false, "/nowhere");
 
         await Assert.That(path).IsEqualTo("kcap");
     }
 
     [Test]
     public async Task ResolvePath_empty_override_is_treated_as_unset() {
-        var path = CliResolver.ResolvePath(_ => "", _ => false);
+        var path = CliResolver.ResolvePath(_ => "", _ => false, "/nowhere");
+
+        await Assert.That(path).IsEqualTo("kcap");
+    }
+
+    [Test]
+    public async Task ResolvePath_uses_the_bundle_sibling_when_present() {
+        var sibling = Path.Combine("/Applications/Kurrent Capacitor.app/Contents/MacOS", "kcap");
+
+        var path = CliResolver.ResolvePath(_ => null, p => p == sibling, "/Applications/Kurrent Capacitor.app/Contents/MacOS");
+
+        await Assert.That(path).IsEqualTo(sibling);
+    }
+
+    [Test]
+    public async Task ResolvePath_override_wins_over_the_bundle_sibling() {
+        var path = CliResolver.ResolvePath(_ => "/opt/kcap/kcap", _ => true, "/Applications/Kurrent Capacitor.app/Contents/MacOS");
+
+        await Assert.That(path).IsEqualTo("/opt/kcap/kcap");
+    }
+
+    [Test]
+    public async Task ResolvePath_missing_sibling_falls_through_to_path() {
+        var path = CliResolver.ResolvePath(_ => null, _ => false, "/Applications/Kurrent Capacitor.app/Contents/MacOS");
 
         await Assert.That(path).IsEqualTo("kcap");
     }
