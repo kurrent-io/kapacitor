@@ -1356,9 +1356,9 @@ public partial class App : Application {
     // the deferred pass below proceeds exactly as it did before the tray existed.
     internal static Task DisposeUiThenConfirmShutdownAsync(
             IReadOnlyList<IDisposable?> uiDisposables, Func<ValueTask>? disposeAsync, Action markConfirmed,
-            IClassicDesktopStyleApplicationLifetime desktop, int exitCode) {
+            IClassicDesktopStyleApplicationLifetime desktop, int exitCode, Action? applyOnExit = null) {
         DisposeAll(uiDisposables, "shutdown");
-        return DisposeAndConfirmShutdownAsync(disposeAsync, markConfirmed, desktop, exitCode);
+        return DisposeAndConfirmShutdownAsync(disposeAsync, markConfirmed, desktop, exitCode, applyOnExit);
     }
 
     // Per-entry guard for the same reason DisposeAndConfirmShutdownAsync wraps its disposeAsync: a
@@ -1389,7 +1389,7 @@ public partial class App : Application {
     // that happening first.
     internal static async Task DisposeAndConfirmShutdownAsync(
             Func<ValueTask>? disposeAsync, Action markConfirmed, IClassicDesktopStyleApplicationLifetime desktop,
-            int exitCode) {
+            int exitCode, Action? applyOnExit = null) {
         // A throwing disposeAsync must never skip markConfirmed/TryShutdown — otherwise
         // _shutdownConfirmed is never set while _shutdownStarted stays true, and every later
         // quit is cancelled forever.
@@ -1399,6 +1399,13 @@ public partial class App : Application {
             Console.Error.WriteLine($"kcap app failed to dispose the daemon client service during shutdown: {ex}");
         } finally {
             markConfirmed();
+            // Last, after every disposal: the updater waits at most 60 s for this process to exit,
+            // and the quiesce above can use all of that on its own.
+            try {
+                applyOnExit?.Invoke();
+            } catch (Exception ex) {
+                Console.Error.WriteLine($"kcap app failed to hand the pending update to the updater: {ex}");
+            }
             desktop.TryShutdown(exitCode);
         }
     }

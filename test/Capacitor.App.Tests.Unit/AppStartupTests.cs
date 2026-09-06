@@ -356,6 +356,35 @@ public class AppStartupTests {
         await Assert.That(fake.ShutdownCalls).IsEquivalentTo([1], CollectionOrdering.Matching);
     }
 
+    /// The updater's own wait is bounded, so it must be launched after every disposal has run and
+    /// immediately before the platform shutdown call — never earlier.
+    [Test]
+    public async Task DisposeAndConfirmShutdownAsync_applies_the_update_after_disposal_and_before_shutdown() {
+        var (desktop, fake) = FakeClassicDesktopLifetime.Create();
+        var order = new List<string>();
+
+        await AppUnderTest.DisposeAndConfirmShutdownAsync(
+            disposeAsync: () => { order.Add("dispose"); return ValueTask.CompletedTask; },
+            markConfirmed: () => order.Add("confirm"),
+            desktop,
+            exitCode: 0,
+            applyOnExit: () => order.Add(fake.ShutdownCalls.Count == 0 ? "apply-before-shutdown" : "apply-after-shutdown"));
+
+        await Assert.That(order).IsEquivalentTo(["dispose", "confirm", "apply-before-shutdown"], CollectionOrdering.Matching);
+        await Assert.That(fake.ShutdownCalls).IsEquivalentTo([0], CollectionOrdering.Matching);
+    }
+
+    [Test]
+    public async Task DisposeAndConfirmShutdownAsync_still_shuts_down_when_apply_throws() {
+        var (desktop, fake) = FakeClassicDesktopLifetime.Create();
+
+        await AppUnderTest.DisposeAndConfirmShutdownAsync(
+            disposeAsync: null, markConfirmed: () => { }, desktop, exitCode: 0,
+            applyOnExit: () => throw new InvalidOperationException("apply-boom"));
+
+        await Assert.That(fake.ShutdownCalls).IsEquivalentTo([0], CollectionOrdering.Matching);
+    }
+
     // spec §3.6: shutdown awaits DaemonLifecycleController.QuiescedAsync (mutations are never
     // abandoned) but only up to a cap, since an internally-triggered mutation has no shutdown-token
     // wiring of its own. AwaitQuiescedAsync is the extracted seam DisposeAndShutdownAsync wires it
