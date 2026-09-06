@@ -45,8 +45,10 @@ public sealed record AgentStatusDto(
     // unknown — the app falls back to its vendor heuristic. Always emitted:
     // false is a real value, not an absence.
     bool? HasTerminal = null,
-    // The launch prompt's first non-blank line, truncated by the daemon (TitleFromPrompt) —
-    // display text for session rows. Trailing + nullable: null = older daemon or no goal text.
+    // Display title for session rows: seeded from the launch prompt's first non-blank line and
+    // upgraded by the daemon's title resolution (native transcript title, the server's title, or
+    // a local generation) as one lands — so its value can change across pulses. At most 120
+    // chars (the set-title cap). Trailing + nullable: null = older daemon or no goal text.
     string? Title = null,
     // Where the daemon found the agent's own transcript (Claude's project .jsonl, Codex's
     // rollout), link-resolved. Trailing + nullable: null is "older daemon", "not found yet",

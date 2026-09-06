@@ -117,11 +117,12 @@ mcp workitems:
                                 attached to.
       declare_work_breakdown   Declare that a work item is broken into parts
                                 (parent_id + part_ids); idempotent, one parent
-                                per part, all items in the same repository.
+                                per part, every item visible to the caller.
       retract_work_breakdown   Detach the named parts from the parent.
       declare_work_relation    Declare a dependency between two items (from_id,
                                 to_id, relation_kind 'blocks' or 'blocked_by');
-                                same repository, no self-relation.
+                                both ends visible to the caller, no
+                                self-relation.
       retract_work_relation    Retract a previously declared dependency.
       get_work_item_topology   Read a work item's parent, parts, and
                                 dependencies (scoped to what the caller sees).

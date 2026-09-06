@@ -10,6 +10,7 @@ namespace Capacitor.App.ViewModels;
 public sealed class SessionCardViewModel {
     public string Id { get; }
     public string Title { get; }
+    public string Sub { get; }
     public string Vendor { get; }
     public string RepoFull { get; }
     public string StatusText { get; }
@@ -23,7 +24,10 @@ public sealed class SessionCardViewModel {
         Id = dto.Id;
         Vendor = dto.Vendor;
         RepoFull = dto.RepoPath ?? "";
-        Title = $"{RepoLabel.Leaf(dto.RepoPath)} · {dto.Vendor}";
+        // The session title leads when the daemon resolved one; the repo·vendor pair then moves
+        // to the sub line so the card never loses the vendor.
+        Title = dto.Title ?? $"{RepoLabel.Leaf(dto.RepoPath)} · {dto.Vendor}";
+        Sub = dto.Title is null ? RepoFull : $"{RepoFull} · {dto.Vendor}";
         StatusText = SessionStatusDots.Label(dto);
         StatusDot = SessionStatusDots.For(dto.Status);
         CreatedAt = dto.CreatedAt;

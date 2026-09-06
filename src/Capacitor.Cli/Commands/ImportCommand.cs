@@ -2797,7 +2797,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
                 return TitleResult.Skipped;
             }
 
-            var result = await TitleGenerator.GenerateAsync(
+            var result = await TitleGeneration.GenerateAsync(
                 userText, assistantText, _ => { }, profiles.Resolution.Profile, home, vendor.VendorId);
 
             if (result is null) {

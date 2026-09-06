@@ -40,6 +40,102 @@ owner's own hosted processes, and the verdict moves nothing but a display hint.
 between rounds waits on the flow, not the user. The card and chat footer read "Waiting for input"
 over the running dot, since the process is live. The tray is unchanged.
 
+## The desktop app shows the same session titles as the web
+
+The daemon resolves a title per hosted agent and carries it in the existing `AgentStatusDto.Title`
+field, so every status consumer — rail, Home cards, tray, remote clients — upgrades without a wire
+change. Resolution is a ladder in `TitleResolveLoop`: the vendor's native transcript title (Claude
+writes `ai-title` lines; the older `summary` shape must keep being accepted), then the server's
+title, then at most one local generation per agent.
+
+**A server title that prefixes the launch prompt counts as no title.** The watcher's initial title
+and the daemon's own seed are both prefix-truncations of the prompt's first line, so adopting the
+echo would overwrite a better native title with what the seed already shows — and treating it as
+real would block both the convergence push and the generation fallback.
+
+**An unreadable server is not a silent one.** Generation costs an LLM call, and for a recorded
+session the watcher is already making that call; a fetch failure (auth lapse, outage) must not be
+read as "the watcher produced nothing" and trigger a second spend. The port throws on failure so
+the loop can tell the two apart, and generation waits out a grace period for the watcher's title
+to land.
+
+**Locally resolved titles converge via `/hooks/set-title`.** The watcher stays a legitimate
+concurrent writer — last writer wins on the server, and the loop adopts the server's title whenever
+it differs, so web and desktop settle on the identical string. A private agent's view carries no
+session id at all: its contract is no per-agent server calls, so only the local lanes apply.
+
+## Declared work structure is bounded by visibility, not by repository
+
+The server takes a breakdown or a relation whose other end lives in another repository — it bounds
+both by what the caller can see, and repository is display only. The `declare_work_breakdown` and
+`declare_work_relation` descriptions, the `kcap-workitems` preamble, the skill and the README state
+that boundary, because an agent reads them before it calls: a repository rule in that text costs
+declarations the server would have accepted, and the loss is silent — the structure is simply never
+declared.
+
+## The reviewer lookup places a session running in a linked worktree
+
+`RepoPathStore` collapses a linked worktree to its main repository before storing it, and
+`GitRepository.FindRoot` stops at the worktree's own `.git` file — so comparing the session's root
+against the advertised paths answers `no_repo_hosting_daemon` for a repository the daemon does host,
+from every session inside `<repo>/.claude/worktrees/<slug>`. That the same session can
+`start_review_flow` is not a contradiction: the server matches daemons by repository identity, not by
+path.
+
+**Both shapes of advertised path match, because a daemon's `RepoPaths` carries two origins.** The
+store collapses what it persists; a configured `AllowedRepoPaths` entry is advertised as written, so
+an operator who allowlists a worktree root by hand has that root on the wire. The session's own root
+and its main repository are both compared, and either matching is enough — collapsing one side alone
+would trade the bug for its mirror image.
+
+**The collapse lives in the aggregation, which costs it its purity.** Resolving at the call site
+would leave the next caller free to compare a raw root again, and hashing the way the server does
+would put the server's identity algorithm on the client. It touches the filesystem, but a path that
+names nothing comes back unchanged, so a synthetic root still compares as itself.
+
+A submodule keeps its own identity through this: its `.git` points into `.git/modules`, which the
+resolver leaves alone, so a submodule checkout does not match a daemon hosting the superproject.
+
+## The work-context pane reads the work item from one endpoint
+
+**AI-2521** fills the sidebar's SOON slots — the item's state, its overview, per-part completion,
+the linked issue and who is on it — from the server's one read per work item,
+`GET /api/work-items/{id}`. It joins the assignments, topology and summary calls as a fourth read:
+it starts beside the topology read once the primary assignment is known, a final 401 or a
+plan-gate 403 on it decides the whole read like the others, and any other failure degrades its
+section the way a topology blip does.
+
+**The key is the endpoint's, not split from the label.** The assignments label packed `"KEY — title"`
+by convention; the item read carries the key, the title and the tracker's enriched title as
+separate fields, so the split and its silent failure mode are gone. When the item read fails for a
+primary the pane has not shown before, the label shows whole as the title with no key chip and the
+pane is stale.
+
+**Parts move to the item read; the topology keeps the rest.** The item's parts carry a settled flag
+the topology never had, so the parts list, its "N of M" header and the marks come from there.
+Part-of, blockers and the cycle marker still come from the topology, and each section keeps its own
+last projection when its read fails.
+
+**The card's identity is the served id.** An absorbed item is served under its survivor's id, and
+the assignments row may catch up to that id a poll later. The pane keys "same primary" on the served
+id and falls back to the requested one when a read carried no item, so neither transition drops the
+projection.
+
+**Reference-class links are ignored on purpose.** The server passes `link_class = reference` rows
+through for other consumers; the issue card is the first `kind = issue` row of class `link`, and its
+URL crosses the same `LinkPolicy` boundary as the PR cards.
+
+**Contributors render as initials.** The app has no remote image loader, so `avatar_url` is carried
+on the view model and not fetched. Collapsed, the section is an initials stack with the session
+count; expanded, a row per person with their last activity. Until an item has contributors the
+row shows this session's requester, the one person the daemon knows.
+
+**A mechanical overview is hidden.** `is_overview_mechanical` marks a generated one-liner that
+restates the title; only a summarizer overview earns the paragraph under the title.
+
+The no-repository note no longer says breakdown and blockers come with the repository: the server
+dropped its same-repository rule for structure, though a work item itself still requires one.
+
 ## The SessionStart index names the repo's projects
 
 An agent can only land a memory at project scope by passing a slug, and nothing in a session told it
@@ -557,7 +653,8 @@ text, system note) closes the run. **The fold is uniform** — a lone settled ca
 command" — and **folding never hides an error**: a failed call inside a folded group puts the danger
 `✕` on the summary line. The group binds ONE inner list whose source swaps on toggle, because a
 hidden `ItemsControl` keeps its containers; expanding a group realizes every row and folding releases
-them. Expanding holds follow-tail once, so the clicked summary stays in view. Summary wording keys on
+them. Expanding is the reader's own gesture, so follow-tail leaves the clicked summary in view until
+the reader returns to the bottom. Summary wording keys on
 the transcript's tool name (Codex's rollout says `shell`, its hook says `Bash`), with Codex shell
 commands classified by `CodexCommandClassifier`, ported verbatim from the server into Core so the
 server can delete its copy on the next submodule bump. A row waiting on a permission shows an accent

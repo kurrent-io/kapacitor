@@ -19,18 +19,46 @@
             <Setter Property="Foreground" Value="{StaticResource KcapFaintBrush}" />
             <Setter Property="VerticalAlignment" Value="Center" />
         </Style>
-        <Style Selector="Border.soon">
+        <!-- State pill: purple while in flight (and for any kind the server adds), green shipped, muted closed. -->
+        <Style Selector="Border.pill">
             <Setter Property="Background" Value="{StaticResource KcapPurpleDimBrush}" />
             <Setter Property="CornerRadius" Value="999" />
             <Setter Property="Padding" Value="6,2" />
             <Setter Property="VerticalAlignment" Value="Center" />
         </Style>
-        <Style Selector="Border.soon > TextBlock">
-            <Setter Property="Text" Value="SOON" />
+        <Style Selector="Border.pill > TextBlock">
             <Setter Property="FontSize" Value="8.5" />
             <Setter Property="FontWeight" Value="Bold" />
             <Setter Property="LetterSpacing" Value="0.6" />
             <Setter Property="Foreground" Value="{StaticResource KcapPurpleBrush}" />
+        </Style>
+        <Style Selector="Border.pill.shipped">
+            <Setter Property="Background" Value="{StaticResource KcapSuccessDimBrush}" />
+        </Style>
+        <Style Selector="Border.pill.shipped > TextBlock">
+            <Setter Property="Foreground" Value="{StaticResource KcapSuccessBrush}" />
+        </Style>
+        <Style Selector="Border.pill.closed">
+            <Setter Property="Background" Value="{StaticResource KcapSurfaceBrush}" />
+        </Style>
+        <Style Selector="Border.pill.closed > TextBlock">
+            <Setter Property="Foreground" Value="{StaticResource KcapMutedBrush}" />
+        </Style>
+        <Style Selector="TextBlock.settled">
+            <Setter Property="Foreground" Value="{StaticResource KcapMutedBrush}" />
+        </Style>
+        <Style Selector="Border.avatar">
+            <Setter Property="Width" Value="24" />
+            <Setter Property="Height" Value="24" />
+            <Setter Property="CornerRadius" Value="999" />
+            <Setter Property="Background" Value="{StaticResource KcapSuccessDimBrush}" />
+        </Style>
+        <Style Selector="Border.avatar > TextBlock">
+            <Setter Property="FontSize" Value="10.5" />
+            <Setter Property="FontWeight" Value="Bold" />
+            <Setter Property="Foreground" Value="{StaticResource KcapSuccessBrush}" />
+            <Setter Property="HorizontalAlignment" Value="Center" />
+            <Setter Property="VerticalAlignment" Value="Center" />
         </Style>
         <!-- Transparent stretch wrapper for cards / nested chrome — not a hit-target of its own. -->
         <Style Selector="Button.toggle">
@@ -89,6 +117,21 @@
             <Setter Property="StrokeJoin" Value="Round" />
         </Style>
     </UserControl.Styles>
+    <UserControl.Resources>
+        <DataTemplate x:Key="LinkCard" x:DataType="vm:WorkContextLinkViewModel">
+            <Button Command="{Binding OpenCommand}" Classes="toggle" Margin="0,9,0,0" ToolTip.Tip="{Binding Url}">
+                <Border Classes="card" Padding="13,11">
+                    <StackPanel Spacing="6">
+                        <TextBlock Text="{Binding Eyebrow}" Classes="cardEyebrow" />
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <TextBlock Text="{Binding Key}" FontSize="11.5" FontWeight="Bold" Foreground="{StaticResource KcapSuccessBrush}" VerticalAlignment="Center" />
+                            <TextBlock Text="{Binding Title}" FontSize="11.5" Foreground="{StaticResource KcapTextBrush}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+            </Button>
+        </DataTemplate>
+    </UserControl.Resources>
 
     <Border BorderBrush="{StaticResource KcapBorderBrush}" BorderThickness="1,0,0,0">
         <ScrollViewer VerticalScrollBarVisibility="Auto">
@@ -117,7 +160,11 @@
                 <Border Classes="card" Margin="0,12,0,0">
                     <StackPanel Spacing="0">
                         <DockPanel>
-                            <Border DockPanel.Dock="Right" Classes="soon"><TextBlock /></Border>
+                            <Border x:Name="StatePill" DockPanel.Dock="Right" Classes="pill"
+                                    Classes.shipped="{Binding IsShipped}" Classes.closed="{Binding IsClosed}"
+                                    IsVisible="{Binding StateLabel, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
+                                <TextBlock Text="{Binding StateLabel}" />
+                            </Border>
                             <TextBlock Text="WORK ITEM" Classes="cardEyebrow" />
                         </DockPanel>
 
@@ -128,36 +175,38 @@
                                        IsVisible="{Binding Key, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
                             <TextBlock x:Name="WorkContextTitle" Text="{Binding Title}" FontSize="12.5" LineHeight="18"
                                        Foreground="{StaticResource KcapTextBrush}" TextWrapping="Wrap" Margin="0,4,0,0" />
+                            <TextBlock x:Name="OverviewText" Text="{Binding Overview}" FontSize="11" LineHeight="16"
+                                       Foreground="{StaticResource KcapMutedBrush}" TextWrapping="Wrap" Margin="0,6,0,0"
+                                       IsVisible="{Binding Overview, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
                             <TextBlock x:Name="PartOfLine" Text="{Binding PartOfTitle, StringFormat='Part of {0}'}" FontSize="10.5"
                                        Foreground="{StaticResource KcapMutedBrush}" TextWrapping="Wrap" Margin="0,4,0,0"
                                        IsVisible="{Binding PartOfTitle, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
 
-                            <!-- Parts: header toggle, then one row per part. -->
                             <Button x:Name="PartsToggle" Command="{Binding TogglePartsCommand}" Classes="sectionHeader" Margin="-8,8,-8,0">
-                                <DockPanel>
-                                    <Border DockPanel.Dock="Right" Classes="soon"><TextBlock /></Border>
-                                    <StackPanel Orientation="Horizontal" Spacing="7">
-                                        <!-- Stroked chevron, not a text glyph — the 9px ▸ rendered as a dot. -->
-                                        <Panel Width="12" Height="12" VerticalAlignment="Center">
-                                            <Path Classes="chevron" Data="M3,4.5 L6,7.5 L9,4.5" IsVisible="{Binding PartsExpanded}" />
-                                            <Path Classes="chevron" Data="M4.5,3 L7.5,6 L4.5,9" IsVisible="{Binding !PartsExpanded}" />
-                                        </Panel>
-                                        <TextBlock Text="{Binding PartsHeader}" FontSize="10.5" Foreground="{StaticResource KcapMutedBrush}" VerticalAlignment="Center" />
-                                    </StackPanel>
-                                </DockPanel>
+                                <StackPanel Orientation="Horizontal" Spacing="7">
+                                    <!-- Stroked chevron, not a text glyph — the 9px ▸ rendered as a dot. -->
+                                    <Panel Width="12" Height="12" VerticalAlignment="Center">
+                                        <Path Classes="chevron" Data="M3,4.5 L6,7.5 L9,4.5" IsVisible="{Binding PartsExpanded}" />
+                                        <Path Classes="chevron" Data="M4.5,3 L7.5,6 L4.5,9" IsVisible="{Binding !PartsExpanded}" />
+                                    </Panel>
+                                    <TextBlock Text="{Binding PartsHeader}" FontSize="10.5" Foreground="{StaticResource KcapMutedBrush}" VerticalAlignment="Center" />
+                                </StackPanel>
                             </Button>
                             <ItemsControl x:Name="PartsList" ItemsSource="{Binding Parts}" Margin="0,8,0,0" IsVisible="{Binding PartsExpanded}">
                                 <ItemsControl.ItemTemplate>
                                     <DataTemplate x:DataType="vm:WorkContextPartViewModel">
                                         <StackPanel Orientation="Horizontal" Spacing="9" Margin="0,0,0,7">
+                                            <!-- Settled: filled with a check. This session: a green ring with a dot. Else: an empty ring. -->
                                             <Panel Width="12" Height="12" VerticalAlignment="Center">
-                                                <Ellipse Width="12" Height="12" Stroke="{StaticResource KcapBorderBrush}" StrokeThickness="1.5" IsVisible="{Binding !IsThisSession}" />
-                                                <Ellipse Width="12" Height="12" Fill="{StaticResource KcapSuccessBrush}" IsVisible="{Binding IsThisSession}" />
+                                                <Ellipse Width="12" Height="12" Stroke="{StaticResource KcapBorderBrush}" StrokeThickness="1.5" IsVisible="{Binding !IsSettled}" />
+                                                <Ellipse Width="12" Height="12" Stroke="{StaticResource KcapSuccessBrush}" StrokeThickness="1.5" IsVisible="{Binding IsThisSession}" />
+                                                <Ellipse Width="5" Height="5" Fill="{StaticResource KcapSuccessBrush}" IsVisible="{Binding IsThisSession}" />
+                                                <Ellipse Width="12" Height="12" Fill="{StaticResource KcapSuccessBrush}" IsVisible="{Binding IsSettled}" />
                                                 <Path Stroke="#07120E" StrokeThickness="1.6" StrokeLineCap="Round" StrokeJoin="Round"
-                                                      Data="M3,6 L5.2,8.2 L9,4" IsVisible="{Binding IsThisSession}" />
+                                                      Data="M3,6 L5.2,8.2 L9,4" IsVisible="{Binding IsSettled}" />
                                             </Panel>
                                             <TextBlock Text="{Binding Title}" FontSize="11.5" TextWrapping="Wrap" VerticalAlignment="Center"
-                                                       Foreground="{StaticResource KcapTextBrush}" />
+                                                       Foreground="{StaticResource KcapTextBrush}" Classes.settled="{Binding IsSettled}" />
                                         </StackPanel>
                                     </DataTemplate>
                                 </ItemsControl.ItemTemplate>
@@ -197,46 +246,59 @@
                     </StackPanel>
                 </Border>
 
-                <!-- Link cards: one per pull request, then the issue slot. -->
-                <ItemsControl x:Name="LinkCards" ItemsSource="{Binding Links}">
-                    <ItemsControl.ItemTemplate>
-                        <DataTemplate x:DataType="vm:WorkContextLinkViewModel">
-                            <Button Command="{Binding OpenCommand}" Classes="toggle" Margin="0,9,0,0" ToolTip.Tip="{Binding Url}">
-                                <Border Classes="card" Padding="13,11">
-                                    <StackPanel Spacing="6">
-                                        <TextBlock Text="{Binding Eyebrow}" Classes="cardEyebrow" />
-                                        <StackPanel Orientation="Horizontal" Spacing="8">
-                                            <TextBlock Text="{Binding Key}" FontSize="11.5" FontWeight="Bold" Foreground="{StaticResource KcapSuccessBrush}" VerticalAlignment="Center" />
-                                            <TextBlock Text="{Binding Title}" FontSize="11.5" Foreground="{StaticResource KcapTextBrush}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
-                                        </StackPanel>
-                                    </StackPanel>
-                                </Border>
-                            </Button>
-                        </DataTemplate>
-                    </ItemsControl.ItemTemplate>
-                </ItemsControl>
-                <Border x:Name="IssueSoonCard" Classes="card" Padding="13,11" Margin="0,9,0,0">
-                    <DockPanel>
-                        <Border DockPanel.Dock="Right" Classes="soon"><TextBlock /></Border>
-                        <TextBlock Text="ISSUE" Classes="cardEyebrow" />
-                    </DockPanel>
-                </Border>
+                <ItemsControl x:Name="LinkCards" ItemsSource="{Binding Links}" ItemTemplate="{StaticResource LinkCard}" />
+                <ContentControl x:Name="IssueCard" Content="{Binding Issue}" ContentTemplate="{StaticResource LinkCard}" IsVisible="{Binding HasIssue}" />
 
-                <!-- Who's on it. -->
+                <!-- Who's on it: the item's contributors, or this session's requester until an item has any. -->
                 <Button x:Name="WhoToggle" Command="{Binding TogglePeopleCommand}" Classes="sectionHeader" Margin="-8,16,-8,0">
                     <DockPanel>
                         <Panel DockPanel.Dock="Right" Width="12" Height="12" VerticalAlignment="Center">
                             <Path Classes="chevron" Data="M3,4.5 L6,7.5 L9,4.5" IsVisible="{Binding PeopleExpanded}" />
                             <Path Classes="chevron" Data="M4.5,3 L7.5,6 L4.5,9" IsVisible="{Binding !PeopleExpanded}" />
                         </Panel>
-                        <Border DockPanel.Dock="Right" Classes="soon" Margin="0,0,10,0"><TextBlock /></Border>
+                        <TextBlock x:Name="SessionCountText" DockPanel.Dock="Right" Text="{Binding SessionCountText}" FontSize="10.5"
+                                   Foreground="{StaticResource KcapMutedBrush}" VerticalAlignment="Center" Margin="0,0,10,0"
+                                   IsVisible="{Binding SessionCountText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
                         <TextBlock Text="WHO'S ON IT" Classes="eyebrow" />
                     </DockPanel>
                 </Button>
-                <StackPanel Orientation="Horizontal" Spacing="10" Margin="0,10,0,0">
-                    <Border Width="24" Height="24" CornerRadius="999" Background="{StaticResource KcapSuccessDimBrush}">
-                        <TextBlock Text="{Binding RequesterInitial}" FontSize="10.5" FontWeight="Bold" Foreground="{StaticResource KcapSuccessBrush}"
-                                   HorizontalAlignment="Center" VerticalAlignment="Center" />
+                <Panel IsVisible="{Binding HasContributors}">
+                    <ItemsControl x:Name="ContributorStack" ItemsSource="{Binding Contributors}" Margin="0,10,0,0" IsVisible="{Binding !PeopleExpanded}">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <StackPanel Orientation="Horizontal" />
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="vm:WorkContextPersonViewModel">
+                                <!-- Overlapping circles: each pulls the next 6px over it; the surface-coloured ring separates them. -->
+                                <Border Classes="avatar" Margin="0,0,-6,0" BorderBrush="{StaticResource KcapSurfaceBrush}" BorderThickness="2"
+                                        Width="28" Height="28" ToolTip.Tip="{Binding Name}">
+                                    <TextBlock Text="{Binding Initial}" />
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                    <ItemsControl x:Name="ContributorList" ItemsSource="{Binding Contributors}" Margin="0,10,0,0" IsVisible="{Binding PeopleExpanded}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="vm:WorkContextPersonViewModel">
+                                <StackPanel Orientation="Horizontal" Spacing="10" Margin="0,0,0,8">
+                                    <Border Classes="avatar">
+                                        <TextBlock Text="{Binding Initial}" />
+                                    </Border>
+                                    <StackPanel VerticalAlignment="Center">
+                                        <TextBlock Text="{Binding Name}" FontSize="11.5" FontWeight="SemiBold" Foreground="{StaticResource KcapTextBrush}" />
+                                        <TextBlock Text="{Binding LastActivityText}" FontSize="10.5" Foreground="{StaticResource KcapFaintBrush}" Margin="0,1,0,0"
+                                                   IsVisible="{Binding LastActivityText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                                    </StackPanel>
+                                </StackPanel>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </Panel>
+                <StackPanel x:Name="RequesterRow" Orientation="Horizontal" Spacing="10" Margin="0,10,0,0" IsVisible="{Binding !HasContributors}">
+                    <Border Classes="avatar">
+                        <TextBlock Text="{Binding RequesterInitial}" />
                     </Border>
                     <StackPanel VerticalAlignment="Center" IsVisible="{Binding PeopleExpanded}">
                         <TextBlock Text="{Binding Requester}" FontSize="11.5" FontWeight="SemiBold" Foreground="{StaticResource KcapTextBrush}" />
