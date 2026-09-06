@@ -34,7 +34,7 @@ public class SessionRailViewModelTests {
             service, remote, new FakeServerLane(), new RepoIdentityResolver(originUrl ?? (_ => null)),
             resolveRepoRoot ?? Resolve, null, null);
         var rail = new SessionRailViewModel(
-            directory, service, open ?? (_ => { }), openRemote ?? (_ => { }), resolveRepoRoot ?? Resolve);
+            directory, open ?? (_ => { }), openRemote ?? (_ => { }), resolveRepoRoot ?? Resolve);
         return (service, remote, rail);
     }
 
@@ -77,6 +77,7 @@ public class SessionRailViewModelTests {
 
                 await Assert.That(rail.Repos).Count().IsEqualTo(1);
                 await Assert.That(rail.Repos[0].RootPath).IsEqualTo("path:/dev/alpha");
+                await Assert.That(rail.Repos[0].RootDisplay).IsEqualTo("/dev/alpha");
                 await Assert.That(rail.Repos[0].Worktrees).Count().IsEqualTo(1);
                 await Assert.That(rail.Repos[0].Worktrees[0].Sessions.Select(s => s.Id))
                     .IsEquivalentTo(["a1", "a2"]);
@@ -208,6 +209,7 @@ public class SessionRailViewModelTests {
                 remote.Cache.AddOrUpdate(RemoteDto("b1", "kurrent-io", "kcap-cli"));
 
                 await Assert.That(rail.Repos).Count().IsEqualTo(1);
+                await Assert.That(rail.Repos.Single().RootDisplay).IsEqualTo("kurrent-io/kcap-cli");
                 var sessions = rail.Repos.Single().Worktrees.SelectMany(w => w.Sessions).ToList();
                 await Assert.That(sessions).Count().IsEqualTo(2);
 
@@ -234,6 +236,29 @@ public class SessionRailViewModelTests {
 
                 await Assert.That(openedRemote).IsEqualTo("b1");
                 await Assert.That(openedLocal).IsNull();
+            }
+        });
+    }
+
+    /// A remote agent with no resolved GitHub identity falls to the "daemon:" group key — its
+    /// RootDisplay names the checkout and the daemon, never the raw key.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task RootDisplay_names_a_daemon_scoped_repo_by_path_and_daemon() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var (service, remote, rail) = Build();
+            using (rail) {
+                service.Agents.AddOrUpdate(Dto("a1", "/dev/alpha"));
+                remote.Cache.AddOrUpdate(new AgentInstanceDto {
+                    AgentId = "b1", Status = "Running", DaemonName = "work-mac", OwnerUserId = "u1",
+                    Vendor = "claude", RepoPath = "/srv/beta",
+                });
+
+                var alpha = rail.Repos.Single(r => r.Label == "alpha");
+                await Assert.That(alpha.RootDisplay).IsEqualTo("/dev/alpha");
+
+                var beta = rail.Repos.Single(r => r.Label == "beta");
+                await Assert.That(beta.RootDisplay).IsEqualTo("/srv/beta on work-mac");
             }
         });
     }

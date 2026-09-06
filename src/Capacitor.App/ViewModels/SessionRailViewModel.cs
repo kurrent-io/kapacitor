@@ -12,13 +12,12 @@ using ReactiveUI;
 
 namespace Capacitor.App.ViewModels;
 
-/// The session rail's root: repository → worktree → session over directory.Rows (spec §3).
+/// The session rail's root: repository → worktree → session over directory.Rows.
 /// Ctor-scoped and disposable like HomeViewModel — the tree must be live from construction.
 /// ONE ObserveOn at the top of the pipeline: nested group caches are mutated by this outer
 /// pipeline, so every inner Connect() below already fires on the UI thread.
 public sealed class SessionRailViewModel : ReactiveObject, IDisposable {
     readonly IAgentDirectory _directory;
-    readonly IDaemonClientService _daemon;
     readonly RailCollapseState _collapse = new();
     readonly CompositeDisposable _disposables = new();
 
@@ -60,12 +59,11 @@ public sealed class SessionRailViewModel : ReactiveObject, IDisposable {
     /// agentsWithPending defaults to an always-empty set so callers that don't wire the
     /// permission service still compile and render.
     public SessionRailViewModel(
-            IAgentDirectory directory, IDaemonClientService daemon,
+            IAgentDirectory directory,
             Action<string> openLocalSession, Action<string> openRemoteInWeb,
             Func<string, string>? resolveRepoRoot = null,
             IObservable<IReadOnlySet<string>>? agentsWithPending = null) {
         _directory = directory;
-        _daemon = daemon;
         var resolveRoot = resolveRepoRoot ?? GitRepository.ResolveMainRepoRoot;
         // Not disposed with the rest: same as RailCollapseState's Changes subject, a bare
         // signaling Subject the class never tears down, so a post-Dispose set never throws.

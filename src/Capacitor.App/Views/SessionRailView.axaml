@@ -99,7 +99,7 @@
                         <ItemsControl.ItemTemplate>
                             <DataTemplate x:DataType="vm:RailRepoViewModel">
                                 <StackPanel Margin="0,10,0,0">
-                                    <DockPanel Margin="8,0,8,5" ToolTip.Tip="{Binding RootPath}">
+                                    <DockPanel Margin="8,0,8,5" ToolTip.Tip="{Binding RootDisplay}">
                                         <TextBlock DockPanel.Dock="Right" Text="{Binding CountText}" FontSize="10.5"
                                                    Foreground="{StaticResource KcapFaintBrush}" VerticalAlignment="Center" />
                                         <TextBlock Text="{Binding Label, Converter={x:Static views:UppercaseConverter.Instance}}"

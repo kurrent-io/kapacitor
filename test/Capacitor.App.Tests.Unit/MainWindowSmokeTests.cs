@@ -465,7 +465,7 @@ public class MainWindowSmokeTests {
                     service, new FakeRemoteAgents(), new FakeServerLane(), new RepoIdentityResolver(_ => null),
                     resolveRepoRoot, null, null);
                 var rail = new SessionRailViewModel(
-                    directory, service, id => vm!.OpenSession(id), _ => { }, resolveRepoRoot);
+                    directory, id => vm!.OpenSession(id), _ => { }, resolveRepoRoot);
                 vm = new MainWindowViewModel(service, CancellationToken.None, TestActivity.New(),
                     workspaceFactory: id => NewWorkspace(service, actions, id), rail: rail);
                 var window = new MainWindow { DataContext = vm };

@@ -777,7 +777,7 @@ public partial class App : Application {
             service, new NoRemoteAgents(), new NoServerLane(), new RepoIdentityResolver(),
             GitRepository.ResolveMainRepoRoot, localMachineId: null, appServerUrl: null);
         var rail = new SessionRailViewModel(
-            directory, service, openLocalSession: agentId => vm?.OpenSession(agentId),
+            directory, openLocalSession: agentId => vm?.OpenSession(agentId),
             openRemoteInWeb: _ => { }, agentsWithPending: agentsWithPending);
         vm = new MainWindowViewModel(
             service, shutdownToken, activity, startAction, lifecycleStatus, home: home,

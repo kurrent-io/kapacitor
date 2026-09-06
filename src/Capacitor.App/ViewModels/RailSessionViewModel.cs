@@ -62,8 +62,7 @@ public sealed class RailSessionViewModel : ReactiveObject, IDisposable {
             .ToProperty(this, x => x.NeedsYou, initialValue: byStatus)
             .DisposeWith(_disposables);
 
-        // Slice 1 remote rows are read-only in-app: opening one deep-links to the web instead of
-        // routing into the local workspace.
+        // Remote rows are read-only in-app; opening deep-links to the web.
         OpenCommand = ReactiveCommand.Create(() => (IsRemote ? openRemoteInWeb : openLocal)(row.Id));
         _disposables.Add(OpenCommand);
     }
