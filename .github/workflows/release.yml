@@ -656,6 +656,8 @@ jobs:
     name: Build and sign the desktop app
     needs: build
     runs-on: macos-latest
+    env:
+      DOTNET_ROLL_FORWARD: Major
     steps:
       - uses: actions/checkout@v7
 
@@ -705,8 +707,18 @@ jobs:
         run: |
           set -euo pipefail
           KEY="desktop/osx-arm64/KurrentCapacitor-${{ steps.version.outputs.VERSION }}-osx-arm64-full.nupkg"
-          if aws s3api head-object --endpoint-url "${{ secrets.R2_ENDPOINT }}" --bucket "${{ secrets.R2_BUCKET }}" --key "$KEY" >/dev/null 2>&1; then
+          set +e
+          ERR="$(aws s3api head-object --endpoint-url "${{ secrets.R2_ENDPOINT }}" --bucket "${{ secrets.R2_BUCKET }}" --key "$KEY" 2>&1 >/dev/null)"
+          rc=$?
+          set -e
+          if [ "$rc" -eq 0 ]; then
             echo "::error::$KEY is already published. A published desktop version is never rebuilt — cut a new version."
+            exit 1
+          fi
+          if echo "$ERR" | grep -qiE '404|Not Found'; then
+            echo "$KEY is not published yet"
+          else
+            echo "::error::could not determine whether $KEY is published (aws exit $rc): $ERR"
             exit 1
           fi
 
@@ -769,7 +781,7 @@ jobs:
           APP_PID=$!
           sleep 15
           kill -0 "$APP_PID" || { echo "::error::the signed app exited within 15 s"; exit 1; }
-          kill "$APP_PID"; wait "$APP_PID" || true
+          kill "$APP_PID" 2>/dev/null || true; wait "$APP_PID" 2>/dev/null || true
 
       - name: Build, sign, notarize and staple the DMG
         shell: bash
@@ -803,6 +815,7 @@ jobs:
       AWS_DEFAULT_REGION: auto
       R2: --endpoint-url ${{ secrets.R2_ENDPOINT }}
       DEST: s3://${{ secrets.R2_BUCKET }}/desktop/osx-arm64
+      DOTNET_ROLL_FORWARD: Major
     steps:
       - uses: actions/checkout@v7
 
@@ -833,7 +846,16 @@ jobs:
           set -euo pipefail
           cat > fetch.sh <<'EOF'
           #!/usr/bin/env bash
-          aws s3 cp $R2 "$DEST/$1" "$2" >/dev/null 2>&1
+          ERR="$(aws s3 cp $R2 "$DEST/$1" "$2" 2>&1 >/dev/null)"
+          rc=$?
+          if [ "$rc" -eq 0 ]; then
+            exit 0
+          elif echo "$ERR" | grep -qiE '404|Not Found'; then
+            exit 44
+          else
+            echo "$ERR" >&2
+            exit 1
+          fi
           EOF
           chmod +x fetch.sh
           bash scripts/verify-desktop-immutables.sh releases "${{ steps.version.outputs.VERSION }}" ./fetch.sh

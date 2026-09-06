@@ -131,6 +131,10 @@ jobs:
   app-bundle:
     name: App bundle (osx-arm64)
     runs-on: macos-latest
+    env:
+      # vpk and minver-cli are framework-dependent global tools built for an older runtime
+      # than the .NET 10 SDK global.json pins and setup-dotnet installs.
+      DOTNET_ROLL_FORWARD: Major
     steps:
       # Full history and tags: MinVer derives the version from the nearest tag, and the app
       # refuses a bundled CLI below its floor — a shallow checkout would compute a below-floor

@@ -19,4 +19,10 @@ cp "$local_dir/KurrentCapacitor-$v-osx-arm64-full.nupkg" "$remote/"
 assert "identical bytes already published passes (retry)" 0
 printf 'other-bytes' > "$remote/Kurrent-Capacitor-$v-osx-arm64.dmg"
 assert "different bytes already published fails" 1
+
+error_fetch="$tmp/error-fetch.sh"
+printf '#!/usr/bin/env bash\necho "transient failure" >&2\nexit 7\n' > "$error_fetch"; chmod +x "$error_fetch"
+rc=1; set +e; bash "$sh" "$local_dir" "$v" "$error_fetch" >/dev/null 2>&1; rc=$?; set -e
+[ "$rc" -eq 1 ] || { echo "FAIL: a fetch error (exit 7) must refuse to publish -> rc=$rc (want 1)"; fail=1; }
+
 [ "$fail" -eq 0 ] && echo "ok" || exit 1
