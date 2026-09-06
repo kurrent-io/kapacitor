@@ -247,7 +247,24 @@ jobs:
           -p:MinVerVersionOverride=${{ steps.version.outputs.VERSION }}
           -o publish/daemon/
 
-      # When app bundling/signing lands, sign the daemon BEFORE this step (signing changes the bytes).
+      - name: Import signing keychain (macOS)
+        if: startsWith(matrix.rid, 'osx-')
+        shell: bash
+        env:
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: bash scripts/import-signing-keychain.sh
+
+      # Before the digest: signing rewrites the daemon's bytes, and the CLI embeds the digest of
+      # the bytes it will actually launch. The daemon is never signed again after this.
+      - name: Sign daemon and shim (macOS)
+        if: startsWith(matrix.rid, 'osx-')
+        shell: bash
+        run: >
+          bash scripts/sign-macos.sh "${{ secrets.APPLE_SIGNING_IDENTITY }}" "$KEYCHAIN"
+          src/Capacitor.App/Packaging/daemon.entitlements.plist
+          publish/daemon/${{ matrix.daemon-binary }} publish/daemon/libpty_shim.dylib
+
       - name: Compute daemon digest
         id: daemon-digest
         shell: bash
@@ -267,6 +284,21 @@ jobs:
           -p:MinVerVersionOverride=${{ steps.version.outputs.VERSION }}
           -p:KcapDaemonDigest=${{ steps.daemon-digest.outputs.DIGEST }}
           -o publish/cli/
+
+      - name: Sign CLI (macOS)
+        if: startsWith(matrix.rid, 'osx-')
+        shell: bash
+        run: >
+          bash scripts/sign-macos.sh "${{ secrets.APPLE_SIGNING_IDENTITY }}" "$KEYCHAIN"
+          src/Capacitor.App/Packaging/cli.entitlements.plist publish/cli/${{ matrix.cli-binary }}
+
+      - name: Smoke signed binaries (macOS)
+        if: startsWith(matrix.rid, 'osx-')
+        shell: bash
+        run: |
+          set -euo pipefail
+          publish/cli/kcap --version --no-update-check
+          publish/daemon/kcap-daemon --version
 
       # The daemon's UnixPtyInterop hard-imports libpty_shim on every non-win-x64 RID (macOS
       # ARM64's variadic-ioctl workaround, and every Linux RID's containment shim as of L1-build).
@@ -462,6 +494,11 @@ jobs:
               cp "publish/daemon/libpty_shim.$ext" archive/
             fi
           done
+          if [[ "${{ matrix.rid }}" == osx-* ]]; then
+            source scripts/lib/hash.sh
+            echo "${{ steps.daemon-digest.outputs.DIGEST }}" > archive/daemon.sha256
+            sha256_of publish/cli/${{ matrix.cli-binary }} > archive/kcap.sha256
+          fi
           cd archive
           if [ "${{ matrix.rid }}" = "win-x64" ]; then
             7z a ../kcap-${{ matrix.rid }}.zip *
