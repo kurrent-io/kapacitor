@@ -25,7 +25,7 @@ tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 for name in "${names[@]}"; do
   [ -f "$local_dir/$name" ] || continue
   set +e
-  "$fetch" "$name" "$tmp/$name" >/dev/null 2>&1
+  "$fetch" "$name" "$tmp/$name" >/dev/null
   fetch_rc=$?
   set -e
   if [ "$fetch_rc" -eq 44 ]; then

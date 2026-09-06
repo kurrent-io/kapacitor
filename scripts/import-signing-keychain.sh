@@ -18,6 +18,7 @@ security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
 security set-keychain-settings -lut 21600 "$KEYCHAIN"
 security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
 security import "$cert" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
+security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
 security list-keychain -d user -s "$KEYCHAIN"
 
 if [ -n "${APPLE_NOTARY_KEY_P8:-}" ]; then
