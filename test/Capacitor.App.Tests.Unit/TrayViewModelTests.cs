@@ -3,6 +3,8 @@ using System.Reactive.Threading.Tasks;
 using Capacitor.App.Services;
 using Capacitor.App.ViewModels;
 using Capacitor.Cli.Core.LocalIpc;
+using Capacitor.Remote.Models;
+using DynamicData;
 using TUnit.Assertions.Enums;
 using static Capacitor.App.Tests.Unit.ConsentEntries;
 
@@ -136,6 +138,121 @@ public class TrayViewModelTests {
 
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "daemon_incompatible", null));
             await Assert.That(vm.MenuModel.State).IsEqualTo(TrayState.Attention);
+        });
+    }
+
+    // ---- spec §6: remote lane aggregation ----
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task LocalStoppedWithRemoteAgentsShowsRunning() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var service = new FakeDaemonClientService();
+            var pause = new FakePauseController();
+            var actions = NewActions(service);
+            var consent = new FakeConsentService();
+            var remote = new BehaviorSubject<RemoteTraySummary>(new RemoteTraySummary(2, LaneConnected: true));
+            using var vm = new TrayViewModel(service, pause, actions, consent, remote: remote);
+
+            service.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "daemon_unreachable", null));
+
+            await Assert.That(vm.MenuModel.State).IsEqualTo(TrayState.Running);
+            await Assert.That(vm.MenuModel.RunningCount).IsEqualTo(2);
+            await Assert.That(vm.MenuModel.Header).Contains("on other machines");
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task LocalStoppedWithIdleLaneStaysStopped() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var service = new FakeDaemonClientService();
+            var pause = new FakePauseController();
+            var actions = NewActions(service);
+            var consent = new FakeConsentService();
+            var remote = new BehaviorSubject<RemoteTraySummary>(new RemoteTraySummary(0, LaneConnected: true));
+            using var vm = new TrayViewModel(service, pause, actions, consent, remote: remote);
+
+            service.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "daemon_unreachable", null));
+
+            await Assert.That(vm.MenuModel.State).IsEqualTo(TrayState.Stopped);
+            await Assert.That(vm.MenuModel.RunningCount).IsEqualTo(0);
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task LocalRunningAddsRemoteCount() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var service = new FakeDaemonClientService();
+            var pause = new FakePauseController();
+            var actions = NewActions(service);
+            var consent = new FakeConsentService();
+            var remote = new BehaviorSubject<RemoteTraySummary>(new RemoteTraySummary(2, LaneConnected: true));
+            using var vm = new TrayViewModel(service, pause, actions, consent, remote: remote);
+
+            service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, []));
+            service.SnapshotsSubject.OnNext(Snap("connected", 1));
+
+            await Assert.That(vm.MenuModel.State).IsEqualTo(TrayState.Running);
+            await Assert.That(vm.MenuModel.RunningCount).IsEqualTo(3);
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task NullRemoteKeepsLegacyBehavior() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var service = new FakeDaemonClientService();
+            var pause = new FakePauseController();
+            var actions = NewActions(service);
+            var consent = new FakeConsentService();
+            using var vm = new TrayViewModel(service, pause, actions, consent); // remote omitted
+
+            service.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "daemon_unreachable", null));
+            await Assert.That(vm.MenuModel.State).IsEqualTo(TrayState.Stopped);
+            await Assert.That(vm.MenuModel.RunningCount).IsEqualTo(0);
+            await Assert.That(vm.MenuModel.Header).IsEqualTo("daemon-a: not running");
+
+            service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, []));
+            service.SnapshotsSubject.OnNext(Snap("connected", 4));
+            await Assert.That(vm.MenuModel.State).IsEqualTo(TrayState.Running);
+            await Assert.That(vm.MenuModel.RunningCount).IsEqualTo(4);
+            await Assert.That(vm.MenuModel.Header).IsEqualTo("daemon-a: connected — 4 agent(s) running");
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task SummaryFrom_counts_live_remote_rows_and_tracks_lane_connection() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var local = new FakeDaemonClientService();
+            var remoteAgents = new FakeRemoteAgents();
+            var lane = new FakeServerLane();
+            using var directory = new AgentDirectory(
+                local, remoteAgents, lane, new RepoIdentityResolver(_ => null), p => p, "m1", "http://localhost:9999");
+
+            RemoteTraySummary? seen = null;
+            using var sub = TrayViewModel.SummaryFrom(directory).Subscribe(v => seen = v);
+
+            await Assert.That(seen).IsNotNull();
+            await Assert.That(seen!.Value.RemoteLiveAgents).IsEqualTo(0);
+            await Assert.That(seen!.Value.LaneConnected).IsFalse();
+
+            remoteAgents.Cache.AddOrUpdate(new AgentInstanceDto {
+                AgentId = "r1", Status = "Running", DaemonName = "other-mac", OwnerUserId = "u1",
+                Vendor = "claude", RepoOwner = "o", RepoName = "r",
+            });
+            lane.StatusSubject.OnNext(new ServerLaneStatus(ServerLaneState.Connected));
+
+            await Assert.That(seen!.Value.RemoteLiveAgents).IsEqualTo(1);
+            await Assert.That(seen!.Value.LaneConnected).IsTrue();
+
+            remoteAgents.Cache.AddOrUpdate(new AgentInstanceDto {
+                AgentId = "r2", Status = "Completed", DaemonName = "other-mac", OwnerUserId = "u1",
+                Vendor = "claude", RepoOwner = "o", RepoName = "r",
+            });
+            await Assert.That(seen!.Value.RemoteLiveAgents).IsEqualTo(1); // Completed doesn't count
         });
     }
 
