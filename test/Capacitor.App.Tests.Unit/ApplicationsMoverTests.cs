@@ -22,6 +22,17 @@ public class ApplicationsMoverTests {
             throw new NotImplementedException();
     }
 
+    /// Stands in for `ditto` being cancelled after it has already written some of the copy.
+    sealed class CancellingDitto : IProcessRunner {
+        public Task<ProcessResult> RunAsync(string fileName, string[] args, RunOptions options, CancellationToken ct) {
+            CompleteBundle(args[1]);
+            throw new OperationCanceledException(ct);
+        }
+
+        public Task<StreamingResult> RunStreamingAsync(string fileName, string[] args, RunOptions options, Action<StreamedLine> onLine, CancellationToken ct) =>
+            throw new NotImplementedException();
+    }
+
     static void CompleteBundle(string root) {
         Directory.CreateDirectory(Path.Combine(root, "Contents", "MacOS"));
         File.WriteAllText(Path.Combine(root, "Contents", "Info.plist"), "<plist/>");
@@ -85,6 +96,17 @@ public class ApplicationsMoverTests {
 
         await Assert.That(outcome.Moved).IsFalse();
         await Assert.That(outcome.Error).Contains("appeared");
+        await Assert.That(Directory.GetDirectories(apps)).IsEmpty();
+    }
+
+    [Test]
+    public async Task Cancellation_mid_copy_removes_staging_and_propagates() {
+        var apps = Tmp.CreateDir("Applications");
+        var source = Tmp.CreateDir("Downloads/Kurrent Capacitor.app");
+        var mover = new ApplicationsMover(new CancellingDitto(), MovePromote, apps);
+
+        await Assert.That(async () => await mover.MoveAsync(source, CancellationToken.None))
+            .Throws<OperationCanceledException>();
         await Assert.That(Directory.GetDirectories(apps)).IsEmpty();
     }
 

@@ -30,18 +30,26 @@ public sealed partial class ApplicationsMover(IProcessRunner runner, Func<string
                 return Fail(staging, $"{name} appeared in {applicationsDir} while copying. Open that copy instead.");
 
             return new MoveOutcome(true, target, null);
-        } catch (Exception ex) when (ex is not OperationCanceledException) {
+        } catch (OperationCanceledException) {
+            RemoveStaging(staging);
+            throw;
+        } catch (Exception ex) {
             return Fail(staging, ex.Message);
         }
     }
 
     static MoveOutcome Fail(string staging, string error) {
+        RemoveStaging(staging);
+        return new MoveOutcome(false, null, error);
+    }
+
+    // A partial copy the caller is shutting down over must not linger in /Applications either.
+    static void RemoveStaging(string staging) {
         try {
             if (Directory.Exists(staging)) Directory.Delete(staging, recursive: true);
         } catch (Exception) {
             // the staging copy is the only thing that could be left behind; reporting the move failure matters more
         }
-        return new MoveOutcome(false, null, error);
     }
 
     /// A plain rename replaces an EMPTY existing directory; RENAME_EXCL fails on any existing entry.
