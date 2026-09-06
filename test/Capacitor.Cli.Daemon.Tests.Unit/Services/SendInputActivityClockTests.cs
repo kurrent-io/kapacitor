@@ -98,6 +98,23 @@ public class SendInputActivityClockTests {
         await Assert.That(agent.ActivityClock.AwaitingInput).IsTrue();
     }
 
+    /// The PTY shape of the same race: the agent was already waiting when the input went out, no
+    /// prompt-submit or tool-call relay ever cleared it, and its text-only answer's Stop is relayed
+    /// while the write is still in flight.
+    [Test]
+    public async Task A_stop_relayed_during_delivery_keeps_a_wait_that_was_already_set() {
+        var clock = new AgentActivityClock(new FakeTimeProvider());
+        clock.SetAwaitingInput(true);
+        var pty = new MidWritePtyProcess(() => clock.SetAwaitingInput(true));
+
+        await using var orch  = AgentOrchestratorHarness.BuildOrchestrator(new CaptureServerConnection(), new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+        var             agent = orch.SeedAgentForTest("send-input-restop", pty: pty, activityClock: clock);
+
+        await orch.HandleSendInputForTest(new SendInputCommand(agent.Id, "hello", null));
+
+        await Assert.That(agent.ActivityClock.AwaitingInput).IsTrue();
+    }
+
     [Test]
     public async Task Failed_delivery_advances_nothing() {
         var server = new CaptureServerConnection();

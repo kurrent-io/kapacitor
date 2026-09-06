@@ -54,10 +54,12 @@ internal sealed class AgentActivityClock(TimeProvider time) {
     /// change, with the new value.</summary>
     public Action<bool>? OnAwaitingInputChanged { get; set; }
 
-    /// <summary>Counts the waits that began. A delivery samples it before writing and clears
-    /// through <see cref="ClearAwaitingInputSince"/>, so a turn that ends while the write is still
-    /// in flight — Codex can complete a turn before the send that started it returns, and a PTY
-    /// submit spray runs for seconds — keeps the wait it began.</summary>
+    /// <summary>Counts every observed turn end, whether or not it moved the flag: a PTY vendor
+    /// relays only Stop, so a wait nothing cleared sees the next turn end as a second Stop with the
+    /// flag already true. A delivery samples it before writing and clears through
+    /// <see cref="ClearAwaitingInputSince"/>, so a turn that ends while the write is still in
+    /// flight — Codex can complete a turn before the send that started it returns, and a PTY submit
+    /// spray runs for seconds — keeps the wait it began.</summary>
     public ulong WaitGeneration {
         get { lock (_gate) return _waitGeneration; }
     }
@@ -146,7 +148,7 @@ internal sealed class AgentActivityClock(TimeProvider time) {
             // held (a runtime going terminal) says nothing about waiting.
             var awaiting = value ? false : ended || _awaitingInput;
             awaitingChanged = awaiting != _awaitingInput;
-            if (awaitingChanged && awaiting) _waitGeneration++;
+            if (ended) _waitGeneration++;
             _awaitingInput = awaiting;
             AdvanceLocked();
         }
@@ -162,7 +164,7 @@ internal sealed class AgentActivityClock(TimeProvider time) {
         bool changed;
         lock (_gate) {
             changed = _awaitingInput != value;
-            if (changed && value) _waitGeneration++;
+            if (value) _waitGeneration++;
             _awaitingInput = value;
         }
         if (changed) OnAwaitingInputChanged?.Invoke(value);

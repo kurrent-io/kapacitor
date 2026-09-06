@@ -166,6 +166,28 @@ public class AgentActivityClockTests {
         await Assert.That(clock.AwaitingInput).IsTrue();
     }
 
+    /// A PTY vendor relays only Stop, so a wait that was never cleared sees the next turn end as
+    /// a second Stop with the flag already true: that observation is still newer than the delivery
+    /// in flight and must count.
+    [Test]
+    public async Task A_turn_end_observed_while_already_waiting_still_outranks_an_older_delivery() {
+        var clock = new AgentActivityClock(new FakeTimeProvider());
+        clock.SetAwaitingInput(true);
+
+        var sampled = clock.WaitGeneration;
+        clock.SetAwaitingInput(true);
+        clock.ClearAwaitingInputSince(sampled);
+        await Assert.That(clock.AwaitingInput).IsTrue();
+
+        sampled = clock.WaitGeneration;
+        clock.SetTurnInFlight(true);
+        clock.SetTurnInFlight(false);
+        clock.SetTurnInFlight(true);
+        clock.SetTurnInFlight(false);
+        clock.ClearAwaitingInputSince(sampled);
+        await Assert.That(clock.AwaitingInput).IsTrue();
+    }
+
     /// <summary>
     /// A minimal <see cref="TimeProvider"/> whose monotonic timestamp and wall clock are deliberately
     /// independent axes — every real implementation (including <see cref="FakeTimeProvider"/>) ties

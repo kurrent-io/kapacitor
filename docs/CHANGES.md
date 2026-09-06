@@ -19,8 +19,9 @@ one place "the turn ended" is known, and the rising edge, a delivered input, or 
 submit clears it. A delivered input is the server's send or a local client's Enter on the attach
 socket: the desktop composer and terminal both arrive as raw PTY bytes there, never through the
 server's send path, and the plugin routes Claude's prompt-submit hook to a title script rather
-than to kcap. A delivery clears only the wait it answered: the clock counts the waits that began,
-the sender samples the count before writing and clears against it afterwards, because Codex can
+than to kcap. A delivery clears only the wait it answered: the clock counts every observed turn
+end — a second Stop on a flag already set counts, since a PTY vendor relays nothing else — the
+sender samples the count before writing and clears against it afterwards, because Codex can
 complete a turn before the send that started it returns, and a PTY submit spray runs for seconds
 in which a short turn's Stop lands. The flag is deliberately not activity: it never moves `ActivitySeq` or
 `IdleForMs`, which the reaper and the server's idle episodes read, so a display hint cannot delay a
