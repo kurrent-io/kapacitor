@@ -1,6 +1,7 @@
 using System.Reactive.Subjects;
 using System.Reactive.Threading.Tasks;
 using Capacitor.App.Services;
+using Capacitor.App.Services.Update;
 using Capacitor.App.ViewModels;
 using Capacitor.Cli.Core.LocalIpc;
 using TUnit.Assertions.Enums;
@@ -996,6 +997,42 @@ public class TrayViewModelTests {
             await Assert.That(vm.MenuModel.ShimInstallVisible).IsTrue();
             // Orthogonal to the rest of the model — the state-matrix projection is untouched.
             await Assert.That(vm.MenuModel.State).IsEqualTo(TrayState.Connecting);
+        });
+    }
+
+    // ---- the update item ----
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task UpdateMenu_drives_MenuModel_UpdateItemLabel() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var service = new FakeDaemonClientService();
+            var pause = new FakePauseController();
+            var actions = NewActions(service);
+            var consent = new FakeConsentService();
+            var updateMenu = new BehaviorSubject<UpdateMenuItem>(new UpdateMenuItem(false, "Check for Updates…"));
+            using var vm = new TrayViewModel(service, pause, actions, consent, updateMenu: updateMenu);
+
+            await Assert.That(vm.MenuModel.UpdateItemLabel).IsNull();
+
+            updateMenu.OnNext(new UpdateMenuItem(true, "Restart to update to 0.12.0-beta.3"));
+
+            await Assert.That(vm.MenuModel.UpdateItemLabel).IsEqualTo("Restart to update to 0.12.0-beta.3");
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task UpdateActionCommand_invokes_the_injected_action() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var service = new FakeDaemonClientService();
+            var calls = 0;
+            using var vm = new TrayViewModel(service, new FakePauseController(), NewActions(service), new FakeConsentService(),
+                updateAction: () => { calls++; return Task.CompletedTask; });
+
+            await vm.UpdateActionCommand.Execute().ToTask();
+
+            await Assert.That(calls).IsEqualTo(1);
         });
     }
 

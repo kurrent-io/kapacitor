@@ -7,7 +7,8 @@ namespace Capacitor.App.Views;
 /// in full every time — NativeMenu has no ItemsSource, and a full rebuild is cheap at these sizes.
 /// Layout: disabled header, separator, agent entries with a Stop/Open-in-web submenu each (only
 /// when the model has entries, with a trailing separator), the pause toggle, "Open Kurrent
-/// Capacitor", a separator, then "Quit".
+/// Capacitor", the shim-install and update items (each only when applicable), a separator, then
+/// "Quit".
 public sealed class TrayMenuBuilder(TrayViewModel vm) {
     public void Rebuild(NativeMenu menu, TrayMenuModel model) {
         menu.Items.Clear();
@@ -32,6 +33,11 @@ public sealed class TrayMenuBuilder(TrayViewModel vm) {
         // a manual click always re-runs the install path, regardless of the once-ever auto-offer.
         if (model.ShimInstallVisible)
             menu.Items.Add(new NativeMenuItem("Install command-line tool…") { Command = vm.InstallShimCommand });
+
+        // One item whose label the coordinator owns: "Check for Updates…" while idle, "Restart
+        // to update to <v>" once a package is downloaded; absent outside a packed bundle.
+        if (model.UpdateItemLabel is { } updateLabel)
+            menu.Items.Add(new NativeMenuItem(updateLabel) { Command = vm.UpdateActionCommand });
 
         menu.Items.Add(new NativeMenuItemSeparator());
         menu.Items.Add(new NativeMenuItem("Quit") { Command = vm.QuitCommand });

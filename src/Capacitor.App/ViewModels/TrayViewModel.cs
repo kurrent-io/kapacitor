@@ -3,6 +3,7 @@ using System.Reactive.Disposables;
 using System.Reactive.Disposables.Fluent;
 using System.Reactive.Linq;
 using Capacitor.App.Services;
+using Capacitor.App.Services.Update;
 using Capacitor.Cli.Core.LocalIpc;
 using ReactiveUI;
 
@@ -60,6 +61,10 @@ public sealed class TrayViewModel : ReactiveObject, IDisposable {
     // this VM constructible for every test that predates the shim coordinator.
     public ReactiveCommand<Unit, Unit> InstallShimCommand { get; }
 
+    // The tray's single update item (check while idle, restart once a package is ready); the
+    // coordinator decides which, so this is a plain delegate call like InstallShimCommand.
+    public ReactiveCommand<Unit, Unit> UpdateActionCommand { get; }
+
     /// <param name="lifecycleAttention">
     /// spec §6: ILifecycleSurface.Attention repair-affordance text (e.g. a
     /// restore-verification failure). Null (most existing tests, and any caller without a live
@@ -73,7 +78,8 @@ public sealed class TrayViewModel : ReactiveObject, IDisposable {
             IDaemonClientService service, IPauseController pause, AgentActionService actions, IConsentService consent,
             Action? openMainWindow = null, Action? quit = null, Action? openReviewPrompts = null,
             IObservable<string?>? lifecycleAttention = null, IObservable<bool>? shimOfferable = null,
-            Func<Task>? installShim = null, IPermissionService? permissions = null) {
+            Func<Task>? installShim = null, IPermissionService? permissions = null,
+            IObservable<UpdateMenuItem>? updateMenu = null, Func<Task>? updateAction = null) {
         _pause = pause;
 
         TogglePauseCommand = ReactiveCommand.Create<bool>(pause.RequestToggle);
@@ -86,6 +92,7 @@ public sealed class TrayViewModel : ReactiveObject, IDisposable {
         QuitCommand = ReactiveCommand.Create(quit ?? (() => { }));
         ReviewPendingCommand = ReactiveCommand.Create(openReviewPrompts ?? (() => { }));
         InstallShimCommand = ReactiveCommand.CreateFromTask(installShim ?? (() => Task.CompletedTask));
+        UpdateActionCommand = ReactiveCommand.CreateFromTask(updateAction ?? (() => Task.CompletedTask));
 
         var snapshots = service.Snapshots
             .Select(s => (DaemonStatusDto?)s)
@@ -113,18 +120,24 @@ public sealed class TrayViewModel : ReactiveObject, IDisposable {
         // the sources above applies to `shim`.
         var withShim = projected.CombineLatest(shim, (model, visible) => model with { ShimInstallVisible = visible });
 
-        // Status, snapshots (seeded above), pause.State, consent.PendingCount, attention,
-        // pendingSummary, and shim are all replay-1-shaped (seed on subscribe), so CombineLatest
-        // emits synchronously on subscribe — captured here as the OAPH's initial value so
-        // MenuModel is never default(TrayMenuModel) (null) before RxSchedulers.MainThreadScheduler
-        // delivers the ObserveOn'd copy below. The synchronous-emission assumption rests on
-        // IPauseController.State's, IConsentService.PendingCount's, and IPermissionService.Summary's
-        // documented replay-on-subscribe contracts, which a future implementation could violate —
-        // defended below rather than left to surface as an unexplained NRE on first MenuModel access.
-        TrayMenuModel? seed = null;
-        using (withShim.Subscribe(v => seed = v)) { }
+        // Same shape as the shim item: a narrow CombineLatest so Build stays untouched. Null (most
+        // tests) is Observable.Return(hidden), which seeds and completes like the sources above.
+        var update = updateMenu ?? Observable.Return(new UpdateMenuItem(false, ""));
+        var withUpdate = withShim.CombineLatest(update, (model, item) => model with { UpdateItemLabel = item.Visible ? item.Label : null });
 
-        _menuModel = withShim
+        // Status, snapshots (seeded above), pause.State, consent.PendingCount, attention,
+        // pendingSummary, shim, and update are all replay-1-shaped (seed on subscribe), so
+        // CombineLatest emits synchronously on subscribe — captured here as the OAPH's initial
+        // value so MenuModel is never default(TrayMenuModel) (null) before
+        // RxSchedulers.MainThreadScheduler delivers the ObserveOn'd copy below. The
+        // synchronous-emission assumption rests on IPauseController.State's,
+        // IConsentService.PendingCount's, and IPermissionService.Summary's documented
+        // replay-on-subscribe contracts, which a future implementation could violate — defended
+        // below rather than left to surface as an unexplained NRE on first MenuModel access.
+        TrayMenuModel? seed = null;
+        using (withUpdate.Subscribe(v => seed = v)) { }
+
+        _menuModel = withUpdate
             .ObserveOn(RxSchedulers.MainThreadScheduler)
             .ToProperty(this, x => x.MenuModel, seed ?? throw new InvalidOperationException(
                 "IPauseController.State, IConsentService.PendingCount, and IPermissionService.Summary must replay a value on subscribe."))
