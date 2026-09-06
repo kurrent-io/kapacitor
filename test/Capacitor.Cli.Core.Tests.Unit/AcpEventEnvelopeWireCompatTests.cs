@@ -29,6 +29,7 @@ public class AcpEventEnvelopeWireCompatTests {
             ToolCallId:        "call-1",
             ToolName:          "bash",
             ToolInputJson:     """{"command":"ls"}""",
+            ToolKind:          AcpToolKind.Execute,
             ToolResult:        "ok",
             ToolIsError:       true,
             Model:             "claude-opus-4-8",
@@ -54,6 +55,7 @@ public class AcpEventEnvelopeWireCompatTests {
         await Assert.That(json).Contains(@"""tool_call_id"":""call-1""");
         await Assert.That(json).Contains(@"""tool_name"":""bash""");
         await Assert.That(json).Contains(@"""tool_input_json""");
+        await Assert.That(json).Contains(@"""tool_kind"":""execute""");
         await Assert.That(json).Contains(@"""tool_result"":""ok""");
         await Assert.That(json).Contains(@"""tool_is_error"":true");
         await Assert.That(json).Contains(@"""model"":""claude-opus-4-8""");
@@ -76,6 +78,35 @@ public class AcpEventEnvelopeWireCompatTests {
         await Assert.That(back.ContextWindowTokens).IsEqualTo(200_000L);
         await Assert.That(back.Ephemeral).IsTrue();
         await Assert.That(back.ItemId).IsEqualTo("item-42");
+        await Assert.That(back.ToolKind).IsEqualTo(AcpToolKind.Execute);
+    }
+
+    [Test]
+    public async Task AcpToolKind_constants_match_the_ACP_tool_kind_vocabulary() {
+        await Assert.That(AcpToolKind.Read).IsEqualTo("read");
+        await Assert.That(AcpToolKind.Edit).IsEqualTo("edit");
+        await Assert.That(AcpToolKind.Delete).IsEqualTo("delete");
+        await Assert.That(AcpToolKind.Move).IsEqualTo("move");
+        await Assert.That(AcpToolKind.Search).IsEqualTo("search");
+        await Assert.That(AcpToolKind.Execute).IsEqualTo("execute");
+        await Assert.That(AcpToolKind.Think).IsEqualTo("think");
+        await Assert.That(AcpToolKind.Fetch).IsEqualTo("fetch");
+        await Assert.That(AcpToolKind.SwitchMode).IsEqualTo("switch_mode");
+        await Assert.That(AcpToolKind.Other).IsEqualTo("other");
+    }
+
+    /// The closed set is what lets a consumer switch on ten tokens. An absent kind stays absent —
+    /// "no lane classified this" is a different answer from "none of the above".
+    [Test]
+    public async Task Normalize_keeps_the_vocabulary_closed_and_absence_distinguishable() {
+        foreach (var known in new[] { "read", "edit", "delete", "move", "search", "execute", "think", "fetch", "switch_mode", "other" })
+            await Assert.That(AcpToolKind.Normalize(known)).IsEqualTo(known).Because(known);
+
+        await Assert.That(AcpToolKind.Normalize("Read")).IsEqualTo(AcpToolKind.Other);
+        await Assert.That(AcpToolKind.Normalize("summarise")).IsEqualTo(AcpToolKind.Other);
+        await Assert.That(AcpToolKind.Normalize(null)).IsNull();
+        await Assert.That(AcpToolKind.Normalize("")).IsNull();
+        await Assert.That(AcpToolKind.Normalize("  ")).IsNull();
     }
 
     [Test]
