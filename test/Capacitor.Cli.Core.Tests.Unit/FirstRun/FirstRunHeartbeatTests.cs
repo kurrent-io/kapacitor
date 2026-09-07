@@ -26,6 +26,13 @@ public class FirstRunHeartbeatTests {
 
         public int Beats => Volatile.Read(ref _beats);
 
+        int _answered;
+
+        /// <summary>Beats that have returned an outcome. Distinct from <see cref="Beats"/>, which counts
+        /// them as they are issued — a test releasing held answers has to wait on this one before moving
+        /// the clock, or the tick it spends can arrive before there is anything to harvest.</summary>
+        public int Answered => Volatile.Read(ref _answered);
+
         /// <summary>Holds every beat until <see cref="Release"/>, to keep one provably in flight.</summary>
         public bool Block { get; init; }
 
@@ -82,6 +89,8 @@ public class FirstRunHeartbeatTests {
             if (Block) await _gate.Task;
             if (Throws is { } boom) throw boom;
 
+            Interlocked.Increment(ref _answered);
+
             if (sequenced is { } answer) return answer;
 
             if (Next is { } once) {
@@ -120,6 +129,16 @@ public class FirstRunHeartbeatTests {
         }
 
         return channel.Beats >= target;
+    }
+
+    /// <summary>Waits, on the real clock only, until <paramref name="answered"/> beats have returned an
+    /// outcome. Moving the fake clock before that spends a tick on an empty drain.</summary>
+    static async Task<bool> AnsweredAsync(FakeChannel channel, int answered) {
+        var until = DateTime.UtcNow + Patience;
+
+        while (DateTime.UtcNow < until && channel.Answered < answered) await Task.Delay(5);
+
+        return channel.Answered >= answered;
     }
 
     /// <summary>Advances the fake clock until the beat count reaches <paramref name="target"/>, or the
@@ -419,6 +438,9 @@ public class FirstRunHeartbeatTests {
 
         channel.ReleaseHeld();
 
+        await Assert.That(await AnsweredAsync(channel, MaxInFlightForTest)).IsTrue()
+                    .Because("the released answers never arrived, so nothing was there to drain");
+
         // Well inside the 120s the two stale answers asked for, so obeying either of them fails here.
         await Assert.That(await ReachesWithinAsync(channel, clock, MaxInFlightForTest + 1,
                                                    TimeSpan.FromSeconds(30))).IsTrue()
@@ -454,6 +476,9 @@ public class FirstRunHeartbeatTests {
                     .Because("the drain this test is about never formed");
 
         channel.ReleaseHeld();
+
+        await Assert.That(await AnsweredAsync(channel, 2 + MaxInFlightForTest)).IsTrue()
+                    .Because("the released answers never arrived, so nothing was there to drain");
 
         await Assert.That(await ReachesWithinAsync(channel, clock, 2 + MaxInFlightForTest + 1,
                                                    TimeSpan.FromSeconds(30))).IsTrue()
