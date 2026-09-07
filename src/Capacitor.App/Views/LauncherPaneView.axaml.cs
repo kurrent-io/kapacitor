@@ -124,6 +124,72 @@ public partial class LauncherPaneView : UserControl {
         }
     }
 
+    // Machine picker: one flyout item per ListMachinesAsync entry — DaemonName with a checkmark
+    // on the selected one, disabled (never pickable) when not Connected. Same kcapPanel Flyout
+    // shape as the repository picker, one row layout instead of two-line paths.
+    async void OnMachineChipClick(object? sender, RoutedEventArgs e) {
+        if (DataContext is not HomeViewModel vm || sender is not Control anchor) return;
+
+        var muted = Brush("KcapMutedBrush");
+        var rows = new StackPanel { Spacing = 2, Margin = new Thickness(6) };
+        var flyout = PanelFlyout(rows, minWidth: 220);
+        foreach (var option in await vm.ListMachinesAsync())
+            rows.Children.Add(MachineRow(vm, option, muted, flyout));
+
+        flyout.ShowAt(anchor);
+    }
+
+    Button MachineRow(HomeViewModel vm, MachineOption option, IBrush muted, Flyout flyout) {
+        var title = new TextBlock {
+            Text = option.DaemonName,
+            FontSize = 13.5,
+            FontWeight = option.Selected ? FontWeight.SemiBold : FontWeight.Normal,
+            Foreground = option.Connected ? Brush("KcapTextBrush") : muted,
+            VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center,
+        };
+
+        var check = new TextBlock {
+            Text = "✓", FontSize = 13, IsVisible = option.Selected,
+            Foreground = Brush("KcapSuccessBrush"), Margin = new Thickness(12, 0, 0, 0),
+            VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center,
+        };
+
+        var subtitle = new TextBlock {
+            Text = option.IsLocal ? "This machine" : option.Connected ? "Connected" : "Offline",
+            FontSize = 10.5, Foreground = muted, Margin = new Thickness(0, 2, 0, 0),
+        };
+
+        var grid = new Grid {
+            ColumnDefinitions = new ColumnDefinitions("*,Auto"),
+            RowDefinitions = new RowDefinitions("Auto,Auto"),
+            MinWidth = 200,
+            HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Stretch,
+        };
+        grid.Children.Add(title);
+        Grid.SetColumn(check, 1);
+        grid.Children.Add(check);
+        Grid.SetRow(subtitle, 1);
+        grid.Children.Add(subtitle);
+
+        var daemonName = option.DaemonName;
+        var row = ChoiceButton(grid, () => {
+            flyout.Hide();
+            _ = SelectMachineObservedAsync(vm, daemonName);
+        });
+        row.IsEnabled = option.Connected;
+        return row;
+    }
+
+    // ChoiceButton's click is sync; keep flyout-close immediate and observe the async load so a
+    // failed state read is not an unobserved task (SelectRepositoryObservedAsync's identical shape).
+    static async Task SelectMachineObservedAsync(HomeViewModel vm, string daemonName) {
+        try {
+            await vm.SelectMachineAsync(daemonName);
+        } catch (Exception ex) {
+            Console.Error.WriteLine($"kcap: select machine failed: {ex}");
+        }
+    }
+
     // "Add one" via a native folder picker — SelectRepositoryAsync then treats the choice like
     // any other repository, so it shows up in the menu from the next open on.
     async Task AddRepositoryAsync(HomeViewModel vm) {
@@ -494,6 +560,17 @@ public sealed class RepositoryChipTipConverter : IValueConverter {
 
     public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture) =>
         value is string { Length: > 0 } path ? path : "Repository for the new session";
+
+    public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) =>
+        throw new NotSupportedException();
+}
+
+/// MachineChip's label: always "Machine · …" so the chip's job stays readable next to Repo.
+public sealed class MachineLabelConverter : IValueConverter {
+    public static readonly MachineLabelConverter Instance = new();
+
+    public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture) =>
+        value is string { Length: > 0 } name ? $"Machine · {name}" : "Machine";
 
     public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) =>
         throw new NotSupportedException();

@@ -70,15 +70,30 @@
                     <!-- Repo on its own row (capped width + ellipsis); settings + Start below so a
                          long leaf never orphans Permissions alone under the repo pill. -->
                     <StackPanel Spacing="8">
-                        <Button x:Name="RepositoryChip" Classes="kcapChip" Click="OnRepositoryChipClick"
-                                HorizontalAlignment="Left" MaxWidth="460"
-                                Background="{StaticResource KcapSurfaceRaisedBrush}" BorderBrush="{StaticResource KcapBorderBrush}"
-                                Foreground="{StaticResource KcapTextBrush}" CornerRadius="999" Padding="11,5"
-                                ToolTip.Tip="{Binding SelectedRepoPath, Converter={x:Static views:RepositoryChipTipConverter.Instance}}">
-                            <TextBlock Text="{Binding SelectedRepoPath, Converter={x:Static views:RepositoryLabelConverter.Instance}}"
-                                       TextTrimming="CharacterEllipsis"
-                                       Foreground="{StaticResource KcapTextBrush}" />
-                        </Button>
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <Button x:Name="RepositoryChip" Classes="kcapChip" Click="OnRepositoryChipClick"
+                                    HorizontalAlignment="Left" MaxWidth="460"
+                                    Background="{StaticResource KcapSurfaceRaisedBrush}" BorderBrush="{StaticResource KcapBorderBrush}"
+                                    Foreground="{StaticResource KcapTextBrush}" CornerRadius="999" Padding="11,5"
+                                    ToolTip.Tip="{Binding SelectedRepoPath, Converter={x:Static views:RepositoryChipTipConverter.Instance}}">
+                                <TextBlock Text="{Binding SelectedRepoPath, Converter={x:Static views:RepositoryLabelConverter.Instance}}"
+                                           TextTrimming="CharacterEllipsis"
+                                           Foreground="{StaticResource KcapTextBrush}" />
+                            </Button>
+
+                            <!-- Hidden until the viewer owns at least one remote daemon
+                                 (HomeViewModel.MachinePickerVisible) — nothing to pick from otherwise. -->
+                            <Button x:Name="MachineChip" Classes="kcapChip" Click="OnMachineChipClick"
+                                    HorizontalAlignment="Left" MaxWidth="220"
+                                    Background="{StaticResource KcapSurfaceRaisedBrush}" BorderBrush="{StaticResource KcapBorderBrush}"
+                                    Foreground="{StaticResource KcapTextBrush}" CornerRadius="999" Padding="11,5"
+                                    IsVisible="{Binding MachinePickerVisible}"
+                                    ToolTip.Tip="Machine to launch this session on">
+                                <TextBlock Text="{Binding SelectedMachine, Converter={x:Static views:MachineLabelConverter.Instance}}"
+                                           TextTrimming="CharacterEllipsis"
+                                           Foreground="{StaticResource KcapTextBrush}" />
+                            </Button>
+                        </StackPanel>
 
                         <Grid ColumnDefinitions="*,Auto">
                             <WrapPanel ItemSpacing="8" LineSpacing="8" VerticalAlignment="Center">

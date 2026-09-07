@@ -2,6 +2,7 @@ using System.Reactive.Linq;
 using Capacitor.App.Services;
 using Capacitor.App.ViewModels;
 using Capacitor.Cli.Core.LocalIpc;
+using Capacitor.Remote.Models;
 using DynamicData;
 
 namespace Capacitor.App.Tests.Unit;
@@ -663,6 +664,134 @@ public class HomeViewModelTests {
 
             await Assert.That(vm.StartError).IsNull();
             await Assert.That(vm.Goal).IsEqualTo("");
+        });
+    }
+
+    // The launcher's machine picker: name-based launch routing is only defined within one owner,
+    // so ListMachinesAsync is the one place that rule is enforced — every test below reads its
+    // output rather than trusting a wired-through daemon list.
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task PickerOffersLocalPlusOwnConnectedDaemons() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            using var tmp = TempDir.WithPathTo("app-state.json", out var path);
+            var daemon = new FakeDaemonClientService();
+            var remote = new FakeRemoteAgents();
+            remote.DaemonsSubject.OnNext([
+                new DaemonInfo { Name = "home-pc", OwnerUserId = "u1", MachineId = "m2", Connected = true },
+                new DaemonInfo { Name = "work-mac", OwnerUserId = "u2", MachineId = "m3", Connected = true },
+                // Same machine id + name as the local daemon: the local daemon's own registry
+                // twin, never a distinct remote target.
+                new DaemonInfo { Name = daemon.DaemonName, OwnerUserId = "u1", MachineId = "m1", Connected = true },
+            ]);
+            using var vm = new HomeViewModel(
+                daemon, new AppStateStore(path), new RecordingLaunchClient(), Known(),
+                daemons: remote.Daemons, viewerId: _ => Task.FromResult<string?>("u1"), localMachineId: "m1");
+
+            var options = await vm.ListMachinesAsync();
+
+            await Assert.That(options.Count).IsEqualTo(2);
+            await Assert.That(options[0].DaemonName).IsEqualTo(daemon.DaemonName);
+            await Assert.That(options[0].IsLocal).IsTrue();
+            await Assert.That(options[0].Selected).IsTrue();
+            await Assert.That(options[1].DaemonName).IsEqualTo("home-pc");
+            await Assert.That(options.Any(o => o.DaemonName == "work-mac")).IsFalse();
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task NullViewerIdOffersOnlyLocal() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            using var tmp = TempDir.WithPathTo("app-state.json", out var path);
+            var daemon = new FakeDaemonClientService();
+            var remote = new FakeRemoteAgents();
+            remote.DaemonsSubject.OnNext([new DaemonInfo { Name = "home-pc", OwnerUserId = "u1", Connected = true }]);
+            // No viewerId supplied — the ctor default never guesses ownership.
+            using var vm = new HomeViewModel(
+                daemon, new AppStateStore(path), new RecordingLaunchClient(), Known(), daemons: remote.Daemons);
+
+            var options = await vm.ListMachinesAsync();
+
+            await Assert.That(options.Count).IsEqualTo(1);
+            await Assert.That(options[0].DaemonName).IsEqualTo(daemon.DaemonName);
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task SelectingRemoteMachineSwitchesRepoAndVendorSources() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            using var tmp = TempDir.WithPathTo("app-state.json", out var path);
+            var daemon = new FakeDaemonClientService();
+            var remote = new FakeRemoteAgents();
+            remote.DaemonsSubject.OnNext([
+                new DaemonInfo {
+                    Name = "home-pc", OwnerUserId = "u1", Connected = true,
+                    RepoPaths = ["/w/repo"], SupportedVendors = ["codex"],
+                },
+            ]);
+            using var vm = new HomeViewModel(
+                daemon, new AppStateStore(path), new RecordingLaunchClient(), Known(),
+                daemons: remote.Daemons, viewerId: _ => Task.FromResult<string?>("u1"));
+
+            await vm.SelectMachineAsync("home-pc");
+
+            await Assert.That(vm.SelectedRepoPath).IsEqualTo("/w/repo");
+            var repos = await vm.ListRepositoriesAsync();
+            await Assert.That(repos.Count).IsEqualTo(1);
+            await Assert.That(repos[0].RepoPath).IsEqualTo("/w/repo");
+            await Assert.That(vm.Harnesses.Single(h => h.Vendor == "codex").Available).IsTrue();
+            await Assert.That(vm.Harnesses.Single(h => h.Vendor == "claude").Available).IsFalse();
+            await Assert.That(vm.SelectedVendor).IsEqualTo("codex");
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task LaunchCarriesTheSelectedMachine() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            using var tmp = TempDir.WithPathTo("app-state.json", out var path);
+            var daemon = new FakeDaemonClientService();
+            Connect(daemon);
+            var launch = new RecordingLaunchClient();
+            var remote = new FakeRemoteAgents();
+            remote.DaemonsSubject.OnNext([
+                new DaemonInfo { Name = "home-pc", OwnerUserId = "u1", Connected = true, RepoPaths = ["/w/repo"] },
+            ]);
+            var lane = new FakeServerLane();
+            lane.StatusSubject.OnNext(new ServerLaneStatus(ServerLaneState.Connected));
+            using var vm = new HomeViewModel(
+                daemon, new AppStateStore(path), launch, Known(),
+                daemons: remote.Daemons, viewerId: _ => Task.FromResult<string?>("u1"), laneStatus: lane.Status);
+
+            await vm.SelectMachineAsync("home-pc");
+            await vm.StartCommand.Execute();
+
+            await Assert.That(launch.Last!.DaemonName).IsEqualTo("home-pc");
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task RemoteSelectionRequiresTheLane() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            using var tmp = TempDir.WithPathTo("app-state.json", out var path);
+            var daemon = new FakeDaemonClientService();
+            var remote = new FakeRemoteAgents();
+            remote.DaemonsSubject.OnNext([new DaemonInfo { Name = "home-pc", OwnerUserId = "u1", Connected = true }]);
+            var lane = new FakeServerLane();
+            lane.StatusSubject.OnNext(new ServerLaneStatus(ServerLaneState.Retrying));
+            using var vm = new HomeViewModel(
+                daemon, new AppStateStore(path), new RecordingLaunchClient(), Known(),
+                daemons: remote.Daemons, viewerId: _ => Task.FromResult<string?>("u1"), laneStatus: lane.Status);
+
+            await vm.SelectMachineAsync("home-pc");
+            await Assert.That(await vm.StartCommand.CanExecute.FirstAsync()).IsFalse();
+
+            lane.StatusSubject.OnNext(new ServerLaneStatus(ServerLaneState.Connected));
+            await Assert.That(await vm.StartCommand.CanExecute.FirstAsync()).IsTrue();
         });
     }
 }

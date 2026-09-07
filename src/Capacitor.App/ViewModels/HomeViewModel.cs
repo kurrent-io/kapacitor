@@ -7,6 +7,7 @@ using System.Reactive.Subjects;
 using Capacitor.App.Services;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Harness.Claude;
+using Capacitor.Remote.Models;
 using DynamicData;
 using DynamicData.Binding;
 using ReactiveUI;
@@ -17,6 +18,14 @@ namespace Capacitor.App.ViewModels;
 /// HomeViewModel.DefaultVendor when none was ever chosen there; Selected marks the entry that
 /// matches SelectedRepoPath under HomeViewModel's own path comparison.
 public sealed record RepositoryOption(string RepoPath, string Vendor, bool Selected);
+
+/// One entry of the launcher's machine chip: the local daemon, or one of the viewer's own remote
+/// daemons — name-based launch routing is only defined within one owner, so a daemon owned by
+/// someone else is never surfaced as an option. RepoPaths/SupportedVendors come from DaemonInfo
+/// verbatim for a remote machine; the local entry's come from the existing repo flow.
+public sealed record MachineOption(
+    string DaemonName, bool IsLocal, bool Connected, string? Platform,
+    string[] RepoPaths, string[]? SupportedVendors, bool Selected);
 
 /// Whether a launch can reach a daemon right now, merged from the local attach state and the
 /// daemon's own upstream connection word — the same two inputs the footer's status line reads.
@@ -173,6 +182,44 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
     readonly ObservableAsPropertyHelper<IReadOnlyList<HarnessOption>> _harnesses;
     public IReadOnlyList<HarnessOption> Harnesses => _harnesses.Value;
 
+    readonly IObservable<IReadOnlyList<DaemonInfo>> _daemons;
+    readonly Func<CancellationToken, Task<string?>> _viewerId;
+    readonly IObservable<ServerLaneStatus> _laneStatus;
+    readonly string? _localMachineId;
+
+    /// Live mirror of the local availability CombineLatest below, read (never bound directly) by
+    /// ListMachinesAsync to stamp the local MachineOption's Connected flag at the moment asked.
+    LaunchAvailability _currentAvailability = LaunchAvailability.Pending;
+
+    string _selectedMachine;
+    /// Which daemon a launch targets: the local one until SelectMachineAsync picks a remote name.
+    public string SelectedMachine {
+        get => _selectedMachine;
+        private set => this.RaiseAndSetIfChanged(ref _selectedMachine, value);
+    }
+
+    bool _remoteMachineSelected;
+    /// False ⇒ every existing repo/harness/launch behavior is untouched — the mechanism that lets
+    /// this task's ctor defaults leave every current caller's behavior exactly as it was.
+    public bool RemoteMachineSelected {
+        get => _remoteMachineSelected;
+        private set => this.RaiseAndSetIfChanged(ref _remoteMachineSelected, value);
+    }
+
+    // Drives the reactive pipelines below (CanExecute, Harnesses) — a subject rather than
+    // WhenAnyValue, same reason as _selectedRepoPathChanges.
+    readonly BehaviorSubject<(string Name, bool Remote)> _machineSelectionChanges;
+    // null = local (daemon.Snapshots governs Harnesses); non-null = the remote machine's own
+    // advertised vendors, set by SelectMachineAsync.
+    readonly BehaviorSubject<string[]?> _remoteVendorOverride = new(null);
+    // Frozen at selection time — ListRepositoriesAsync's remote branch reads it rather than
+    // re-resolving the daemon list on every menu open.
+    MachineOption? _selectedRemoteMachine;
+
+    readonly ObservableAsPropertyHelper<bool> _machinePickerVisible;
+    /// The machine chip's visibility: hidden until the viewer owns at least one remote daemon.
+    public bool MachinePickerVisible => _machinePickerVisible.Value;
+
     static readonly IComparer<SessionCardViewModel> RowComparer = Comparer<SessionCardViewModel>.Create((a, b) => {
         var byCreated = a.CreatedAt.CompareTo(b.CreatedAt);
         return byCreated != 0 ? byCreated : string.CompareOrdinal(a.Id, b.Id);
@@ -204,11 +251,22 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
     /// </param>
     /// <param name="requestSignIn">Opens the re-auth sign-in surface (App owns the window). Null
     /// leaves the Sign in button inert — a HomeViewModel with no windows to open.</param>
+    /// <param name="daemons">The viewer's own-plus-others remote registry (IRemoteAgentsService.
+    /// Daemons). Null ⇒ the machine picker offers only the local daemon.</param>
+    /// <param name="viewerId">The signed-in user's own id (JwtClaims), read fresh per call. Null
+    /// ⇒ no remote daemon is ever offered — ownership is never guessed.</param>
+    /// <param name="laneStatus">The app's own server lane (IServerLane.Status) — what a remote
+    /// launch's availability gates on, independent of the local daemon's own connection word.</param>
+    /// <param name="localMachineId">This machine's id, for excluding the local daemon's own remote
+    /// registry twin from the picker's remote options.</param>
     public HomeViewModel(
             IDaemonClientService daemon, IAppStateStore state, ILaunchClient launch,
             Func<Task<string[]>> knownRepos, CancellationToken shutdown = default,
             Action<string>? openSession = null, Func<int>? navigationGeneration = null,
-            Action<string, int>? openSessionIfCurrent = null, Action? requestSignIn = null) {
+            Action<string, int>? openSessionIfCurrent = null, Action? requestSignIn = null,
+            IObservable<IReadOnlyList<DaemonInfo>>? daemons = null,
+            Func<CancellationToken, Task<string?>>? viewerId = null,
+            IObservable<ServerLaneStatus>? laneStatus = null, string? localMachineId = null) {
         _daemon = daemon;
         _state = state;
         _launch = launch;
@@ -218,15 +276,37 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
         _navigationGeneration = navigationGeneration;
         _openSessionIfCurrent = openSessionIfCurrent;
         _requestSignIn = requestSignIn;
+        _daemons = daemons ?? Observable.Return<IReadOnlyList<DaemonInfo>>([]);
+        _viewerId = viewerId ?? (_ => Task.FromResult<string?>(null));
+        _laneStatus = laneStatus ?? Observable.Return(new ServerLaneStatus(ServerLaneState.Dormant));
+        _localMachineId = localMachineId;
+        _selectedMachine = daemon.DaemonName;
+        _machineSelectionChanges = new((daemon.DaemonName, false));
 
         // Never starts empty: a null SupportedVendors means "daemon
         // capability unknown", not "hosts nothing" — Build(null) offers everything until the first
-        // real snapshot narrows it. ObserveOn BEFORE ToProperty: Snapshots is pushed from the
-        // daemon client's own background thread (MainWindowViewModel's identical comment).
+        // real snapshot narrows it. Merged with the machine-picker's own override (null when
+        // local, the selected remote machine's advertised vendors otherwise — SelectMachineAsync's
+        // rule). ObserveOn BEFORE ToProperty: Snapshots is pushed from the daemon client's own
+        // background thread (MainWindowViewModel's identical comment).
         _harnesses = daemon.Snapshots
+            .Select(s => s.Daemon.SupportedVendors)
+            .StartWith((string[]?)null)
+            .CombineLatest(_remoteVendorOverride, _machineSelectionChanges,
+                (localVendors, remoteVendors, sel) => HostedHarnessCatalog.Build(sel.Remote ? remoteVendors : localVendors))
             .ObserveOn(RxSchedulers.MainThreadScheduler)
-            .Select(s => HostedHarnessCatalog.Build(s.Daemon.SupportedVendors))
             .ToProperty(this, x => x.Harnesses, HostedHarnessCatalog.Build(null))
+            .DisposeWith(_disposables);
+
+        // A throw from viewerId (e.g. a claims-file read fault) is a missed visibility recompute,
+        // never a fault that kills this OAPH's subscription forever (RemoteAgentsService's
+        // identical philosophy for its own daemons refresh).
+        _machinePickerVisible = _daemons
+            .Select(list => Observable.FromAsync(() => OwnDaemonsAsync(list)).Catch(Observable.Return<IReadOnlyList<DaemonInfo>>([])))
+            .Switch()
+            .Select(own => own.Count > 0)
+            .ObserveOn(RxSchedulers.MainThreadScheduler)
+            .ToProperty(this, x => x.MachinePickerVisible, initialValue: false)
             .DisposeWith(_disposables);
 
         Sessions = new ReadOnlyObservableCollection<SessionCardViewModel>(_sessionsSource);
@@ -248,14 +328,22 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
         // ordering guarantees a real value is there (MainWindowViewModel's identical seam comment).
         var availability = daemon.Status.CombineLatest(
             daemon.Snapshots.Select(s => s.Daemon.Connection).StartWith(""), AvailabilityFor);
+        availability.Subscribe(a => _currentAvailability = a).DisposeWith(_disposables);
+
+        // A remote selection swaps in RemoteAvailabilityFor (lane + the selected daemon's latest
+        // Connected) rather than changing AvailabilityFor itself — the local gate stays exactly
+        // what every existing (non-machine-picking) caller already exercises.
+        var canLaunch = availability.CombineLatest(
+            _laneStatus, _daemons, _machineSelectionChanges,
+            (local, lane, list, sel) => (sel.Remote ? RemoteAvailabilityFor(lane, FindMachine(list, sel.Name)) : local)
+                == LaunchAvailability.Ready);
 
         // Explicit ObserveOn: ReactiveCommand does NOT reschedule the supplied canExecute, and a
         // Status event arrives on the daemon client's pump thread (MainWindowViewModel's canStart
         // comment) — without it CanExecuteChanged would touch the bound Button off the UI thread.
         StartCommand = ReactiveCommand.CreateFromTask(
             StartAsync,
-            availability.Select(a => a == LaunchAvailability.Ready)
-                .ObserveOn(RxSchedulers.MainThreadScheduler));
+            canLaunch.ObserveOn(RxSchedulers.MainThreadScheduler));
 
         var signInState = availability
             .CombineLatest(
@@ -398,9 +486,40 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
     /// repository the casing the user picked is the one displayed. Scratch ("No repository") is
     /// offered only when that list is empty — with real repos, an empty selection adopts the
     /// most recently used known path instead.
+    ///
+    /// A remote machine selection swaps this entirely: only that machine's own advertised
+    /// RepoPaths are offered (no known-repos merge, no scratch adoption — a remote path is never
+    /// verified locally), each labelled DefaultVendor since there is no per-repo remembered
+    /// harness for a machine that is not this one.
     public async Task<IReadOnlyList<RepositoryOption>> ListRepositoriesAsync() {
+        if (RemoteMachineSelected) {
+            var remoteSelected = SelectedRepoPath;
+            return (_selectedRemoteMachine?.RepoPaths ?? [])
+                .Select(p => new RepositoryOption(p, DefaultVendor, PathComparer.Equals(p, remoteSelected)))
+                .ToList();
+        }
+
         await EnsureDefaultRepositoryAsync();
 
+        var (byRepo, paths) = await GatherLocalRepoDataAsync();
+
+        var selected = SelectedRepoPath;
+        var options = paths
+            .OrderBy(p => RepoLabel.Leaf(p), StringComparer.OrdinalIgnoreCase)
+            .ThenBy(p => p, StringComparer.Ordinal)
+            .Select(p => new RepositoryOption(p, Lookup(byRepo, p) ?? DefaultVendor, PathComparer.Equals(p, selected)))
+            .ToList();
+
+        if (paths.Count == 0)
+            options.Add(new RepositoryOption(
+                ScratchRepoPath, Lookup(byRepo, ScratchRepoPath) ?? DefaultVendor, selected.Length == 0));
+        return options;
+    }
+
+    /// The path-gathering half of ListRepositoriesAsync's local branch, split out so
+    /// ListMachinesAsync can reuse it for the local MachineOption's RepoPaths without a second
+    /// AppStateStore read of the same file.
+    async Task<(IReadOnlyDictionary<string, string>? ByRepo, List<string> Paths)> GatherLocalRepoDataAsync() {
         var byRepo = (await _state.LoadAsync()).HarnessByRepo;
         var known = await _knownRepos();
 
@@ -423,17 +542,99 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
             Add(repo);
         Add(SelectedRepoPath);
 
-        var selected = SelectedRepoPath;
-        var options = paths
-            .OrderBy(p => RepoLabel.Leaf(p), StringComparer.OrdinalIgnoreCase)
-            .ThenBy(p => p, StringComparer.Ordinal)
-            .Select(p => new RepositoryOption(p, Lookup(byRepo, p) ?? DefaultVendor, PathComparer.Equals(p, selected)))
-            .ToList();
+        return (byRepo, paths);
+    }
 
-        if (paths.Count == 0)
-            options.Add(new RepositoryOption(
-                ScratchRepoPath, Lookup(byRepo, ScratchRepoPath) ?? DefaultVendor, selected.Length == 0));
+    /// The launcher's machine chip menu: local first, always, then the viewer's own connected
+    /// remote daemons — this is the one place ownership is enforced, so nothing downstream needs
+    /// to re-check it. A null viewer id (signed out, or claims not readable yet) means no remote
+    /// options ever, never a guess.
+    public async Task<IReadOnlyList<MachineOption>> ListMachinesAsync() {
+        var (_, localPaths) = await GatherLocalRepoDataAsync();
+        var options = new List<MachineOption> {
+            new(_daemon.DaemonName, IsLocal: true, _currentAvailability == LaunchAvailability.Ready,
+                Platform: null, localPaths.ToArray(), SupportedVendors: null, Selected: !RemoteMachineSelected),
+        };
+
+        foreach (var d in await OwnRemoteDaemonsAsync())
+            options.Add(new MachineOption(
+                d.Name, IsLocal: false, d.Connected, d.Platform, d.RepoPaths ?? [], d.SupportedVendors,
+                Selected: RemoteMachineSelected && string.Equals(d.Name, SelectedMachine, StringComparison.Ordinal)));
+
         return options;
+    }
+
+    /// Picking the local name leaves the repository/harness/launch flow exactly as it is for
+    /// every non-machine-picking caller; picking a remote name switches the repository and
+    /// harness sources to that machine's own advertised set and resets the
+    /// vendor off one it cannot host.
+    public async Task SelectMachineAsync(string daemonName) {
+        if (string.Equals(daemonName, _daemon.DaemonName, StringComparison.Ordinal)) {
+            SetMachineSelection(daemonName, remote: false);
+            _selectedRemoteMachine = null;
+            _remoteVendorOverride.OnNext(null);
+            return;
+        }
+
+        DaemonInfo? match = null;
+        foreach (var d in await OwnRemoteDaemonsAsync())
+            if (string.Equals(d.Name, daemonName, StringComparison.Ordinal)) { match = d; break; }
+        var machine = match is null
+            ? null
+            : new MachineOption(match.Name, false, match.Connected, match.Platform,
+                match.RepoPaths ?? [], match.SupportedVendors, true);
+
+        SetMachineSelection(daemonName, remote: true);
+        _selectedRemoteMachine = machine;
+        _remoteVendorOverride.OnNext(machine?.SupportedVendors);
+        SelectedRepoPath = machine?.RepoPaths.FirstOrDefault() is { Length: > 0 } first ? first : ScratchRepoPath;
+
+        var options = HostedHarnessCatalog.Build(machine?.SupportedVendors);
+        var current = options.FirstOrDefault(o => string.Equals(o.Vendor, SelectedVendor, StringComparison.OrdinalIgnoreCase));
+        if (current is not { Available: true })
+            SetVendor(options.FirstOrDefault(o => o.Available)?.Vendor ?? DefaultVendor);
+    }
+
+    void SetMachineSelection(string name, bool remote) {
+        SelectedMachine = name;
+        RemoteMachineSelected = remote;
+        _machineSelectionChanges.OnNext((name, remote));
+    }
+
+    /// A daemon with the local machine id and the local daemon's own name is this same daemon's
+    /// registry entry, not a distinct remote target — MachineId is null-guarded so an app that has
+    /// never learned its own machine id (localMachineId: null) never treats a name collision as a
+    /// twin (LocalDaemonTwin's identical guard).
+    bool IsLocalTwin(DaemonInfo d) =>
+        _localMachineId is not null && d.MachineId == _localMachineId
+        && string.Equals(d.Name, _daemon.DaemonName, StringComparison.Ordinal);
+
+    /// The one ownership filter: every remote daemon this ViewModel ever offers or resolves by
+    /// name goes through this, so "the viewer's own daemons" has exactly one definition.
+    async Task<IReadOnlyList<DaemonInfo>> OwnDaemonsAsync(IReadOnlyList<DaemonInfo> all) {
+        var viewer = await _viewerId(CancellationToken.None);
+        if (viewer is null) return [];
+        return all.Where(d => d.OwnerUserId == viewer && !IsLocalTwin(d)).ToList();
+    }
+
+    async Task<IReadOnlyList<DaemonInfo>> OwnRemoteDaemonsAsync() => await OwnDaemonsAsync(await _daemons.FirstAsync());
+
+    /// Live lookup by name against the raw (unfiltered) daemons list — used only by the CanExecute
+    /// pipeline, where the name already came from a selection ListMachinesAsync had ownership-
+    /// filtered, so re-awaiting viewerId on every lane/daemons tick would add nothing.
+    static MachineOption? FindMachine(IReadOnlyList<DaemonInfo> daemons, string name) {
+        foreach (var d in daemons)
+            if (string.Equals(d.Name, name, StringComparison.Ordinal))
+                return new MachineOption(d.Name, false, d.Connected, d.Platform, d.RepoPaths ?? [], d.SupportedVendors, true);
+        return null;
+    }
+
+    /// A remote launch is Ready only with the app's OWN server lane connected AND the selected
+    /// daemon's latest reported Connected — the local daemon-down notices never apply here (they
+    /// stay local-only; a remote pick with the lane down still just shows ServerLostNotice).
+    internal static LaunchAvailability RemoteAvailabilityFor(ServerLaneStatus lane, MachineOption? machine) {
+        if (lane.State != ServerLaneState.Connected) return LaunchAvailability.ServerDisconnected;
+        return machine is { Connected: true } ? LaunchAvailability.Ready : LaunchAvailability.DaemonUnavailable;
     }
 
     /// When nothing is selected, adopt the most recently used known repository (then a remembered
@@ -487,7 +688,7 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
 
     async Task StartAsync() {
         var request = new LaunchRequest(
-            _daemon.DaemonName, SelectedRepoPath, SelectedVendor, Goal, SelectedModel, SelectedEffort,
+            SelectedMachine, SelectedRepoPath, SelectedVendor, Goal, SelectedModel, SelectedEffort,
             PermissionModeFor(SelectedVendor, SelectedPermissionMode));
         // Captured BEFORE the call, never after (spec §3): the whole point is to notice a navigation
         // that happened WHILE the launch was in flight.
