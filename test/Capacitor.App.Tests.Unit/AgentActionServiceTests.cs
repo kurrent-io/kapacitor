@@ -265,7 +265,7 @@ public class AgentActionServiceTests {
             ["Couldn't open the browser: no handler registered"], CollectionOrdering.Matching);
     }
 
-    // ---- open in web: local vs remote origin (finding 5) ----
+    // ---- open in web: local vs remote origin ----
 
     [Test]
     public async Task OpenInWeb_and_OpenInWebRemote_use_different_servers() {
