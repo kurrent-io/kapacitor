@@ -387,16 +387,24 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
             StartAsync,
             canLaunch.ObserveOn(RxSchedulers.MainThreadScheduler));
 
+        // OR'd into _signInRequired at the read side (never written into the subject itself) so
+        // NotifySignInCompleted's reset stays a clean false — a subject write here would let the
+        // lane's still-SignedOut status immediately re-flip it back to true.
+        var laneSignedOut = _laneStatus
+            .Select(s => s.State == ServerLaneState.SignedOut)
+            .DistinctUntilChanged();
+        var signInRequired = _signInRequired.CombineLatest(laneSignedOut, (expired, lane) => expired || lane);
+
         var signInState = availability
             .CombineLatest(
-                _signInRequired,
+                signInRequired,
                 _awaitingServerAfterSignIn,
                 (a, expired, awaiting) => (Availability: a, Expired: expired, Awaiting: awaiting))
             .ObserveOn(RxSchedulers.MainThreadScheduler);
         var notices = daemon.Status
             .CombineLatest(
                 daemon.Snapshots.Select(s => s.Daemon.Connection).StartWith(""),
-                _signInRequired,
+                signInRequired,
                 _awaitingServerAfterSignIn,
                 NoticeFor)
             .ObserveOn(RxSchedulers.MainThreadScheduler);

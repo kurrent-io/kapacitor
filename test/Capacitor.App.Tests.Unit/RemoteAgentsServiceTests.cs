@@ -20,7 +20,7 @@ public class RemoteAgentsServiceTests {
         var lane = new FakeServerLane {
             DaemonsHandler = () => Task.FromResult<IReadOnlyList<DaemonInfo>?>([new DaemonInfo { Name = "work-mac", Connected = true }]),
         };
-        using var svc = new RemoteAgentsService(lane, _ => Task.FromResult<AgentInstanceDto[]?>([Agent("a1")]), TimeSpan.Zero);
+        using var svc = new RemoteAgentsService(lane, _ => Task.FromResult(new RemoteFetch([Agent("a1")])), TimeSpan.Zero);
 
         lane.StatusSubject.OnNext(new(ServerLaneState.Connected));
         await Eventually(() => svc.Agents.Count == 1);
@@ -33,7 +33,8 @@ public class RemoteAgentsServiceTests {
     public async Task PingRefreshesAndRemovalsPropagate() {
         var results = new Queue<AgentInstanceDto[]?>([ [Agent("a1"), Agent("a2")], [Agent("a2")] ]);
         var lane = new FakeServerLane();
-        using var svc = new RemoteAgentsService(lane, _ => Task.FromResult(results.Count > 0 ? results.Dequeue() : null), TimeSpan.Zero);
+        using var svc = new RemoteAgentsService(
+            lane, _ => Task.FromResult(new RemoteFetch(results.Count > 0 ? results.Dequeue() : null)), TimeSpan.Zero);
 
         lane.StatusSubject.OnNext(new(ServerLaneState.Connected));
         await Eventually(() => svc.Agents.Count == 2);
@@ -48,7 +49,7 @@ public class RemoteAgentsServiceTests {
         using var svc = new RemoteAgentsService(lane, _ => {
             var r = first ? new[] { Agent("a1") } : null;
             first = false;
-            return Task.FromResult<AgentInstanceDto[]?>(r);
+            return Task.FromResult(new RemoteFetch(r));
         }, TimeSpan.Zero);
 
         lane.StatusSubject.OnNext(new(ServerLaneState.Connected));
@@ -65,7 +66,7 @@ public class RemoteAgentsServiceTests {
             DaemonsHandler = () => Task.FromResult<IReadOnlyList<DaemonInfo>?>([new DaemonInfo { Name = "work-mac", Connected = true }]),
         };
         using var svc = new RemoteAgentsService(
-            lane, _ => Task.FromResult<AgentInstanceDto[]?>(returnNull ? null : [Agent("a1")]), TimeSpan.Zero);
+            lane, _ => Task.FromResult(new RemoteFetch(returnNull ? null : [Agent("a1")])), TimeSpan.Zero);
 
         lane.StatusSubject.OnNext(new(ServerLaneState.Connected, Subject: "u1"));
         await Eventually(() => svc.Agents.Count == 1);
@@ -85,11 +86,11 @@ public class RemoteAgentsServiceTests {
     [Test]
     public async Task StaleFetchCompletingAfterIdentityChangeIsDiscarded() {
         var callCount = 0;
-        var gate = new TaskCompletionSource<AgentInstanceDto[]?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var gate = new TaskCompletionSource<RemoteFetch>(TaskCreationOptions.RunContinuationsAsynchronously);
         var lane = new FakeServerLane();
         using var svc = new RemoteAgentsService(lane, async _ => {
             var n = Interlocked.Increment(ref callCount);
-            return n == 1 ? await gate.Task : [Agent("a2")];
+            return n == 1 ? await gate.Task : new RemoteFetch([Agent("a2")]);
         }, TimeSpan.Zero);
 
         lane.StatusSubject.OnNext(new(ServerLaneState.Connected, Subject: "u1")); // fetch #1 in flight
@@ -97,7 +98,7 @@ public class RemoteAgentsServiceTests {
 
         lane.StatusSubject.OnNext(new(ServerLaneState.Connected, Subject: "u2")); // clear + generation bump
 
-        gate.SetResult([Agent("a1")]); // u1's stale rows land after the identity change
+        gate.SetResult(new RemoteFetch([Agent("a1")])); // u1's stale rows land after the identity change
 
         await Task.Delay(150); // give the stale completion a chance to (wrongly) publish
         await Assert.That(svc.Agents.Count).IsEqualTo(0);
@@ -109,7 +110,7 @@ public class RemoteAgentsServiceTests {
     [Test]
     public async Task ReconnectWithTheSameSubjectDoesNotClearTheCache() {
         var lane = new FakeServerLane();
-        using var svc = new RemoteAgentsService(lane, _ => Task.FromResult<AgentInstanceDto[]?>([Agent("a1")]), TimeSpan.Zero);
+        using var svc = new RemoteAgentsService(lane, _ => Task.FromResult(new RemoteFetch([Agent("a1")])), TimeSpan.Zero);
 
         lane.StatusSubject.OnNext(new(ServerLaneState.Connected, Subject: "u1"));
         await Eventually(() => svc.Agents.Count == 1);
@@ -124,13 +125,13 @@ public class RemoteAgentsServiceTests {
     // whether a rapid burst reaches RefreshAgentsAsync as one or several attempts a timing race
     // — the same race either way it lands. Status flows through no Throttle, so each edge below
     // deterministically re-enters RefreshAgentsAsync on the calling thread while call #1 still
-    // holds the semaphore, exercising the exact contended path the WaitAsync(0)/rerun-flag pair
+    // holds the busy flag, exercising the exact contended path the lock-guarded busy/rerun pair
     // exists for.
     [Test]
     public async Task OverlappingRefreshesCoalesceIntoOneTrailingRun() {
         var callCount = 0;
-        var gate = new TaskCompletionSource<AgentInstanceDto[]?>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var trailing = new[] { Agent("a2") };
+        var gate = new TaskCompletionSource<RemoteFetch>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var trailing = new RemoteFetch([Agent("a2")]);
         var lane = new FakeServerLane();
         using var svc = new RemoteAgentsService(lane, async _ => {
             var n = Interlocked.Increment(ref callCount);
@@ -146,9 +147,33 @@ public class RemoteAgentsServiceTests {
             lane.StatusSubject.OnNext(new(ServerLaneState.Connected));
         }
 
-        gate.SetResult([Agent("a1")]);
+        gate.SetResult(new RemoteFetch([Agent("a1")]));
 
         await Eventually(() => svc.Agents.Lookup("a2").HasValue);
         await Assert.That(Volatile.Read(ref callCount)).IsEqualTo(2);
+    }
+
+    // Pins finding 4a: an Unauthorized fetch must invoke onUnauthorized, once per occurrence,
+    // without disturbing whatever rows the cache already holds.
+    [Test]
+    public async Task UnauthorizedFetchInvokesTheCallbackAndLeavesTheCacheUntouched() {
+        var unauthorizedCalls = 0;
+        var lane = new FakeServerLane();
+        var first = true;
+        using var svc = new RemoteAgentsService(
+            lane,
+            _ => {
+                var result = first ? new RemoteFetch([Agent("a1")]) : new RemoteFetch(null, Unauthorized: true);
+                first = false;
+                return Task.FromResult(result);
+            },
+            TimeSpan.Zero, onUnauthorized: () => Interlocked.Increment(ref unauthorizedCalls));
+
+        lane.StatusSubject.OnNext(new(ServerLaneState.Connected));
+        await Eventually(() => svc.Agents.Count == 1);
+
+        lane.AgentsChangedSubject.OnNext(System.Reactive.Unit.Default);
+        await Eventually(() => Volatile.Read(ref unauthorizedCalls) == 1);
+        await Assert.That(svc.Agents.Count).IsEqualTo(1);
     }
 }

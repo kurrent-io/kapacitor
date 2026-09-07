@@ -154,6 +154,25 @@ public class ServerConnectionServiceTests {
     }
 
     [Test]
+    public async Task ParkSignedOutPublishesSignedOutAndStopsTheLoopUntilRestarted() {
+        await using var host = await HubTestHost.StartAsync();
+        await using var lane = Lane(host);
+        lane.Start();
+        await Next(lane.Status, s => s.State == ServerLaneState.Connected);
+
+        lane.ParkSignedOut();
+        await Next(lane.Status, s => s.State == ServerLaneState.SignedOut);
+
+        var outcome = await ((ILaunchClient)lane).StartAsync(
+            new LaunchRequest("d", "/r", "claude", null), CancellationToken.None);
+        await Assert.That(outcome.Started).IsFalse();
+        await Assert.That(outcome.Unauthorized).IsTrue();
+
+        await lane.RestartAsync();
+        await Next(lane.Status, s => s.State == ServerLaneState.Connected);
+    }
+
+    [Test]
     public async Task UnauthorizedIsDetectedAnywhereInTheExceptionChain() {
         var wrapped = new InvalidOperationException(
             "outer", new HttpRequestException("401", null, System.Net.HttpStatusCode.Unauthorized));

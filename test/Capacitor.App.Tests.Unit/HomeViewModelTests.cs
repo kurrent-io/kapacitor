@@ -566,6 +566,31 @@ public class HomeViewModelTests {
         });
     }
 
+    /// The lane can go SignedOut (a remote HTTP fetch's own 401, ParkSignedOut) independently of
+    /// the local daemon's attach state — the sign-in affordance must surface either way.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task LaneSignedOutSurfacesSignInEvenWithTheLocalDaemonDown() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            using var tmp = TempDir.WithPathTo("app-state.json", out var path);
+            var daemon = new FakeDaemonClientService();
+            var lane = new FakeServerLane();
+            using var vm = new HomeViewModel(
+                daemon, new AppStateStore(path), new RecordingLaunchClient(), Known(), laneStatus: lane.Status);
+
+            daemon.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "not running", null));
+            lane.StatusSubject.OnNext(new ServerLaneStatus(ServerLaneState.SignedOut));
+
+            await Assert.That(vm.SignInVisible).IsTrue();
+            await Assert.That(vm.ConnectionNotice).IsEqualTo(HomeViewModel.SignInExpiredNotice);
+
+            lane.StatusSubject.OnNext(new ServerLaneStatus(ServerLaneState.Connected));
+
+            await Assert.That(vm.ConnectionNotice).IsEqualTo(HomeViewModel.DaemonDownNotice);
+            await Assert.That(vm.SignInVisible).IsFalse();
+        });
+    }
+
     [Test]
     [NotInParallel("AvaloniaSession")]
     public async Task An_unreachable_daemon_is_not_a_sign_in_problem() {

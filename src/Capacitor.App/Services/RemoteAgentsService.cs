@@ -15,8 +15,15 @@ public interface IRemoteAgentsService {
     IObservable<IReadOnlyList<DaemonInfo>> Daemons { get; }
 }
 
+/// An agents fetch's outcome: Rows is null on any failure (including Unauthorized), so a caller
+/// that only cares about data keeps reading it exactly as before; Unauthorized additionally
+/// distinguishes the one failure kind that needs to reach the sign-in surface rather than being
+/// swallowed as ordinary lane loss.
+public sealed record RemoteFetch(AgentInstanceDto[]? Rows, bool Unauthorized = false);
+
 /// Remote registry caches: seeded on lane Connected, refreshed on the org-wide pings. A failed
-/// or signed-out fetch returns null and leaves the caches as they were — lane loss is data.
+/// fetch returns null Rows and leaves the caches as they were — lane loss is data — except
+/// Unauthorized, which additionally invokes onUnauthorized so the sign-in surface hears about it.
 public sealed class RemoteAgentsService : IRemoteAgentsService, IDisposable {
     readonly SourceCache<AgentInstanceDto, string> _agents = new(a => a.AgentId);
     readonly BehaviorSubject<IReadOnlyList<DaemonInfo>> _daemons = new([]);
@@ -34,10 +41,12 @@ public sealed class RemoteAgentsService : IRemoteAgentsService, IDisposable {
     bool _agentsRerun;
     bool _daemonsBusy;
     bool _daemonsRerun;
+    readonly Action? _onUnauthorized;
 
     public RemoteAgentsService(
-            IServerLane lane, Func<CancellationToken, Task<AgentInstanceDto[]?>> fetchAgents,
-            TimeSpan? debounce = null) {
+            IServerLane lane, Func<CancellationToken, Task<RemoteFetch>> fetchAgents,
+            TimeSpan? debounce = null, Action? onUnauthorized = null) {
+        _onUnauthorized = onUnauthorized;
         var wait = debounce ?? TimeSpan.FromMilliseconds(250);
         var connected = lane.Status
             .Select(s => s.State == ServerLaneState.Connected)
@@ -78,7 +87,7 @@ public sealed class RemoteAgentsService : IRemoteAgentsService, IDisposable {
     public IObservableCache<AgentInstanceDto, string> Agents => _agents.AsObservableCache();
     public IObservable<IReadOnlyList<DaemonInfo>> Daemons => _daemons.AsObservable();
 
-    async Task RefreshAgentsAsync(Func<CancellationToken, Task<AgentInstanceDto[]?>> fetch) {
+    async Task RefreshAgentsAsync(Func<CancellationToken, Task<RemoteFetch>> fetch) {
         lock (_lock) {
             if (_agentsBusy) { _agentsRerun = true; return; }
             _agentsBusy = true;
@@ -86,17 +95,18 @@ public sealed class RemoteAgentsService : IRemoteAgentsService, IDisposable {
         while (true) {
             int generation;
             lock (_lock) generation = _generation;
-            AgentInstanceDto[]? result = null;
+            RemoteFetch? result = null;
             try {
                 result = await fetch(CancellationToken.None).ConfigureAwait(false);
             } catch (Exception) {
                 // Data-plane refresh: a throw here is a missed refresh, never an app fault.
             }
+            if (result is { Unauthorized: true }) _onUnauthorized?.Invoke();
             lock (_lock) {
                 // A completion from before an identity-change clear must never repopulate what
                 // that clear just emptied — checked under the same lock the clear itself takes.
-                if (result is not null && generation == _generation)
-                    _agents.EditDiff(result, EqualityComparer<AgentInstanceDto>.Default);
+                if (result?.Rows is { } rows && generation == _generation)
+                    _agents.EditDiff(rows, EqualityComparer<AgentInstanceDto>.Default);
                 if (_agentsRerun) { _agentsRerun = false; continue; }
                 _agentsBusy = false;
                 return;
@@ -128,24 +138,30 @@ public sealed class RemoteAgentsService : IRemoteAgentsService, IDisposable {
     }
 
     /// Production fetch: authenticated GET {server}/api/agent-instances via the
-    /// HttpClientExtensions choke point, client built per call, null on auth failure/unreachable.
-    public static Func<CancellationToken, Task<AgentInstanceDto[]?>> HttpFetch(
+    /// HttpClientExtensions choke point, client built per call. Unreachable/non-auth failures
+    /// come back as an empty (non-Unauthorized) RemoteFetch — lane loss is data, not a sign-in
+    /// problem.
+    public static Func<CancellationToken, Task<RemoteFetch>> HttpFetch(
             ConfigRoot config, ProfileContext? profiles) => async ct => {
         var serverUrl = profiles?.Resolution.ServerUrl;
-        if (profiles is null || string.IsNullOrEmpty(serverUrl)) return null;
+        if (profiles is null || string.IsNullOrEmpty(serverUrl)) return new RemoteFetch(null);
         try {
             var (client, status) = await HttpClientExtensions.CreateClientWithAuthStatusAsync(
                 config, profiles, serverUrl, ct, autoRetryUnauthorized: true).ConfigureAwait(false);
             using (client) {
-                if (status is not (AuthStatus.Ok or AuthStatus.NoAuthRequired)) return null;
+                if (status is not (AuthStatus.Ok or AuthStatus.NoAuthRequired))
+                    return new RemoteFetch(null, Unauthorized: true);
                 var url = $"{serverUrl.TrimEnd('/')}/{ApiRoutes.AgentInstances}";
                 using var response = await client.GetAsync(url, ct).ConfigureAwait(false);
-                if (!response.IsSuccessStatusCode) return null;
-                return await response.Content.ReadFromJsonAsync(
+                if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+                    return new RemoteFetch(null, Unauthorized: true);
+                if (!response.IsSuccessStatusCode) return new RemoteFetch(null);
+                var rows = await response.Content.ReadFromJsonAsync(
                     RemoteModelsJsonContext.Default.AgentInstanceDtoArray, ct).ConfigureAwait(false);
+                return new RemoteFetch(rows);
             }
         } catch (Exception) {
-            return null;
+            return new RemoteFetch(null);
         }
     };
 

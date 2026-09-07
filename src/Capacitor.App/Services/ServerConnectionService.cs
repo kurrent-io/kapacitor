@@ -60,6 +60,15 @@ public sealed class ServerConnectionService : IServerLane, ILaunchClient, IAsync
         _ = RestartAsync();
     }
 
+    /// Same parked semantics as the 401-negotiate path in RunAsync (SignedOut, loop stopped) but
+    /// triggered from outside it — RemoteAgentsService's onUnauthorized, when its own HTTP fetch
+    /// hits a 401 the hub connection itself never saw. RestartAsync (wired to sign-in completion)
+    /// is what revives it.
+    public void ParkSignedOut() {
+        lock (_statusLock) _status.OnNext(new(ServerLaneState.SignedOut));
+        _loopCts?.Cancel();
+    }
+
     public async Task RestartAsync(CancellationToken ct = default) {
         if (_serverUrl is null || _lifetime.IsCancellationRequested) return;
         await _restartGate.WaitAsync(ct).ConfigureAwait(false);
