@@ -1028,8 +1028,6 @@ public class TrayViewModelTests {
         });
     }
 
-    // ---- the update item ----
-
     [Test]
     [NotInParallel("AvaloniaSession")]
     public async Task UpdateMenu_drives_MenuModel_UpdateItemLabel() {

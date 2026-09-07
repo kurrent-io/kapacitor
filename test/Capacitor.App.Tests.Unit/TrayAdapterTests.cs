@@ -401,8 +401,6 @@ public class TrayAdapterTests {
         });
     }
 
-    // ---- the update item ----
-
     [Test]
     [NotInParallel("AvaloniaSession")]
     public async Task Rebuild_omits_the_update_item_without_a_label() {

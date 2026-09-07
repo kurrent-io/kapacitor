@@ -120,9 +120,7 @@ public sealed class UpdateCoordinator {
                 if (Ready is not null) return;
                 await Task.Delay(_interval, _time, _lifetime).ConfigureAwait(false);
             }
-        } catch (OperationCanceledException) {
-            // shutdown
-        }
+        } catch (OperationCanceledException) { }
     }
 
     Task CheckAsync(bool manual) {
@@ -161,7 +159,6 @@ public sealed class UpdateCoordinator {
             ConsumeManual(manual);
             if (accepted) RequestRestart(candidate);
         } catch (OperationCanceledException) {
-            // shutdown
         } catch (Exception ex) {
             Console.Error.WriteLine($"kcap: update check failed: {ex.Message}");
             if (ConsumeManual(manual)) await ReportAsync("Could not check for updates. Try again later.").ConfigureAwait(false);
