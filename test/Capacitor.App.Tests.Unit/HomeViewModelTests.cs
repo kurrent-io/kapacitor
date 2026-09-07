@@ -1388,4 +1388,68 @@ public class HomeViewModelTests {
             await Assert.That(vm.StartError).IsNull();
         });
     }
+
+    /// A directory that reports every read of its Rows, so a test can land an Add at a chosen point
+    /// of the caller's own read sequence — the only way to reach the window between HomeViewModel's
+    /// two row checks, which the Add event itself cannot close (nothing is pending when it fires).
+    sealed class ReadHookedDirectory : IAgentDirectory, IDisposable {
+        readonly SourceCache<AgentRow, string> _source = new(r => r.Key);
+        readonly IObservableCache<AgentRow, string> _rows;
+        public Action? OnRead;
+
+        public ReadHookedDirectory() => _rows = _source.AsObservableCache();
+
+        public IObservableCache<AgentRow, string> Rows {
+            get { OnRead?.Invoke(); return _rows; }
+        }
+
+        public IObservable<bool> RemoteStale => Observable.Return(false);
+
+        public void Add(string agentId) => _source.AddOrUpdate(
+            AgentRow.FromLocal(Agent(agentId, "/repo/a"), new RepoIdentity("path:/repo/a", "repo")));
+
+        public void Dispose() {
+            _rows.Dispose();
+            _source.Dispose();
+        }
+    }
+
+    /// Buffers a failure for the launched id, then arms the directory to add that id's row on the
+    /// SECOND row check of the launch that follows — the first is RecordPendingLaunch's leading
+    /// check, the second its re-check after registering the pending entry.
+    sealed class RowBetweenTheRowChecksLaunchClient : ILaunchClient {
+        public required ReadHookedDirectory Directory { get; init; }
+        public required Subject<LaunchFailure> Failures { get; init; }
+        public required string AgentId { get; init; }
+
+        public Task<LaunchOutcome> StartAsync(LaunchRequest request, CancellationToken ct) {
+            Failures.OnNext(new LaunchFailure(AgentId, "launch_denied_by_owner: default"));
+            var reads = 0;
+            Directory.OnRead = () => { if (++reads == 2) Directory.Add(AgentId); };
+            return Task.FromResult(new LaunchOutcome(true, AgentId, null));
+        }
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task ARowAppearingAfterTheLeadingCheckStillDiscardsTheBufferedFailure() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            using var tmp = TempDir.WithPathTo("app-state.json", out var path);
+            var daemon = new FakeDaemonClientService();
+            Connect(daemon);
+            var failures = new Subject<LaunchFailure>();
+            using var directory = new ReadHookedDirectory();
+            var launch = new RowBetweenTheRowChecksLaunchClient {
+                Directory = directory, Failures = failures, AgentId = "agent-9",
+            };
+            using var vm = new HomeViewModel(
+                daemon, new AppStateStore(path), launch, Known(),
+                launchFailures: failures, directory: directory);
+
+            await vm.SelectRepositoryAsync("/repo/a");
+            await vm.StartCommand.Execute();
+
+            await Assert.That(vm.StartError).IsNull();
+        });
+    }
 }

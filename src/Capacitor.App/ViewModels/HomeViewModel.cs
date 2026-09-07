@@ -876,15 +876,14 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
     }
 
     void RecordPendingLaunch(string agentId) {
-        // A directory row for this id can already exist here — the launch succeeded before this
-        // method ever ran. Checked FIRST and returned on: a failure buffered for this same id
-        // (the race where it arrived while the invoke above was still in flight) must never
-        // render once the row itself already confirms success, however it got buffered.
+        // A row for this id confirms success, and it can appear on either side of the registration
+        // below: the launch may have succeeded before this method ran at all, or the directory's
+        // Add may land while it runs — at which point ConfirmPendingRows finds nothing pending yet
+        // and clears nothing. So the row is checked twice, and a buffered failure only ever renders
+        // when neither check found one. Both checks are outside _launchTrackingLock (RowExists
+        // takes no lock of its own), keeping the cache→tracking lock order intact.
         if (RowExists(agentId)) {
-            lock (_launchTrackingLock) {
-                _pendingLaunches.Remove(agentId);
-                _recentFailures.Remove(agentId);
-            }
+            ForgetLaunch(agentId);
             return;
         }
 
@@ -899,7 +898,18 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
                 _recentFailures.Remove(agentId);
             }
         }
+        if (RowExists(agentId)) {
+            ForgetLaunch(agentId);
+            return;
+        }
         if (bufferedReason is not null) StartError = FriendlyLaunchFailure(bufferedReason);
+    }
+
+    void ForgetLaunch(string agentId) {
+        lock (_launchTrackingLock) {
+            _pendingLaunches.Remove(agentId);
+            _recentFailures.Remove(agentId);
+        }
     }
 
     // Directory keys preserve the row's incoming id spelling (e.g. a dashed Guid never becomes
