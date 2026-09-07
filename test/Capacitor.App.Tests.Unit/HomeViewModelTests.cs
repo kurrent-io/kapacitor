@@ -591,6 +591,35 @@ public class HomeViewModelTests {
         });
     }
 
+    /// Local availability alone can never settle "awaiting" when the local daemon sits behind a
+    /// DIFFERENT server than this app's own lane — only a terminal lane outcome can, here forced
+    /// by keeping local availability pinned at ServerDisconnected for the whole test.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task LaneOutcomeSettlesAwaitingWhenLocalAvailabilityNeverRecovers() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            using var tmp = TempDir.WithPathTo("app-state.json", out var path);
+            var daemon = new FakeDaemonClientService();
+            var lane = new FakeServerLane();
+            using var vm = new HomeViewModel(
+                daemon, new AppStateStore(path), new RecordingLaunchClient(), Known(), laneStatus: lane.Status);
+
+            daemon.SnapshotsSubject.OnNext(FakeDaemonClientService.Snap(connection: "disconnected"));
+            daemon.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, null));
+            vm.NotifySignInCompleted();
+            await Assert.That(vm.SignInVisible).IsFalse();
+            await Assert.That(vm.ConnectionNotice).IsEqualTo(HomeViewModel.FinishingSignInNotice);
+
+            lane.StatusSubject.OnNext(new ServerLaneStatus(ServerLaneState.Connected));
+            // Local availability never recovered (still "disconnected") — only the lane's own
+            // Connected outcome could have cleared awaiting, which the notice now reflects.
+            await Assert.That(vm.ConnectionNotice).IsEqualTo(HomeViewModel.ServerLostNotice);
+
+            lane.StatusSubject.OnNext(new ServerLaneStatus(ServerLaneState.SignedOut));
+            await Assert.That(vm.SignInVisible).IsTrue();
+        });
+    }
+
     [Test]
     [NotInParallel("AvaloniaSession")]
     public async Task An_unreachable_daemon_is_not_a_sign_in_problem() {

@@ -433,6 +433,16 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
             .Subscribe(_ => _awaitingServerAfterSignIn.OnNext(false))
             .DisposeWith(_disposables);
 
+        // Local availability alone can never settle awaiting when the local daemon points at a
+        // DIFFERENT server than this app's own lane — a terminal lane outcome (either direction)
+        // is the other half of the same "finished catching up" signal.
+        _laneStatus
+            .Select(s => s.State is ServerLaneState.Connected or ServerLaneState.SignedOut)
+            .DistinctUntilChanged()
+            .Where(t => t)
+            .Subscribe(_ => _awaitingServerAfterSignIn.OnNext(false))
+            .DisposeWith(_disposables);
+
         _startButtonTip = _selectedRepoPathChanges
             .CombineLatest(notices, TipFor)
             .ToProperty(this, x => x.StartButtonTip, TipFor(SelectedRepoPath, ConnectingNotice))
