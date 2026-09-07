@@ -638,6 +638,50 @@ public class HomeViewModelTests {
         });
     }
 
+    /// A remote selection's notices/tooltip/Start-enabled must follow the SELECTED machine's own
+    /// availability (RemoteAvailabilityFor), never the local daemon's — a local daemon left down
+    /// or disconnected must never leak its own notice into a remote pick, and a lane loss under a
+    /// remote pick must still surface something rather than nothing. Switching back to local
+    /// restores the legacy local-only notices.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task NoticesFollowTheSelectedMachineNotTheLocalDaemon() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            using var tmp = TempDir.WithPathTo("app-state.json", out var path);
+            var daemon = new FakeDaemonClientService();
+            daemon.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "not running", null));
+            var remote = new FakeRemoteAgents();
+            remote.DaemonsSubject.OnNext([
+                new DaemonInfo { Name = "home-pc", OwnerUserId = "u1", Connected = true, RepoPaths = ["/w/repo"] },
+            ]);
+            var lane = new FakeServerLane();
+            using var vm = new HomeViewModel(
+                daemon, new AppStateStore(path), new RecordingLaunchClient(), Known(),
+                daemons: remote.Daemons, viewerId: _ => Task.FromResult<string?>("u1"), laneStatus: lane.Status);
+
+            lane.StatusSubject.OnNext(new ServerLaneStatus(ServerLaneState.Connected));
+            await vm.SelectMachineAsync("home-pc", isLocal: false);
+
+            // Local daemon Unreachable, lane Connected, remote machine Connected: no banner, the
+            // local daemon's own down-notice never surfaces, Start is enabled.
+            await Assert.That(vm.ConnectionNotice).IsNull();
+            await Assert.That(vm.ConnectionBannerVisible).IsFalse();
+            await Assert.That(await vm.StartCommand.CanExecute.FirstAsync()).IsTrue();
+
+            lane.StatusSubject.OnNext(new ServerLaneStatus(ServerLaneState.Retrying));
+            await Assert.That(vm.ConnectionNotice).IsEqualTo(HomeViewModel.ServerLostNotice);
+
+            lane.StatusSubject.OnNext(new ServerLaneStatus(ServerLaneState.Connecting));
+            await Assert.That(vm.ConnectionNotice).IsEqualTo(HomeViewModel.ConnectingNotice);
+
+            lane.StatusSubject.OnNext(new ServerLaneStatus(ServerLaneState.Connected));
+            await vm.SelectMachineAsync(daemon.DaemonName, isLocal: true);
+
+            // Back to local: the local daemon's own Unreachable notice applies again.
+            await Assert.That(vm.ConnectionNotice).IsEqualTo(HomeViewModel.DaemonDownNotice);
+        });
+    }
+
     [Test]
     [Arguments(null, null, null)]
     [Arguments("daemon down", null, "daemon down")]

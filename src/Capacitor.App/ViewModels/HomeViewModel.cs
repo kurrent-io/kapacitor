@@ -379,10 +379,14 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
         // exercises. FindMachine re-verifies ownership against _lastViewerId on every emission, so
         // a registry update that reassigns an already-selected name to a different owner revokes
         // launch readiness rather than trusting the selection made when it was still valid.
-        var canLaunch = availability.CombineLatest(
+        // Shared with notices/signInState/StartButtonTip below — every surface that asks "can I
+        // launch right now" reads the SAME selection-aware value, so a remote pick's banner can
+        // never disagree with whether Start is actually enabled.
+        var selectedAvailability = availability.CombineLatest(
             _laneStatus, _daemons, _machineSelectionChanges,
-            (local, lane, list, sel) => (sel.Remote ? RemoteAvailabilityFor(lane, FindMachine(list, sel.Name, _lastViewerId)) : local)
-                == LaunchAvailability.Ready);
+            (local, lane, list, sel) => sel.Remote ? RemoteAvailabilityFor(lane, FindMachine(list, sel.Name, _lastViewerId)) : local);
+
+        var canLaunch = selectedAvailability.Select(a => a == LaunchAvailability.Ready);
 
         // Explicit ObserveOn: ReactiveCommand does NOT reschedule the supplied canExecute, and a
         // Status event arrives on the daemon client's pump thread (MainWindowViewModel's canStart
@@ -399,18 +403,25 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
             .DistinctUntilChanged();
         var signInRequired = _signInRequired.CombineLatest(laneSignedOut, (expired, lane) => expired || lane);
 
-        var signInState = availability
+        var signInState = selectedAvailability
             .CombineLatest(
                 signInRequired,
                 _awaitingServerAfterSignIn,
                 (a, expired, awaiting) => (Availability: a, Expired: expired, Awaiting: awaiting))
             .ObserveOn(RxSchedulers.MainThreadScheduler);
-        var notices = daemon.Status
+        // Chained rather than one wide CombineLatest: local status/connection/signIn/awaiting
+        // first, then folded against the selection-aware availability and the selection itself —
+        // NoticeFor needs both to know whether a local-only notice (daemon down/incompatible)
+        // may apply at all.
+        var localNoticeInputs = daemon.Status
             .CombineLatest(
                 daemon.Snapshots.Select(s => s.Daemon.Connection).StartWith(""),
                 signInRequired,
                 _awaitingServerAfterSignIn,
-                NoticeFor)
+                (status, connection, expired, awaiting) => (status, connection, expired, awaiting));
+        var notices = localNoticeInputs
+            .CombineLatest(selectedAvailability, _machineSelectionChanges,
+                (n, avail, sel) => NoticeFor(n.status, n.connection, n.expired, n.awaiting, sel.Remote, avail))
             .ObserveOn(RxSchedulers.MainThreadScheduler);
         _connectionNotice = notices
             .ToProperty(this, x => x.ConnectionNotice, ConnectingNotice)
@@ -514,16 +525,31 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
         },
     };
 
+    /// `selectedAvailability` is whichever of AvailabilityFor/RemoteAvailabilityFor applies to the
+    /// CURRENT selection — the same value canLaunch gates on, so the notice a remote pick shows
+    /// never disagrees with whether Start is actually enabled. `status`/`daemonConnection` matter
+    /// only for a local selection's daemon-down/incompatible text — a remote pick has no local
+    /// daemon affordance to name, so those never apply to it (a lost lane there is always the
+    /// generic ServerLostNotice/ConnectingNotice, matching RemoteAvailabilityFor's own vocabulary).
     internal static string? NoticeFor(
-            AttachStatus status, string daemonConnection, bool signInExpired, bool awaitingServer = false) {
+            AttachStatus status, string daemonConnection, bool signInExpired, bool awaitingServer,
+            bool remoteSelected, LaunchAvailability selectedAvailability) {
         if (signInExpired) return SignInExpiredNotice;
-        if (status.State == AttachState.Unreachable) {
+
+        if (!remoteSelected && status.State == AttachState.Unreachable)
             return status.Reason == IncompatibleReason ? DaemonIncompatibleNotice : DaemonDownNotice;
-        }
-        var availability = AvailabilityFor(status, daemonConnection);
-        if (awaitingServer && availability is LaunchAvailability.ServerDisconnected or LaunchAvailability.Pending)
+
+        if (awaitingServer && selectedAvailability is LaunchAvailability.ServerDisconnected or LaunchAvailability.Pending)
             return FinishingSignInNotice;
-        return availability switch {
+
+        if (remoteSelected)
+            return selectedAvailability switch {
+                LaunchAvailability.Ready   => null,
+                LaunchAvailability.Pending => ConnectingNotice,
+                _                          => ServerLostNotice,
+            };
+
+        return selectedAvailability switch {
             LaunchAvailability.Ready             => null,
             LaunchAvailability.Pending           => ConnectingNotice,
             LaunchAvailability.DaemonUnavailable => DaemonDownNotice,
@@ -737,7 +763,10 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
     /// A remote launch is Ready only with the app's OWN server lane connected AND the selected
     /// daemon's latest reported Connected — the local daemon-down notices never apply here (they
     /// stay local-only; a remote pick with the lane down still just shows ServerLostNotice).
+    /// Connecting reads as Pending (not ServerDisconnected) so the notice for a remote selection
+    /// can distinguish "still connecting" from "lost" the same way the local path already does.
     internal static LaunchAvailability RemoteAvailabilityFor(ServerLaneStatus lane, MachineOption? machine) {
+        if (lane.State == ServerLaneState.Connecting) return LaunchAvailability.Pending;
         if (lane.State != ServerLaneState.Connected) return LaunchAvailability.ServerDisconnected;
         return machine is { Connected: true } ? LaunchAvailability.Ready : LaunchAvailability.DaemonUnavailable;
     }
