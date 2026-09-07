@@ -65,6 +65,10 @@ public static class PlatformPaths {
 // pass it to AgentActionService.RequestStop, which decides protected-ness (decision 5).
 public sealed record TrayAgentEntry(string Id, string Label, string Kind, bool StopEnabled);
 public sealed record TrayPauseItem(bool Enabled, bool Checked);
+
+/// The server lane's contribution to the tray verdict: live remote agents (twin-suppressed
+/// rows excluded already) and whether the lane is up.
+public readonly record struct RemoteTraySummary(int RemoteLiveAgents, bool LaneConnected);
 // ShimInstallVisible (spec §5): "Install command-line tool…" tray-item visibility — trailing
 // with a default so every existing positional/object-initializer call site stays valid.
 public sealed record TrayMenuModel(

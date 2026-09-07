@@ -4,7 +4,7 @@ using System.Reactive;
 using System.Reactive.Disposables;
 using System.Reactive.Disposables.Fluent;
 using System.Reactive.Linq;
-using Capacitor.Cli.Core.LocalIpc;
+using Capacitor.App.Services;
 using DynamicData;
 using DynamicData.Binding;
 using ReactiveUI;
@@ -49,13 +49,25 @@ public sealed class RailWorktreeViewModel : ReactiveObject, IDisposable {
     readonly CompositeDisposable _disposables = new();
 
     public RailWorktreeViewModel(
-            string path, string repoRoot, bool showHeader,
-            IObservableCache<AgentStatusDto, string> sessionsCache, RailCollapseState collapse,
+            string path, Func<string, string> resolveRepoRoot, bool showHeader,
+            IObservableCache<AgentRow, string> sessionsCache, RailCollapseState collapse,
             IObservable<string?> selectedAgentId, IObservable<IReadOnlySet<string>> agentsWithPending,
-            Action<string> open) {
+            Action<string> openLocal, Action<string> openRemoteInWeb) {
         Path = path;
-        IsMainCheckout = CheckoutLabel.IsMain(path, repoRoot);
-        Label = CheckoutLabel.Format(path, repoRoot);
+        // Every row in one worktree group shares CheckoutLabel by construction — any member
+        // names a remote pseudo-checkout (labeled by the daemon it runs on, never "main"); an
+        // empty cache (a leaf-VM unit test building this directly) reads as local, same as a
+        // local row would. A local checkout resolves against its OWN path — the same heuristic
+        // GitRepository.ResolveMainRepoRoot already applies to a linked worktree's .git file.
+        var remoteLabel = sessionsCache.Items.Count > 0 ? sessionsCache.Items[0].CheckoutLabel : "";
+        if (remoteLabel.Length == 0) {
+            var repoRoot = PlatformPaths.Normalize(resolveRepoRoot(path));
+            IsMainCheckout = CheckoutLabel.IsMain(path, repoRoot);
+            Label = CheckoutLabel.Format(path, repoRoot);
+        } else {
+            IsMainCheckout = false;
+            Label = remoteLabel;
+        }
         ShowHeader = showHeader;
 
         // Both IsExpanded and SessionsVisible are projected off this SAME stream, rather than
@@ -81,22 +93,23 @@ public sealed class RailWorktreeViewModel : ReactiveObject, IDisposable {
             .ToProperty(this, x => x.CountText, initialValue: sessionsCache.Count.ToString(CultureInfo.InvariantCulture))
             .DisposeWith(_disposables);
 
+        // Both projections compare against AgentRow.Id (the logical agent id), never the cache's
+        // own key — that key is source-scoped ("local:"/"remote:" prefixed) so it never matches
+        // selectedAgentId or an agentsWithPending member verbatim.
         _needsYou = sessionsCache.Connect().QueryWhenChanged()
             .CombineLatest(agentsWithPending, (q, set) =>
-                q.Items.Any(SessionStatusDots.NeedsAttention) || q.Keys.Any(set.Contains))
+                q.Items.Any(r => SessionStatusDots.NeedsAttention(r) || set.Contains(r.Id)))
             .ToProperty(this, x => x.NeedsYou, initialValue: false)
             .DisposeWith(_disposables);
 
-        // QueryWhenChanged() without a selector: a membership probe needs no materialized key set
-        // (the previous Keys.ToHashSet() allocated one per changeset just to test a single id).
         _holdsSelected = sessionsCache.Connect().QueryWhenChanged()
-            .CombineLatest(selectedAgentId, (q, sel) => sel is not null && q.Lookup(sel).HasValue)
+            .CombineLatest(selectedAgentId, (q, sel) => sel is not null && q.Items.Any(r => r.Id == sel))
             .ToProperty(this, x => x.HoldsSelected, initialValue: false)
             .DisposeWith(_disposables);
 
         Sessions = new ReadOnlyObservableCollection<RailSessionViewModel>(_sessionsSource);
         sessionsCache.Connect()
-            .Transform(dto => new RailSessionViewModel(dto, selectedAgentId, agentsWithPending, open))
+            .Transform(row => new RailSessionViewModel(row, selectedAgentId, agentsWithPending, openLocal, openRemoteInWeb))
             .DisposeMany()
             .SortAndBind(_sessionsSource, SessionComparer)
             .Subscribe()

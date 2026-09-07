@@ -101,7 +101,11 @@ public partial class App : Application {
     // holder on both teardown paths, after _home — never before, or a launch still in flight would
     // lose its transport mid-invoke.
     ServerClients? _serverClients;
-    ServerLaunchClient? _launch;
+    ServerConnectionService? _serverLane;
+    // Disposed together, before _serverClients, inside DisposeServerClientsAsync — _directory
+    // subscribes to both _remoteAgents and serverLane, so it goes first.
+    RemoteAgentsService? _remoteAgents;
+    AgentDirectory? _directory;
     TrayViewModel? _trayVm;
     TrayIconManager? _tray;
     // No disposal needed — RefCount tears its Interval down with its last subscriber, and every
@@ -296,7 +300,9 @@ public partial class App : Application {
         // a captured value) — safe even though _coordinator is still null right here, because
         // nothing can trigger a protected-kind stop before ShowMainWindow below assigns it.
         var opener = new ShellUrlOpener();
-        var actions = new AgentActionService(ops, notifier, opener, service.Snapshots, _shutdown.Token, ConfirmForceStopAsync);
+        var actions = new AgentActionService(
+            ops, notifier, opener, service.Snapshots, _shutdown.Token, ConfirmForceStopAsync,
+            fallbackServerUrl: profiles?.Resolution.ServerUrl);
 
         // Constructed once here, like the ticker and consent service (spec §7): the prompt
         // window factory below and MainWindowViewModel both need the SAME instance — the
@@ -327,11 +333,38 @@ public partial class App : Application {
         // One launch client and one work-context source for the app, not one per window the
         // coordinator builds — each owns a live transport, and only a held instance can be
         // disposed at teardown.
-        var launch = new ServerLaunchClient(_config, profiles);
+        var serverLane = new ServerConnectionService(_config, profiles);
+        serverLane.Start();
         var workContext = new ServerWorkContextSource(_config, profiles);
-        var serverClients = new ServerClients(launch, workContext);
-        _launch = launch;
+        var serverClients = new ServerClients(serverLane, workContext);
+        _serverLane = serverLane;
+
+        var machineId = new MachineId(_config).ReadPersisted();
+        var remoteAgents = new RemoteAgentsService(
+            serverLane, RemoteAgentsService.HttpFetch(_config, profiles),
+            onUnauthorized: epoch => serverLane.ParkSignedOut(epoch));
+        var repoIdentity = new RepoIdentityResolver();
+        var directory = new AgentDirectory(
+            service, remoteAgents, serverLane, repoIdentity, GitRepository.ResolveMainRepoRoot,
+            machineId, profiles?.Resolution.ServerUrl);
+        _remoteAgents = remoteAgents;
+        _directory = directory;
+
+        // The signed-in user's own id (JwtClaims sub claim), read fresh per call — never cached,
+        // since a re-auth or profile switch must be reflected on the very next read.
+        Func<CancellationToken, Task<string?>> viewerId = async ct => {
+            if (profiles is null) return null;
+            var resolution = await new TokenStore(_config).GetValidTokensForServerAsync(
+                profiles.Name, profiles.Resolution.ServerUrl!, ct).ConfigureAwait(false);
+            var token = resolution.Tokens?.AccessToken;
+            return token is null ? null : JwtClaims.TryGetString(token, "sub");
+        };
+
+        ILaunchClient launch = serverLane;
         _serverClients = serverClients;
+        // The single restart trigger for a completed sign-in — RestartAsync serializes rather
+        // than coalesces, so RefreshAfterReauthAsync deliberately does not also await it.
+        serverClients.SignInCompleted.Subscribe(signedIn => { _ = serverLane.RestartAsync(); });
 
         // One attach client per attempt, dialed at the daemon's own control socket; 80x24 is a
         // placeholder only — TerminalControl resizes its model to the real pane the moment it is
@@ -344,12 +377,14 @@ public partial class App : Application {
 
         _coordinator = new MainWindowCoordinator(
             () => BuildAndShowMainWindow(
-                service, _config, actions, notifier, ticker, _shutdown.Token, activity, lifecycle.StartActionAsync,
-                lifecycleStatus, launch, _navigation, _workspaceTeardown.Track, BuildWorkspace,
+                service, _config, actions, notifier, ticker, _shutdown.Token, activity, launch, lifecycle.StartActionAsync,
+                lifecycleStatus, _navigation, _workspaceTeardown.Track, BuildWorkspace,
                 // The tenant slug the rail footer shows — profiles are named after it at sign-in.
                 tenantName: profiles?.Resolution?.ProfileName, agentsWithPending: permissions.AgentsWithPending,
                 requestSignIn: requestSignIn,
-                lifecycleAttention: lifecycleAttention),
+                lifecycleAttention: lifecycleAttention,
+                directory: directory, remoteAgents: remoteAgents, lane: serverLane,
+                viewerId: viewerId, localMachineId: machineId),
             // Both close paths release the workspace: hide-to-tray keeps the window (and its
             // attach) alive, a real close discards the window the next Show() would rebuild.
             releaseWorkspace: window => (window.DataContext as MainWindowViewModel)?.CloseWorkspace());
@@ -372,7 +407,8 @@ public partial class App : Application {
             service, _pause, actions, consent, openMainWindow: _coordinator.ShowMainWindow,
             quit: () => desktop.TryShutdown(), openReviewPrompts: _promptCoordinator.ShowPromptWindow,
             lifecycleAttention: lifecycleAttention, shimOfferable: shimOffer.Offerable,
-            installShim: shimOffer.RunManualInstallAsync, permissions: permissions);
+            installShim: shimOffer.RunManualInstallAsync, permissions: permissions,
+            remote: TrayViewModel.SummaryFrom(directory));
         _tray = new TrayIconManager(this, _trayVm);
     }
 
@@ -433,12 +469,13 @@ public partial class App : Application {
         if (ReferenceEquals(_signInWindow, window)) window.Close();
     }
 
-    /// Clears the launcher's expired/disconnected sign-in banner path, drops a stale launch hub,
-    /// nudges work-context refresh, and kicks attach so snapshots catch up sooner after new tokens land.
+    /// Clears the launcher's expired/disconnected sign-in banner path, nudges work-context
+    /// refresh, and kicks attach so snapshots catch up sooner after new tokens land. The server
+    /// lane's own restart is NOT awaited here — NotifySignInCompleted's subscription
+    /// (BuildDaemonGraph) is the single trigger for it.
     async Task RefreshAfterReauthAsync() {
         _home?.NotifySignInCompleted();
         _serverClients?.NotifySignInCompleted();
-        if (_launch is not null) await _launch.InvalidateAsync().ConfigureAwait(true);
         if (_service is not null) await _service.RestartLoopAsync().ConfigureAwait(true);
     }
 
@@ -740,44 +777,56 @@ public partial class App : Application {
     internal static MainWindow BuildAndShowMainWindow(
             IDaemonClientService service, ConfigRoot config,
             AgentActionService actions, IAppNotifier notifier, ITicker ticker,
-            CancellationToken shutdownToken, ActivityViewModel activity, Func<CancellationToken, Task>? startAction = null,
-            IObservable<string?>? lifecycleStatus = null, ILaunchClient? launch = null,
+            CancellationToken shutdownToken, ActivityViewModel activity, ILaunchClient launch,
+            Func<CancellationToken, Task>? startAction = null,
+            IObservable<string?>? lifecycleStatus = null,
             NavigationGate? navigation = null, Action<Func<Task>>? trackWorkspaceTeardown = null,
             Func<string, WorkspaceViewModel>? workspaceFactory = null, string? tenantName = null,
             IObservable<IReadOnlySet<string>>? agentsWithPending = null, Action? requestSignIn = null,
-            IObservable<string?>? lifecycleAttention = null) {
+            IObservable<string?>? lifecycleAttention = null,
+            IAgentDirectory? directory = null, IRemoteAgentsService? remoteAgents = null,
+            IServerLane? lane = null, Func<CancellationToken, Task<string?>>? viewerId = null,
+            string? localMachineId = null) {
         // Notifier is set on the WINDOW (spec §11 toast overlay), not the ViewModel — the toast
         // is a View-level concern (WindowNotificationManager lives on MainWindow) independent of
         // the VM's WhenActivated-scoped projections.
         //
-        // Home is built here, over the SAME `service` instance MainWindowViewModel
-        // itself uses — never a second daemon connection. AppStateStore/ServerLaunchClient are both
-        // cheap, self-contained constructions (file-path-gated I/O; a HubConnection that only opens
-        // lazily on first StartAsync), the same reasoning BuildLifecycleController's own
-        // `new AppStateStore(config.Path("app-state.json"))` already relies on. The
-        // composition root passes its held client so teardown can dispose it; a caller that passes
-        // none (a test) gets an unheld one, which owns nothing until a launch is actually made.
+        // Home is built here, over the SAME `service` instance MainWindowViewModel itself uses —
+        // never a second daemon connection. The composition root passes its held server lane so
+        // teardown can dispose it; a caller building its own graph (a test) passes a stub.
         //
         // Home's three navigation callbacks close over `vm`, which cannot exist yet (it takes Home
         // itself) — a captured local, assigned right below, is what ties the knot without a
         // settable hook on either ViewModel. Every callback runs on the UI thread, after both
         // objects exist.
+
+        // A caller with no live remote lane (most existing tests) falls back to the local-only
+        // stand-in — NoRemoteAgents/NoServerLane never report a remote agent, so the directory
+        // just mirrors `service`. The composition root always supplies its own `directory`.
+        var resolvedDirectory = directory ?? new AgentDirectory(
+            service, remoteAgents ?? new NoRemoteAgents(), lane ?? new NoServerLane(), new RepoIdentityResolver(),
+            GitRepository.ResolveMainRepoRoot, localMachineId, appServerUrl: null);
+
         MainWindowViewModel? vm = null;
         var home = new HomeViewModel(
             service, new AppStateStore(config.Path("app-state.json")),
-            launch ?? new ServerLaunchClient(config, null), new RepoPathStore(config).GetSortedPathsAsync, shutdownToken,
+            launch, new RepoPathStore(config).GetSortedPathsAsync, shutdownToken,
             openSession: agentId => vm?.OpenSession(agentId),
             navigationGeneration: () => vm?.NavigationGeneration ?? 0,
             openSessionIfCurrent: (agentId, generation) => vm?.OpenSessionIfCurrent(agentId, generation),
-            requestSignIn: requestSignIn);
+            requestSignIn: requestSignIn,
+            daemons: remoteAgents?.Daemons, viewerId: viewerId, laneStatus: lane?.Status,
+            localMachineId: localMachineId, launchFailures: lane?.LaunchFailures, directory: resolvedDirectory);
         // Same knot as home above, over the SAME `service` instance — its own openSession
         // callback closes over `vm`, not a local, so no two-step forward-declaration is needed.
         var rail = new SessionRailViewModel(
-            service, openSession: agentId => vm?.OpenSession(agentId), agentsWithPending: agentsWithPending);
+            resolvedDirectory, openLocalSession: agentId => vm?.OpenSession(agentId),
+            openRemoteInWeb: actions.OpenInWebRemote, agentsWithPending: agentsWithPending);
         vm = new MainWindowViewModel(
             service, shutdownToken, activity, startAction, lifecycleStatus, home: home,
             navigation: navigation, trackWorkspaceTeardown: trackWorkspaceTeardown, workspaceFactory: workspaceFactory,
-            rail: rail, tenantName: tenantName, lifecycleAttention: lifecycleAttention);
+            rail: rail, tenantName: tenantName, lifecycleAttention: lifecycleAttention,
+            laneStatus: lane?.Status);
         var window = new MainWindow {
             DataContext = vm,
             Notifier = notifier,
@@ -1316,6 +1365,8 @@ public partial class App : Application {
     // Reached from both teardown paths; the holder memoizes the cleanup, so a second call awaits
     // the first rather than disposing anything again.
     async ValueTask DisposeServerClientsAsync() {
+        _directory?.Dispose();
+        _remoteAgents?.Dispose();
         if (_serverClients is null) return;
         await _serverClients.DisposeAsync().ConfigureAwait(false);
     }

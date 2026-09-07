@@ -1,5 +1,5 @@
+using Capacitor.App.Services;
 using Capacitor.App.ViewModels;
-using Capacitor.Cli.Core.LocalIpc;
 using DynamicData;
 using System.Reactive.Subjects;
 using TUnit.Assertions.Enums;
@@ -11,17 +11,21 @@ namespace Capacitor.App.Tests.Unit;
 /// test here runs inside AvaloniaSession.WithImmediateRxScheduler and carries
 /// [NotInParallel("AvaloniaSession")].
 public class RailWorktreeViewModelTests {
-    static AgentStatusDto Dto(string id, string status = "Running", DateTime? created = null) =>
-        new(id, "agent", "claude", "/repo/.claude/worktrees/wt-a", status,
-            null, null, null, created ?? DateTime.UtcNow, null, null);
+    static readonly RepoIdentity Repo = new("path:/repo", "repo");
+
+    static AgentRow Row(string id, string status = "Running", DateTime? created = null, bool? awaitingInput = null) =>
+        AgentRow.FromLocal(
+            new(id, "agent", "claude", "/repo/.claude/worktrees/wt-a", status,
+                null, null, null, created ?? DateTime.UtcNow, null, null, AwaitingInput: awaitingInput),
+            Repo);
 
     static RailWorktreeViewModel Build(
-            SourceCache<AgentStatusDto, string> cache, RailCollapseState? collapse = null,
+            SourceCache<AgentRow, string> cache, RailCollapseState? collapse = null,
             string path = "/repo/.claude/worktrees/wt-a", string root = "/repo", bool showHeader = true,
             IObservable<string?>? selected = null, IObservable<IReadOnlySet<string>>? pending = null) =>
-        new(path, root, showHeader, cache.AsObservableCache(),
+        new(path, _ => root, showHeader, cache.AsObservableCache(),
             collapse ?? new RailCollapseState(), selected ?? new BehaviorSubject<string?>(null),
-            pending ?? new BehaviorSubject<IReadOnlySet<string>>(new HashSet<string>()), _ => { });
+            pending ?? new BehaviorSubject<IReadOnlySet<string>>(new HashSet<string>()), _ => { }, _ => { });
 
     [Test]
     [NotInParallel("AvaloniaSession")]
@@ -38,15 +42,15 @@ public class RailWorktreeViewModelTests {
     [NotInParallel("AvaloniaSession")]
     public async Task Count_and_pip_follow_the_cache() {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
-            var cache = new SourceCache<AgentStatusDto, string>(a => a.Id);
+            var cache = new SourceCache<AgentRow, string>(r => r.Key);
             using var wt = Build(cache);
-            cache.AddOrUpdate(Dto("a1"));
-            cache.AddOrUpdate(Dto("a2", status: "Failed"));
+            cache.AddOrUpdate(Row("a1"));
+            cache.AddOrUpdate(Row("a2", status: "Failed"));
             await Assert.That(wt.Sessions.Count).IsEqualTo(2);
             await Assert.That(wt.CountText).IsEqualTo("2");
             await Assert.That(wt.NeedsYou).IsTrue();
 
-            cache.AddOrUpdate(Dto("a2", status: "Running")); // recovery clears the pip
+            cache.AddOrUpdate(Row("a2", status: "Running")); // recovery clears the pip
             await Assert.That(wt.NeedsYou).IsFalse();
         });
     }
@@ -55,12 +59,12 @@ public class RailWorktreeViewModelTests {
     [NotInParallel("AvaloniaSession")]
     public async Task Pip_follows_a_sessions_awaiting_input_verdict() {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
-            var cache = new SourceCache<AgentStatusDto, string>(a => a.Id);
+            var cache = new SourceCache<AgentRow, string>(r => r.Key);
             using var wt = Build(cache);
-            cache.AddOrUpdate(Dto("a1") with { AwaitingInput = true });
+            cache.AddOrUpdate(Row("a1", awaitingInput: true));
             await Assert.That(wt.NeedsYou).IsTrue();
 
-            cache.AddOrUpdate(Dto("a1") with { AwaitingInput = false }); // the user answered
+            cache.AddOrUpdate(Row("a1", awaitingInput: false)); // the user answered
             await Assert.That(wt.NeedsYou).IsFalse();
         });
     }
@@ -69,7 +73,7 @@ public class RailWorktreeViewModelTests {
     [NotInParallel("AvaloniaSession")]
     public async Task Every_worktree_defaults_expanded_main_checkout_included() {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
-            var cache = new SourceCache<AgentStatusDto, string>(a => a.Id);
+            var cache = new SourceCache<AgentRow, string>(r => r.Key);
             using var main = Build(cache, path: "/repo", root: "/repo");
             using var wt = Build(cache);
             // The rail only carries current sessions, so nothing hides by default (owner
@@ -84,7 +88,7 @@ public class RailWorktreeViewModelTests {
     public async Task Toggle_persists_in_the_shared_state_across_VM_recreation() {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var collapse = new RailCollapseState();
-            var cache = new SourceCache<AgentStatusDto, string>(a => a.Id);
+            var cache = new SourceCache<AgentRow, string>(r => r.Key);
             using (var first = Build(cache, collapse, path: "/repo", root: "/repo")) {
                 first.ToggleCommand.Execute().Subscribe(); // explicit collapse
                 await Assert.That(first.IsExpanded).IsFalse();
@@ -98,12 +102,12 @@ public class RailWorktreeViewModelTests {
     [NotInParallel("AvaloniaSession")]
     public async Task Sessions_sort_by_created_then_id() {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
-            var cache = new SourceCache<AgentStatusDto, string>(a => a.Id);
+            var cache = new SourceCache<AgentRow, string>(r => r.Key);
             var t = DateTime.UtcNow;
             using var wt = Build(cache);
-            cache.AddOrUpdate(Dto("b", created: t));
-            cache.AddOrUpdate(Dto("a", created: t));
-            cache.AddOrUpdate(Dto("c", created: t.AddMinutes(-1)));
+            cache.AddOrUpdate(Row("b", created: t));
+            cache.AddOrUpdate(Row("a", created: t));
+            cache.AddOrUpdate(Row("c", created: t.AddMinutes(-1)));
             await Assert.That(wt.Sessions.Select(s => s.Id)).IsEquivalentTo(["c", "a", "b"], CollectionOrdering.Matching);
         });
     }
@@ -112,7 +116,7 @@ public class RailWorktreeViewModelTests {
     [NotInParallel("AvaloniaSession")]
     public async Task Headerless_group_always_shows_sessions() {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
-            var cache = new SourceCache<AgentStatusDto, string>(a => a.Id);
+            var cache = new SourceCache<AgentRow, string>(r => r.Key);
             using var wt = Build(cache, showHeader: false, path: "", root: "");
             await Assert.That(wt.SessionsVisible).IsTrue();
         });
@@ -122,11 +126,11 @@ public class RailWorktreeViewModelTests {
     [NotInParallel("AvaloniaSession")]
     public async Task Dispose_stops_tracking_the_cache() {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
-            var cache = new SourceCache<AgentStatusDto, string>(a => a.Id);
+            var cache = new SourceCache<AgentRow, string>(r => r.Key);
             var wt = Build(cache);
-            cache.AddOrUpdate(Dto("a1"));
+            cache.AddOrUpdate(Row("a1"));
             wt.Dispose();
-            cache.AddOrUpdate(Dto("a2"));
+            cache.AddOrUpdate(Row("a2"));
             await Assert.That(wt.CountText).IsEqualTo("1");
             await Assert.That(wt.Sessions.Count).IsEqualTo(1);
         });
@@ -136,12 +140,12 @@ public class RailWorktreeViewModelTests {
     [NotInParallel("AvaloniaSession")]
     public async Task Collapsed_worktree_shows_a_permission_only_alert() {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
-            var cache = new SourceCache<AgentStatusDto, string>(a => a.Id);
+            var cache = new SourceCache<AgentRow, string>(r => r.Key);
             var pending = new BehaviorSubject<IReadOnlySet<string>>(new HashSet<string>());
             var collapse = new RailCollapseState();
             collapse.Set("/repo/.claude/worktrees/wt-a", collapsed: true);
             using var wt = Build(cache, collapse, pending: pending);
-            cache.AddOrUpdate(Dto("a1"));
+            cache.AddOrUpdate(Row("a1"));
             await Assert.That(wt.NeedsYou).IsFalse();
             pending.OnNext(new HashSet<string> { "a1" });
             await Assert.That(wt.NeedsYou).IsTrue();

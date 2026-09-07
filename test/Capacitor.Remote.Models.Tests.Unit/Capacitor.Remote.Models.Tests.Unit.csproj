@@ -6,18 +6,16 @@
     </PropertyGroup>
     <ItemGroup>
         <ProjectReference Include="..\Capacitor.Tests.Helpers\Capacitor.Tests.Helpers.csproj" />
-        <ProjectReference Include="..\..\src\Capacitor.App\Capacitor.App.csproj" />
+        <ProjectReference Include="..\..\src\Capacitor.Remote.Models\Capacitor.Remote.Models.csproj" />
     </ItemGroup>
     <ItemGroup>
         <PackageReference Include="TUnit" />
-        <PackageReference Include="Avalonia.Headless" />
+        <PackageReference Include="Tomlyn" />
+        <PackageReference Include="WireMock.Net" />
+        <PackageReference Include="NSubstitute" />
         <PackageReference Include="Microsoft.Extensions.TimeProvider.Testing" />
     </ItemGroup>
     <ItemGroup>
-        <FrameworkReference Include="Microsoft.AspNetCore.App" />
-    </ItemGroup>
-    <ItemGroup>
         <Using Include="Capacitor.Tests.Helpers" />
-        <Using Include="Capacitor.Models.Transcripts" />
     </ItemGroup>
 </Project>
