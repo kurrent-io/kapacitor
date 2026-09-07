@@ -6,6 +6,28 @@ diff. `CLAUDE.md` holds the invariants; `docs/superpowers/specs/` holds the full
 Not release notes. Each entry is written as of the change that produced it and is not revised as the
 code moves on; where an entry disagrees with the code, the code wins.
 
+## Desktop shell: remote daemons
+
+The rail now merges the local daemon's agents with the server's registry of every daemon the
+signed-in user owns, so an agent running on another of the user's machines renders beside the ones
+on this one. Two invariants hold the merge and the launcher honest.
+
+**Twin identity is proven, never assumed, and an unproven twin renders twice.**
+`LocalDaemonTwin.Find` suppresses a server-registry agent only on an exact, server-scoped match — the
+daemon's `MachineId` equals this machine's persisted id and its `Name` equals the local daemon's own
+— and only while the local lane can still see it. A missing machine id, two owners running
+same-named daemons on one machine, or any other uncertainty leaves both the local and the server row
+standing rather than guessing which one to hide: a duplicate row is the cost of a merge that would
+otherwise sometimes have to make an agent disappear.
+
+**The launcher's machine picker offers only the signed-in user's own daemons.**
+`RequestLaunchAgentV2` carries a `daemon_name` and no owner or machine id, so name-based launch
+routing is defined only within one owner — a picker listing another owner's same-named daemon would
+route a launch nowhere the user intended. Ownership is re-verified at launch time rather than trusted
+from the picker's own filtered list: `ReactiveCommand.Execute()` does not gate itself on
+`CanExecute`, so a selection whose daemon was reassigned to another owner between selection and
+launch is refused inside `StartAsync` itself, not left to the affordance alone.
+
 ## The SessionStart index names the repo's projects
 
 An agent can only land a memory at project scope by passing a slug, and nothing in a session told it
