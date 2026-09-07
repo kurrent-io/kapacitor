@@ -79,16 +79,20 @@ public sealed class ServerConnectionService : IServerLane, ILaunchClient, IAsync
             HubConnection? hub = null;
             try {
                 hub = Build();
-                await hub.StartAsync(ct).ConfigureAwait(false);
-                _hub = hub;
-                attempt = 0;
-                _status.OnNext(new(ServerLaneState.Connected, Diagnostic: await DiagnoseAsync().ConfigureAwait(false)));
 
+                // Registered before StartAsync (SignalR supports that), so a close during the
+                // DiagnoseAsync token read below — or during StartAsync itself — is still
+                // observed, never lost with status stuck on a dead hub.
                 var closed = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
                 hub.Closed += ex => { closed.TrySetResult(ex); return Task.CompletedTask;  };
                 hub.Reconnecting += _ => { _status.OnNext(new(ServerLaneState.Retrying, "reconnecting")); return Task.CompletedTask; };
                 hub.Reconnected += async _ =>
                     _status.OnNext(new(ServerLaneState.Connected, Diagnostic: await DiagnoseAsync().ConfigureAwait(false)));
+
+                await hub.StartAsync(ct).ConfigureAwait(false);
+                _hub = hub;
+                attempt = 0;
+                _status.OnNext(new(ServerLaneState.Connected, Diagnostic: await DiagnoseAsync().ConfigureAwait(false)));
 
                 Exception? closeReason;
                 await using (ct.Register(() => closed.TrySetResult(null)))
