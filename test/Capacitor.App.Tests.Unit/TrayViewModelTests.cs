@@ -141,7 +141,7 @@ public class TrayViewModelTests {
         });
     }
 
-    // ---- spec §6: remote lane aggregation ----
+    // ---- remote lane aggregation ----
 
     [Test]
     [NotInParallel("AvaloniaSession")]

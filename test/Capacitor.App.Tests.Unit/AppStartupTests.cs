@@ -62,12 +62,12 @@ public class AppStartupTests {
         return (new AgentActionService(new ScriptedLocalControlOps(), notifier, new RecordingOpener(), service.SnapshotsSubject, CancellationToken.None, NeverConfirm.Confirm), notifier);
     }
 
-    /// Task 13: BuildAndShowMainWindow's new directory/remoteAgents/lane parameters must actually
-    /// reach Home/Rail/the footer, not just compile — a fallback that silently rebuilt its own
-    /// local-only AgentDirectory (the placeholder this task replaces) would leave the window
-    /// looking identical for every LOCAL assertion, so this pins two REMOTE-only signals: the
-    /// lane's own diagnostic (ServerLaneTip) and a remote-only row (never producible by the
-    /// NoRemoteAgents/NoServerLane fallback) reaching the rail's hosted count.
+    /// BuildAndShowMainWindow's directory/remoteAgents/lane parameters must actually reach
+    /// Home/Rail/the footer, not just compile — a fallback that silently rebuilt its own
+    /// local-only AgentDirectory would leave the window looking identical for every LOCAL
+    /// assertion, so this pins two REMOTE-only signals: the lane's own diagnostic (ServerLaneTip)
+    /// and a remote-only row (never producible by the NoRemoteAgents/NoServerLane fallback)
+    /// reaching the rail's hosted count.
     [Test]
     [NotInParallel("AvaloniaSession")]
     public async Task BuildAndShowMainWindow_threads_the_injected_directory_and_lane_through() {

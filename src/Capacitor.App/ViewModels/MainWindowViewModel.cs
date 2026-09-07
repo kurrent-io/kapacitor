@@ -102,8 +102,8 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     ObservableAsPropertyHelper<string?>? _reason;
     public string? Reason => _reason?.Value;
 
-    // The server lane's silent-deafness diagnostic (spec §6) — informational only, never blocking;
-    // null while the lane is healthy or absent.
+    // The server lane's silent-deafness diagnostic — informational only, never blocking; null
+    // while the lane is healthy or absent.
     ObservableAsPropertyHelper<string?>? _serverLaneTip;
     public string? ServerLaneTip => _serverLaneTip?.Value;
 
