@@ -67,6 +67,45 @@ public class AgentDirectoryTests {
         await Assert.That(dir.Rows.Lookup("remote:b1").HasValue).IsTrue();
     }
 
+    /// While the twin is proven, precedence flips WITH the local socket: Connected shows the
+    /// local row and suppresses the remote twin's; disconnected, the retained local row is stale
+    /// and must yield entirely to the server's view — including its absence, so a server-side
+    /// termination never leaves a stale local "Running" with nothing to override it.
+    [Test]
+    public async Task ProvenTwinYieldsToTheServersViewOnceLocalDisconnects() {
+        var (local, remote, _, dir) = Build();
+        using var _d = dir;
+        local.SnapshotsSubject.OnNext(FakeDaemonClientService.Snap());
+        local.StatusSubject.OnNext(new(AttachState.Connected, null, ["status/1"]));
+        local.Agents.AddOrUpdate(LocalAgent("a1"));
+        remote.DaemonsSubject.OnNext([new DaemonInfo { Name = "daemon-a", MachineId = "m1", OwnerUserId = "u1", Connected = true }]);
+        remote.Cache.AddOrUpdate(Remote("a1", daemon: "daemon-a"));
+
+        // Twin proven, local Connected: the existing rule — local row shows, its remote twin
+        // stays hidden.
+        await Assert.That(dir.Rows.Lookup("local:a1").HasValue).IsTrue();
+        await Assert.That(dir.Rows.Lookup("remote:a1").HasValue).IsFalse();
+
+        local.StatusSubject.OnNext(new(AttachState.Unreachable, "daemon_unreachable", null));
+
+        // Local socket lost: the retained local row is now stale and yields to the server's view.
+        await Assert.That(dir.Rows.Lookup("local:a1").HasValue).IsFalse();
+        await Assert.That(dir.Rows.Lookup("remote:a1").HasValue).IsTrue();
+
+        remote.Cache.RemoveKey("a1"); // the server's own view: this agent has ended
+
+        // No row at all — never a stale local "Running" surviving a server-side termination.
+        await Assert.That(dir.Rows.Lookup("local:a1").HasValue).IsFalse();
+        await Assert.That(dir.Rows.Lookup("remote:a1").HasValue).IsFalse();
+
+        local.StatusSubject.OnNext(new(AttachState.Connected, null, ["status/2"]));
+
+        // Local reconnects: its retained row (never removed at the source, only suppressed while
+        // disconnected) returns, and the remote twin's row is suppressed again.
+        await Assert.That(dir.Rows.Lookup("local:a1").HasValue).IsTrue();
+        await Assert.That(dir.Rows.Lookup("remote:a1").HasValue).IsFalse();
+    }
+
     [Test]
     public async Task UncertainTwinFailsOpenToDuplicates() {
         var (local, remote, _, dir) = Build(machineId: null); // no persisted machine id
