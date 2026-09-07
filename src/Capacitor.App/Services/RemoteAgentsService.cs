@@ -29,8 +29,9 @@ public sealed class RemoteAgentsService : IRemoteAgentsService, IDisposable {
     readonly BehaviorSubject<IReadOnlyList<DaemonInfo>> _daemons = new([]);
     readonly IDisposable _subscriptions;
     // Guards _generation/_lastSubject and each refresh kind's busy/rerun pair. _generation bumps
-    // on every Connected status, not only a subject change, so any fetch issued before the
-    // latest connect is stale for both the cache-publish and the onUnauthorized check below.
+    // on every Connected status carrying a subject, not only on a subject change, so any fetch
+    // issued before the latest connect is stale for both the cache-publish and the onUnauthorized
+    // check below.
     // Admission (busy check / set rerun) and completion (rerun check / clear busy) share this
     // same critical section, so a losing admission can never land between a drain loop reading
     // rerun false and clearing busy.
@@ -62,8 +63,9 @@ public sealed class RemoteAgentsService : IRemoteAgentsService, IDisposable {
         // Subscribed before the refresh triggers below (same lane.Status), so on a Connected
         // status this runs first: nothing seeded under one identity survives into another, even
         // when the refresh that follows fetches null and would otherwise leave stale rows in
-        // place. _lastLaneEpoch tracks every Connected regardless of Subject — the identity
-        // (generation/clear) rule below stays Subject-scoped, unchanged.
+        // place. Caches clear only when the token subject changes; every Connected carrying a
+        // subject advances the generation, so an older fetch can neither publish nor report an
+        // auth failure.
         var identityChange = lane.Status
             .Where(s => s.State == ServerLaneState.Connected)
             .Subscribe(s => {
