@@ -87,8 +87,9 @@ tracker enrichment.
 - A renamed username must not transfer access to a different numeric account. A
   permission response with a missing or mismatched target user cannot authorize.
 - The deployed integration token's ability to call the permission endpoint has not
-  been tested here. No server token was retrieved. Before implementation sign-off,
-  verify it with a public repository and an authorized private test repository,
+  been tested here. No server token was retrieved. Before implementation planning,
+  the operator/driver must verify it in its protected deployment environment with
+  a public repository and an authorized private test repository,
   including team/base-role access and a denied user. Use only read operations.
 - This introduces permission-query traffic; it belongs in the interactive request
   budget and must not starve background enrichment.
@@ -112,5 +113,8 @@ linking alone cannot mint this delegation.
 
 The approved read-only v1 approach is linked GitHub identity plus a fail-closed
 repository-role gate. The design specifies the public-repository case, proof
-lifetime and cache/page admission. Deployed-token compatibility remains unverified.
+lifetime and cache/page admission. Server fetches remain fail-closed; the draft gives
+already visible client content a bounded, labelled transient-outage display grace,
+never a grant to fetch or reveal more content. Deployed-token compatibility remains
+unverified and blocks implementation planning.
 Use delegated user tokens if exact user-to-server authorization is required.

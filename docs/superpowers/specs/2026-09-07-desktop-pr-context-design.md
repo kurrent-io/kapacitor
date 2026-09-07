@@ -120,17 +120,26 @@ The current `SessionPullRequestDto` is identity/link metadata only. The existing
 `WorkContextReader` also gates its summary through work-item outcomes. New PR
 reads must not inherit that work-item coupling or subscription gate.
 
-Add `pull_request_reads_version: 1` to every provider's existing `/auth/config`
-response. It describes protocol availability only, not token configuration, user
-link state, or repository access. This route is already anonymous; the new field
-contains no user/tenant-private data. Add the nullable field to
-`AuthDiscoveryResponse`; absence on a successfully parsed response means an older
-server. Version 1 is advertised even when interactive reads are disabled.
+Add `pull_request_reads_versions: [1]` to every provider's existing tenant-server
+`/auth/config` response. `AuthEndpoints.GetConfigHandler` lives in Capacitor.Server,
+not AuthProxy; it is served by the same deployment as the session routes. Fetch it
+from the active tenant API origin, never AuthKit, AuthProxy or an exchange URL.
+Refuse off-origin redirects; partition discovery by tenant origin/profile identity.
+Reverse-proxy routing must preserve this binding.
+
+This anonymous field exposes supported protocols only, not token configuration,
+link state or repository access. Add the nullable set to `AuthDiscoveryResponse`;
+absence on a valid response means an older server. Advertise v1 even when disabled.
+Clients select a shared version and send `version=1` on all v1 routes. Additive,
+fixture-compatible changes retain v1. Breaking changes get a new version/bundle;
+servers continue serving/advertising v1 alongside newer versions for supported
+desktop releases. Removing v1 is an explicit breaking release, not a field addition.
 
 Discover once per profile activation; cache for five minutes. Recheck on manual
-refresh, reconnect, and profile change. Until a supported version is observed, do
-not call the new routes. An unknown higher version is unsupported until explicitly
-supported by the client. Malformed/non-JSON capability responses are a discovery
+refresh, reconnect, and profile change. Until a shared version is observed, do
+not call the new routes. A set containing v1 and unknown higher versions still
+supports v1. Only unknown versions offers legacy links and an app-update explanation.
+Malformed sets or malformed/non-JSON capability responses are a discovery
 failure, not proof of an old server; retry discovery with 30s, 60s, then five-minute
 backoff. Manual refresh is coalesced and cannot flood discovery.
 
@@ -138,10 +147,18 @@ Source precedence is explicit:
 
 1. With supported capability, the new link-list route is authoritative. Do not
    union its results with legacy links, resurrect missing entries, or override its
-   ordering/titles from legacy data. A 404 clears protected PR state, not capability.
+   ordering/titles from legacy data. A 404 clears protected PR state and triggers
+   rediscovery, not an inference of an old server. Three consecutive list 404s pause
+   automatic PR calls for five minutes and rediscover, with explicit Retry. If v1
+   remains advertised, explain unavailable/misconfigured access rather than silently
+   downgrading admission. Legacy fallback requires fresh confirmation of no shared
+   version, not status-code heuristics.
 2. Without capability, retain only legacy links from a successful, independently
    admitted session-summary read. Read that summary independently of work-item
-   assignments for this fallback. An empty legacy result says details unavailable,
+   assignments for this fallback. Add a direct summary read to the PR source;
+   reuse the transport lease, not WorkContextReader's gated aggregate. Leave that
+   reader's work-item gating intact and regression-test its card.
+   An empty legacy result says details unavailable,
    not No PR linked. There is no live-details polling.
 3. A malformed response on an advertised new route is an unavailable protocol
    result, never route-unsupported or an authoritative empty list. Back off as
@@ -173,8 +190,7 @@ Use `IGitHubLinkService.GetStateAsync` for the canonical caller: require `Linked
 and a positive `GitHubId`, not the pending `LinkedGitHubId` claim marker, a cached
 login string, or a generic display name. This includes GitHub-native human accounts;
 do not resurrect a missing holder association by parsing an old `github:` user ID.
-Unlinked WorkOS
-users see **Link GitHub to read PR details**, opening the configured tenant's
+Unlinked WorkOS users see **Link GitHub to read PR details**, opening the configured tenant's
 existing `/auth/github-link/start` browser flow; a sign-in to the website may be
 needed if the browser lacks its cookie. Recheck association on return/manual refresh.
 Do not transfer desktop tokens in a browser URL or mint new linking credentials.
@@ -195,7 +211,9 @@ Do not transfer desktop tokens in a browser URL or mint new linking credentials.
 5. Fetch canonical base-repository metadata using the integration token. Require a
    matching repository identity and explicit visibility. Only `visibility=public`
    supplies public-read evidence; `private`, `internal`, missing, or unknown values
-   do not. The caller still needs a linked identity for this v1 reader.
+   do not. This reader still requires linked identity for uniform GitHub audit
+   attribution, deliberately stricter than public-web access. External public PR
+   links remain usable without linking.
 6. For non-public repos, call
    `GET /repos/{owner}/{repo}/collaborators/{login}/permission`. Require a matching
    returned user ID and explicit `permission` of `read`, `write`, or `admin`.
@@ -205,13 +223,13 @@ Do not transfer desktop tokens in a browser URL or mint new linking credentials.
 7. Admit before accessing a cached body. Re-read current Capacitor admission and
    holder/configuration state before delivery; renew expired external evidence
    before releasing a long-running result. Always construct provider URLs from the
-   freshly admitted link. Neither
-   a cursor nor a provider node ID supplies repository/host authority.
+   freshly admitted link. A cursor or provider node ID never supplies repository/
+   host authority.
 
 Permission/public-visibility evidence has a maximum 30-second positive lifetime.
 Renew any proof with ten seconds or less remaining instead of returning another
-near-expiry lease; concurrent renewals coalesce. It is bound to integration generation, canonical repository ID, and numeric user
-ID (public visibility itself may be shared, but the caller's identity gate is not).
+near-expiry lease; concurrent renewals coalesce. Bind proof to integration generation,
+canonical repository ID and numeric user ID (public visibility itself may be shared, but the caller's identity gate is not).
 No stale positive evidence is usable. A failed fresh permission check clears the
 proof; never fall back to a previous successful proof after that failure. Negative
 results can be cached for at most 30 seconds. Every page and cached read still
@@ -224,13 +242,21 @@ GitHub-side permission change without an options change takes effect when observ
 with positive evidence bounded to 30 seconds; final-response revalidation bounds
 long reads too. This is not instantaneous revocation.
 
-The result contains a remaining access lifetime. The desktop masks protected bodies
-when this lifetime expires and obtains new evidence before revealing them again.
-It also masks bodies immediately when a workspace becomes hidden and before
-revealing retained data on return. A local profile/sign-out change clears all PR
-state. When permission/configuration failure or a session/list 404 is observed,
-clear **all** loaded bodies/cursors in the affected PR/session, not just the polled
-section. Retain only separately admitted link metadata, if still admitted.
+Expiry blocks new fetch/reveal; no server content, cached or otherwise, is delivered
+without a live proof. Desktop display retention is separate: already displayed
+content may remain **Access could not be rechecked · saved view** during a transient
+transport/rate/budget failure, for at most five minutes from the last successful
+access validation's monotonic request start. This grace never slides on failures
+or authorizes loading/revealing another page, section or PR. Server unavailable
+responses carry no protected data. Negative/invalid permission signals, identity/
+configuration changes, sign-out/profile changes and session/list 404s clear **all**
+affected bodies/cursors immediately. Unknown failure classifications fail closed.
+
+Pause polling on foreground loss. A return within five seconds can reuse still-live
+proof for already displayed content, unless a known lock/suspend, identity/profile
+change or denial occurred. Beyond that short grace, mask before redisplay and
+revalidate; the five-minute transient display allowance cannot restore a hidden or
+evicted view. Only separately admitted link metadata survives denied detail access.
 
 This checks repository roles/publication, not all of GitHub's per-user SSO, session,
 IP, or conditional-access policies. Requests are made as the integration, not with
@@ -240,7 +266,8 @@ token lifecycle; that is outside this feature.
 
 ### Audit and provider safety
 
-Record structured server access events for detail decisions: caller ID, session ID,
+Record structured server access events for detail decisions: caller ID, verified
+numeric GitHub ID/resolved login (nullable when unavailable), session ID,
 repository hash/PR number, section, UTC timestamp, admitted/denied/unavailable result,
 and cache-hit flag. Use existing protected operational logging/retention, not a new
 public analytics view, event-store stream, or audit UI. Do not log bodies, tokens,
@@ -261,6 +288,26 @@ images/attachments are not fetched. Only explicit absolute HTTP/HTTPS body links
 pass through LinkPolicy. Relative links, mentions and issue-reference shorthand
 remain text in v1; no repository-relative URL inference. Disallowed schemes are inert.
 
+## Preflight gate before implementation planning
+
+Before planning or building either part, the implementation driver and operator
+must run a read-only probe using the intended deployment's actual integration
+credential **in its existing protected environment**. The agent must not retrieve,
+copy or log the token, or substitute its local GitHub login. Operator approval and
+designated public/private repositories plus reader/denied identities are required.
+No safe probe environment means planning is blocked.
+
+Verify identity lookup, public metadata, private permission for an allowed user
+(including team-only read) and a denied user, matching IDs, content/check read
+permissions, primary limits and actual bounded GraphQL cost. Record only credential
+type, sanitized outcomes, candidate environment and budget measurements, never
+token/body data. Documentation and stub tests are not a passing deployment probe.
+
+If it fails, stop and ask the operator to configure a compatible scoped credential,
+then repeat. Do not weaken the linked-user gate into an allowlist/shared-token-only
+policy. Credential replacement/renewal is separate operator work, not automatic.
+Design review may finish before the probe; implementation planning cannot.
+
 ## Server module and request budget
 
 Add a dedicated pull-request read module, separate from enrichment. Reads do not
@@ -276,10 +323,18 @@ Register `GitHubPullRequestReads` with fixed GitHub origins, a 15-second upstrea
 headers-and-body deadline, explicit cancellation, no automatic retries and no
 off-origin redirect following. Bound a complete admitted HTTP operation, including
 queue wait and capture, to 30 seconds. Desktop request deadline is 35 seconds.
-Deadline expiry is typed unavailable, never empty or complete. Limit decoded
+Deadline expiry is unavailable or an explicitly limited captured subset, never
+empty/complete by inference. Limit decoded
 upstream bodies to 16 MiB while streaming, before JSON parsing, and client-side
 server response reads to 4 MiB. Neither side may buffer an unbounded response merely
 to discover that its normalized form exceeds the budget.
+
+The Checks section's suite-scoped latest set is canonical. Overview GraphQL rollup
+and counts are labelled **GitHub summary**, advisory rather than proof that the
+section has no failures. Once a complete fresh section for the same head exists,
+use its counts in both card and reader; head changes discard them. On disagreement,
+prefer the section and qualify source/time, not contradictory unlabeled green/red
+aggregates. Test disagreement explicitly.
 
 The lightweight overview uses one bounded GraphQL request for identity/lifecycle,
 head SHA, description, `reviewDecision`, the first 50 current-review/request rows,
@@ -299,19 +354,41 @@ Add a credential-scoped rate-limit observer used by the interactive client and t
 existing GitHub background HTTP clients. This observer consumes response headers
 and GraphQL cost information; background scheduling semantics stay unchanged.
 Interactive reads yield when REST or GraphQL remaining quota is below 20% of its
-reported limit, during any primary/secondary cooldown, or while the corresponding
-background provider gate is cooling down. No interactive request bypasses this rule
-for an access probe, cache revalidation or manual refresh.
+reported limit, during any primary/secondary cooldown, or while an observed
+background GitHub cooldown is active. Enrichment stores its cooldown in metadata;
+reviewer polling keeps a private in-process value. Add a metadata observer adapter
+and a notification seam when the poller arms its cooldown. These are new work, not
+an existing shared gate; tests must preserve background scheduling, classification
+and job order. Access probes/cache revalidation/manual refresh cannot bypass yielding.
 
-Limit interactive upstream concurrency to two and starts to 30 requests/minute per
-credential. Charge GraphQL by actual reported points, separately from REST calls.
+Limit interactive upstream concurrency to two and starts to 60 requests/minute per
+credential. Acquire permits per upstream call, not whole capture; queued overview/
+access work takes priority over body/capture calls. Charge actual GraphQL points,
+separately from REST calls.
 An unknown primary budget permits one serialized observation request; missing
 budget headers retain conservative local pacing rather than pretending quota is
 unlimited. A cooldown without a supplied reset/retry time defaults to 60 seconds.
 Return `retry_at`/`poll_after_seconds`; server backoff always wins over ordinary
 polling and early access-lease renewal. With no backoff, `poll_after_seconds` is zero.
-Expired access proof remains masked while yielding. The feature may become
-unavailable rather than starving background work.
+Expired proof blocks fetches while yielding; only an existing view's bounded display
+grace can remain. The feature may become unavailable rather than starve background work.
+
+Capacity target: four active readers on distinct PRs per credential with ordinary
+collections. At 25-second renewals this costs about 1,152 REST gate requests and
+576 overview GraphQL requests/hour before section reads; at the 15-second retry
+floor, about 1,920 REST and 960 GraphQL requests/hour. Multiply GraphQL requests by
+measured query cost, not one assumed point. Sixty starts/minute leaves section
+capacity at the faster cadence. Excess workloads yield rather than promise freshness.
+
+Documented profiles are fine-grained PAT or App installation with Metadata read
+plus PR/issue/check/status read permissions. An existing classic PAT needs private-
+repo `repo` scope and the same live admission probes; enrichment success alone
+never certifies it. Do not add scopes or change credential type automatically. Preflight must
+verify at least 5,000/hour REST and GraphQL primary limits and measured headroom
+alongside background work. Installation tokens are not automatically 15,000/hour:
+GitHub documents 5,000 minimum, scaling to 12,500, or 15,000 for qualifying Enterprise
+Cloud installations. Credential provisioning/installation-token renewal remains
+operator-owned; the feature neither finds nor persists replacement credentials.
 
 ## Stable pagination and bounded storage
 
@@ -331,8 +408,13 @@ is frozen, newly created items wait for explicit refresh.
 
 Record provider connection counts/boundaries before and after capture, and compare
 unique enumerated IDs with the unfiltered provider count before applying publication
-or resolved filters. Changed boundaries/counts, missing nodes, or repeated/non-advancing
-provider cursors cannot produce complete coverage. Retry enumeration at most once
+or resolved filters. Changed boundaries/counts, unexplained missing nodes, or
+repeated/non-advancing cursors cannot produce complete coverage. Provider-declared
+redacted/unreadable nodes with identity/publication evidence become placeholders
+and still count as enumerated; unexplained gaps do not. Compare the unfiltered
+count before dropping PENDING entries. Never expose a review/thread placeholder
+or count when publication cannot be established; pending drafts contribute no
+existence signal. Retry enumeration at most once
 within the same deadline, merging by stable ID; otherwise return a limited manifest
 with a changed-during-capture reason and an explicit Refresh action. An API without
 sufficient enumeration/completeness evidence also yields limited coverage. Complete
@@ -341,15 +423,18 @@ a historical point-in-time view. In-place body/state edits retain that caveat.
 
 Paging the frozen manifest cannot skip/reorder captured IDs when GitHub grows.
 Tests cover growth during capture as a stable retry or visibly limited result, and
-no missed captured rows when growth happens between client pages. Deleted items
-may be tombstones only with positive deletion evidence. Null/missing nodes or 404
-alone are ambiguous and follow the authorization-class failure policy.
+no missed captured rows when growth happens between client pages. A missing item
+at hydration becomes an unavailable row at that manifest position, with no retained
+body/hunk; call it deleted only with positive evidence. It does not clear unrelated
+rows. Repository/PR/permission/user-probe denials remain resource-level failures.
 
 Once frozen, a manifest cannot reorder as the user pages. The server sorts the
 whole captured sequence before cutting pages; the client appends without re-sorting:
 
-- Conversation and published reviews: `created_at` descending, provider ID as a
-  stable tiebreak. Editing changes `updated_at`, never the order.
+- Conversation: `created_at` descending, then provider ID. Editing changes
+  `updated_at`, never the order.
+- Published reviews: `submitted_at` descending, `created_at` only as fallback,
+  then provider ID.
 - Thread comments: `created_at` ascending, then provider ID.
 - Threads: unresolved before resolved, then root-comment `created_at` descending,
   then thread ID. The default is unresolved-only; `resolved=all` starts a separate
@@ -359,20 +444,29 @@ whole captured sequence before cutting pages; the client appends without re-sort
   name and stable run/context ID. Preserve cancelled/timed-out/action-required
   labels in the failed/non-success group instead of calling them passed.
 
-Check manifests are tied to a head SHA. Use the provider's latest check-run filter;
-retain suite/app/name identity and never collapse distinct suites solely because
-names match. Within the same suite/app/name, retain the most recent attempt by
-`started_at`/`created_at` and ID tiebreak. Legacy statuses use latest `created_at`, ID
-per context. If the provider cannot establish the latest set, mark coverage limited
+Check manifests are tied to a head SHA. Enumerate that commit's check suites and
+query each suite's latest runs, not the commit-wide latest filter with unverified
+cross-suite semantics. Suite-scoped filtering cannot drop another suite's same-name
+job. Retain suite/app/name identity; ambiguous latest-attempt evidence keeps labelled
+attempts and an unknown aggregate rather than a guess. Legacy statuses use latest
+`created_at`, ID per context. If the provider cannot establish the latest set, mark coverage limited
 and do not publish an exact success aggregate. A fixture must cover two workflows
 with the same job name, as well as reruns; name-only deduplication is forbidden.
 
 Manifest capture is bounded to 5,000 metadata entries, 4 MiB, and the operation
 deadline. If the entry/size ceiling is reached, a limited manifest can still be
 read, with `coverage=limited`, lower-bound counts, and **More on GitHub** after the
-captured rows. Do not call it the whole collection. Timeout/provider failure returns
-unavailable rather than an ostensibly complete manifest; rate advice is preserved. These limits deliberately bound exceptional PRs;
-ordinary large bodies alone do not make an entire collection unreadable.
+captured rows. Deadline or transient failure after useful metadata was captured
+can also freeze a limited subset, with deadline/provider_failure reason and rate
+advice. Page it without restarting the scan. No useful rows means unavailable, not
+empty; authorization-class failure never publishes a partial capture.
+
+This is an ordered **subset**, not necessarily the newest/failure-first global
+prefix. Label that before rows and never certify omitted failures/unresolved rows
+or global counts/order. The same rule permits partial checks/threads without an
+invented monotone provider API. Reserve time for final admission/serialization;
+pending hydration can yield unavailable item rows. Refresh explicitly retries a
+new capture. Large bodies alone cannot make the collection unreadable.
 
 ### Pages and cursors
 
@@ -382,13 +476,18 @@ the next unreturned manifest entry. Never consume/drop an item just because it d
 not fit. For a single oversized body, include an explicit truncated preview,
 `body_truncated=true`, and item URL; bound the preview to 256 KiB. Preserve identity
 and truncation metadata. An unavailable whole section is the last resort, not the
-normal handling of an oversized body.
+normal handling of an oversized body. Once a page is first materialized, its handle
+also binds the exact start/end manifest positions. Retrying that page keeps its row
+boundaries; if edited bodies now exceed the budget, return explicitly truncated
+previews rather than moving entries into a different page. Coalesce simultaneous
+first requests for a handle so only one boundary is assigned. Next-page handles
+choose their end once, on first materialization.
 
 Use 256-bit random **server-side opaque cursor handles**, not client-authored JSON.
 A handle record binds caller, tenant, session, PR identity, section/filter, thread
 where applicable, integration generation, snapshot ID, next position, and expiry.
-Expire after five minutes; the snapshot lives no longer than its handles. Bind to
-the numeric GitHub identity used for access too. A cursor supplies position only:
+The manifest and all its handles share a fixed absolute expiry of 30 minutes from
+capture start; paging never extends it. Bind to the numeric GitHub identity too. A cursor supplies position only:
 re-resolve the link and thread membership to build each upstream request. Unknown
 or foreign handles never cause a GitHub call. A well-formed handle missing from the
 bounded store returns generic `cursor_unavailable`; a known foreign handle returns
@@ -401,10 +500,19 @@ whole provider collection. The client rejects inconsistent combinations and neve
 runs a continuation loop automatically. Zero-length pages with a continuation
 are a protocol failure. Stable IDs prevent duplicate appends on retried pages.
 
-Server bodies/manifests/handles share a 64 MiB payload budget and 256 payload-entry
-cap; evict least recently used entries, with ten-minute idle expiry and the shorter
-five-minute manifest/handle lifetime. Coalesced data is keyed by integration
-generation, canonical PR, section/filter, snapshot/page, and check SHA. Mutable overview/body payloads have a 30-second freshness window;
+Separate server budgets: body cache 64 MiB/256 entries; manifest store 128 MiB/256
+manifests; opaque-handle store 8 MiB/16,384 records. These operational defaults target
+four active PR readers with six collections and up to twenty expanded-thread
+manifests each, plus opportunistic idle retention. Body paging cannot evict manifests
+or consume handle capacity. Byte accounting includes stored metadata/handle contents.
+Evict idle PRs first; if admission still cannot fit, return capacity unavailable
+rather than silently evict another active reader's manifest.
+
+Ten-minute idle eviction is separate from the fixed 30-minute absolute expiry.
+An admitted foreground overview touches that caller's selected-PR manifests, so
+quiet reading stays active. Body cache touches follow body access. Coalesced data
+is keyed by integration generation, PR, section/filter, snapshot/page and check SHA.
+Mutable overview/body payloads have a 30-second freshness window;
 use conditional requests where supported. Manual refresh can reuse a still-fresh
 payload and must retain its actual timestamp. Frozen manifest metadata remains its
 own snapshot until explicit refresh/expiry; fresh body hydration does not reorder it.
@@ -438,7 +546,8 @@ GET /api/sessions/{sessionId}/pull-requests/{repoHash}/{number}/conversation
 The list does no GitHub fan-out: it returns Capacitor-admitted session link metadata,
 not hydrated GitHub bodies. Its `data` is `{ "items": [...] }`, with each row's
 identity fields plus nullable `url`, `title`, and `head_ref`. Its successful response
-can be empty. All detail routes
+can be empty. This local-data list returns ready or unavailable, never stale;
+`access_valid_for_seconds` is zero/ignored and `access_failure` is null. Detail routes
 apply the additional GitHub gate. Resolve `repoHash` against this session's admitted
 canonical links, using the existing hash derivation; do not treat the hash itself as
 authorization. No match, ambiguous identity, unknown repository, or unreadable
@@ -464,7 +573,8 @@ serialization/deserialization in both repositories.
   "reason": null,
   "retry_at": null,
   "poll_after_seconds": 0,
-  "access_valid_for_seconds": 20
+  "access_valid_for_seconds": 20,
+  "access_failure": null
 }
 ```
 
@@ -478,13 +588,21 @@ times remain separate. All absolute times are RFC 3339 UTC strings ending in Z;
 `access_valid_for_seconds` is remaining positive proof lifetime at server delivery,
 zero on unavailable or failed authorization. The client measures expiry from its
 request's monotonic **start**, not receipt, so network time cannot extend the lease.
-It caps the duration at 30 seconds and masks on expiry. The link list does not grant
-a detail access lease. Each body response needs valid current authorization too.
+Cap it at 30 seconds. At receipt, fewer than five conservative seconds remaining
+cannot reveal new bodies; renew at the next permitted attempt instead. Expiry
+blocks fetch/reveal; only the five-minute display grace retains an existing view.
+The link list grants no lease. Each body response requires current authorization.
+
+`access_failure` is null on admission, otherwise transient, denied or invalid.
+Transient means only network/timeout/5xx/rate/budget inability to check. Explicit
+401/non-rate 403/404, permission=none, unlink/configuration change, ID mismatch, malformed
+evidence and unknown classifications get no display grace. Resource-level signals
+use this field; item-level hydration outcomes do not change it.
 
 Reasons: disabled, not_configured, github_not_linked, github_access_denied,
 github_access_unverifiable, provider_unauthorized, provider_forbidden,
 provider_not_found, rate_limited, budget_exhausted, timeout, provider_unavailable,
-protocol_error, capture_unstable, payload_unavailable. Unknown reasons use a generic
+protocol_error, capture_unstable, payload_unavailable, capacity_exhausted. Unknown reasons use a generic
 unavailable label. Only transient content failures/rate limits with a still-valid
 access proof may carry stale data. Unknown authorization status never may.
 
@@ -517,7 +635,7 @@ Page `data`:
   "coverage": "complete",
   "head_sha": null,
   "total": {"value":2,"kind":"exact"},
-  "items": [{"id":"IC_example","url":"https://github.com/example/repo/pull/42#issuecomment-1","created_at":"2026-09-07T09:00:00Z","updated_at":"2026-09-07T09:00:00Z","author":null,"body":"Example comment","body_truncated":false}],
+  "items": [{"id":"IC_example","availability":"available","reason":null,"url":"https://github.com/example/repo/pull/42#issuecomment-1","created_at":"2026-09-07T09:00:00Z","updated_at":"2026-09-07T09:00:00Z","author":null,"body":"Example comment","body_truncated":false}],
   "page_cursor": "opaque-current-page-handle",
   "has_more": true,
   "next_cursor": "opaque-next-page-handle"
@@ -525,13 +643,22 @@ Page `data`:
 ```
 
 Coverage is complete or limited; unknown coverage is limited. A limited page also
-carries `coverage_reason`: entry_limit, size_limit, changed_during_capture, or
-provider_limit; unknown reasons retain the limited label. Each collection item carries stable provider ID, its validated
+carries `coverage_reason`: entry_limit, size_limit, changed_during_capture,
+provider_limit, deadline or provider_failure; unknown reasons retain the limited
+label. Each collection item carries stable provider ID, its validated
 external URL if available, and the section's typed content. Bodies additionally
 carry `body_truncated`. User/team actors have stable ID, kind, nullable login/name,
 and no automatically downloaded image. Pending review state `PENDING` is dropped
 server-side unconditionally; review comments/threads must also exclude unpublished
 review content, rather than assuming the integration cannot see its owner's drafts.
+
+Each item has `availability` (available, unavailable, redacted) and nullable `reason`
+(item_missing, item_unreadable, item_redacted, hydration_timeout). Missing/unknown
+availability cannot render a body. An unavailable row retains admitted ID and safe
+URL if known; body, hunk and protected previews are null. It occupies its manifest
+position even when alone on a page, preventing a zero-item continuation. Call it
+deleted only with positive evidence. Page reload may retry hydration; failure
+cache freshness is 30 seconds. Publication rules precede any placeholder.
 
 ### HTTP outcomes and reset semantics
 
@@ -542,19 +669,21 @@ inputs or known-foreign/malformed cursor handles return 400 without upstream wor
 
 409 uses `{ "error":"restart_required", "reason":"…" }`, where reason is
 head_changed, cursor_expired, cursor_unavailable, snapshot_evicted,
-cursor_version_changed, integration_changed, or identity_changed. The current subject must pass admission
-before returning a detailed restart reason. Otherwise return the ordinary denied
+cursor_version_changed, integration_changed, or identity_changed. The current
+subject must pass admission before returning a detailed restart reason. Otherwise return the ordinary denied
 outcome, not a hint about another user's cursor.
 
 - Head changed: discard checks and their counts/cursors immediately; these cannot
   remain displayed as the current head's checks. Reload on explicit refresh.
 - Integration/identity changed: clear all protected bodies and proofs; reauthorize.
 - Cursor expired/unavailable/version changed/snapshot evicted: disable Load more, retain visible
-  rows only while their access lease is valid, label them as an old snapshot, and
+  rows under a live lease or eligible display grace, label the old snapshot, and
   offer Refresh. Do not silently replace pages under the user.
 - Manual Refresh explicitly resets the selected collection to page one and scrolls
   it to the top. Retain expansion IDs only for rows that reappear. This is an
   intentional exception to ordinary background-refresh scroll preservation.
+- Toggling `resolved=all` starts a new capture and resets paging/scroll, with a loader
+  explaining the change; it is not a free filter on already loaded rows.
 
 ## Desktop lifecycle and freshness
 
@@ -579,9 +708,9 @@ renew via the overview five seconds before the conservative access deadline, wit
 at least 15 seconds between attempts; reuse fresh content but renew expiring access
 proofs. Early renewal normally avoids a blank flash at each lease boundary, not a
 guarantee during slow/failed requests. It cannot bypass server pacing/cooldowns.
-Ended sessions follow the same rule. Stop polling and mask bodies when ineligible;
-on return, revalidate before showing retained bodies, even if a previous timer had
-not expired. Load other sections on demand.
+Ended sessions follow the same rule. Stop polling when ineligible; apply the stated
+five-second foreground-return grace, otherwise mask and revalidate before showing
+retained bodies. Load other sections on demand.
 
 Background overview refresh never replaces reader pages. It may show an update
 hint. Sections show their own times; manual refresh restarts them. Valid new access
@@ -595,10 +724,11 @@ labelled with its old fetch time. A fresh overview cannot label those bodies fre
 | Successful empty captured collection | No comments/reviews/checks, only if coverage is complete. |
 | Missing GitHub link | Link GitHub action; no bodies. |
 | Disabled/missing integration | Known PR link and explanatory note; no bodies. |
-| Denied/unverifiable user permission | Clear bodies/proofs, link retained only if Capacitor-admitted. |
-| Provider 401, non-rate 403, or 404 | Authorization-class: clear fetched bodies, never stale; do not change link or lifecycle. |
-| Content transport/5xx/timeout | Retain stale bodies only until an existing access lease expires. |
-| Rate/budget limit | Respect retry advice; expired evidence is masked, not extended. |
+| Denied/invalid permission | Clear bodies/proofs; link retained only if Capacitor-admitted. |
+| Resource-level provider 401, non-rate 403, or 404 | Clear bodies, no grace; preserve admitted link/lifecycle. |
+| Item miss/unreadable | Unavailable placeholder without old body/hunk; paging continues. |
+| Transport/5xx/timeout rechecking | No server data without proof; existing visible data gets labelled display grace. |
+| Rate/budget limit | Follow retry advice; no fetch on expired proof, same bounded display grace. |
 | Oversized item | Explicit truncated preview and its external link; paging continues. |
 | Limited manifest | Label loaded subset/lower bound; More on GitHub, never all-loaded. |
 | Caller sign-out/session 404 | Clear affected protected state immediately. |
@@ -611,13 +741,15 @@ Full/hidden/team gates, forged session/PR/thread/cursor identity, missing and ch
 GitHub links, numeric-ID mismatch/login rename, public vs internal/private repos,
 team/base-role read and denied/unverifiable permission, cache-hit authorization,
 proof expiry during fetch, token/flag rotation, GitHub-side revocation, and denial
-on 404. Verify that cached bodies cannot bypass the user's GitHub permission gate.
+on resource 404 versus item misses. Server caches cannot bypass the GitHub gate;
+display grace cannot enable fetch/new reveal or survive a negative signal.
 
 Pagination tests must cover inserts during capture (stable retry or explicit limited
 coverage) and between pages (no missed manifest rows), deletions/tombstones,
-snapshot-stable ordering, resolved filter,
+snapshot-stable ordering, resolved filter, stable page bounds on edited-body retries,
 body-budget short pages without lost items, one oversized body, repeated cursors,
-limited manifests, eviction and every 409 reason. Include pending/dismissed reviews,
+deadline-limited subsets, one-item hydration failures, redacted placeholders,
+separate budget exhaustion under four readers, thirty-minute expiry and all 409s. Include pending/dismissed reviews,
 file-level/outdated threads, deleted actors, cross-repo equal PR numbers, same-name
 workflow jobs and reruns. Test rate-limit yielding and coalescing without changing
 background-job scheduling or emitting enrichment events.
@@ -625,7 +757,8 @@ background-job scheduling or emitting enrichment events.
 Core/app tests pin tolerant JSON parsing, unknown status/enum handling, exact
 count/page invariants, source precedence, unsupported discovery/backoff, provider
 failure versus Capacitor sign-out, memory eviction, monotonic access expiry,
-visibility return masking, and profile/selection cancellation. Avalonia tests assert
+five-minute display-grace expiry, short foreground return, long-hide masking,
+minimum reveal-lease floor, and profile/selection cancellation. Avalonia tests assert
 realized Chat/Terminal preservation, non-PTY and ended layouts, card-row focus,
 selected tab accessibility, live announcements, readable long content, and failures
 in one sidebar module not contaminating the other.
@@ -638,7 +771,8 @@ versioned contract metadata. A server field rename fails its serialization test
 against the checked-in canonical fixture; tests must not regenerate golden files.
 No new cross-repo CI credentials are assumed. The implementation driver compares
 the bundle digests at the paired candidate commits before merge and before release;
-a contract revision needs both pins updated together. This catches accidental field
+a contract revision needs both pins updated together, and a non-additive change
+requires a new negotiated version rather than silently modifying v1. This catches accidental field
 drift in local CI and coordinated revision mismatches in paired integration.
 
 The implementation driver owns a read-only smoke check against the paired server
@@ -684,9 +818,10 @@ integration/release, not parallel fixture-based development.
 - [Get repository permissions for a user](https://docs.github.com/en/rest/collaborators/collaborators#get-repository-permissions-for-a-user):
   effective base roles across direct/team/org grants; Metadata read for supported
   fine-grained token types.
-- [List check runs for a Git reference](https://docs.github.com/en/rest/checks/runs#list-check-runs-for-a-git-reference):
-  latest filter and the provider's 1,000-suite limit; do not claim complete coverage
-  if a provider ceiling was reached.
+- [List check runs in a check suite](https://docs.github.com/en/rest/checks/runs#list-check-runs-in-a-check-suite):
+  suite-scoped latest avoids guessing commit-wide cross-suite deduplication.
+- [GitHub REST rate limits](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api):
+  installation alone does not imply the 15,000/hour Enterprise Cloud limit.
 - [GitHub's published GraphQL schema](https://docs.github.com/public/fpt/schema.docs.graphql):
   PR/review/thread/comment connections expose native cursors; review-thread/review
   connections lack a created-at order parameter, and IssueCommentOrderField exposes
