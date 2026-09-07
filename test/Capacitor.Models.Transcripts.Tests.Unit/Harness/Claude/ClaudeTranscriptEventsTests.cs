@@ -114,6 +114,29 @@ public class ClaudeTranscriptEventsTests {
         await Assert.That(((AssistantToolCallsGenerated)absent[0].Payload).ToolCalls[0].Arguments.Fields.Count).IsEqualTo(0);
     }
 
+    /// The persisted kind comes from the table the chat lane stamps, so an import and the chat never
+    /// disagree. The name alone decides — a `Bash` reading a file is still `execute` — and a tool the
+    /// table does not list, or a nameless call, is a PRESENT `other`: the key being there is how a
+    /// consumer tells "none of these" from the absence a lane with no table leaves behind.
+    [Test]
+    public async Task Tool_calls_carry_a_vendor_neutral_kind_and_an_unlisted_tool_is_a_present_other() {
+        foreach (var (block, kind) in new[] {
+            ("""{"type":"tool_use","id":"t","name":"Read","input":{"file_path":"a.rs"}}""",           AcpToolKind.Read),
+            ("""{"type":"tool_use","id":"t","name":"Edit","input":{"file_path":"a.rs"}}""",           AcpToolKind.Edit),
+            ("""{"type":"tool_use","id":"t","name":"Bash","input":{"command":"cat a.rs"}}""",         AcpToolKind.Execute),
+            ("""{"type":"tool_use","id":"t","name":"Grep","input":{"pattern":"x"}}""",                AcpToolKind.Search),
+            ("""{"type":"tool_use","id":"t","name":"WebFetch","input":{"url":"https://x"}}""",        AcpToolKind.Fetch),
+            ("""{"type":"tool_use","id":"t","name":"Task","input":{"prompt":"go"}}""",                AcpToolKind.Other),
+            ("""{"type":"tool_use","id":"t","name":"mcp__linear__get_issue","input":{"id":"1"}}""",   AcpToolKind.Other),
+            ("""{"type":"tool_use","id":"t","input":{}}""",                                           AcpToolKind.Other),
+        }) {
+            var e    = E($$$"""{"type":"assistant","message":{"content":[{{{block}}}]}}""");
+            var call = ((AssistantToolCallsGenerated)e[0].Payload).ToolCalls[0];
+            await Assert.That(call.HasToolKind).IsTrue().Because(block);
+            await Assert.That(call.ToolKind).IsEqualTo(kind).Because(block);
+        }
+    }
+
     [Test]
     public async Task Empty_thinking_stays_a_thinking_event_with_empty_content() {
         var e = E("""{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"","signature":"abc"}]}}""");

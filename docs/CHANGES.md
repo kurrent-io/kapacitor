@@ -1058,3 +1058,27 @@ composer caret blinking while the window is focused is enough, and the flicker s
 leaves. Nothing in the app drives it: every surface is a static brush, and the shift covers the rail, the
 panes and the text alike. The renderer order leaves Metal out, OpenGL first with the software renderer
 behind it, and the flicker is gone.
+
+## The tool kind reaches the persisted canonical event
+
+**#794** populates `ToolCallInfo.ToolKind`, the field `Kurrent.Agent.Schema` 0.5.0 carries, in the
+Claude and Codex transcript projections, so the server sees the kind for an imported session and not
+only the chat and the daemon's hosted lane. The kind tables move down into `Capacitor.Models.Transcripts`
+to make that possible: the projections sit below `Capacitor.Cli.Core`, where the tables lived, and one
+copy of each table matters more than which directory holds it — a hosted session, the chat and an
+import of the same rollout must not answer differently for the same call. The schema pin is shared
+with kcap-server, which carries this repo as a submodule, so its pin has to move with the submodule
+pointer or two schema versions share one build graph.
+
+**Absent stays distinguishable from `other`, and these two lanes always answer.** The schema carries
+the field with explicit presence, so an unclassified call omits the key rather than writing `""`.
+Both projections classify every call — an unlisted tool, an MCP tool arriving under its bare name, even
+a nameless call, is a present `other` — and absence is reserved for a lane with no table at all: the
+server's own normalizers, and an ACP agent that sent no kind. A nameless call could have been read as
+absent; it is not, because the chat lane already says `other` for it and the lanes agreeing wins.
+
+**The raw input reaches the shell classifier, not the struct.** A Codex shell call is classified by its
+command, and the projection has turned the arguments into a `Struct` by the time it builds the call, so
+the general path carries the unparsed string alongside. A `custom_tool_call` hands over its body, which
+is not JSON, so a shell-family custom tool would read as `execute`; `apply_patch`, the one that occurs,
+is decided by its name.

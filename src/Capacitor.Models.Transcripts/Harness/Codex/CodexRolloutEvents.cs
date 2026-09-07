@@ -36,8 +36,8 @@ public sealed class CodexRolloutEvents : ITranscriptProjection {
 
             IMessage? evt = payload.Str("type") switch {
                 "message"          => Message(payload, ts),
-                "function_call"    => ToolCall(payload, ArgumentsStruct(payload.Str("arguments")), ts),
-                "custom_tool_call" => ToolCall(payload, Wrap("input", payload.Str("input") ?? ""), ts),
+                "function_call"    => ToolCall(payload, ArgumentsStruct(payload.Str("arguments")), payload.Str("arguments"), ts),
+                "custom_tool_call" => ToolCall(payload, Wrap("input", payload.Str("input") ?? ""), payload.Str("input"), ts),
                 "function_call_output" or "custom_tool_call_output"
                                    => new ToolResultReceived { CallId = payload.Str("call_id") ?? "", Result = OutputText(payload), Timestamp = ts },
                 "tool_search_call" => ToolSearchCall(payload, ts),
@@ -76,11 +76,7 @@ public sealed class CodexRolloutEvents : ITranscriptProjection {
         var callId = recordId.ToString();
 
         var call = new AssistantToolCallsGenerated { Timestamp = ts };
-        call.ToolCalls.Add(new ToolCallInfo {
-            CallId    = callId,
-            ToolName  = "web_search",
-            Arguments = payload.Obj("action") is { } action ? StructOf(action) : new Struct(),
-        });
+        call.ToolCalls.Add(Info(callId, "web_search", payload.Obj("action") is { } action ? StructOf(action) : new Struct()));
 
         var result = new ToolResultReceived { CallId = callId, Result = payload.Str("status") ?? "", Timestamp = ts };
 
@@ -94,21 +90,24 @@ public sealed class CodexRolloutEvents : ITranscriptProjection {
     /// any other call; only the tool name is ours to supply, the payload carrying none.
     static AssistantToolCallsGenerated ToolSearchCall(JsonElement payload, Timestamp ts) {
         var call = new AssistantToolCallsGenerated { Timestamp = ts };
-        call.ToolCalls.Add(new ToolCallInfo {
-            CallId    = payload.Str("call_id") ?? "",
-            ToolName  = "tool_search",
-            Arguments = payload.Obj("arguments") is { } args ? StructOf(args) : new Struct(),
-        });
+        call.ToolCalls.Add(Info(payload.Str("call_id") ?? "", "tool_search", payload.Obj("arguments") is { } args ? StructOf(args) : new Struct()));
         return call;
     }
 
     static string ToolsText(JsonElement payload) => payload.Arr("tools")?.GetRawText() ?? "";
 
-    static AssistantToolCallsGenerated ToolCall(JsonElement payload, Struct arguments, Timestamp ts) {
+    static AssistantToolCallsGenerated ToolCall(JsonElement payload, Struct arguments, string? rawInput, Timestamp ts) {
         var call = new AssistantToolCallsGenerated { Timestamp = ts };
-        call.ToolCalls.Add(new ToolCallInfo { CallId = payload.Str("call_id") ?? "", ToolName = payload.Str("name") ?? "", Arguments = arguments });
+        call.ToolCalls.Add(Info(payload.Str("call_id") ?? "", payload.Str("name") ?? "", arguments, rawInput));
         return call;
     }
+
+    /// Every call this projection writes takes its kind from the table the chat lane and the daemon
+    /// share. A shell call is classified by its command, which the classifier reads from the raw
+    /// input rather than the struct.
+    static ToolCallInfo Info(string callId, string toolName, Struct arguments, string? rawInput = null) => new() {
+        CallId = callId, ToolName = toolName, Arguments = arguments, ToolKind = CodexToolKinds.Of(toolName, rawInput),
+    };
 
     // `arguments` is a JSON string; an object parses as the struct, anything else is wrapped.
     static Struct ArgumentsStruct(string? arguments) {

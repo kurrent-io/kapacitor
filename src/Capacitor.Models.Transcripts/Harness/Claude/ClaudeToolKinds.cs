@@ -1,4 +1,4 @@
-namespace Capacitor.Cli.Core.Harness.Claude;
+namespace Capacitor.Models.Transcripts.Harness.Claude;
 
 /// What a Claude tool call did, in the vendor-neutral vocabulary.
 public static class ClaudeToolKinds {
