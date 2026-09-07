@@ -701,6 +701,10 @@ public class AgentOrchestratorVendorTests {
         await Assert.That(server.LaunchFailedCalls[0].Reason).Contains("reviewer_certification_changed");
         await Assert.That(claudeSpy.PrepareCalls).IsEqualTo(0);
         await Assert.That(ptyFactory.SpawnCalls).IsEqualTo(0);
+
+        // The rejection is also the self-heal: the daemon re-advertises so the next attempt passes.
+        await orch.CapabilityRefreshForTest;
+        await Assert.That(server.RegisterDaemonCalls).IsEqualTo(1);
     }
 
     [Test]

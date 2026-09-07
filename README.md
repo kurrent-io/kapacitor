@@ -657,9 +657,9 @@ It provides nine tools:
 
 - **`declare_work_item`** — attach the current session (and its continuation chain) to a work item. Pass exactly one of `issue_key` (e.g. `"AI-1234"`), `pr_number`, `work_item_id`, or `new_title` (creates a brand-new work item).
 - **`get_session_work_items`** — list the work items the current session is attached to.
-- **`declare_work_breakdown`** — declare that a work item is broken into parts (`parent_id` + `part_ids`). Idempotent; a part has at most one parent, and all items must live in the same repository.
+- **`declare_work_breakdown`** — declare that a work item is broken into parts (`parent_id` + `part_ids`). Idempotent; a part has at most one parent, and every item must be visible to the caller — a part may live in a different repository than its parent.
 - **`retract_work_breakdown`** — detach the named parts from the parent.
-- **`declare_work_relation`** — declare a dependency between two items (`from_id`, `to_id`, `relation_kind` `"blocks"` or `"blocked_by"`). Same repository, no self-relation.
+- **`declare_work_relation`** — declare a dependency between two items (`from_id`, `to_id`, `relation_kind` `"blocks"` or `"blocked_by"`). Both ends must be visible to the caller and may live in different repositories; no self-relation.
 - **`retract_work_relation`** — retract a previously declared dependency.
 - **`get_work_item_topology`** — read a work item's parent, parts, and dependencies (scoped to what the caller can see).
 - **`merge_work_item`** — merge a duplicate item into another (`work_item_id` → `into_work_item_id`): its sessions and links move to the survivor. Refused when a user marked either item standalone, rejected the pairing, or the items sit in different tracker hierarchies.

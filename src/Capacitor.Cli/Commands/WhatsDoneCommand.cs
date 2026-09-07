@@ -79,7 +79,7 @@ sealed class WhatsDoneCommand(ConfigRoot config, ProfileContext profiles, UserHo
         var result = vendor == "codex"
             ? await CodexCliRunner.RunAsync(prompt, TimeSpan.FromSeconds(90), log, profiles.Resolution.Profile)
             : await ClaudeCliRunner.RunAsync(prompt, TimeSpan.FromSeconds(90), log, profiles.Resolution.Profile, home,
-                systemPrompt: TitleGenerator.HeadlessSummarizerSystemPrompt);
+                systemPrompt: TitleGeneration.HeadlessSummarizerSystemPrompt);
 
         if (result is null) {
             log($"{vendor} returned empty or failed");

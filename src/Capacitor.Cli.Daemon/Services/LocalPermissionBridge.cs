@@ -37,6 +37,7 @@ internal sealed partial class LocalPermissionBridge(
     ) : IHostedService, IAsyncDisposable {
     const int    MaxBindAttempts = 15;
     const string PathSuffix      = "/permission-request";
+    const string InputWaitSuffix = "/input-wait";
 
     internal static readonly TimeSpan ResponseWriteTimeout = TimeSpan.FromSeconds(2);
     internal static readonly TimeSpan RequestReadTimeout   = TimeSpan.FromSeconds(2);
@@ -63,6 +64,11 @@ internal sealed partial class LocalPermissionBridge(
     /// constructor, so the dependency cannot point the other way). Null = every request is
     /// unattributed and takes the server-only path.
     internal Func<PermissionAttribution, AttributedAgent?>? AttributeHandler { get; set; }
+
+    /// Assigned by the orchestrator like <see cref="AttributeHandler"/>: receives the attributed
+    /// agent id and whether a PTY vendor's hook just reported its turn ended (true) or a new one
+    /// began (false). Null = relays are acknowledged and dropped.
+    internal Action<string, bool>? InputWaitHandler { get; set; }
 
     internal int ServerLegsInFlightForTest => Volatile.Read(ref _serverLegsInFlight);
 
@@ -479,10 +485,18 @@ internal sealed partial class LocalPermissionBridge(
                 }
             }
 
+            var path = context.Request.Url?.AbsolutePath;
+
+            if (context.Request.HttpMethod == "POST" && path is not null
+             && path.EndsWith(InputWaitSuffix, StringComparison.Ordinal)) {
+                await HandleInputWaitAsync(context, path);
+
+                return;
+            }
+
             // Require token + vendor + endpoint match. The HttpListener prefix already routed us
             // here, but we re-validate explicitly so a stray prefix can't quietly admit anything.
             // Path shape: /{token}/{vendor}/permission-request.
-            var path = context.Request.Url?.AbsolutePath;
 
             if (path is null
              || !path.EndsWith(PathSuffix, StringComparison.Ordinal)
@@ -884,6 +898,80 @@ internal sealed partial class LocalPermissionBridge(
                 return true;
 
         return false;
+    }
+
+    /// <summary>
+    /// A PTY vendor's hook reporting a turn boundary: <c>/{token}/{vendor}/input-wait</c> with
+    /// <c>session_id</c>, <c>waiting</c>, and the <c>agent_id</c>/<c>cwd</c> the attribution ladder
+    /// reads. Same token and vendor rules as the permission path. Answers 204 whether or not the
+    /// ladder placed the agent — the hook has nothing to do with the difference — and refuses only
+    /// a body it cannot read a session and a verdict from.
+    /// </summary>
+    async Task HandleInputWaitAsync(HttpListenerContext context, string path) {
+        var trimmed    = path.TrimStart('/');
+        var firstSlash = trimmed.IndexOf('/');
+
+        if (firstSlash <= 0) {
+            Close(context, 404);
+
+            return;
+        }
+
+        var token = trimmed[..firstSlash];
+
+        if (!string.Equals(token, _sharedToken, StringComparison.Ordinal) && !_reviewerTokens.ContainsKey(token)) {
+            Close(context, 404);
+
+            return;
+        }
+
+        var afterToken = path[(token.Length + 2)..];
+        var vendor     = afterToken.Length > InputWaitSuffix.Length ? afterToken[..^InputWaitSuffix.Length] : "";
+
+        if (vendor is not ("claude" or "codex")) {
+            Close(context, 404);
+
+            return;
+        }
+
+        using var readCts = new CancellationTokenSource(RequestReadTimeout);
+        var       body    = await ReadCappedBodyAsync(context.Request.InputStream, MaxPermissionRequestBodyBytes, readCts.Token);
+
+        if (body is null) {
+            Close(context, 413);
+
+            return;
+        }
+
+        JsonObject? node;
+
+        try {
+            node = JsonNode.Parse(body) as JsonObject;
+        } catch (JsonException) {
+            node = null;
+        }
+
+        var sessionId = PermissionWire.Canonical(Str(node, "session_id"));
+        var waiting   = node?["waiting"] is JsonValue verdict && verdict.TryGetValue<bool>(out var w) ? w : (bool?) null;
+
+        if (sessionId is null || waiting is null) {
+            Close(context, 400);
+
+            return;
+        }
+
+        var attributed = AttributeHandler?.Invoke(new PermissionAttribution(Str(node, "agent_id"), sessionId, Str(node, "cwd")));
+        if (attributed is { } agent) InputWaitHandler?.Invoke(agent.AgentId, waiting.Value);
+
+        Close(context, 204);
+    }
+
+    static string? Str(JsonObject? node, string field) =>
+        node?[field] is JsonValue v && v.TryGetValue<string>(out var s) ? s : null;
+
+    static void Close(HttpListenerContext context, int status) {
+        context.Response.StatusCode = status;
+        context.Response.Close();
     }
 
     /// <summary>Reads at most <paramref name="maxBytes"/>, returning null when the body exceeds

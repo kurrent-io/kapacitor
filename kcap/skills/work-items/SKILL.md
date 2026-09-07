@@ -71,8 +71,9 @@ two — that records structure that isn't there. Merge instead:
 
 ## Rules the server enforces
 
-- **Same repository.** A parent and its parts, and both ends of a relation, must
-  live in the same repository. Cross-repo structure is rejected.
+- **Visibility, not repository.** Every item you name must be visible to you.
+  Repository is display only: a part may live in a different repository than its
+  parent, and a relation may cross repositories.
 - **One parent per part.** A part can belong to at most one parent breakdown.
 - **No self-relation.** An item cannot block or be blocked by itself.
 - **Idempotent declares.** Re-declaring an existing part or relation is fine.

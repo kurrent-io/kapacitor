@@ -80,6 +80,19 @@ public class AcpEventTranslatorTests {
         await Assert.That(env.Value.ToolCallId).IsEqualTo("call-1");
         await Assert.That(env.Value.ToolName).IsEqualTo("Run shell command");
         await Assert.That(env.Value.ToolInputJson).IsEqualTo("""{"command":"echo hi"}""");
+        await Assert.That(env.Value.ToolKind).IsEqualTo(AcpToolKind.Execute);
+    }
+
+    /// The kind is agent-supplied, so it is normalized onto the closed vocabulary before it reaches
+    /// a consumer that switches on it — and a kind-less tool_call stays kind-less rather than
+    /// claiming to have been classified.
+    [Test]
+    public async Task ToolCall_normalizes_an_agent_supplied_kind_and_leaves_an_absent_one_null() {
+        var unknown = new AcpSessionUpdate(AcpUpdateKind.ToolCall, ToolCallId: "c", ToolKind: "summarise");
+        await Assert.That(AcpEventTranslator.Translate(unknown, 1, TimestampIso)!.Value.ToolKind).IsEqualTo(AcpToolKind.Other);
+
+        var none = new AcpSessionUpdate(AcpUpdateKind.ToolCall, ToolCallId: "c");
+        await Assert.That(AcpEventTranslator.Translate(none, 2, TimestampIso)!.Value.ToolKind).IsNull();
     }
 
     [Test]

@@ -38,7 +38,10 @@ internal static partial class AcpEventTranslator {
     /// (as <see cref="AcpEventEnvelope.ToolName"/> — ACP's <c>tool_call</c> has no separate machine
     /// "name" field, only <c>title</c>/<c>kind</c>; <c>title</c> is the closest analogue and is what
     /// the server's <c>AssistantToolCallsGenerated.ToolCallInfo.ToolName</c> expects to
-    /// display)/<see cref="AcpSessionUpdate.ToolInputJson"/>.</description></item>
+    /// display)/<see cref="AcpSessionUpdate.ToolInputJson"/>, plus the update's own <c>kind</c>
+    /// normalized onto <see cref="AcpToolKind"/>'s closed set — the agent supplies it, so an
+    /// unrecognised token becomes <c>other</c> rather than reaching a consumer that switches on
+    /// the vocabulary.</description></item>
     /// <item><description><see cref="AcpUpdateKind.ToolCallUpdate"/> → <see cref="AcpEventKind.ToolResult"/>
     /// ONLY when the status is terminal (<see cref="IsTerminalToolStatus"/>) AND
     /// <see cref="AcpSessionUpdate.ToolResultText"/> is non-null — a status-only update (non-terminal,
@@ -90,6 +93,7 @@ internal static partial class AcpEventTranslator {
                     ToolCallId: update.ToolCallId,
                     ToolName: update.ToolTitle,
                     ToolInputJson: update.ToolInputJson,
+                    ToolKind: AcpToolKind.Normalize(update.ToolKind),
                     TimestampIso: timestampIso);
 
             case AcpUpdateKind.ToolCallUpdate:

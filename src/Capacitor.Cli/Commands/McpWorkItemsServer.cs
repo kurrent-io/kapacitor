@@ -140,10 +140,11 @@ sealed class McpWorkItemsServer(ConfigRoot config, ProfileContext profiles) {
         "(declare_work_breakdown); when one item must land before another, declare the dependency " +
         "(declare_work_relation — 'blocks'/'blocked_by'). Breakdown and relations are DECLARED, never " +
         "inferred: if you don't declare them the work item's topology stays empty. Declare only real " +
-        "structure you're confident of, keep every item in the same repository, and use the retract_* " +
-        "tools when it changes. Two items for the same work — a title-only item you created and the issue/PR-" +
-        "keyed item the server minted — are a duplicate: merge yours into the keyed one with merge_work_item. " +
-        "A wrong attach is undone with detach_work_item, never papered over with a breakdown.";
+        "structure you're confident of — every item must be visible to you, but parts and dependencies " +
+        "may cross repositories — and use the retract_* tools when it changes. Two items for the same " +
+        "work — a title-only item you created and the issue/PR-keyed item the server minted — are a " +
+        "duplicate: merge yours into the keyed one with merge_work_item. A wrong attach is undone with " +
+        "detach_work_item, never papered over with a breakdown.";
 
     static string BuildInitializeResponse(JsonNode id, JsonObject request) =>
         ToResponse<McpInitResult>(
@@ -516,7 +517,8 @@ sealed class McpWorkItemsServer(ConfigRoot config, ProfileContext profiles) {
         new("declare_work_breakdown",
             "Declare that a work item is broken down into parts (sub-items). Idempotent: re-declaring an "
           + "existing part is accepted and reported as existing rather than created. A part can have at "
-          + "most one parent, and all items must live in the same repository.",
+          + "most one parent, and every item must be visible to you — a part may live in a different "
+          + "repository than its parent, where repository is display only.",
             new("object", new() {
                 ["parent_id"] = new("string", "The work item being broken down."),
                 ["part_ids"]  = new("array", "Work item ids that are parts of the parent.", new("string", "A work item id."))
@@ -531,8 +533,8 @@ sealed class McpWorkItemsServer(ConfigRoot config, ProfileContext profiles) {
 
         new("declare_work_relation",
             "Declare a dependency between two work items: 'blocks' means from_id blocks to_id, "
-          + "'blocked_by' means from_id is blocked by to_id. Both items must live in the same repository, "
-          + "and an item cannot relate to itself.",
+          + "'blocked_by' means from_id is blocked by to_id. Both items must be visible to you and may "
+          + "live in different repositories; an item cannot relate to itself.",
             new("object", new() {
                 ["from_id"]       = new("string", "The work item the relation starts from."),
                 ["to_id"]         = new("string", "The work item on the other end of the relation."),

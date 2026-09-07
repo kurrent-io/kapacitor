@@ -132,6 +132,10 @@ public class DaemonConfig {
     public string[]? UnattendedVendors { get; set; }
     public IReadOnlyList<UnattendedVendorCapability>? UnattendedVendorCapabilities { get; set; }
 
+    /// <summary>Per-vendor fingerprint of the binary <see cref="UnattendedVendorCapabilities"/> was
+    /// probed from, taken before that probe; the vendor CLI watcher's starting point.</summary>
+    public IReadOnlyDictionary<string, Services.CliBinaryStat?>? UnattendedVendorBaselines { get; set; }
+
     /// <summary>
     /// Vendor tokens this daemon accepts a launch-time ACP permission preset for — the installed
     /// hostable vendors (a subset of <see cref="SupportedVendors"/>) that route permissions through

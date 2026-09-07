@@ -384,6 +384,44 @@ public class AgentStatusSnapshotTests {
         } finally { await fx.CleanupAsync(); }
     }
 
+    /// The wire carries the clock's verdict only for a live agent: a Completed or Failed one has
+    /// nothing to wait for, whatever its clock last recorded.
+    [Test]
+    public async Task Status_payload_carries_awaiting_input_only_while_running() {
+        var fx = Build();
+        try {
+            var running = fx.Orchestrator.SeedAgentForTest("run");
+            var done    = fx.Orchestrator.SeedAgentForTest("done", status: "Completed");
+            var busy    = fx.Orchestrator.SeedAgentForTest("busy");
+            running.ActivityClock.SetAwaitingInput(true);
+            done.ActivityClock.SetAwaitingInput(true);
+
+            string Json(string id) => JsonSerializer.Serialize(
+                fx.Orchestrator.SnapshotAgentsForStatus().Single(a => a.Id == id), StatusIpcJsonContext.Default.AgentStatusDto);
+
+            await Assert.That(Json("run")).Contains("\"awaiting_input\":true");
+            await Assert.That(Json("done")).Contains("\"awaiting_input\":false");
+            await Assert.That(Json("busy")).Contains("\"awaiting_input\":false");
+        } finally { await fx.CleanupAsync(); }
+    }
+
+    /// A turn ending is a status change the app must see without waiting for another mutation,
+    /// so the launch-path clock wiring pulses the generation on every flip.
+    [Test]
+    public async Task A_turn_boundary_pulses_the_status_generation() {
+        var fx = Build();
+        try {
+            var agent = fx.Orchestrator.SeedAgentForTest("flip");
+            var v0 = fx.Notifier.Version;
+
+            agent.ActivityClock.SetTurnInFlight(true);
+            agent.ActivityClock.SetTurnInFlight(false);
+
+            await Assert.That(fx.Notifier.Version).IsGreaterThan(v0);
+            await Assert.That(fx.Orchestrator.SnapshotAgentsForStatus().Single().AwaitingInput).IsTrue();
+        } finally { await fx.CleanupAsync(); }
+    }
+
     [Test]
     public async Task Status_payload_normalizes_a_blank_branch_and_passes_a_real_one() {
         var fx = Build();

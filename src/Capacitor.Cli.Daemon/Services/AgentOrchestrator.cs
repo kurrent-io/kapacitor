@@ -16,6 +16,7 @@ using Capacitor.Cli.Core.Policy;
 using Capacitor.Cli.Daemon.Harness.Antigravity;
 using Capacitor.Cli.Daemon.Harness.Claude;
 using Capacitor.Cli.Daemon.Harness.Codex;
+using Capacitor.Models.Transcripts.Harness.Claude;
 using Capacitor.Cli.Core.Setup;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -81,6 +82,11 @@ internal record AgentInstance(
             return _title;
         }
     }
+
+    /// <summary>A title resolved after launch — native extraction, local generation, or the
+    /// server's — which the status payload prefers over the prompt seed. Written only through
+    /// <see cref="AgentOrchestrator.SetResolvedTitle"/> so the pulse cannot be forgotten.</summary>
+    public string? ResolvedTitle { get; set; }
 
     /// First non-blank line of the launch prompt, trimmed, capped at 80 chars total (ellipsis when
     /// cut, never splitting a surrogate pair) — the status payload is re-sent on every revision,
@@ -519,6 +525,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     int _quarantineSweepRunning;
     readonly DaemonConfig                                      _config;
     readonly ConfigRoot                                        _configRoot;
+    readonly UserHome                                          _home;
     // The vendors this daemon sees, resolved once for its lifetime: an override cannot change under
     // a running process, and the inventory refresh would otherwise re-resolve all nine per TTL.
     readonly HarnessRegistry                                   _harnesses;
@@ -536,6 +543,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     /// <summary>Serialises + coalesces the background capability refresh fired after a certification
     /// rejection. See SingleFlightRefresh for why bare fire-and-forget was unsafe here.</summary>
     readonly SingleFlightRefresh _capabilityRefresh = new();
+    int                          _republishRequested;
 
     // Hosted-agent PTYs are spawned at a fixed size and never resized. The daemon
     // reports these dims to the server right after the agent registers (and on
@@ -578,6 +586,11 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     // see SpoolDrainLoop's doc comment. 60s mirrors the reaper-style cadence of the other timers;
     // the drain's own per-tick budget keeps a slow/unreachable server from stalling the daemon.
     readonly PeriodicTimer _spoolDrain = new(TimeSpan.FromSeconds(60));
+
+    // Title resolution ladder (native transcript title → server title → one local generation).
+    // 60s: a title is display convenience — the lanes it drives are either cheap (a transcript
+    // scan) or explicitly rate-limited by TitleResolveLoop itself.
+    readonly PeriodicTimer _titleResolve = new(TimeSpan.FromSeconds(60));
 
     // Refresh once the token is within this much of its expiry. Comfortably above the 60 s tick
     // so the window is never stepped over.
@@ -657,6 +670,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         _shutdownCts       = CancellationTokenSource.CreateLinkedTokenSource(lifetime.ApplicationStopping);
         _config            = config;
         _configRoot        = configRoot;
+        _home              = home;
         _harnesses         = HarnessRegistry.FromEnvironment(home);
         _server            = server;
         _worktreeManager   = worktreeManager;
@@ -721,9 +735,10 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         _server.OnRegisteredHook              =  () => { Processor?.RedeliverUnretiredProcessedAcks(); return Task.CompletedTask; };
         _server.FindRepoForRemoteHandler      =  HandleFindRepoForRemote;
         _permissionBridge.AttributeHandler    =  HandleAttributePermission;
+        _permissionBridge.InputWaitHandler    =  HandleInputWait;
         _server.ProbeBorrowSourceHandler      =  HandleProbeBorrowSource;
-        // Task 8: the side-effect-free reviewer-model preflight. Pure resolution over the
-        // advertised resolvers — no subprocess/worktree/config side effects.
+        // The side-effect-free reviewer-model preflight: pure resolution over the advertised
+        // resolvers — no subprocess/worktree/config side effects.
         _server.ResolveReviewerModelHandler   =  req => Task.FromResult(HandleResolveReviewerModel(req));
 
         // Phase B2-b (sequenced-settlement design §4.2.4): the server prunes the resolved-candidates
@@ -774,6 +789,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         _ = RunDaemonHeartbeatLoopAsync(_shutdownCts.Token);
         _ = RunTokenRefreshLoopAsync(_shutdownCts.Token);
         _ = RunSpoolDrainLoopAsync(_shutdownCts.Token);
+        _ = RunTitleResolveLoopAsync(_shutdownCts.Token);
         _ = RunDaemonStatusReportLoopAsync(_shutdownCts.Token); // Phase B (D2): periodic self-report
     }
 
@@ -868,6 +884,12 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         _statusNotifier.Pulse();
     }
 
+    internal void SetResolvedTitle(AgentInstance agent, string title) {
+        if (agent.ResolvedTitle == title) return;
+        agent.ResolvedTitle = title;
+        _statusNotifier.Pulse();
+    }
+
     /// The attribution ladder: the payload's agent id (raw, then canonical GUID), the resolved
     /// vendor session id, the worktree path — each rung only on exactly one live match. Live is
     /// "present in _agents"; teardown withdraws whatever was attributed during that window.
@@ -897,6 +919,13 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         }
 
         return null;
+    }
+
+    /// The bridge's attributed turn-boundary verdict for a PTY-hosted agent, whose runtime cannot
+    /// attest its own turns. Lands on the live agent's clock; an id the daemon does not hold
+    /// (torn down since the hook fired) is dropped.
+    void HandleInputWait(string agentId, bool waiting) {
+        if (_agents.TryGetValue(agentId, out var agent)) agent.ActivityClock.SetAwaitingInput(waiting);
     }
 
     internal PermissionPromptBroker PermissionBrokerForTest => _permissionBroker;
@@ -1197,8 +1226,8 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             return (false, $"could not read the installed {vendor} CLI version (the version probe " +
                            "failed or timed out) — this is usually transient under load; retry the flow");
 
-        // Range BEFORE swap: an out-of-range replacement would otherwise be told only to restart,
-        // and restarting re-advertises the same out-of-range version.
+        // Range BEFORE swap: an out-of-range replacement would otherwise be told only to retry,
+        // and the re-advertisement behind that retry carries the same out-of-range version.
         if (!DaemonRunner.CliVersionAllowed(probedVersion, certification.AllowedCliRanges))
             return (false, $"the installed {vendor} CLI '{probedVersion}' is outside the " +
                            $"server's allowed range '{certification.AllowedCliRanges}'");
@@ -1206,14 +1235,50 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         // A missing advertised version means the registration probe failed — not evidence of a CLI
         // swap, which is all this arm exists to catch. It falls through to the range check above.
         // Null or empty: declared non-nullable, but populated from a probe returning null over JSON.
+        // The remedy is a retry, never a restart: the rejection re-advertises the installed version
+        // on the live connection, while a restart tears down every hosted agent.
         if (!string.IsNullOrEmpty(certification.ExpectedCliVersion) &&
             !string.Equals(probedVersion, certification.ExpectedCliVersion, StringComparison.Ordinal))
             return (false, $"the installed {vendor} CLI is '{probedVersion}' but this daemon " +
                            $"advertised '{certification.ExpectedCliVersion}' at registration — " +
-                           "restart the daemon so it re-advertises");
+                           "the daemon is re-advertising the installed version; retry the flow");
 
         return (true, "");
     }
+
+    /// <summary>
+    /// Re-probes the vendors advertised at startup and re-registers when the advertisement changed
+    /// — the one path through which a running daemon updates what the server knows about its CLI
+    /// versions. Returns at once; the work is single-flighted off the caller's stack so a burst of
+    /// requests coalesces and the last publication is always the newest probe.
+    /// </summary>
+    /// <param name="republishUnchanged">Re-register even when the local advertisement already
+    /// reads the same, for a caller that knows the server's copy differs.</param>
+    internal void RefreshAdvertisedCapabilities(string reason, bool republishUnchanged = false) {
+        // Sticky rather than captured by the delegate: a request folded into a running pass reruns
+        // THAT pass's delegate, which would otherwise carry the earlier caller's answer.
+        if (republishUnchanged) Interlocked.Exchange(ref _republishRequested, 1);
+
+        _capabilityRefresh.Trigger(
+            async () => {
+                var republish = Interlocked.Exchange(ref _republishRequested, 0) == 1;
+                var current   = _config.UnattendedVendorCapabilities;
+                var fresh     = DaemonRunner.RetainAdvertisedVersions(current,
+                    DaemonRunner.ComputeUnattendedVendorCapabilities(_runtimeFactories.Values, _config, _config.UnattendedVendors));
+
+                if (!republish && current is not null && current.SequenceEqual(fresh)) return;
+
+                _config.UnattendedVendorCapabilities = fresh;
+                LogReAdvertising(_logger, reason,
+                    string.Join(", ", fresh.Select(c => $"{c.Vendor} {c.CliVersion ?? DaemonRunner.UnknownCliVersion}")));
+                await _server.ReRegisterAsync();
+            },
+            ex => _logger.LogDebug(ex,
+                "Capability refresh ({Reason}) failed; the next registration or launch re-evaluates it.", reason));
+    }
+
+    /// <summary>Test seam: the most recently scheduled capability refresh, for awaiting quiescence.</summary>
+    internal Task CapabilityRefreshForTest => _capabilityRefresh.Current;
 
     internal AgentLiveness ReadLiveness(string agentId) {
         // Order matters: check _agents first (Live/Quarantined-by-status), then _quarantine, then Dead.
@@ -1633,11 +1698,14 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     /// <see cref="SeedAgentForTest"/> so tests exercise the same wiring, never a test-only hookup.</summary>
     AgentActivityClock CreateActivityClock() =>
         new(TimeProvider.System) {
-            OnLaunchStageChanged = () => _ = SendStatusReportNowAsync(),
-            OnTurnEnded          = () => _ = SendStatusReportNowAsync(),
+            OnLaunchStageChanged   = () => _ = SendStatusReportNowAsync(),
+            OnTurnEnded            = () => _ = SendStatusReportNowAsync(),
+            // The flag rides the local status payload; the clock already holds the new value when
+            // this fires, so the pulse's snapshot reads it (mutation first, pulse second).
+            OnAwaitingInputChanged = _ => _statusNotifier.Pulse(),
         };
 
-    /// <summary>Phase B: test-only seam — insert a minimal <see cref="AgentInstance"/> (Noop
+    /// <summary>Test-only seam — insert a minimal <see cref="AgentInstance"/> (Noop
     /// PTY runtime, no real process/worktree) so unit tests can exercise <see cref="BuildLiveAgents"/>
     /// / status-report / reviewer-TTL logic without a live launch. Never called in production.</summary>
     internal AgentInstance SeedAgentForTest(
@@ -1909,26 +1977,11 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 await _server.LaunchFailedAsync(cmd.AgentId,
                     $"reviewer_certification_changed: {certificationCheck.Reason}.");
 
-                // The self-heal (recompute + re-advertise) is genuinely useful — a certification
-                // mismatch usually means the advertisement is stale — but nothing waits on it, and
-                // the caller already has its answer.
-                //
-                // SINGLE-FLIGHT, not bare fire-and-forget. Codex review round 3: concurrent rejected
-                // launches each starting an independent refresh reintroduces this PR's own bug — a
-                // slow failing refresh can complete AFTER a fast successful one and overwrite valid
-                // capabilities with a failed-probe null, durably disabling the reviewer again.
-                // Serialising publication is necessary; coalescing keeps a burst of rejections from
-                // queueing a refresh each, and the rerun pass guarantees the LAST write is the
-                // NEWEST computation.
-                _capabilityRefresh.Trigger(
-                    async () => {
-                        _config.UnattendedVendorCapabilities =
-                            DaemonRunner.ComputeUnattendedVendorCapabilities(_runtimeFactories.Values, _config);
-                        await _server.ReRegisterAsync();
-                    },
-                    ex => _logger.LogDebug(ex,
-                        "Capability recompute after a certification rejection failed; the next " +
-                        "registration or launch re-evaluates it."));
+                // The self-heal: a certification mismatch usually means the advertisement is stale.
+                // Nothing waits on it — the caller already has its answer. Republished even when the
+                // local advertisement already reads the same, because the server's copy has just
+                // proven to disagree with the installed binary.
+                RefreshAdvertisedCapabilities("reviewer certification rejected", republishUnchanged: true);
                 return new CommandOutcome(
                     CommandOutcomeKind.LaunchRejected,
                     agentId,
@@ -3708,6 +3761,10 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 if (agent.TranscriptPath is { } rolloutPath) codexBaseline = TryFileLength(rolloutPath);
             }
 
+            // Sampled before the write: a turn can end while the delivery is still in flight, and
+            // that wait is newer than the one this input answers.
+            var waitGeneration = agent.ActivityClock.WaitGeneration;
+
             // PTY runtimes use bracketed paste; ACP runtimes send a structured prompt.
             if (agent.BorrowedSnapshotSource is not null)
                 await agent.Runtime.SendUserInputAndWaitForWriteAsync(message);
@@ -3719,6 +3776,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             // residual: a full ACP _pendingTurns queue drops input silently without throwing, so this
             // can advance on a delivery that was actually dropped — kill-delaying only, accepted.
             agent.ActivityClock.Advance();
+            agent.ActivityClock.ClearAwaitingInputSince(waitGeneration);
 
             // One report per successfully handled invocation (SendInputCommand carries no round
             // identity, so a duplicate is tolerated and content-honest); fire-and-forget, contained,
@@ -4781,6 +4839,50 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         }
     }
 
+    async Task RunTitleResolveLoopAsync(CancellationToken ct) {
+        var loop = new TitleResolveLoop(
+            SnapshotAgentsForTitles,
+            (agentId, title) => { if (_agents.TryGetValue(agentId, out var agent)) SetResolvedTitle(agent, title); },
+            new TitleServerPort(_configRoot, _config.Profiles, _config.ServerUrl),
+            NativeTitleFor,
+            GenerateTitleForAsync,
+            TimeProvider.System,
+            _logger);
+
+        while (await _titleResolve.WaitForNextTickAsync(ct)) {
+            // Defence in depth: TickAsync is intentionally total, but this runs as an
+            // unobserved background Task — guard here so the loop survives even if a
+            // future change lets an exception escape the tick.
+            try {
+                await loop.TickAsync(ct);
+            } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
+                return;
+            } catch (Exception ex) {
+                _logger.LogWarning(ex, "Title resolve tick faulted — continuing loop");
+            }
+        }
+    }
+
+    /// A private agent's contract is "no per-agent server calls", so its view carries no session
+    /// id: the resolver then never polls or pushes for it and only the local lanes apply.
+    IReadOnlyList<TitleAgentView> SnapshotAgentsForTitles() =>
+        [.. _agents.Values.Select(a => new TitleAgentView(
+            a.Id, a.Vendor, a.Prompt,
+            a.IsPrivate ? null : a.SessionId ?? (a.Runtime as IAcpTranscriptSource)?.AcpSessionId,
+            a.TranscriptPath, a.CreatedAt))];
+
+    static string? NativeTitleFor(TitleAgentView agent) =>
+        agent is { Vendor: "claude", TranscriptPath: { } path } ? ClaudeNativeTitle.TryExtract(path) : null;
+
+    async Task<string?> GenerateTitleForAsync(TitleAgentView agent, CancellationToken ct) {
+        var result = await TitleGeneration.GenerateAsync(
+            agent.Prompt!, null, msg => _logger.LogDebug("Title generation ({AgentId}): {Message}", agent.Id, msg),
+            _config.Profiles.Resolution.Profile, _home,
+            vendor: agent.Vendor == "codex" ? "codex" : "claude", ct: ct);
+
+        return result?.Result;
+    }
+
     async Task CleanupAgentAsync(string agentId) {
         // Phase B (D1): claim the single-flight teardown BEFORE removing the agent from _agents.
         // TryGetValue (not TryRemove) keeps the agent COUNTED in ActiveCount for the whole teardown, so a
@@ -4986,6 +5088,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 _daemonHeartbeat.Dispose();
                 _tokenRefresh.Dispose();
                 _spoolDrain.Dispose();
+                _titleResolve.Dispose();
             } catch (Exception ex) {
                 LogDisposeStepFailed(ex, "timers");
             }
@@ -5045,6 +5148,9 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     // Vendor belongs on the same line as the model: without it, a model that does not belong to the
     // launched vendor is only visible by correlating with a later runtime line, and PTY vendors emit
     // no such line at all.
+    [LoggerMessage(Level = LogLevel.Information, Message = "Re-advertising unattended vendor capabilities ({Reason}): {Versions}")]
+    static partial void LogReAdvertising(ILogger logger, string reason, string versions);
+
     [LoggerMessage(Level = LogLevel.Information, Message = "Launching agent {AgentId} for {Repo} (vendor={Vendor}, effort={Effort}, model={Model})")]
     partial void LogLaunching(string agentId, string repo, string vendor, string effort, string? model);
 

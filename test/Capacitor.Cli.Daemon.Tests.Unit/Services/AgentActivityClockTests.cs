@@ -9,6 +9,7 @@ using Capacitor.Cli.Daemon.Tests.Unit.Acp;
 using Capacitor.Cli.Daemon.Tests.Unit.Pty;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Time.Testing;
+using TUnit.Assertions.Enums;
 
 namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 
@@ -99,6 +100,92 @@ public class AgentActivityClockTests {
         clock.ClearLaunchStage(); // the agent reached Running
         await Assert.That(clock.LaunchStage).IsNull();
         await Assert.That(clock.ActivitySeq).IsEqualTo(4UL);
+    }
+
+    [Test]
+    public async Task A_turns_falling_edge_marks_awaiting_input_and_the_next_rising_edge_clears_it() {
+        var clock = new AgentActivityClock(new FakeTimeProvider());
+        var seen  = new List<bool>();
+        clock.OnAwaitingInputChanged = v => seen.Add(v);
+
+        await Assert.That(clock.AwaitingInput).IsFalse();
+        clock.SetTurnInFlight(true);
+        await Assert.That(clock.AwaitingInput).IsFalse();
+        clock.SetTurnInFlight(false);
+        await Assert.That(clock.AwaitingInput).IsTrue();
+        clock.SetTurnInFlight(true);
+        await Assert.That(clock.AwaitingInput).IsFalse();
+
+        await Assert.That(seen).IsEquivalentTo([true, false], CollectionOrdering.Matching);
+    }
+
+    /// A gate cleared without ever being held (a runtime going terminal) is not a turn ending.
+    [Test]
+    public async Task Clearing_a_gate_that_was_never_held_does_not_mark_awaiting_input() {
+        var clock = new AgentActivityClock(new FakeTimeProvider());
+
+        clock.SetTurnInFlight(false);
+
+        await Assert.That(clock.AwaitingInput).IsFalse();
+    }
+
+    /// The explicit setter is the hook-relay and input-delivery path: it moves the flag alone,
+    /// never the activity evidence the reaper reads, and notifies only on a real change.
+    [Test]
+    public async Task SetAwaitingInput_moves_only_the_flag_and_notifies_once_per_change() {
+        var clock    = new AgentActivityClock(new FakeTimeProvider());
+        var notified = 0;
+        clock.OnAwaitingInputChanged = _ => notified++;
+
+        clock.SetAwaitingInput(true);
+        clock.SetAwaitingInput(true);
+        await Assert.That(clock.AwaitingInput).IsTrue();
+        await Assert.That(notified).IsEqualTo(1);
+        await Assert.That(clock.ActivitySeq).IsEqualTo(1UL);
+
+        clock.SetAwaitingInput(false);
+        await Assert.That(clock.AwaitingInput).IsFalse();
+        await Assert.That(notified).IsEqualTo(2);
+    }
+
+    /// A delivery clears the wait it was answering, never one that began while the delivery was
+    /// still in flight.
+    [Test]
+    public async Task Clearing_since_a_sample_yields_to_a_wait_that_began_afterwards() {
+        var clock = new AgentActivityClock(new FakeTimeProvider());
+        clock.SetAwaitingInput(true);
+
+        var sampled = clock.WaitGeneration;
+        clock.ClearAwaitingInputSince(sampled);
+        await Assert.That(clock.AwaitingInput).IsFalse();
+
+        var stale = clock.WaitGeneration;
+        clock.SetTurnInFlight(true);
+        clock.SetTurnInFlight(false);
+        clock.ClearAwaitingInputSince(stale);
+        await Assert.That(clock.AwaitingInput).IsTrue();
+    }
+
+    /// A PTY vendor relays only Stop, so a wait that was never cleared sees the next turn end as
+    /// a second Stop with the flag already true: that observation is still newer than the delivery
+    /// in flight and must count.
+    [Test]
+    public async Task A_turn_end_observed_while_already_waiting_still_outranks_an_older_delivery() {
+        var clock = new AgentActivityClock(new FakeTimeProvider());
+        clock.SetAwaitingInput(true);
+
+        var sampled = clock.WaitGeneration;
+        clock.SetAwaitingInput(true);
+        clock.ClearAwaitingInputSince(sampled);
+        await Assert.That(clock.AwaitingInput).IsTrue();
+
+        sampled = clock.WaitGeneration;
+        clock.SetTurnInFlight(true);
+        clock.SetTurnInFlight(false);
+        clock.SetTurnInFlight(true);
+        clock.SetTurnInFlight(false);
+        clock.ClearAwaitingInputSince(sampled);
+        await Assert.That(clock.AwaitingInput).IsTrue();
     }
 
     /// <summary>

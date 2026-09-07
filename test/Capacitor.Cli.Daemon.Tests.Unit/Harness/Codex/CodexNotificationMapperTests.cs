@@ -64,6 +64,61 @@ public class CodexNotificationMapperTests {
         await Assert.That(e.ToolInputJson!).Contains("/repo");
     }
 
+    /// Pins the vendor-neutral kind on every tool call the hosted lane opens. A shell call has no
+    /// name of its own for a read or a search, so its command decides.
+    [Test]
+    public async Task Tool_calls_carry_a_vendor_neutral_kind() {
+        foreach (var (command, kind) in new[] {
+            ("ls -la", AcpToolKind.Search), ("cat a.rs", AcpToolKind.Read),
+            ("rg needle src", AcpToolKind.Search), ("cargo build", AcpToolKind.Execute),
+        }) {
+            var e = Single(Run(NewMapper(), "item/started",
+                $$$"""{"item":{"type":"commandExecution","id":"c1","command":"{{{command}}}","cwd":"/repo","status":"inProgress"}}"""));
+            await Assert.That(e.ToolKind).IsEqualTo(kind).Because(command);
+        }
+
+        var mcp = Single(Run(NewMapper(), "item/started",
+            """{"item":{"type":"mcpToolCall","id":"m1","server":"srv","tool":"do","status":"inProgress"}}"""));
+        await Assert.That(mcp.ToolKind).IsEqualTo(AcpToolKind.Other);
+
+        var patch = Run(NewMapper(), "item/completed",
+            """{"item":{"type":"fileChange","id":"f1","status":"completed","changes":[{"path":"a.txt","kind":"update","diff":"@@"}]}}""")[0];
+        await Assert.That(patch.ToolKind).IsEqualTo(AcpToolKind.Edit);
+
+        var unknown = Single(Run(NewMapper(), "item/completed", """{"item":{"type":"someFutureThing","id":"z1"}}"""));
+        await Assert.That(unknown.ToolKind).IsEqualTo(AcpToolKind.Other);
+    }
+
+    /// A hosted web search has no item/started row, so the completed item carries the pair — an
+    /// orphan call would render as running forever. It is `fetch`, matching the kind every other
+    /// lane gives a web tool.
+    [Test]
+    public async Task WebSearch_completed_maps_to_a_paired_fetch_call_and_result() {
+        var r = Run(NewMapper(), "item/completed",
+            """{"item":{"type":"webSearch","id":"w1","query":"acp tool kinds","action":{"type":"search","query":"acp tool kinds"},"results":[{"url":"https://x/y"}]}}""");
+        await Assert.That(r.Count).IsEqualTo(2);
+
+        await Assert.That(r[0].Kind).IsEqualTo(AcpEventKind.ToolCall);
+        await Assert.That(r[0].ToolName).IsEqualTo("web_search");
+        await Assert.That(r[0].ToolKind).IsEqualTo(AcpToolKind.Fetch);
+        await Assert.That(r[0].ToolCallId).IsEqualTo("w1");
+        await Assert.That(r[0].ToolInputJson!).Contains("acp tool kinds");
+        using var doc = JsonDocument.Parse(r[0].ToolInputJson!);
+        await Assert.That(doc.RootElement.ValueKind).IsEqualTo(JsonValueKind.Object);
+
+        await Assert.That(r[1].Kind).IsEqualTo(AcpEventKind.ToolResult);
+        await Assert.That(r[1].ToolCallId).IsEqualTo("w1");
+        await Assert.That(r[1].ToolResult!).Contains("https://x/y");
+
+        // An openPage action and an absent results array still pair, and still read as a fetch.
+        var page = Run(NewMapper(), "item/completed",
+            """{"item":{"type":"webSearch","id":"w2","query":"q","action":{"type":"openPage","url":"https://x/z"}}}""");
+        await Assert.That(page.Count).IsEqualTo(2);
+        await Assert.That(page[0].ToolKind).IsEqualTo(AcpToolKind.Fetch);
+        await Assert.That(page[0].ToolInputJson!).Contains("https://x/z");
+        await Assert.That(page[1].ToolResult).IsEqualTo("");
+    }
+
     [Test]
     public async Task CommandExecution_completed_is_the_authoritative_result_with_error_from_exit_code() {
         var ok = Single(Run(NewMapper(), "item/completed",

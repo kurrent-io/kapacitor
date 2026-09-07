@@ -28,6 +28,53 @@ public class CodexRolloutEventsTests {
         await Assert.That(((AssistantTextGenerated)assistant[0].Payload).Content).IsEqualTo("Hi");
     }
 
+    /// A web search is written already settled and carries no id of its own, so the record has to
+    /// supply one — and it must reach BOTH halves, or nothing pairs the result to its call. The two
+    /// events are distinct records, so their EventIds differ even though their call id is shared.
+    [Test]
+    public async Task A_web_search_projects_as_a_pair_sharing_a_call_id_derived_from_the_record() {
+        var line = Item("""{"type":"web_search_call","status":"completed","action":{"type":"search","query":"acp tool kinds"}}""");
+        var e    = E(line);
+
+        await Assert.That(e).Count().IsEqualTo(2);
+
+        var call = (AssistantToolCallsGenerated)e[0].Payload;
+        await Assert.That(call.ToolCalls[0].ToolName).IsEqualTo("web_search");
+        await Assert.That(call.ToolCalls[0].Arguments.Fields["query"].StringValue).IsEqualTo("acp tool kinds");
+        await Assert.That(e[0].EventId).IsEqualTo(TranscriptIds.CodexRecord(line));
+
+        var result = (ToolResultReceived)e[1].Payload;
+        await Assert.That(result.CallId).IsEqualTo(call.ToolCalls[0].CallId);
+        await Assert.That(result.Result).IsEqualTo("completed");
+        await Assert.That(e[1].EventId).IsEqualTo(TranscriptIds.Sibling(TranscriptIds.CodexRecord(line), "result"));
+        await Assert.That(e[1].EventId).IsNotEqualTo(e[0].EventId);
+
+        // Two searches differing only in their action are distinct calls, not one.
+        var other = E(Item("""{"type":"web_search_call","status":"completed","action":{"type":"openPage","url":"https://x/y"}}"""));
+        await Assert.That(((AssistantToolCallsGenerated)other[0].Payload).ToolCalls[0].CallId)
+            .IsNotEqualTo(call.ToolCalls[0].CallId);
+
+        // An action-less record still pairs rather than emitting a call with no arguments object.
+        var bare = E(Item("""{"type":"web_search_call","status":"completed"}"""));
+        await Assert.That(bare).Count().IsEqualTo(2);
+        await Assert.That(((AssistantToolCallsGenerated)bare[0].Payload).ToolCalls[0].Arguments.Fields).IsEmpty();
+    }
+
+    [Test]
+    public async Task A_tool_search_pairs_on_its_own_call_id() {
+        var call = E(Item("""{"type":"tool_search_call","call_id":"call_1","status":"completed","arguments":{"query":"linear issue","limit":8}}"""));
+        await Assert.That(call).Count().IsEqualTo(1);
+        var info = ((AssistantToolCallsGenerated)call[0].Payload).ToolCalls[0];
+        await Assert.That(info.CallId).IsEqualTo("call_1");
+        await Assert.That(info.ToolName).IsEqualTo("tool_search");
+        await Assert.That(info.Arguments.Fields["query"].StringValue).IsEqualTo("linear issue");
+
+        var output = E(Item("""{"type":"tool_search_output","call_id":"call_1","status":"completed","tools":[{"type":"function","name":"get_issue"}]}"""));
+        var result = (ToolResultReceived)output[0].Payload;
+        await Assert.That(result.CallId).IsEqualTo("call_1");
+        await Assert.That(result.Result).IsEqualTo("""[{"type":"function","name":"get_issue"}]""");
+    }
+
     [Test]
     public async Task Injected_preludes_are_kept_here_and_developer_and_system_roles_are_skipped() {
         var prelude = E(Item("""{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>\nstuff"}]}"""));
