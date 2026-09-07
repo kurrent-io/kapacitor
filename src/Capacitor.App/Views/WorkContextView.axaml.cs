@@ -1,4 +1,7 @@
+using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Input;
+using Avalonia.VisualTree;
 
 namespace Capacitor.App.Views;
 
@@ -9,6 +12,10 @@ public partial class WorkContextView : UserControl {
         InitializeComponent();
     }
 
-    void OnHeaderPointerPressed(object? sender, Avalonia.Input.PointerPressedEventArgs e) =>
+    // Drag only from empty chrome — never from the refresh button (or any other Button in the strip).
+    void OnHeaderPointerPressed(object? sender, PointerPressedEventArgs e) {
+        if (e.Source is Visual source && source.FindAncestorOfType<Button>(includeSelf: true) is not null)
+            return;
         WindowChrome.BeginDrag(this, e);
+    }
 }

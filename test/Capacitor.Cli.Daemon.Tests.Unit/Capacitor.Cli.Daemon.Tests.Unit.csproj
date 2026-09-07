@@ -17,6 +17,12 @@
         <PackageReference Include="Microsoft.Extensions.TimeProvider.Testing" />
     </ItemGroup>
     <ItemGroup>
+        <!-- Hosts a real SignalR hub for the wire tests: positional hub arity is checked by the
+             protocol layer, which a seam-overriding ServerConnection double never reaches. -->
+        <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    </ItemGroup>
+    <ItemGroup>
         <Using Include="Capacitor.Tests.Helpers" />
+        <Using Include="Capacitor.Models.Transcripts" />
     </ItemGroup>
 </Project>

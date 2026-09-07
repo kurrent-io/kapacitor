@@ -46,7 +46,7 @@ public sealed class PermissionService : IPermissionService {
             .StartWith(PendingSummary.From(_cache.Items));
 
     public async Task<PermissionResolveOutcome> ResolveAsync(PendingPermissionRequest target, PermissionAnswer answer, CancellationToken ct) {
-        var decision = answer == PermissionAnswer.Deny ? "deny" : "allow";
+        var decision = answer == PermissionAnswer.Deny ? PermissionResolveDecisions.Deny : PermissionResolveDecisions.Allow;
         var apply = answer == PermissionAnswer.AllowAlways ? ClaudePermissions.AlwaysAllow(target.ToolName) : (System.Text.Json.JsonElement?)null;
         return await SendResolveAsync(new PermissionResolveDto(target.RequestId, decision, apply, null), ct).ConfigureAwait(false);
     }
@@ -54,8 +54,11 @@ public sealed class PermissionService : IPermissionService {
     public async Task<PermissionResolveOutcome> AnswerAsync(PendingPermissionRequest target, IReadOnlyList<ElicitationAnswer> answers, CancellationToken ct) {
         if (target.Questions is null) throw new ArgumentException("not an elicitation entry", nameof(target));
         var updated = ClaudeElicitation.ComposeAnswers(target.Questions, answers);
-        return await SendResolveAsync(new PermissionResolveDto(target.RequestId, "allow", null, updated), ct).ConfigureAwait(false);
+        return await SendResolveAsync(new PermissionResolveDto(target.RequestId, PermissionResolveDecisions.Allow, null, updated), ct).ConfigureAwait(false);
     }
+
+    public async Task<PermissionResolveOutcome> WithdrawAsync(PendingPermissionRequest target, CancellationToken ct) =>
+        await SendResolveAsync(new PermissionResolveDto(target.RequestId, PermissionResolveDecisions.Withdraw, null, null), ct).ConfigureAwait(false);
 
     async Task<PermissionResolveOutcome> SendResolveAsync(PermissionResolveDto dto, CancellationToken ct) {
         PermissionAckDto ack;

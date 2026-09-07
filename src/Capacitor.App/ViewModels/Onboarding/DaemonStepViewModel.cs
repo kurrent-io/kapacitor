@@ -311,13 +311,13 @@ public sealed class DaemonStepViewModel : ReactiveObject, IWizardStep {
         if (matched) {
             // Not enablement: a manual daemon dies at logout and no later startup phase repairs it.
             Set(DaemonRow.ManualIdentityMatch,
-                $"A daemon is already running outside the service (pid {daemonPid}) — it stops at logout unless kcap manages it.",
+                $"A daemon is already running outside the service (PID {daemonPid}) — it stops at logout unless kcap manages it.",
                 DaemonAffordance.Takeover);
             return;
         }
 
         Set(DaemonRow.ManualIdentityMismatch,
-            $"{DescribeForeign(_evidence)} is already running under this name (pid {daemonPid}) — kcap changed nothing.",
+            $"{DescribeForeign(_evidence)} is already running under this name (PID {daemonPid}) — kcap changed nothing.",
             DaemonAffordance.Takeover);
     }
 

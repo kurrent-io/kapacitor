@@ -1,6 +1,7 @@
 using System.Reactive;
 using System.Reactive.Disposables.Fluent;
 using System.Reactive.Linq;
+using System.Reactive.Subjects;
 using Avalonia.Media;
 using Capacitor.App.Services;
 using ReactiveUI;
@@ -12,26 +13,37 @@ namespace Capacitor.App.ViewModels;
 /// Sessions view.
 public enum ShellView { Home, Sessions }
 
-/// Projects IDaemonClientService.Status/Snapshots into display text and drives Start/Retry.
-/// All display projections are activation-scoped (WhenActivated) — the service outlives this
-/// ViewModel and owns its subjects (spec §5), so nothing here disposes the service itself.
-/// DEVIATION: StartDaemonCommand/RetryCommand and their canExecute pipelines are built in the
-/// CONSTRUCTOR, not inside WhenActivated — commands must exist (and be assertable via
-/// CanExecute) independent of window activation; service.Status/service.Snapshots are the
-/// service's own long-lived subjects, not resources the VM needs to scope to a window's
-/// lifetime. StartVisible/RetryVisible mirror that same constructor scoping (spec: presentation
-/// visibility must track the identical state predicate the command's own canExecute uses,
-/// independent of activation too).
+/// Projects IDaemonClientService.Status/Snapshots into display text and drives Start/Reconnect.
+/// Display projections are activation-scoped (WhenActivated). StartDaemonCommand/RetryCommand and
+/// their canExecute pipelines are built in the constructor so they exist pre-activation.
+/// StartVisible/RetryVisible track the same predicates (one primary action: Start when down;
+/// Reconnect when connecting or skewed). The service outlives this VM and owns its subjects.
 public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel {
     const string IncompatibleReason = "daemon_incompatible";
     const string UnreachableReason  = "daemon_unreachable";
 
-    // Neutral wording (spec §5): §4.2's incompatibility classification is a broad heuristic —
-    // an unexpected frame can equally mean the APP is the older side — so the UI must not
-    // prescribe an upgrade direction.
-    const string SkewMessage = "app and daemon are incompatible — make sure both are up to date";
+    // Neutral wording: incompatibility classification is a broad heuristic — an unexpected frame
+    // can equally mean the APP is the older side — so the UI must not prescribe an upgrade direction.
+    // User-facing copy lives on HomeViewModel (launcher banner); Reason mirrors it for tests/tray.
 
-    // StatusColors (shared with TrayIconRenderer's tray-icon overlay, spec §4) is hex-only
+    /// User-facing copy when the daemon isn't attached. Never the wire token (daemon_unreachable).
+    internal static string UnreachableMessage => HomeViewModel.DaemonDownNotice;
+
+    /// Shown the moment Start daemon is pressed, before the lifecycle/CLI work returns, so a
+    /// click is never silent even when the start action itself has nothing further to say.
+    internal const string StartingMessage = "Starting the daemon…";
+
+    /// Shown the moment Reconnect is pressed. Cleared on Connected; replaced if attach stays unreachable.
+    internal const string ReconnectingMessage = "Reconnecting…";
+
+    internal const string ReconnectFailedMessage =
+        "Could not reconnect. If the daemon isn't running, press Start daemon.";
+
+    internal static bool IsInFlightReconnectMessage(string? message) =>
+        message == ReconnectingMessage
+        || message == DaemonLifecycleController.AlreadyRunningReconnectStatus;
+
+    // StatusColors (shared with TrayIconRenderer's tray-icon overlay) is hex-only
     // constants (plain strings, not Brush instances). A Brush is an AvaloniaObject with UI-thread
     // affinity enforced the moment the renderer references it; caching one as a shared
     // `static readonly` field would tie its affinity to whichever thread happens to trigger this
@@ -77,24 +89,23 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     ObservableAsPropertyHelper<IBrush>? _statusDotBrush;
     public IBrush StatusDotBrush => _statusDotBrush?.Value ?? DotBrush(StatusColors.Unavailable);
 
-    // "n of m agents" only while Connected (spec §1.5: active_agents is a display count, never
-    // a free-slots/launch-capacity claim) — "—" otherwise, even though the last-known snapshot
-    // (and the Agents cache) is retained by the service across disconnects.
+    // "n of m agents" only while Connected — active_agents is a display count, never capacity.
+    // "—" otherwise; the service still retains the last snapshot across disconnects.
     ObservableAsPropertyHelper<string>? _agentCountText;
     public string AgentCountText => _agentCountText?.Value ?? "—";
 
     ObservableAsPropertyHelper<AttachState>? _state;
     public AttachState State => _state?.Value ?? AttachState.Connecting;
 
-    // Display text for why we're not connected: the raw wire reason for daemon_unreachable, but
-    // the NEUTRAL skew message (never an upgrade-direction verdict) for daemon_incompatible; null
-    // outside Unreachable.
+    // Display text for why we're not connected: friendly copy only — never a raw wire token
+    // like daemon_unreachable. Null outside Unreachable.
     ObservableAsPropertyHelper<string?>? _reason;
     public string? Reason => _reason?.Value;
 
-    /// The Activity feed (spec §7) — constructed once at the composition root, same instance the
-    /// prompt window's onConcluded callback nudges, so this is a plain ctor-injected reference,
-    /// not something built here.
+    readonly BehaviorSubject<string?> _startMessageChanges = new(null);
+
+    /// Constructed once at the composition root; the prompt window's onConcluded callback nudges
+    /// the same instance.
     public ActivityViewModel Activity { get; }
 
     /// The Home surface's launcher and cards — constructed at the composition root over the SAME
@@ -110,7 +121,7 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     WorkspaceViewModel? _currentWorkspace;
     /// null = the Sessions surface shows its placeholder pane; non-null = that session's workspace.
     /// Exactly one workspace at a time, and this VM owns it: every swap starts the outgoing one's
-    /// tracked teardown (spec §3).
+    /// tracked teardown.
     public WorkspaceViewModel? CurrentWorkspace {
         get => _currentWorkspace;
         private set => this.RaiseAndSetIfChanged(ref _currentWorkspace, value);
@@ -138,7 +149,8 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     public SessionRailViewModel? Rail { get; }
 
     /// The active profile's name — the tenant slug (profiles are named after it at sign-in).
-    /// "" for a caller without one (tests, pre-onboarding); the footer binding tolerates it.
+    /// "" when absent or when the name is the literal built-in "default" (hiding that segment
+    /// so the rail footer does not read as a second "Default" next to connection state).
     public string TenantName { get; }
 
     /// The launch auto-open's staleness token — see NavigationGate. Read from the SHARED gate, not
@@ -150,21 +162,20 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     public ReactiveCommand<Unit, Unit> CloseWorkspaceCommand { get; }
 
     string? _startMessage;
-    // Start-daemon failure text. Cleared on every new start attempt AND on any transition to
-    // Connected (spec §5); set only when a start attempt actually fails.
+    // Cleared on every new start attempt and on Connected; set when a start attempt fails.
     public string? StartMessage {
         get => _startMessage;
-        private set => this.RaiseAndSetIfChanged(ref _startMessage, value);
+        private set {
+            this.RaiseAndSetIfChanged(ref _startMessage, value);
+            _startMessageChanges.OnNext(value);
+        }
     }
 
     public ReactiveCommand<Unit, Unit> StartDaemonCommand { get; }
     public ReactiveCommand<Unit, Unit> RetryCommand { get; }
 
-    // Button IsVisible projections (spec: "shows ONLY when its action is meaningful"). Deliberately
-    // NOT ReactiveCommand.CanExecute — that ANDs in "not currently executing", which would hide the
-    // button mid-attempt instead of just disabling it. These track the exact same state predicate
-    // (canStart/canRetry below) the commands' own canExecute pipelines use, ctor-scoped for the
-    // same reason those pipelines are (see class doc comment).
+    // Visibility tracks "action is meaningful", not CanExecute — CanExecute also ANDs "not
+    // executing", which would hide the button mid-attempt instead of only disabling it.
     readonly ObservableAsPropertyHelper<bool> _startVisible;
     public bool StartVisible => _startVisible.Value;
 
@@ -174,25 +185,23 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     readonly TimeProvider _time;
 
     /// <param name="shutdownToken">
-    /// Abandons StartDaemonAsync's WAIT (never the spawned daemon) on app shutdown. MUST be a
-    /// token linked to the app lifetime — never CancellationToken.None (Task 4 carry-note: an
-    /// unbounded wait would survive app exit).
+    /// Abandons StartDaemonAsync's WAIT (never the spawned daemon) on app shutdown. Must be linked
+    /// to the app lifetime — never CancellationToken.None (an unbounded wait would survive exit).
     /// </param>
     /// <param name="startAction">
-    /// spec §4.4: the service-aware Start action (DaemonLifecycleController.StartActionAsync).
-    /// Null falls back to the plain detached `StartDaemonAsync` RunStartAsync always used —
-    /// preserved so a caller without a live controller (most existing tests) keeps today's
-    /// behavior verbatim.
+    /// Service-aware Start (DaemonLifecycleController.StartActionAsync). Null falls back to plain
+    /// StartDaemonAsync — for callers without a live controller (most unit tests).
     /// </param>
     /// <param name="lifecycleStatus">
-    /// spec §6: ILifecycleSurface.Status one-liners (e.g. "daemon started, app not yet
-    /// attached — retrying", a coded transaction failure) ride the SAME start-message lane
-    /// RunStartAsync already uses — one place near the Start button for "why isn't this working",
-    /// cleared by the identical Connected-transition rule below. Null (most existing tests, and
-    /// any caller without a live lifecycle controller) means this lane never receives anything.
+    /// ILifecycleSurface.Status one-liners ride the same StartMessage lane as start failures.
+    /// Null means this lane never receives anything.
+    /// </param>
+    /// <param name="lifecycleAttention">
+    /// ILifecycleSurface.Attention lines on the same StartMessage lane — otherwise a mutation-lane
+    /// Start failure only updates the tray and the banner stays mute.
     /// </param>
     /// <param name="navigation">
-    /// The composition root's app-lifetime NavigationGate (spec §3). Null builds a private one, so
+    /// The composition root's app-lifetime NavigationGate. Null builds a private one, so
     /// a caller with no navigation of its own (most existing tests) still gets a working VM — but
     /// only a SHARED gate makes the shutdown latch reach a window built after shutdown began.
     /// </param>
@@ -217,7 +226,7 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
             IObservable<string?>? lifecycleStatus = null, TimeProvider? time = null, HomeViewModel? home = null,
             NavigationGate? navigation = null, Action<Func<Task>>? trackWorkspaceTeardown = null,
             Func<string, WorkspaceViewModel>? workspaceFactory = null, SessionRailViewModel? rail = null,
-            string? tenantName = null) {
+            string? tenantName = null, IObservable<string?>? lifecycleAttention = null) {
         _service = service;
         _time = time ?? TimeProvider.System;
         Activity = activity;
@@ -226,7 +235,7 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
         _trackTeardown = trackWorkspaceTeardown ?? RunUntracked;
         _workspaceFactory = workspaceFactory;
         Rail = rail;
-        TenantName = tenantName ?? "";
+        TenantName = ProfileLabelForRail(tenantName);
         CloseWorkspaceCommand = ReactiveCommand.Create(CloseWorkspace);
         ShowHomeCommand = ReactiveCommand.Create(() => { CurrentView = ShellView.Home; });
         ShowSessionsCommand = ReactiveCommand.Create(() => { CurrentView = ShellView.Sessions; });
@@ -243,16 +252,21 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
         // IsEnabled write, onto that same background thread, tripping Avalonia's dispatcher
         // thread-affinity check. These stay constructor-scoped (not inside WhenActivated) since
         // commands must exist and be assertable pre-activation — see the class doc comment.
+        // One primary action at a time: Start when nothing is listening (spawn/reattach via the
+        // lifecycle); Reconnect when Start is not the right next step (skew, or still connecting).
         var canStart = service.Status
             .Select(s => s.State == AttachState.Unreachable && s.Reason == UnreachableReason)
             .ObserveOn(RxSchedulers.MainThreadScheduler);
         var canRetry = service.Status
-            .Select(s => s.State != AttachState.Connected)
+            .Select(s =>
+                s.State == AttachState.Connecting
+                || (s.State == AttachState.Unreachable && s.Reason != UnreachableReason))
             .ObserveOn(RxSchedulers.MainThreadScheduler);
 
         var start = startAction ?? RunStartAsync;
-        StartDaemonCommand = ReactiveCommand.CreateFromTask(() => start(shutdownToken), canStart);
-        RetryCommand        = ReactiveCommand.CreateFromTask(service.RestartLoopAsync, canRetry);
+        StartDaemonCommand = ReactiveCommand.CreateFromTask(
+            () => InvokeStartAsync(start, shutdownToken), canStart);
+        RetryCommand = ReactiveCommand.CreateFromTask(InvokeRetryAsync, canRetry);
 
         // Independent subscriptions to the SAME canStart/canRetry state predicates the commands
         // above were built from (service.Status is hot/multicast, so a second subscriber replays
@@ -261,6 +275,11 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
         // behavior. Ctor-scoped for the same reason as the commands themselves.
         _startVisible = canStart.ToProperty(this, x => x.StartVisible, initialValue: false);
         _retryVisible = canRetry.ToProperty(this, x => x.RetryVisible, initialValue: false);
+
+        // Launcher banner owns the chrome; share the same Start/Reconnect commands and start-message
+        // lane so the pane never drifts from what MainWindow already drives.
+        home?.AttachDaemonRecovery(
+            StartDaemonCommand, RetryCommand, canStart, canRetry, _startMessageChanges);
 
         this.WhenActivated(disposables => {
             var status    = service.Status.ObserveOn(RxSchedulers.MainThreadScheduler);
@@ -320,16 +339,31 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
                 .Subscribe(_ => StartMessage = null)
                 .DisposeWith(disposables);
 
-            lifecycleStatus?.ObserveOn(RxSchedulers.MainThreadScheduler)
-                .Where(msg => msg is not null)
-                .Subscribe(msg => StartMessage = msg)
+            // Reconnect / already-running kicks only reattach. If we land Unreachable again while
+            // still showing an in-flight reconnect copy, replace it so the banner does not claim
+            // reconnect forever.
+            status.Where(s => s.State == AttachState.Unreachable)
+                .Subscribe(_ => {
+                    if (IsInFlightReconnectMessage(StartMessage))
+                        StartMessage = ReconnectFailedMessage;
+                })
                 .DisposeWith(disposables);
+
+            // Status (start-action one-liners) and Attention (mutation-outcome presentation) both
+            // land on StartMessage so the launcher banner is never mute after a Start daemon click.
+            void BindStartMessage(IObservable<string?>? source) =>
+                source?.ObserveOn(RxSchedulers.MainThreadScheduler)
+                    .Where(msg => msg is not null)
+                    .Subscribe(msg => StartMessage = msg)
+                    .DisposeWith(disposables);
+
+            BindStartMessage(lifecycleStatus);
+            BindStartMessage(lifecycleAttention);
         });
     }
 
-    /// Card and rail click: swaps the window to this session's workspace on the Sessions surface,
-    /// starting the tracked teardown of whatever it replaces. Refused once shutdown has latched — a
-    /// new workspace is a new attach, and quiesce/disposal is already running (spec §3).
+    /// Card and rail click: swaps to this session's workspace. Refused once shutdown has latched —
+    /// a new workspace is a new attach, and quiesce is already running.
     public void OpenSession(string agentId) {
         if (_navigation.ShutdownLatched || _workspaceFactory is null) return;
         CurrentView = ShellView.Sessions;
@@ -353,10 +387,9 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     /// open must still retire an in-flight launch's captured generation.
     public void CloseWorkspace() => SwapTo(null);
 
-    /// The first shutdown pass, synchronously: unhook the live workspace and register its teardown
-    /// BEFORE the drain seals the tracker, then latch the gate so no later window can open another
-    /// one. A workspace that never went through a close or close-to-hide would otherwise register
-    /// its teardown after the drain, against already-disposed dependencies (spec §3).
+    /// First shutdown pass: unhook the live workspace and register its teardown before the drain
+    /// seals the tracker, then latch so no later window opens another. A workspace that never
+    /// closed would otherwise register teardown after drain against already-disposed deps.
     public void LatchShutdown() {
         var live = CurrentWorkspace;
         CurrentWorkspace = null;
@@ -388,8 +421,8 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     }
 
     static string? ReasonText(AttachStatus status) => status.State switch {
-        AttachState.Unreachable when status.Reason == IncompatibleReason => SkewMessage,
-        AttachState.Unreachable => status.Reason,
+        AttachState.Unreachable when status.Reason == IncompatibleReason => HomeViewModel.DaemonIncompatibleNotice,
+        AttachState.Unreachable => HomeViewModel.DaemonDownNotice,
         _ => null,
     };
 
@@ -402,6 +435,14 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     }
 
     static string Capitalize(string word) => word.Length == 0 ? word : char.ToUpperInvariant(word[0]) + word[1..];
+
+    /// Named profiles stay visible beside Connected; the built-in "default" profile does not —
+    /// that word collides with the model/effort "Default" elsewhere in the chrome.
+    internal static string ProfileLabelForRail(string? profileName) =>
+        string.IsNullOrWhiteSpace(profileName)
+        || string.Equals(profileName, "default", StringComparison.OrdinalIgnoreCase)
+            ? ""
+            : profileName;
 
     // Single word for the merged status line. Local attach State is checked FIRST — the daemon's
     // own upstream Connection word is only meaningful once State is Connected (see the
@@ -431,15 +472,25 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
         };
     }
 
+    async Task InvokeStartAsync(Func<CancellationToken, Task> start, CancellationToken ct) {
+        StartMessage = StartingMessage;
+        await start(ct);
+    }
+
+    async Task InvokeRetryAsync() {
+        StartMessage = ReconnectingMessage;
+        await _service.RestartLoopAsync();
+    }
+
     async Task RunStartAsync(CancellationToken ct) {
-        StartMessage = null; // clear on every new attempt
         try {
             var result = await _service.StartDaemonAsync(ct);
             if (!result.Ok) StartMessage = result.Message;
+            else StartMessage = "Daemon start requested. Waiting to connect…";
         } catch (OperationCanceledException) {
             // App is quitting: OnShutdownRequested cancelled `ct` while this start was still in
-            // flight, and StartDaemonAsync deliberately rethrows OCE for exactly that case (spec
-            // §5 — ct abandons the WAIT, not the started daemon). Nothing subscribes to
+            // flight, and StartDaemonAsync deliberately rethrows OCE for exactly that case —
+            // ct abandons the WAIT, not the started daemon. Nothing subscribes to
             // StartDaemonCommand.ThrownExceptions, so letting this escape would have ReactiveUI's
             // default handler reschedule an UnhandledErrorException onto the still-alive
             // dispatcher. The app is exiting — there is nothing left to render.

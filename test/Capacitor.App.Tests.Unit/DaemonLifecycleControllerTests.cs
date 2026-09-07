@@ -634,6 +634,8 @@ public class DaemonLifecycleControllerTests {
 
         await Assert.That(h.Client.RestartCount).IsEqualTo(1);
         await Assert.That(h.Lane.Requests).IsEmpty();
+        await Assert.That(h.Surface.StatusMessages.Count).IsEqualTo(1);
+        await Assert.That(h.Surface.StatusMessages[0]).Contains("Reconnecting");
     }
 
     [Test]
@@ -649,6 +651,8 @@ public class DaemonLifecycleControllerTests {
         // Task 10: DetachedStart from Start now shares the SAME success handling as every other
         // verb (a strict improvement — it used to be a bare, result-discarding CLI call).
         await Assert.That(h.Client.RestartCount).IsEqualTo(1);
+        await Assert.That(h.Surface.StatusMessages.Count).IsEqualTo(1);
+        await Assert.That(h.Surface.StatusMessages[0]).Contains("Waiting to connect");
     }
 
     [Test]

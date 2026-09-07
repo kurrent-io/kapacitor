@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using Capacitor.Cli.Core;
 
 namespace Capacitor.Cli.Daemon.Acp;
 
@@ -19,10 +20,13 @@ internal static class AcpPermissionPresets {
     internal const string Edit    = "edit";
 
     static readonly AcpLaunchPermissionPreset ExplorePreset = new(
-        Explore, new HashSet<string>(StringComparer.Ordinal) { "read", "search" });
+        Explore, new HashSet<string>(StringComparer.Ordinal) { AcpToolKind.Read, AcpToolKind.Search });
 
     static readonly AcpLaunchPermissionPreset EditPreset = new(
-        Edit, new HashSet<string>(StringComparer.Ordinal) { "read", "search", "edit", "move", "delete" });
+        Edit,
+        new HashSet<string>(StringComparer.Ordinal) {
+            AcpToolKind.Read, AcpToolKind.Search, AcpToolKind.Edit, AcpToolKind.Move, AcpToolKind.Delete
+        });
 
     /// <summary>Resolves a wire token to its preset; false (and null out) for null/blank/unknown.</summary>
     internal static bool TryResolve(string? token, [NotNullWhen(true)] out AcpLaunchPermissionPreset? preset) {

@@ -16,9 +16,7 @@ namespace Capacitor.App.Tests.Unit;
 /// RxSchedulers.MainThreadScheduler), so every test runs inside
 /// AvaloniaSession.WithImmediateRxScheduler and carries [NotInParallel("AvaloniaSession")].
 public class MainWindowViewModelTests {
-    // Real AppNotifier (not RecordingNotifier) — none of these tests exercise notifications, and
-    // the toast overlay is a View concern MainWindowViewModel no longer touches (spec §11); the
-    // production notifier is fine here, kept only because AgentActionService requires one.
+    // Real AppNotifier — these tests do not exercise toasts; AgentActionService still needs one.
     static (AgentActionService Actions, IAppNotifier Notifier) NewActions(FakeDaemonClientService service) {
         var notifier = new AppNotifier();
         var actions = new AgentActionService(new ScriptedLocalControlOps(), notifier, new RecordingOpener(), service.SnapshotsSubject, CancellationToken.None, NeverConfirm.Confirm);
@@ -95,6 +93,17 @@ public class MainWindowViewModelTests {
     }
 
     [Test]
+    [Arguments(null, "")]
+    [Arguments("", "")]
+    [Arguments("   ", "")]
+    [Arguments("default", "")]
+    [Arguments("Default", "")]
+    [Arguments("kurrent", "kurrent")]
+    public async Task ProfileLabelForRail_hides_the_built_in_default(string? profile, string expected) {
+        await Assert.That(MainWindowViewModel.ProfileLabelForRail(profile)).IsEqualTo(expected);
+    }
+
+    [Test]
     [Arguments(AttachState.Connecting, null, "connected", "#FFB300")]
     [Arguments(AttachState.Unreachable, "daemon_unreachable", "connected", "#9E9E9E")]
     [Arguments(AttachState.Unreachable, "daemon_incompatible", "connected", "#E53935")]
@@ -109,31 +118,32 @@ public class MainWindowViewModelTests {
         await Assert.That(brush.Color).IsEqualTo(Color.Parse(expectedHex));
     }
 
-    // ---- Start/Retry visibility (spec: shows ONLY when the action is meaningful, tracking the
-    // SAME state predicate as canStart/canRetry — but, unlike CanExecute, never hidden just
-    // because a start is in flight) ----
+    // ---- Start/Reconnect visibility (one primary action: Start when unreachable-down;
+    // Reconnect when connecting or skew — never both) ----
 
     [Test]
     [NotInParallel("AvaloniaSession")]
-    public async Task Start_and_retry_visibility_track_the_command_state_matrix() {
+    public async Task Start_and_reconnect_visibility_are_mutually_exclusive() {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var service = new FakeDaemonClientService();
             var (actions, _) = NewActions(service);
             var vm = new MainWindowViewModel(service, CancellationToken.None, TestActivity.New());
 
-            foreach (var reason in new[] { "daemon_unreachable", "daemon_incompatible" }) {
-                service.StatusSubject.OnNext(new AttachStatus(AttachState.Connecting, null, null));
-                await Assert.That(vm.StartVisible).IsFalse();
-                await Assert.That(vm.RetryVisible).IsTrue();
+            service.StatusSubject.OnNext(new AttachStatus(AttachState.Connecting, null, null));
+            await Assert.That(vm.StartVisible).IsFalse();
+            await Assert.That(vm.RetryVisible).IsTrue();
 
-                service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, null));
-                await Assert.That(vm.StartVisible).IsFalse();
-                await Assert.That(vm.RetryVisible).IsFalse();
+            service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, null));
+            await Assert.That(vm.StartVisible).IsFalse();
+            await Assert.That(vm.RetryVisible).IsFalse();
 
-                service.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, reason, null));
-                await Assert.That(vm.StartVisible).IsEqualTo(reason == "daemon_unreachable");
-                await Assert.That(vm.RetryVisible).IsTrue();
-            }
+            service.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "daemon_unreachable", null));
+            await Assert.That(vm.StartVisible).IsTrue();
+            await Assert.That(vm.RetryVisible).IsFalse();
+
+            service.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "daemon_incompatible", null));
+            await Assert.That(vm.StartVisible).IsFalse();
+            await Assert.That(vm.RetryVisible).IsTrue();
         });
     }
 
@@ -209,7 +219,7 @@ public class MainWindowViewModelTests {
 
                 service.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, reason, null));
                 await Assert.That(startCanExecute).IsEqualTo(reason == "daemon_unreachable");
-                await Assert.That(retryCanExecute).IsTrue();
+                await Assert.That(retryCanExecute).IsEqualTo(reason != "daemon_unreachable");
             }
 
             // In-flight: an outstanding start disables StartDaemonCommand even though the
@@ -250,7 +260,11 @@ public class MainWindowViewModelTests {
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "daemon_incompatible", null));
 
             await Assert.That(vm.Reason).IsNotNull();
-            await Assert.That(vm.Reason!).Contains("app and daemon are incompatible — make sure both are up to date");
+            await Assert.That(vm.Reason!).Contains("App and daemon are incompatible");
+            await Assert.That(vm.Reason!).Contains("Reconnect");
+            await Assert.That(vm.Reason!).DoesNotContain("daemon_incompatible");
+            await Assert.That(vm.StartVisible).IsFalse();
+            await Assert.That(vm.RetryVisible).IsTrue();
             await Assert.That(startCanExecute).IsFalse();
             await Assert.That(retryCanExecute).IsTrue();
         });
@@ -266,23 +280,24 @@ public class MainWindowViewModelTests {
             using var activation = vm.Activator.Activate();
 
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "daemon_unreachable", null));
+            await Assert.That(vm.Reason).IsEqualTo(MainWindowViewModel.UnreachableMessage);
+            await Assert.That(vm.Reason!).DoesNotContain("daemon_unreachable");
 
             service.StartBehavior = _ => Task.FromResult(new StartDaemonResult(false, "boom: could not bind socket"));
             await vm.StartDaemonCommand.Execute().ToTask();
             await Assert.That(vm.StartMessage).IsEqualTo("boom: could not bind socket");
 
-            // A new attempt clears the previous failure message SYNCHRONOUSLY, before the
-            // attempt's own async work resolves — proven here by asserting it's already null
-            // while the gated fake is still pending.
+            // StartingMessage is set before the gated startAction returns.
             var gate = new TaskCompletionSource();
             service.StartBehavior = async _ => {
                 await gate.Task;
                 return new StartDaemonResult(true, null);
             };
             var execute = vm.StartDaemonCommand.Execute().ToTask();
-            await Assert.That(vm.StartMessage).IsNull();
+            await Assert.That(vm.StartMessage).IsEqualTo(MainWindowViewModel.StartingMessage);
             gate.SetResult();
             await execute;
+            await Assert.That(vm.StartMessage).IsEqualTo("Daemon start requested. Waiting to connect…");
 
             // A transition to Connected clears it too.
             service.StartBehavior = _ => Task.FromResult(new StartDaemonResult(false, "second failure"));
@@ -295,7 +310,7 @@ public class MainWindowViewModelTests {
         });
     }
 
-    // spec §6: ILifecycleSurface.Status one-liners ride the same StartMessage lane.
+    // ILifecycleSurface.Status one-liners ride the same StartMessage lane.
     [Test]
     [NotInParallel("AvaloniaSession")]
     public async Task Lifecycle_status_sets_and_is_cleared_like_a_start_failure() {
@@ -316,10 +331,71 @@ public class MainWindowViewModelTests {
         });
     }
 
-    // spec §4.4: StartDaemonCommand is repointed to the service-aware
-    // DaemonLifecycleController.StartActionAsync when the composition root supplies one — the
-    // plain detached StartDaemonAsync is a fallback for callers with no live controller, not the
-    // production path.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Reconnect_sets_reconnecting_then_settles_if_still_unreachable() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var service = new FakeDaemonClientService();
+            var vm = new MainWindowViewModel(service, CancellationToken.None, TestActivity.New());
+            using var activation = vm.Activator.Activate();
+
+            // Reconnect is offered while connecting or skewed — not while Start owns the down case.
+            service.StatusSubject.OnNext(new AttachStatus(AttachState.Connecting, null, null));
+            await Assert.That(vm.StartMessage).IsNull();
+            await Assert.That(vm.RetryVisible).IsTrue();
+
+            var execute = vm.RetryCommand.Execute().ToTask();
+            await Assert.That(vm.StartMessage).IsEqualTo(MainWindowViewModel.ReconnectingMessage);
+            await execute;
+
+            // Still unreachable after the reattach kick: replace the in-flight copy.
+            service.StatusSubject.OnNext(new AttachStatus(AttachState.Connecting, null, null));
+            await Assert.That(vm.StartMessage).IsEqualTo(MainWindowViewModel.ReconnectingMessage);
+
+            service.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "daemon_unreachable", null));
+            await Assert.That(vm.StartMessage).IsEqualTo(MainWindowViewModel.ReconnectFailedMessage);
+
+            service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, null));
+            await Assert.That(vm.StartMessage).IsNull();
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Already_running_reconnect_status_clears_when_attach_stays_unreachable() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var service = new FakeDaemonClientService();
+            var lifecycleStatus = new Subject<string?>();
+            var vm = new MainWindowViewModel(
+                service, CancellationToken.None, TestActivity.New(),
+                lifecycleStatus: lifecycleStatus);
+            using var activation = vm.Activator.Activate();
+
+            lifecycleStatus.OnNext(DaemonLifecycleController.AlreadyRunningReconnectStatus);
+            await Assert.That(vm.StartMessage).IsEqualTo(DaemonLifecycleController.AlreadyRunningReconnectStatus);
+
+            service.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "daemon_unreachable", null));
+            await Assert.That(vm.StartMessage).IsEqualTo(MainWindowViewModel.ReconnectFailedMessage);
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Lifecycle_attention_also_lands_on_the_start_message_lane() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var service = new FakeDaemonClientService();
+            var lifecycleAttention = new Subject<string?>();
+            var vm = new MainWindowViewModel(
+                service, CancellationToken.None, TestActivity.New(),
+                lifecycleAttention: lifecycleAttention);
+            using var activation = vm.Activator.Activate();
+
+            lifecycleAttention.OnNext("The daemon didn't come up cleanly. Press Start daemon to try again.");
+            await Assert.That(vm.StartMessage).IsEqualTo("The daemon didn't come up cleanly. Press Start daemon to try again.");
+        });
+    }
+
+    // Supplied startAction runs instead of StartDaemonAsync.
     [Test]
     [NotInParallel("AvaloniaSession")]
     public async Task StartDaemonCommand_invokes_the_supplied_startAction_instead_of_StartDaemonAsync() {
@@ -345,9 +421,8 @@ public class MainWindowViewModelTests {
         });
     }
 
-    // ---- Navigation (spec §3). The full surface-swap/teardown matrix lives in
-    // WorkspaceNavigationTests; these two pin what the VM's own nullable-default seams promise. ----
-
+    // Navigation: the full surface-swap/teardown matrix lives in WorkspaceNavigationTests;
+    // these two pin what the VM's own nullable-default seams promise.
     /// Every caller that predates workspaces passes no factory — and must keep landing on the
     /// tabbed shell rather than a half-built workspace or a throw.
     [Test]

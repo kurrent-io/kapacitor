@@ -15,6 +15,11 @@ public sealed class WorkContextClient(HttpClient http, string serverUrl) : IWork
             ? GetAsync($"{_base}/api/work-items/session/{Uri.EscapeDataString(id)}", CapacitorJsonContext.Default.ListSessionWorkItemAssignmentDto, ct)
             : Task.FromResult(Refused<List<SessionWorkItemAssignmentDto>>());
 
+    public Task<WorkContextOutcome<WorkItemDto>> GetWorkItemAsync(string workItemId, CancellationToken ct) =>
+        WorkContextIds.ValidWorkItemId(workItemId) is { } id
+            ? GetAsync($"{_base}/api/work-items/{Uri.EscapeDataString(id)}", CapacitorJsonContext.Default.WorkItemDto, ct)
+            : Task.FromResult(Refused<WorkItemDto>());
+
     public Task<WorkContextOutcome<WorkItemTopologyDto>> GetTopologyAsync(string workItemId, CancellationToken ct) =>
         WorkContextIds.ValidWorkItemId(workItemId) is { } id
             ? GetAsync($"{_base}/api/work-items/{Uri.EscapeDataString(id)}/topology", CapacitorJsonContext.Default.WorkItemTopologyDto, ct)

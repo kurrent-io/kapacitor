@@ -27,24 +27,52 @@ public enum ChatTabPhase { Waiting, Reading, Missing, Unavailable }
 /// completes under a stale generation and is discarded.
 public sealed class ChatTabViewModel : ReactiveObject {
     internal static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(500);
+    /// First retry gap after a failed withdraw; each further one doubles it.
+    internal static readonly TimeSpan WithdrawRetryDelay = TimeSpan.FromSeconds(2);
+    internal const int MaxWithdrawRetries = 3;
 
     readonly string _agentId;
     readonly TerminalTabViewModel _terminal;
-    readonly ITranscriptProjection? _projection;
+    readonly TranscriptChatProjection? _projection;
     readonly IUrlOpener _opener;
     readonly TimeProvider _time;
+    readonly IPermissionService _permissions;
     readonly CompositeDisposable _disposables = new();
+    readonly CancellationTokenSource _lifetime = new();
+    // Read once: the source is disposed at teardown, and a retry waking after that still needs a
+    // token it can ask without an ObjectDisposedException.
+    readonly CancellationToken _lifetimeToken;
     readonly AvaloniaList<ChatItemViewModel> _items = new();
     readonly Dictionary<string, ToolCallItem> _pendingTools = new(StringComparer.Ordinal);
+    // Every tool id with a result, not only the running ones: a replayed request can arrive after
+    // the transcript's initial load, and then only this set can tell that its tool is done.
+    readonly HashSet<string> _settledTools = new(StringComparer.Ordinal);
+    readonly HashSet<string> _withdrawing = new(StringComparer.Ordinal);
+    readonly Dictionary<string, int> _withdrawFailures = new(StringComparer.Ordinal);
     readonly ConcurrentDictionary<string, byte> _loggedFailures = new(StringComparer.Ordinal);
     readonly Dictionary<string, PendingPermissionRequest> _requests = new(StringComparer.Ordinal);
     readonly HashSet<ToolCallItem> _marked = new(ReferenceEqualityComparer.Instance);
     ToolGroupItem? _openGroup;
 
-    /// The tail and the generation it belongs to, taken as one reference: reading the two
+    /// The tail, the generation it belongs to, and the projection context and line count that
+    /// live exactly as long as the file the tail is reading. Taken as one reference: reading them
     /// separately lets a switch land between them and tag a read of the old file with the new
     /// generation, which Apply's guard would then wave through onto the freshly cleared list.
-    sealed record TailLease(JsonlTail Tail, int Generation);
+    sealed class TailLease(JsonlTail tail, int generation) {
+        public JsonlTail Tail { get; } = tail;
+        public int Generation { get; } = generation;
+        TranscriptContext? _context;
+        int _linesRead;
+
+        // The app has no session id and persists nothing, so the agent id stands in; only attachment ids would read it.
+        public TranscriptContext ContextFor(TranscriptChatProjection projection, string agentId) =>
+            _context ??= projection.CreateContext(agentId, null);
+
+        public void Reset() { _context = null; _linesRead = 0; }
+
+        // Counts the lines the tail yields, which skips blank lines, so it is not the file's physical line number.
+        public int NextLine() => ++_linesRead;
+    }
 
     int _generation;
     int _readInFlight;
@@ -92,6 +120,11 @@ public sealed class ChatTabViewModel : ReactiveObject {
     readonly ObservableAsPropertyHelper<string> _composerHint;
     public string ComposerHint => _composerHint.Value;
 
+    readonly ObservableAsPropertyHelper<bool> _showsComposer;
+    /// Input + Send stay in the tree only while messaging is still possible. An ended session
+    /// hides them and leaves the hint — a greyed empty box is the wrong affordance.
+    public bool ShowsComposer => _showsComposer.Value;
+
     string _vendor = "";
     IReadOnlyList<HarnessOption> _options = HostedHarnessCatalog.Build(null);
 
@@ -132,8 +165,9 @@ public sealed class ChatTabViewModel : ReactiveObject {
 
     /// The hint is built from the terminal's own availability, so it is true in the windows
     /// where State alone would lie (a reattach or detach under way while State reads Attached).
-    internal static string HintFor(SendAvailability availability, TerminalSessionState state, string vendorLabel) => availability switch {
-        SendAvailability.Ready         => $"Reply to {vendorLabel} · Enter sends · Shift+Enter for a new line",
+    /// Ready omits the harness name — the workspace chip already names it.
+    internal static string HintFor(SendAvailability availability, TerminalSessionState state) => availability switch {
+        SendAvailability.Ready         => "Enter sends · Shift+Enter for a new line",
         SendAvailability.Sending       => "Sending…",
         SendAvailability.Transitioning => "Updating the terminal connection…",
         SendAvailability.ReadOnly      => $"Read-only: {state.Detail}",
@@ -148,14 +182,19 @@ public sealed class ChatTabViewModel : ReactiveObject {
     /// await that, advance one tick, then await again to see the new path's first rows.
     internal Task? PendingReadForTesting => _pendingRead;
 
+    /// Test-only seam: withdraws sent and not yet acknowledged, or failed.
+    internal int WithdrawsInFlightForTesting => _withdrawing.Count;
+
     public ChatTabViewModel(
             string agentId, IDaemonClientService daemon, TerminalTabViewModel terminal,
-            ITranscriptProjection? projection, IUrlOpener opener, TimeProvider time, IPermissionService permissions) {
+            TranscriptChatProjection? projection, IUrlOpener opener, TimeProvider time, IPermissionService permissions) {
         _agentId = agentId;
         _terminal = terminal;
         _projection = projection;
         _opener = opener;
         _time = time;
+        _permissions = permissions;
+        _lifetimeToken = _lifetime.Token;
         _phase = projection is null ? ChatTabPhase.Unavailable : ChatTabPhase.Waiting;
 
         // ObserveOn BEFORE the binding operator: the cache is mutated on the service's
@@ -195,7 +234,11 @@ public sealed class ChatTabViewModel : ReactiveObject {
                 foreach (var change in changes) {
                     switch (change.Reason) {
                         case ChangeReason.Add or ChangeReason.Update: _requests[change.Key] = change.Current; break;
-                        case ChangeReason.Remove: _requests.Remove(change.Key); break;
+                        case ChangeReason.Remove:
+                            _requests.Remove(change.Key);
+                            _withdrawing.Remove(change.Key);
+                            _withdrawFailures.Remove(change.Key);
+                            break;
                     }
                 }
                 Reconcile();
@@ -222,10 +265,17 @@ public sealed class ChatTabViewModel : ReactiveObject {
         // goes blank there instead of offering a reply that can never be sent.
         _composerHint = Observable.CombineLatest(
                 terminal.WhenAnyValue(t => t.SendAvailability, t => t.State, (availability, state) => (availability, state)),
-                this.WhenAnyValue(x => x.VendorLabel),
                 this.WhenAnyValue(x => x.IsReadOnlyParticipant),
-                (t, label, readOnly) => readOnly ? "" : HintFor(t.availability, t.state, label))
-            .ToProperty(this, x => x.ComposerHint, HintFor(terminal.SendAvailability, terminal.State, ""))
+                (t, readOnly) => readOnly ? "" : HintFor(t.availability, t.state))
+            .ToProperty(this, x => x.ComposerHint, HintFor(terminal.SendAvailability, terminal.State))
+            .DisposeWith(_disposables);
+
+        _showsComposer = Observable.CombineLatest(
+                terminal.WhenAnyValue(t => t.SendAvailability),
+                this.WhenAnyValue(x => x.IsReadOnlyParticipant),
+                (availability, readOnly) => !readOnly && availability != SendAvailability.Ended)
+            .ToProperty(this, x => x.ShowsComposer,
+                initialValue: !IsReadOnlyParticipant && terminal.SendAvailability != SendAvailability.Ended)
             .DisposeWith(_disposables);
 
         var canSend = Observable.CombineLatest(
@@ -262,7 +312,7 @@ public sealed class ChatTabViewModel : ReactiveObject {
         _rootSubject.OnNext(root);
         VendorLabel = HostedHarnessCatalog.LabelFor(_options, dto.Vendor);
         ModelLabel = HostedHarnessCatalog.ModelLabelFor(dto.Vendor, dto.Model ?? "");
-        StatusText = dto.Status;
+        StatusText = SessionStatusDots.Label(dto);
         StatusDot = SessionStatusDots.For(dto.Status);
         if (_projection is not null && dto.TranscriptPath is { } path && path != _path) SwitchPath(path);
     }
@@ -270,6 +320,7 @@ public sealed class ChatTabViewModel : ReactiveObject {
     void SwitchPath(string path) {
         _items.Clear();
         _pendingTools.Clear();
+        _settledTools.Clear();
         _openGroup = null;
         _marked.Clear();
         _path = path;
@@ -285,22 +336,29 @@ public sealed class ChatTabViewModel : ReactiveObject {
     void OnTick() {
         if (_lease is not { } lease || _projection is not { } projection) return;
         if (Interlocked.CompareExchange(ref _readInFlight, 1, 0) != 0) return;
-        _pendingRead = ReadAndApplyAsync(lease.Tail, projection, lease.Generation);
+        _pendingRead = ReadAndApplyAsync(lease, projection);
     }
 
-    async Task ReadAndApplyAsync(JsonlTail tail, ITranscriptProjection projection, int generation) {
+    async Task ReadAndApplyAsync(TailLease lease, TranscriptChatProjection projection) {
         try {
             var (read, envelopes) = await Task.Run(() => {
-                var result = tail.ReadAppended();
+                var result = lease.Tail.ReadAppended();
+                if (result.Status == TailStatus.Reset) lease.Reset();
                 var list = new List<AcpEventEnvelope>();
-                foreach (var line in result.Lines) {
-                    try { list.AddRange(projection.Project(line)); }
-                    catch (Exception ex) { LogOnce($"projection: {ex.Message}"); }
+                if (result.Lines.Count > 0) {
+                    var context = lease.ContextFor(projection, _agentId);
+                    context.BeginBatch();
+                    var receivedAt = _time.GetUtcNow();
+                    foreach (var line in result.Lines) {
+                        var lineNumber = lease.NextLine();
+                        try { list.AddRange(projection.Project(line, lineNumber, receivedAt, context)); }
+                        catch (Exception ex) { LogOnce($"projection: {ex.Message}"); }
+                    }
                 }
                 return (result, list);
             }).ConfigureAwait(false);
 
-            await Dispatcher.UIThread.InvokeAsync(() => Apply(generation, read, envelopes));
+            await Dispatcher.UIThread.InvokeAsync(() => Apply(lease.Generation, read, envelopes));
         } catch (Exception ex) {
             LogOnce($"read: {ex.Message}");
         } finally {
@@ -321,6 +379,7 @@ public sealed class ChatTabViewModel : ReactiveObject {
             case TailStatus.Reset:
                 _items.Clear();
                 _pendingTools.Clear();
+                _settledTools.Clear();
                 _openGroup = null;
                 _marked.Clear();
                 break;
@@ -356,7 +415,9 @@ public sealed class ChatTabViewModel : ReactiveObject {
                     break;
                 }
                 case AcpEventKind.ToolResult:
-                    if (e.ToolCallId is { } resultId && _pendingTools.Remove(resultId, out var call))
+                    if (e.ToolCallId is not { } resultId) break;
+                    _settledTools.Add(resultId);
+                    if (_pendingTools.Remove(resultId, out var call))
                         call.Outcome = e.ToolIsError ? ToolOutcome.Error : ToolOutcome.Done;
                     break;
             }
@@ -383,6 +444,41 @@ public sealed class ChatTabViewModel : ReactiveObject {
         foreach (var call in targets) call.IsAwaitingPermission = true;
         _marked.Clear();
         _marked.UnionWith(targets);
+        WithdrawSettled();
+    }
+
+    /// A pending request whose tool already has a result was answered where the daemon cannot see
+    /// (the vendor's own terminal prompt), so this tab is the one party that can retire it. Sent
+    /// once per request; a failed send reopens it and retries on a bounded backoff.
+    void WithdrawSettled() {
+        if (_lifetimeToken.IsCancellationRequested) return;
+        foreach (var request in _requests.Values) {
+            if (request.ToolUseId is not { } id || !_settledTools.Contains(id) || !_withdrawing.Add(request.RequestId)) continue;
+            _ = WithdrawAsync(request);
+        }
+    }
+
+    async Task WithdrawAsync(PendingPermissionRequest request) {
+        var id = request.RequestId;
+        try {
+            var outcome = await _permissions.WithdrawAsync(request, _lifetimeToken);
+            if (outcome.Kind != PermissionResolveKind.TransportFailure) { _withdrawFailures.Remove(id); return; }
+        } catch (OperationCanceledException) when (_lifetimeToken.IsCancellationRequested) {
+            return;
+        } catch (Exception ex) {
+            LogOnce($"withdraw: {ex.Message}");
+        }
+
+        // The resolve rides a one-shot socket that can fail while the subscription stays healthy,
+        // and an empty poll never reconciles, so the retry has to be this method's own. Past the
+        // cap, the next resubscribe or permission/transcript change is what tries again.
+        _withdrawing.Remove(id);
+        var failures = _withdrawFailures.GetValueOrDefault(id) + 1;
+        _withdrawFailures[id] = failures;
+        if (failures > MaxWithdrawRetries) return;
+        try { await Task.Delay(WithdrawRetryDelay * (1 << (failures - 1)), _time, _lifetimeToken); }
+        catch (OperationCanceledException) { return; }
+        WithdrawSettled();
     }
 
     void LogOnce(string reason) {
@@ -396,6 +492,8 @@ public sealed class ChatTabViewModel : ReactiveObject {
         _timer = null;
         _disposables.Dispose();
         _rootSubject.Dispose();
+        try { _lifetime.Cancel(); } catch (ObjectDisposedException) { }
+        _lifetime.Dispose();
         return Task.CompletedTask;
     }
 }

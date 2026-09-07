@@ -55,7 +55,7 @@
                                         <TextBlock Text="{Binding Title}" FontWeight="Bold" Foreground="{StaticResource KcapTextBrush}"
                                                    TextTrimming="CharacterEllipsis" />
                                     </StackPanel>
-                                    <TextBlock Text="{Binding RepoFull}" FontSize="11" Foreground="{StaticResource KcapMutedBrush}"
+                                    <TextBlock Text="{Binding Sub}" FontSize="11" Foreground="{StaticResource KcapMutedBrush}"
                                                ToolTip.Tip="{Binding RepoFull}" TextTrimming="CharacterEllipsis" />
                                     <Grid ColumnDefinitions="*,Auto">
                                         <TextBlock Text="{Binding StatusText}" FontSize="11" Foreground="{StaticResource KcapPurpleBrush}" />

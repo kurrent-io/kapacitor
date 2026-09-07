@@ -19,7 +19,7 @@ public class ChatComposerTests {
         var time = new FakeTimeProvider();
         var opener = new RecordingOpener();
         var terminal = new TerminalTabViewModel("a1", daemon, factory.Factory, () => new FakeTerminalSurface(), time);
-        var chat = new ChatTabViewModel("a1", daemon, terminal, TranscriptProjection.For("claude"), opener, time, new FakePermissionService());
+        var chat = new ChatTabViewModel("a1", daemon, terminal, TranscriptChat.For("claude"), opener, time, new FakePermissionService());
         daemon.SnapshotsSubject.OnNext(FakeDaemonClientService.Snap(supportedVendors: ["claude", "codex"]));
         daemon.Agents.AddOrUpdate(Agent("a1", "claude", hasTerminal: true, repoPath: "/repo", model: "claude-opus-5") with { Status = "Running" });
         await (terminal.PendingResolveWorkForTesting ?? Task.CompletedTask);
@@ -54,11 +54,11 @@ public class ChatComposerTests {
 
     [Test]
     [NotInParallel("AvaloniaSession")]
-    public async Task Hint_follows_send_availability_and_the_vendor_label() {
+    public async Task Hint_follows_send_availability() {
         await RunOnUiAsync(async () => {
             var (daemon, _, terminal, chat, client, _) = await BuildAttachedAsync();
             await Assert.That(chat.VendorLabel).IsEqualTo("Claude Code");
-            await Assert.That(chat.ComposerHint).IsEqualTo("Reply to Claude Code · Enter sends · Shift+Enter for a new line");
+            await Assert.That(chat.ComposerHint).IsEqualTo("Enter sends · Shift+Enter for a new line");
 
             client.Result.SetResult(new AttachOutcome.Detached());
             await terminal.CurrentRunForTesting!;
@@ -68,13 +68,30 @@ public class ChatComposerTests {
             // a detach lands SessionEnded — and the hint follows the terminal there too.
             daemon.Agents.Remove("a1");
             await Assert.That(chat.ComposerHint).IsEqualTo("This session has ended");
+            await Assert.That(chat.ShowsComposer).IsFalse();
 
             var attached = TerminalSessionState.Attached(null);
-            await Assert.That(ChatTabViewModel.HintFor(SendAvailability.Transitioning, attached, "Claude Code")).IsEqualTo("Updating the terminal connection…");
-            await Assert.That(ChatTabViewModel.HintFor(SendAvailability.ReadOnly, TerminalSessionState.Attached("review"), "x")).IsEqualTo("Read-only: review");
-            await Assert.That(ChatTabViewModel.HintFor(SendAvailability.Connecting, TerminalSessionState.Connecting, "x")).IsEqualTo("Connecting to the terminal…");
-            await Assert.That(ChatTabViewModel.HintFor(SendAvailability.Ended, TerminalSessionState.SessionEnded, "x")).IsEqualTo("This session has ended");
-            await Assert.That(ChatTabViewModel.HintFor(SendAvailability.NoTerminal, TerminalSessionState.NotFound, "x")).IsEqualTo("No terminal to send to");
+            await Assert.That(ChatTabViewModel.HintFor(SendAvailability.Transitioning, attached)).IsEqualTo("Updating the terminal connection…");
+            await Assert.That(ChatTabViewModel.HintFor(SendAvailability.ReadOnly, TerminalSessionState.Attached("review"))).IsEqualTo("Read-only: review");
+            await Assert.That(ChatTabViewModel.HintFor(SendAvailability.Connecting, TerminalSessionState.Connecting)).IsEqualTo("Connecting to the terminal…");
+            await Assert.That(ChatTabViewModel.HintFor(SendAvailability.Ended, TerminalSessionState.SessionEnded)).IsEqualTo("This session has ended");
+            await Assert.That(ChatTabViewModel.HintFor(SendAvailability.NoTerminal, TerminalSessionState.NotFound)).IsEqualTo("No terminal to send to");
+            await chat.TeardownAsync();
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Composer_hides_when_agent_status_becomes_Failed() {
+        await RunOnUiAsync(async () => {
+            var (daemon, _, _, chat, _, _) = await BuildAttachedAsync();
+            await Assert.That(chat.ShowsComposer).IsTrue();
+
+            daemon.Agents.AddOrUpdate(Agent("a1", "claude", hasTerminal: true, repoPath: "/repo") with { Status = "Failed" });
+            await Assert.That(chat.ComposerHint).IsEqualTo("This session has ended");
+            await Assert.That(chat.ShowsComposer).IsFalse();
+            chat.ComposerText = "too late";
+            await Assert.That(await chat.SendCommand.CanExecute.FirstAsync()).IsFalse();
             await chat.TeardownAsync();
         });
     }
@@ -88,9 +105,14 @@ public class ChatComposerTests {
             await Assert.That(chat.StatusText).IsEqualTo("Running");
             await Assert.That(chat.StatusDot).IsSameReferenceAs(SessionStatusDots.For("Running"));
 
+            // A finished turn keeps the running dot: the process is live, it is the user's move.
+            daemon.Agents.AddOrUpdate(Agent("a1", "claude", hasTerminal: true, repoPath: "/repo") with { AwaitingInput = true });
+            await Assert.That(chat.StatusText).IsEqualTo("Waiting for input");
+            await Assert.That(chat.StatusDot).IsSameReferenceAs(SessionStatusDots.For("Running"));
+
             daemon.Agents.AddOrUpdate(Agent("a1", "claude", hasTerminal: true, repoPath: "/repo") with { Status = "Failed" });
             await Assert.That(chat.StatusText).IsEqualTo("Failed");
-            await Assert.That(chat.ModelLabel).IsEqualTo("default");
+            await Assert.That(chat.ModelLabel).IsEqualTo("Default");
             await chat.TeardownAsync();
         });
     }
@@ -124,7 +146,7 @@ public class ChatComposerTests {
             var time = new FakeTimeProvider();
             var terminal = new TerminalTabViewModel("r1", daemon, factory.Factory, () => new FakeTerminalSurface(), time);
             var chat = new ChatTabViewModel(
-                "r1", daemon, terminal, TranscriptProjection.For("claude"), new RecordingOpener(), time, new FakePermissionService());
+                "r1", daemon, terminal, TranscriptChat.For("claude"), new RecordingOpener(), time, new FakePermissionService());
             daemon.Agents.AddOrUpdate(
                 Agent("r1", "claude", hasTerminal: true, kind: "review-flow") with { FlowRunId = "f1", FlowRole = "reviewer" });
             await (terminal.PendingResolveWorkForTesting ?? Task.CompletedTask);

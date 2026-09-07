@@ -44,15 +44,21 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
     /// a storage key only.
     public const string ScratchRepoPath = "";
 
-    /// A launch that started but handed back an id nothing can open. The session is real and running
-    /// — it just has to be reached from the session list, so this is a launch-succeeded wording, not
-    /// a failure one (spec §3, entry-point guards).
-    public const string UnusableIdMessage = "Launched, but the session id was unusable — open it from the session list.";
+    /// A launch that started but handed back an id nothing can open. The session is real — open
+    /// it from the session list rather than treating this as a launch failure.
+    public const string UnusableIdMessage = "Launched, but the session ID was unusable. Open it from the session list.";
 
     internal const string ConnectingNotice     = "Connecting to the server…";
-    internal const string DaemonDownNotice     = "The daemon isn't running — start it to launch sessions.";
-    internal const string ServerLostNotice     = "Not connected to the server — sign in again to reconnect.";
-    internal const string SignInExpiredNotice  = "Your sign-in has expired — sign in again.";
+    internal const string FinishingSignInNotice =
+        "Finishing sign-in. Reconnecting to the server…";
+    internal const string DaemonDownNotice     =
+        "The daemon isn't running. Press Start daemon to launch sessions.";
+    internal const string DaemonIncompatibleNotice =
+        "App and daemon are incompatible. Update both to matching versions, then press Reconnect.";
+    internal const string ServerLostNotice     = "Not connected to the server. Sign in again to reconnect.";
+    internal const string SignInExpiredNotice  = "Your sign-in has expired. Sign in again.";
+
+    const string IncompatibleReason = "daemon_incompatible";
 
     readonly IDaemonClientService _daemon;
     readonly IAppStateStore _state;
@@ -64,9 +70,15 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
     readonly CompositeDisposable _disposables = new();
 
     string _selectedRepoPath = ScratchRepoPath;
+    // Subject (not WhenAnyValue) so the ctor can compose StartButtonTip — same reason as
+    // _signInRequired above.
+    readonly BehaviorSubject<string> _selectedRepoPathChanges = new(ScratchRepoPath);
     public string SelectedRepoPath {
         get => _selectedRepoPath;
-        set => this.RaiseAndSetIfChanged(ref _selectedRepoPath, value);
+        set {
+            this.RaiseAndSetIfChanged(ref _selectedRepoPath, value);
+            _selectedRepoPathChanges.OnNext(value);
+        }
     }
 
     string _selectedVendor = DefaultVendor;
@@ -117,6 +129,9 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
     /// property read via WhenAnyValue) so the ctor can compose it — see SessionRailViewModel's
     /// _selectedAgentIdChanges for why WhenAnyValue is avoided in constructors here.
     readonly BehaviorSubject<bool> _signInRequired = new(false);
+    /// True after a successful re-auth until the daemon reports server-connected (or goes down).
+    /// Keeps the banner from still asking to Sign in while the daemon catches up.
+    readonly BehaviorSubject<bool> _awaitingServerAfterSignIn = new(false);
     readonly Action? _requestSignIn;
 
     readonly ObservableAsPropertyHelper<string?> _connectionNotice;
@@ -124,8 +139,34 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
     /// wins over the connection-derived one — it is the more specific diagnosis.
     public string? ConnectionNotice => _connectionNotice.Value;
 
+    readonly ObservableAsPropertyHelper<string?> _bannerMessage;
+    /// Single banner body: a start/lifecycle message wins over the generic connection notice so
+    /// Unreachable + "kcap too old" does not stack two lines that both say press Start daemon.
+    public string? BannerMessage => _bannerMessage.Value;
+
+    readonly ObservableAsPropertyHelper<bool> _connectionBannerVisible;
+    /// Same connection/sign-in/daemon banner the launcher shows above the composer.
+    public bool ConnectionBannerVisible => _connectionBannerVisible.Value;
+
     readonly ObservableAsPropertyHelper<bool> _signInVisible;
     public bool SignInVisible => _signInVisible.Value;
+
+    ObservableAsPropertyHelper<bool>? _daemonStartVisible;
+    public bool DaemonStartVisible => _daemonStartVisible?.Value ?? false;
+
+    ObservableAsPropertyHelper<bool>? _daemonRetryVisible;
+    public bool DaemonRetryVisible => _daemonRetryVisible?.Value ?? false;
+
+    // Feeds BannerMessage before AttachDaemonRecovery runs (null) and after (lifecycle lane).
+    readonly BehaviorSubject<string?> _daemonStartMessageFeed = new(null);
+
+    /// Wired by AttachDaemonRecovery to MainWindow's Start/Reconnect commands.
+    public ReactiveCommand<Unit, Unit>? StartDaemonCommand { get; private set; }
+    public ReactiveCommand<Unit, Unit>? RetryDaemonCommand { get; private set; }
+
+    readonly ObservableAsPropertyHelper<string> _startButtonTip;
+    /// Tip when Start is disabled (no repo / connection gate). ToolTip.ShowOnDisabled is required.
+    public string StartButtonTip => _startButtonTip.Value;
 
     public ReactiveCommand<Unit, Unit> SignInCommand { get; }
 
@@ -217,22 +258,86 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
                 .ObserveOn(RxSchedulers.MainThreadScheduler));
 
         var signInState = availability
-            .CombineLatest(_signInRequired, (a, expired) => (Availability: a, Expired: expired))
+            .CombineLatest(
+                _signInRequired,
+                _awaitingServerAfterSignIn,
+                (a, expired, awaiting) => (Availability: a, Expired: expired, Awaiting: awaiting))
             .ObserveOn(RxSchedulers.MainThreadScheduler);
-        _connectionNotice = signInState.Select(t => NoticeFor(t.Availability, t.Expired))
+        var notices = daemon.Status
+            .CombineLatest(
+                daemon.Snapshots.Select(s => s.Daemon.Connection).StartWith(""),
+                _signInRequired,
+                _awaitingServerAfterSignIn,
+                NoticeFor)
+            .ObserveOn(RxSchedulers.MainThreadScheduler);
+        _connectionNotice = notices
             .ToProperty(this, x => x.ConnectionNotice, ConnectingNotice)
             .DisposeWith(_disposables);
+        var bannerMessages = notices.CombineLatest(_daemonStartMessageFeed, BannerMessageFor);
+        _bannerMessage = bannerMessages
+            .ToProperty(this, x => x.BannerMessage, ConnectingNotice)
+            .DisposeWith(_disposables);
+        _connectionBannerVisible = bannerMessages
+            .Select(message => message is not null)
+            .ToProperty(this, x => x.ConnectionBannerVisible, initialValue: false)
+            .DisposeWith(_disposables);
         _signInVisible = signInState
-            .Select(t => t.Expired || t.Availability == LaunchAvailability.ServerDisconnected)
+            .Select(t => !t.Awaiting && (t.Expired || t.Availability == LaunchAvailability.ServerDisconnected))
             .ToProperty(this, x => x.SignInVisible, initialValue: false)
             .DisposeWith(_disposables);
 
+        availability
+            .Where(a => a is LaunchAvailability.Ready or LaunchAvailability.DaemonUnavailable)
+            .Subscribe(_ => _awaitingServerAfterSignIn.OnNext(false))
+            .DisposeWith(_disposables);
+
+        _startButtonTip = _selectedRepoPathChanges
+            .CombineLatest(notices, TipFor)
+            .ToProperty(this, x => x.StartButtonTip, TipFor(SelectedRepoPath, ConnectingNotice))
+            .DisposeWith(_disposables);
+
         SignInCommand = ReactiveCommand.Create(() => { _requestSignIn?.Invoke(); });
+
+        // Adopt a recent known repo when the launcher starts empty — fire-and-forget; the picker
+        // also calls EnsureDefaultRepositoryAsync before listing.
+        _ = EnsureDefaultRepositoryAsync();
     }
 
-    /// The re-auth dialog's success lands here (App wires it): the expired flag lifts without
-    /// waiting for the next launch attempt to re-prove it.
-    public void NotifySignInCompleted() => _signInRequired.OnNext(false);
+    /// MainWindow owns Start/Reconnect (lifecycle startAction + shutdown token). The launcher banner
+    /// reuses those commands and the start-message lane so chrome and pane never diverge.
+    public void AttachDaemonRecovery(
+            ReactiveCommand<Unit, Unit> startDaemon,
+            ReactiveCommand<Unit, Unit> retry,
+            IObservable<bool> startVisible,
+            IObservable<bool> retryVisible,
+            IObservable<string?> startMessage) {
+        StartDaemonCommand = startDaemon;
+        RetryDaemonCommand = retry;
+        this.RaisePropertyChanged(nameof(StartDaemonCommand));
+        this.RaisePropertyChanged(nameof(RetryDaemonCommand));
+
+        _daemonStartVisible = startVisible
+            .ToProperty(this, x => x.DaemonStartVisible, initialValue: false)
+            .DisposeWith(_disposables);
+        _daemonRetryVisible = retryVisible
+            .ToProperty(this, x => x.DaemonRetryVisible, initialValue: false)
+            .DisposeWith(_disposables);
+        startMessage
+            .ObserveOn(RxSchedulers.MainThreadScheduler)
+            .Subscribe(_daemonStartMessageFeed)
+            .DisposeWith(_disposables);
+    }
+
+    /// Prefer the actionable start/lifecycle line when present; otherwise the connection notice.
+    internal static string? BannerMessageFor(string? connectionNotice, string? startMessage) =>
+        !string.IsNullOrEmpty(startMessage) ? startMessage : connectionNotice;
+
+    /// The re-auth dialog's success lands here (App wires it): clears the expired flag and holds a
+    /// finishing notice until the daemon reports the server is connected again.
+    public void NotifySignInCompleted() {
+        _signInRequired.OnNext(false);
+        _awaitingServerAfterSignIn.OnNext(true);
+    }
 
     /// Local attach state is checked FIRST — the upstream word is only meaningful once the attach
     /// is Connected (a stale retained snapshot might carry any word). Unknown upstream words read
@@ -247,18 +352,34 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
         },
     };
 
-    internal static string? NoticeFor(LaunchAvailability availability, bool signInExpired) =>
-        signInExpired ? SignInExpiredNotice
-        : availability switch {
+    internal static string? NoticeFor(
+            AttachStatus status, string daemonConnection, bool signInExpired, bool awaitingServer = false) {
+        if (signInExpired) return SignInExpiredNotice;
+        if (status.State == AttachState.Unreachable) {
+            return status.Reason == IncompatibleReason ? DaemonIncompatibleNotice : DaemonDownNotice;
+        }
+        var availability = AvailabilityFor(status, daemonConnection);
+        if (awaitingServer && availability is LaunchAvailability.ServerDisconnected or LaunchAvailability.Pending)
+            return FinishingSignInNotice;
+        return availability switch {
             LaunchAvailability.Ready             => null,
             LaunchAvailability.Pending           => ConnectingNotice,
             LaunchAvailability.DaemonUnavailable => DaemonDownNotice,
             _                                    => ServerLostNotice,
         };
+    }
+
+    /// Repo gate first (IsEnabled), then the connection/sign-in notice StartCommand also gates on.
+    internal static string TipFor(string? repoPath, string? connectionNotice) =>
+        string.IsNullOrEmpty(repoPath) ? "Select a repository to start"
+        : connectionNotice ?? "Start";
 
     // Constructor-scoped (like TrayViewModel/ActivityViewModel), not WhenActivated — the OAPH and
     // the Agents subscription above run for this object's whole lifetime, not a window's.
-    public void Dispose() => _disposables.Dispose();
+    public void Dispose() {
+        _disposables.Dispose();
+        _daemonStartMessageFeed.Dispose();
+    }
 
     /// Sets the selection and persists it for SelectedRepoPath.
     public async Task ChooseHarnessAsync(string vendor) {
@@ -274,16 +395,21 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
     /// known repos (what the server's launch dialog sees), and the current selection (a
     /// picker-added repo with no remembered harness and no agent yet lives nowhere else).
     /// Deduped under PathComparer with remembered keys added first, so where two casings are one
-    /// repository the casing the user picked is the one displayed. Scratch is always last; the
-    /// view renders it separated.
+    /// repository the casing the user picked is the one displayed. Scratch ("No repository") is
+    /// offered only when that list is empty — with real repos, an empty selection adopts the
+    /// most recently used known path instead.
     public async Task<IReadOnlyList<RepositoryOption>> ListRepositoriesAsync() {
+        await EnsureDefaultRepositoryAsync();
+
         var byRepo = (await _state.LoadAsync()).HarnessByRepo;
         var known = await _knownRepos();
 
         var seen = new HashSet<string>(PathComparer);
         var paths = new List<string>();
         void Add(string? path) {
-            if (!string.IsNullOrEmpty(path) && seen.Add(path)) paths.Add(path);
+            if (string.IsNullOrEmpty(path)) return;
+            var normalized = PlatformPaths.Normalize(path);
+            if (seen.Add(normalized)) paths.Add(normalized);
         }
 
         foreach (var key in byRepo?.Keys ?? [])
@@ -304,17 +430,48 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
             .Select(p => new RepositoryOption(p, Lookup(byRepo, p) ?? DefaultVendor, PathComparer.Equals(p, selected)))
             .ToList();
 
-        options.Add(new RepositoryOption(
-            ScratchRepoPath, Lookup(byRepo, ScratchRepoPath) ?? DefaultVendor, selected.Length == 0));
+        if (paths.Count == 0)
+            options.Add(new RepositoryOption(
+                ScratchRepoPath, Lookup(byRepo, ScratchRepoPath) ?? DefaultVendor, selected.Length == 0));
         return options;
+    }
+
+    /// When nothing is selected, adopt the most recently used known repository (then a remembered
+    /// harness key, then an agent root). No-op when a selection already exists or nothing is known.
+    public async Task EnsureDefaultRepositoryAsync() {
+        if (SelectedRepoPath.Length > 0) return;
+        if (await PreferRecentRepositoryAsync() is not { Length: > 0 } recent) return;
+        // PreferRecent can await file I/O — a pick made while that ran must win.
+        if (SelectedRepoPath.Length > 0) return;
+        await SelectRepositoryAsync(recent);
+    }
+
+    async Task<string?> PreferRecentRepositoryAsync() {
+        foreach (var path in await _knownRepos()) {
+            var normalized = PlatformPaths.Normalize(path);
+            if (normalized.Length > 0) return normalized;
+        }
+
+        foreach (var key in (await _state.LoadAsync()).HarnessByRepo?.Keys ?? []) {
+            var normalized = PlatformPaths.Normalize(key);
+            if (normalized.Length > 0) return normalized;
+        }
+
+        foreach (var agent in _daemon.Agents.Items) {
+            if (agent.RepoPath is not { Length: > 0 } repoPath) continue;
+            var normalized = PlatformPaths.Normalize(GitRepository.ResolveMainRepoRoot(repoPath));
+            if (normalized.Length > 0) return normalized;
+        }
+
+        return null;
     }
 
     /// Sets the repository and restores that repository's remembered harness, or DefaultVendor
     /// when none — never the vendor a DIFFERENT repository had selected.
     public async Task SelectRepositoryAsync(string repoPath) {
-        SelectedRepoPath = repoPath;
+        SelectedRepoPath = repoPath.Length == 0 ? ScratchRepoPath : PlatformPaths.Normalize(repoPath);
         var saved = await _state.LoadAsync();
-        SetVendor(Lookup(saved.HarnessByRepo, repoPath) ?? DefaultVendor);
+        SetVendor(Lookup(saved.HarnessByRepo, SelectedRepoPath) ?? DefaultVendor);
     }
 
     /// The one place a vendor change lands, so the model-reset invariant (ids are
@@ -389,16 +546,17 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
     }
 
     /// Replaces any entry whose key matches under PathComparer, so re-choosing a harness for the
-    /// same repository reached under different casing overwrites rather than accumulating a
-    /// second, shadowing entry.
+    /// same repository reached under different casing or a trailing separator overwrites rather
+    /// than accumulating a second, shadowing entry.
     static IReadOnlyDictionary<string, string> WithEntry(IReadOnlyDictionary<string, string>? existing, string key, string value) {
+        var normalized = key.Length == 0 ? key : PlatformPaths.Normalize(key);
         var next = new Dictionary<string, string>();
         if (existing is not null)
             foreach (var entry in existing)
-                if (!PathComparer.Equals(entry.Key, key))
+                if (!PathComparer.Equals(entry.Key, normalized))
                     next[entry.Key] = entry.Value;
 
-        next[key] = value;
+        next[normalized] = value;
         return next;
     }
 }

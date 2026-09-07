@@ -377,10 +377,10 @@ public class WizardStartupTests {
             channel, surface, WizardFixtures.NeverRunMutation, WizardFixtures.FixedTerminalPath("/usr/bin"),
             () => null, cts.Token);
 
-        channel.Enqueue(WizardFixtures.Envelope("wizard_visible_token"));
+        channel.Enqueue(WizardFixtures.Envelope("internal_error"));
         await WizardFixtures.WaitUntilAsync(() => surface.AttentionText is not null, what: "the wizard-surface presentation");
 
-        await Assert.That(surface.AttentionText!).Contains("wizard_visible_token");
+        await Assert.That(surface.AttentionText).IsEqualTo(AppUnderTest.AttentionCopyFor("internal_error")!);
 
         await cts.CancelAsync();
         await consumer.WaitAsync(TimeSpan.FromSeconds(5));
@@ -416,7 +416,7 @@ public class WizardStartupTests {
             channel, wizardSurface, WizardFixtures.NeverRunMutation, WizardFixtures.FixedTerminalPath("/usr/bin"),
             () => null, cts.Token);
 
-        channel.Enqueue(WizardFixtures.Envelope("raced_token"));
+        channel.Enqueue(WizardFixtures.Envelope("internal_error"));
         await WizardFixtures.WaitUntilAsync(() => wizardSurface.Entered == 1, what: "the wizard consumer's presentation");
 
         await AppUnderTest.HandoffAfterWizardAsync(auth: null, () => Task.CompletedTask, Cap, channel);
@@ -451,10 +451,10 @@ public class WizardStartupTests {
             channel, rootSurface, WizardFixtures.NeverRunMutation, WizardFixtures.FixedTerminalPath("/usr/bin"),
             () => null, cts.Token);
 
-        channel.Enqueue(WizardFixtures.Envelope("post_handoff_token"));
+        channel.Enqueue(WizardFixtures.Envelope("internal_error"));
         await WizardFixtures.WaitUntilAsync(() => rootSurface.AttentionMessages.Count == 1, what: "the root presentation");
 
-        await Assert.That(rootSurface.AttentionMessages[0]).Contains("post_handoff_token");
+        await Assert.That(rootSurface.AttentionMessages[0]).IsEqualTo(AppUnderTest.AttentionCopyFor("internal_error")!);
         await Assert.That(wizardSurface.AttentionMessages).IsEmpty();
 
         await cts.CancelAsync();

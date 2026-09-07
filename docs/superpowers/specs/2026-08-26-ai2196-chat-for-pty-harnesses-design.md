@@ -317,18 +317,22 @@ the shape Avalonia virtualizes; an `ItemsControl` dropped inside an external
 `ScrollViewer` is measured at infinite height and realizes every item. Item
 templates are per item type (`DataTemplates` keyed on the three shapes).
 
-Follow-tail is a view concern that sticks to the bottom: on every
-`ScrollViewer.ScrollChanged` whose extent or viewport moved, the view decides
-*was at the bottom before this change* from the event's deltas and, if so,
-scrolls to the new end. It is not a once-per-append scroll because the
-virtualizing panel reports the extent as an estimate that a tall row corrects
-only once it is realized — a single scroll to the estimated end lands short,
-and the next append then reads "not at the bottom" and stops following;
-re-evaluating on each change converges instead. A reader scrolling up moves
-the offset down, in the same change or an earlier one, and a change whose
-offset delta is negative is never followed — only the panel's own anchoring
-moves the offset up while the extent grows — so a user who has scrolled up
-keeps their offset untouched until they return to the bottom. The hook is
+Follow-tail is a view concern that sticks to the bottom until the reader
+leaves it: on every `ScrollViewer.ScrollChanged` that lands above the bottom,
+the view scrolls to the new end unless a gesture of the reader's own — a
+pointer press or release, wheel, scroll gesture, key or scrollbar drag inside
+the list — landed in the same layout pass; a change that lands on the bottom
+re-arms following. It is not a once-per-append scroll because the virtualizing
+panel reports the extent as an estimate that a tall row corrects only once it
+is realized — a single scroll to the estimated end lands short; re-evaluating
+on each change converges instead. The decision cannot be read from the
+change's deltas: a realized row changing height (a tool row marked as awaiting
+permission, a group folding) makes the panel drop its anchor and re-place
+every row from the average realized size, after which the presenter clamps or
+anchor-shifts the offset by arbitrary amounts that look exactly like a reader
+scrolling up. Only input tells the two apart, so a reader who scrolled up
+keeps their offset untouched until they return to the bottom, and a layout
+that moves a following reader off the bottom is always corrected. The hook is
 attached when the list's template is applied, which for a surface built
 before its first layout is later than its first rows, so the initial load
 lands at the bottom through the same rule.

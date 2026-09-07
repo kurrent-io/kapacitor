@@ -47,6 +47,26 @@ public class SessionRailViewModelTests {
         });
     }
 
+    /// `/repo` and `/repo/` are one repository — without separator normalization the rail would
+    /// show two same-leaf groups for one checkout.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Trailing_separators_do_not_split_a_repository_group() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var (service, rail) = Build();
+            using (rail) {
+                service.Agents.AddOrUpdate(Dto("a1", "/dev/alpha"));
+                service.Agents.AddOrUpdate(Dto("a2", "/dev/alpha/"));
+
+                await Assert.That(rail.Repos).Count().IsEqualTo(1);
+                await Assert.That(rail.Repos[0].RootPath).IsEqualTo("/dev/alpha");
+                await Assert.That(rail.Repos[0].Worktrees).Count().IsEqualTo(1);
+                await Assert.That(rail.Repos[0].Worktrees[0].Sessions.Select(s => s.Id))
+                    .IsEquivalentTo(["a1", "a2"]);
+            }
+        });
+    }
+
     /// A reviewer that borrowed a checkout belongs on that checkout's node, beside the session it
     /// reviews — a snapshot reviewer too, which runs elsewhere but names what it borrowed. The
     /// collapse key follows the same rule, so opening the reviewer expands that node.

@@ -57,4 +57,8 @@ public interface IPermissionService : IDisposable {
     /// Answers a classified AskUserQuestion entry (Questions non-null; ArgumentException otherwise,
     /// as for an invalid answer set — both thrown before anything reaches the wire).
     Task<PermissionResolveOutcome> AnswerAsync(PendingPermissionRequest target, IReadOnlyList<ElicitationAnswer> answers, CancellationToken ct);
+    /// Retires a request whose tool already has a result in the transcript: it was answered where
+    /// the daemon cannot see (the vendor's own terminal prompt), so the app is the party that knows.
+    /// Concluded here on any ack, a rejected decision from an older daemon included.
+    Task<PermissionResolveOutcome> WithdrawAsync(PendingPermissionRequest target, CancellationToken ct);
 }

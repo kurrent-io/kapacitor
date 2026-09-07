@@ -845,7 +845,7 @@ public static class OAuthLoginFlow {
             json = await CorrectWorkOSOrgAsync(http, apiBase, clientId, json, organizationId, ct);
 
             if (json is null) {
-                progress.Error("Error: signed in to the wrong workspace. Re-run `kcap login` and choose the one this server belongs to.");
+                progress.Error("Error: Signed in to the wrong workspace. Sign in again and choose the one this server belongs to.");
 
                 return null;
             }

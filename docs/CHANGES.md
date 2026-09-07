@@ -6,6 +6,165 @@ diff. `CLAUDE.md` holds the invariants; `docs/superpowers/specs/` holds the full
 Not release notes. Each entry is written as of the change that produced it and is not revised as the
 code moves on; where an entry disagrees with the code, the code wins.
 
+## The desktop app shows a session waiting for input
+
+The web already marked a session whose turn was over; the desktop app lit its needs-you pip only
+for a failed status or a pending ask, because the local status payload carried nothing about turn
+boundaries. Both of the web's sources bypass the app: the Claude Stop hook posts to the server, and
+the daemon's turn attestation (`TurnInFlight`) rode only the server-bound status report.
+
+**The daemon owns the verdict, on the agent's activity clock.** The clock already brackets every
+runtime-attested turn (ACP vendors, Pi, Codex app-server, Antigravity), so its falling edge is the
+one place "the turn ended" is known, and the rising edge, a delivered input, or a relayed prompt
+submit clears it. A delivered input is the server's send or a local client's Enter on the attach
+socket: the desktop composer and terminal both arrive as raw PTY bytes there, never through the
+server's send path, and the plugin routes Claude's prompt-submit hook to a title script rather
+than to kcap. A delivery clears only the wait it answered: the clock counts every observed turn
+end — a second Stop on a flag already set counts, since a PTY vendor relays nothing else — the
+sender samples the count before writing and clears against it afterwards, because Codex can
+complete a turn before the send that started it returns, and a PTY submit spray runs for seconds
+in which a short turn's Stop lands. The flag is deliberately not activity: it never moves `ActivitySeq` or
+`IdleForMs`, which the reaper and the server's idle episodes read, so a display hint cannot delay a
+reap or open a durable idle marker. The payload emits `awaiting_input` only while Running — a
+terminal agent keeps whatever its clock last saw, and that must not read as a pending ask — and
+null from an older daemon, which a client reads as unknown, never as working.
+
+**PTY vendors relay their hooks to the daemon's loopback bridge.** PTY silence attests nothing, so
+Claude and Codex report their own turn boundaries: Stop marks the wait, prompt submit and a tool
+call clear it, on `/{token}/{vendor}/input-wait` beside the permission route. The relay runs ahead
+of every gate in the hook — client creation, auth, exclusion — because it is local display state
+and a server outage is exactly when the app is the surface that matters; it is best effort on a
+one-second cap, bounded further by the hook's own remaining budget, so a wedged daemon cannot push
+a policy decision past the host's kill. Only a daemon-spawned agent has both `KCAP_AGENT_ID` and a
+loopback `KCAP_DAEMON_URL`; anything else relays nothing, and neither does a subagent's tool
+call (`agent_id` set), which runs the same hook with the parent's environment but is not the
+parent's turn. The route trusts the same shared token
+and attribution ladder as the permission route, on the same footing: every caller is one of the
+owner's own hosted processes, and the verdict moves nothing but a display hint.
+
+**The app folds the flag into the existing pip**, gated on an answerable kind: a flow participant
+between rounds waits on the flow, not the user. The card and chat footer read "Waiting for input"
+over the running dot, since the process is live. The tray is unchanged.
+
+## The desktop app shows the same session titles as the web
+
+The daemon resolves a title per hosted agent and carries it in the existing `AgentStatusDto.Title`
+field, so every status consumer — rail, Home cards, tray, remote clients — upgrades without a wire
+change. Resolution is a ladder in `TitleResolveLoop`: the vendor's native transcript title (Claude
+writes `ai-title` lines; the older `summary` shape must keep being accepted), then the server's
+title, then at most one local generation per agent.
+
+**A server title that prefixes the launch prompt counts as no title.** The watcher's initial title
+and the daemon's own seed are both prefix-truncations of the prompt's first line, so adopting the
+echo would overwrite a better native title with what the seed already shows — and treating it as
+real would block both the convergence push and the generation fallback.
+
+**An unreadable server is not a silent one.** Generation costs an LLM call, and for a recorded
+session the watcher is already making that call; a fetch failure (auth lapse, outage) must not be
+read as "the watcher produced nothing" and trigger a second spend. The port throws on failure so
+the loop can tell the two apart, and generation waits out a grace period for the watcher's title
+to land.
+
+**Locally resolved titles converge via `/hooks/set-title`.** The watcher stays a legitimate
+concurrent writer — last writer wins on the server, and the loop adopts the server's title whenever
+it differs, so web and desktop settle on the identical string. A private agent's view carries no
+session id at all: its contract is no per-agent server calls, so only the local lanes apply.
+
+## Declared work structure is bounded by visibility, not by repository
+
+The server takes a breakdown or a relation whose other end lives in another repository — it bounds
+both by what the caller can see, and repository is display only. The `declare_work_breakdown` and
+`declare_work_relation` descriptions, the `kcap-workitems` preamble, the skill and the README state
+that boundary, because an agent reads them before it calls: a repository rule in that text costs
+declarations the server would have accepted, and the loss is silent — the structure is simply never
+declared.
+
+## The reviewer lookup places a session running in a linked worktree
+
+`RepoPathStore` collapses a linked worktree to its main repository before storing it, and
+`GitRepository.FindRoot` stops at the worktree's own `.git` file — so comparing the session's root
+against the advertised paths answers `no_repo_hosting_daemon` for a repository the daemon does host,
+from every session inside `<repo>/.claude/worktrees/<slug>`. That the same session can
+`start_review_flow` is not a contradiction: the server matches daemons by repository identity, not by
+path.
+
+**Both shapes of advertised path match, because a daemon's `RepoPaths` carries two origins.** The
+store collapses what it persists; a configured `AllowedRepoPaths` entry is advertised as written, so
+an operator who allowlists a worktree root by hand has that root on the wire. The session's own root
+and its main repository are both compared, and either matching is enough — collapsing one side alone
+would trade the bug for its mirror image.
+
+**The collapse lives in the aggregation, which costs it its purity.** Resolving at the call site
+would leave the next caller free to compare a raw root again, and hashing the way the server does
+would put the server's identity algorithm on the client. It touches the filesystem, but a path that
+names nothing comes back unchanged, so a synthetic root still compares as itself.
+
+A submodule keeps its own identity through this: its `.git` points into `.git/modules`, which the
+resolver leaves alone, so a submodule checkout does not match a daemon hosting the superproject.
+
+## The work-context pane reads the work item from one endpoint
+
+**AI-2521** fills the sidebar's SOON slots — the item's state, its overview, per-part completion,
+the linked issue and who is on it — from the server's one read per work item,
+`GET /api/work-items/{id}`. It joins the assignments, topology and summary calls as a fourth read:
+it starts beside the topology read once the primary assignment is known, a final 401 or a
+plan-gate 403 on it decides the whole read like the others, and any other failure degrades its
+section the way a topology blip does.
+
+**The key is the endpoint's, not split from the label.** The assignments label packed `"KEY — title"`
+by convention; the item read carries the key, the title and the tracker's enriched title as
+separate fields, so the split and its silent failure mode are gone. When the item read fails for a
+primary the pane has not shown before, the label shows whole as the title with no key chip and the
+pane is stale.
+
+**Parts move to the item read; the topology keeps the rest.** The item's parts carry a settled flag
+the topology never had, so the parts list, its "N of M" header and the marks come from there.
+Part-of, blockers and the cycle marker still come from the topology, and each section keeps its own
+last projection when its read fails.
+
+**The card's identity is the served id.** An absorbed item is served under its survivor's id, and
+the assignments row may catch up to that id a poll later. The pane keys "same primary" on the served
+id and falls back to the requested one when a read carried no item, so neither transition drops the
+projection.
+
+**Reference-class links are ignored on purpose.** The server passes `link_class = reference` rows
+through for other consumers; the issue card is the first `kind = issue` row of class `link`, and its
+URL crosses the same `LinkPolicy` boundary as the PR cards.
+
+**Contributors render as initials.** The app has no remote image loader, so `avatar_url` is carried
+on the view model and not fetched. Collapsed, the section is an initials stack with the session
+count; expanded, a row per person with their last activity. Until an item has contributors the
+row shows this session's requester, the one person the daemon knows.
+
+**A mechanical overview is hidden.** `is_overview_mechanical` marks a generated one-liner that
+restates the title; only a summarizer overview earns the paragraph under the title.
+
+The no-repository note no longer says breakdown and blockers come with the repository: the server
+dropped its same-repository rule for structure, though a work item itself still requires one.
+
+## The SessionStart index names the repo's projects
+
+An agent can only land a memory at project scope by passing a slug, and nothing in a session told it
+which project the cwd repo is in — so cross-repo learnings went to org, the only cross-repo scope
+reachable without one. The index fragment now opens with a line per project naming that slug.
+
+**The projects ride the index call, negotiated by `include=projects`.** The body was a bare array and
+a CLI that predates this drops the whole fragment when it is not one, so the shape could not simply
+change. A sibling endpoint or a superseding one costs a second round trip inside a hook budget that
+is already tight on Cursor and Claude; a response header cannot carry a non-ASCII project name
+without an encoding nobody else in the wire needs. The parameter costs nothing and degrades in both
+directions: an older server ignores it and answers with the array, a newer one answers with an
+object, and the CLI decides which it got by sniffing the opening token. Sniffing rather than
+attempting the array parse matters — a failed deserialize is indistinguishable from a corrupt body,
+which is retried, and an old server would never answer differently.
+
+**The parameter goes out even with no repo resolved.** It declares that this CLI can read the object
+body, not that a repo is in hand; making it conditional would leave the server answering one request
+with two shapes.
+
+**Projects alone are enough to emit a fragment**, where entries alone are not. A project holding no
+memories yet is exactly the state the agent is being asked to fix, and it cannot without the slug.
+
 ## The flow can enable the daemon as a service
 
 `kcap daemon service ensure` existed with no caller in the product. Making the browser able to ask for it
@@ -471,6 +630,26 @@ what bounds the outgoing resolve frame by arithmetic. An unparseable or oversize
 back to the permission card (Allow = let the TUI ask) with "Allow always" hidden for the
 question tool.
 
+**A series is walked one question at a time**, the way Claude Code's own TUI does it: a step chip
+per question plus a closing Review step, a single-select pick advances, Enter on an answered
+question advances, and only the Review step — every answer listed, each row a way back to its
+question — submits. A lone question keeps its Submit inline and the fast path (one single-select
+question with options) still submits on the pick. Option chrome lives in class styles only: a
+local `Background`/`BorderBrush` on the button outranks the `selected` style and leaves it inert,
+which is what made a pick look like nothing had happened.
+
+**A terminal answer retires the card.** The daemon never sees a TUI answer: the `PermissionRequest`
+hook stays parked and no hook reports the tool's completion (the plugin registers no
+`PostToolUse`), so the broker holds the request until the agent exits. The Chat tab already tails
+the transcript, and a `tool_result` for a pending request's `tool_use_id` is the one signal that
+the prompt was answered elsewhere — so the tab sends the resolve frame with decision `withdraw`,
+which the daemon settles as `withdrawn`/`tool_settled` and answers the hook with a deny (an allow
+could only apply to some later call). An older daemon rejects the decision and the app concludes
+the entry locally on that ack, so the card still goes. Sent once per request. A failed send
+reopens it and retries on a bounded doubling backoff of its own, because the resolve rides a
+one-shot socket that can fail while the subscription stays healthy, and an empty transcript poll
+never reconciles; past the cap, the next resubscribe or permission/transcript change tries again.
+
 ## Compact tool calls in the Chat tab
 
 **AI-2418** (spec: `docs/superpowers/specs/2026-09-02-ai2418-compact-tool-calls-design.md`) folds a
@@ -480,7 +659,8 @@ text, system note) closes the run. **The fold is uniform** — a lone settled ca
 command" — and **folding never hides an error**: a failed call inside a folded group puts the danger
 `✕` on the summary line. The group binds ONE inner list whose source swaps on toggle, because a
 hidden `ItemsControl` keeps its containers; expanding a group realizes every row and folding releases
-them. Expanding holds follow-tail once, so the clicked summary stays in view. Summary wording keys on
+them. Expanding is the reader's own gesture, so follow-tail leaves the clicked summary in view until
+the reader returns to the bottom. Summary wording keys on
 the transcript's tool name (Codex's rollout says `shell`, its hook says `Bash`), with Codex shell
 commands classified by `CodexCommandClassifier`, ported verbatim from the server into Core so the
 server can delete its copy on the next submodule bump. A row waiting on a permission shows an accent
@@ -688,6 +868,72 @@ client by lease so overlapping reads never see it disposed, retires it on sign-o
 with the launch client through a holder that memoizes the cleanup, so both teardown paths reach it
 and nothing is disposed twice. The window gains a minimum width equal to its default: 310 of rail plus
 400 of pane must never squeeze the terminal column to nothing.
+
+## Transcript normalization has one home
+
+**AI-2265** (spec: `docs/superpowers/specs/2026-09-04-ai2265-transcript-normalization-leaf-design.md`)
+moves transcript-to-canonical projection into `Capacitor.Models.Transcripts`, a leaf with the
+`Kurrent.Agent.Schema` package and nothing else, so the desktop chat and, from the server's
+adoption step onward, the server read one implementation. **Projections emit the schema's own
+messages**, because that is what the server persists and the package is AOT-clean; the chat keeps
+its `AcpEventEnvelope` renderer through an adapter in Core, with each vendor's display rules
+(Claude's wrapper stripping and task-notification note, Codex's injected-prelude skip) beside it
+under `Harness/<Vendor>/`. **A projection never mutates an event it has returned**: anything the
+server stamps in place today arrives as an explicit amendment or a `UsageApplied` instruction.
+**Every id derivation is a persistence contract** pinned by fixed vectors; the server dedups by
+them. This first step carries the chat's coverage only; Claude and Codex parity with the server's
+normalizers follow, one PR each. Five things the chat shows differently after this step, all
+narrower than before: several text blocks in one Claude user record are one bubble; text beside
+tool results is not shown; the envelope carries no model; a user record opening with an
+available-deferred-tools injection is dropped, as the server drops it; and a meta record's tool
+results settle their tool rows instead of vanishing with the record.
+
+## A vendor-neutral tool kind on canonical tool-call events
+
+**#746** puts an `AcpToolKind` beside `ToolName` on `AcpEventEnvelope`, so a consumer that wants to
+know what a tool call *did* reads one closed vocabulary — the ten ACP `ToolKind` tokens — instead of
+keeping a per-vendor name table. `ToolName` stays raw vendor fidelity: the server's Codex handling
+pairs `exec_command` with `write_stdin` and reaches into `apply_patch` results by that name, so the
+name is not ours to normalise. The field is nullable and additive; `ContractVersion` stays 1.
+
+**A null kind means no lane classified the call, never "none of the above."** `AcpToolKind.Normalize`
+is what keeps the set closed — an agent-supplied token outside the vocabulary becomes `other` rather
+than reaching a consumer that switches on it — while an absent one stays absent. That leaves null free
+to say something else: the lanes that carry no kind yet.
+
+**A codex shell call is classified by its command, because it has no name of its own for a read or a
+search** — `sed -n`, `cat` and `rg` all arrive as one tool. An unclassifiable command is `execute`: a
+shell call did run something.
+
+**A hosted web search surfaces as a paired call and result.** It has no `item/started` row, so the
+completed item carries both halves, the same rule `fileChange` follows — an orphan tool call renders
+as running forever, since a result is what settles one. It is `fetch`, the kind a web tool gets
+wherever it appears, so the hosted lane and a later import of the same session cannot disagree.
+
+## Codex web and tool searches reach the transcript
+
+**#794** projects two `response_item` payloads the Codex rollout projection dropped, so a Codex web
+search no longer disappears: `web_search_call` and the `tool_search_call` / `tool_search_output` pair.
+Until now `fetch` was unreachable for Codex while Claude's `WebSearch` mapped straight to it, so the
+vocabulary was populated asymmetrically across vendors.
+
+**A web search projects as a synthesized pair.** It is written already settled, carries no id of its
+own — its payload is exactly `action` / `status` / `type` — and keeps its results in the `event_msg`
+lane this projection does not read. So the record supplies the call id for both halves, and the two
+events take the record id and its `result` sibling. A call with no result never settles for a consumer
+that pairs by id; the status is the only outcome available. A tool-registry lookup needs none of that:
+it has a `call_id` and its own output record.
+
+**`tool_search` is `other`, not `search`.** The ACP kind means searching for content, and counting a
+tool-registry lookup as one would skew every consumer measuring how much the agent searched the
+workspace.
+
+**The kind for an imported transcript is stamped by the vendor's chat rules**, which already rewrite
+envelopes and already live per vendor. That gives an import the same kinds the hosted lane carries
+without waiting on the canonical schema, which has no field for it — a projected tool call is a
+`Kurrent.Agent.Schema` `ToolCallInfo`, so the persisted event stays kind-less until the package gains
+one. The shell-command rule is shared with the daemon rather than written twice: a hosted session and
+an import of it must not answer differently for the same call.
 
 ## The machine beats, so a death that cannot speak is still visible
 

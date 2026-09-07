@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Harness.Codex;
 using Microsoft.Extensions.Logging;
 
 namespace Capacitor.Cli.Daemon.Harness.Codex;
@@ -131,10 +132,23 @@ internal sealed partial class CodexNotificationMapper {
                 return Two(
                     new AcpEventEnvelope(
                         Kind: AcpEventKind.ToolCall, ToolCallId: id, ToolName: "apply_patch",
-                        ToolInputJson: RenderChanges(item.Arr("changes")), ItemId: id, TimestampIso: ts),
+                        ToolInputJson: RenderChanges(item.Arr("changes")), ToolKind: AcpToolKind.Edit,
+                        ItemId: id, TimestampIso: ts),
                     new AcpEventEnvelope(
                         Kind: AcpEventKind.ToolResult, ToolCallId: id, ToolResult: item.Str("status") ?? "",
                         ToolIsError: item.Str("status") is "failed" or "declined", ItemId: id, TimestampIso: ts));
+
+            case "webSearch":
+                // Like fileChange, no item/started row — so the completed item carries both halves and a
+                // consumer never sees an orphan call. Every action of the one web tool is a fetch.
+                return Two(
+                    new AcpEventEnvelope(
+                        Kind: AcpEventKind.ToolCall, ToolCallId: id, ToolName: "web_search",
+                        ToolInputJson: RenderWebSearchOpen(item), ToolKind: AcpToolKind.Fetch,
+                        ItemId: id, TimestampIso: ts),
+                    new AcpEventEnvelope(
+                        Kind: AcpEventKind.ToolResult, ToolCallId: id, ToolResult: Content(item, "results") ?? "",
+                        ItemId: id, TimestampIso: ts));
 
             case "mcpToolCall":
                 return One(new AcpEventEnvelope(
@@ -158,12 +172,14 @@ internal sealed partial class CodexNotificationMapper {
             case "commandExecution":
                 return One(new AcpEventEnvelope(
                     Kind: AcpEventKind.ToolCall, ToolCallId: id, ToolName: "shell",
-                    ToolInputJson: RenderCommandOpen(item), ItemId: id, TimestampIso: ts));
+                    ToolInputJson: RenderCommandOpen(item), ToolKind: CodexToolKinds.Shell(item.Str("command")),
+                    ItemId: id, TimestampIso: ts));
 
             case "mcpToolCall":
                 return One(new AcpEventEnvelope(
                     Kind: AcpEventKind.ToolCall, ToolCallId: id, ToolName: McpToolName(item),
-                    ToolInputJson: McpArguments(item), ItemId: id, TimestampIso: ts));
+                    ToolInputJson: McpArguments(item), ToolKind: AcpToolKind.Other,
+                    ItemId: id, TimestampIso: ts));
 
             // Text/reasoning/plan/userMessage/fileChange have no separate "open" row — their content
             // arrives via deltas + the completed snapshot. An unknown type is counted once at completion,
@@ -223,7 +239,8 @@ internal sealed partial class CodexNotificationMapper {
         // the completed item's canonical envelopes are authoritative either way).
         return One(new AcpEventEnvelope(
             Kind: AcpEventKind.ToolCall, ToolCallId: itemId, ToolName: "apply_patch",
-            ToolInputJson: RenderChanges(changes), Ephemeral: true, ItemId: itemId));
+            ToolInputJson: RenderChanges(changes), ToolKind: AcpToolKind.Edit,
+            Ephemeral: true, ItemId: itemId));
     }
 
     IReadOnlyList<AcpEventEnvelope> Unmapped(string? type, string? id, JsonElement item, string? ts) {
@@ -235,7 +252,8 @@ internal sealed partial class CodexNotificationMapper {
         // item is a JSON object, so it rides as the tool's arguments for a viewer to inspect.
         return One(new AcpEventEnvelope(
             Kind: AcpEventKind.ToolCall, ToolCallId: id, ToolName: type ?? "unknown",
-            ToolInputJson: item.GetRawText(), ItemId: id, TimestampIso: ts));
+            ToolInputJson: item.GetRawText(), ToolKind: AcpToolKind.Other,
+            ItemId: id, TimestampIso: ts));
     }
 
     // ── Rendering helpers (pure) ──────────────────────────────────────────────────────────────────
@@ -314,6 +332,22 @@ internal sealed partial class CodexNotificationMapper {
             w.WriteStartObject();
             WriteNullable(w, "command", item.Str("command"));
             WriteNullable(w, "cwd", item.Str("cwd"));
+            w.WriteEndObject();
+        }
+        return Encoding.UTF8.GetString(buffer.ToArray());
+    }
+
+    // The query is the item's own required field; the action (search / openPage / find-in-page) rides
+    // along verbatim, since its variants carry the url or pattern the query alone does not show.
+    static string RenderWebSearchOpen(JsonElement item) {
+        using var buffer = new MemoryStream();
+        using (var w = new Utf8JsonWriter(buffer)) {
+            w.WriteStartObject();
+            WriteNullable(w, "query", item.Str("query"));
+            if (item.Obj("action") is { } action) {
+                w.WritePropertyName("action");
+                action.WriteTo(w);
+            }
             w.WriteEndObject();
         }
         return Encoding.UTF8.GetString(buffer.ToArray());

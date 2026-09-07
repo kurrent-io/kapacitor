@@ -1,21 +1,28 @@
 <Application xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              x:Class="Capacitor.App.App"
-             RequestedThemeVariant="Default">
+             RequestedThemeVariant="Dark">
     <Application.Resources>
         <!-- The Home surface's design palette. Kcap-prefixed keys so these never
              shadow a FluentTheme resource of the same short name — MainWindow's existing controls
-             stay on FluentTheme defaults untouched. -->
+             stay on FluentTheme defaults untouched. ThemeVariant is Dark because every Kcap*
+             brush is a dark-canvas token: Fluent's light ButtonBackgroundPointerOver would paint
+             a near-white fill under our light Foreground and the control vanishes on hover. -->
         <ResourceDictionary>
             <SolidColorBrush x:Key="KcapCanvasBrush" Color="#0B0D12" />
             <SolidColorBrush x:Key="KcapSurfaceBrush" Color="#12151D" />
             <SolidColorBrush x:Key="KcapSurfaceRaisedBrush" Color="#191D27" />
             <SolidColorBrush x:Key="KcapBorderBrush" Color="#2A3040" />
             <SolidColorBrush x:Key="KcapTextBrush" Color="#F1F3F7" />
-            <SolidColorBrush x:Key="KcapMutedBrush" Color="#9299AA" />
-            <SolidColorBrush x:Key="KcapFaintBrush" Color="#6F7687" />
-            <SolidColorBrush x:Key="KcapAccentBrush" Color="#5BE0B3" />
-            <SolidColorBrush x:Key="KcapAccentDimBrush" Color="#173F36" />
+            <!-- Secondary / tertiary body text: both clear AA (≥4.5:1) on Canvas→Border.
+                 Faint was #6F7687 (~3.7:1 on Raised) — too dim for real copy. -->
+            <SolidColorBrush x:Key="KcapMutedBrush" Color="#B0B7C6" />
+            <SolidColorBrush x:Key="KcapFaintBrush" Color="#949BAA" />
+            <!-- Primary CTAs: near-white fill. Green (KcapSuccess*) is status/selection only. -->
+            <SolidColorBrush x:Key="KcapPrimaryBrush" Color="#F1F3F7" />
+            <SolidColorBrush x:Key="KcapOnPrimaryBrush" Color="#0B0D12" />
+            <SolidColorBrush x:Key="KcapSuccessBrush" Color="#5BE0B3" />
+            <SolidColorBrush x:Key="KcapSuccessDimBrush" Color="#173F36" />
             <SolidColorBrush x:Key="KcapWarningBrush" Color="#F4B860" />
             <SolidColorBrush x:Key="KcapWarningDimBrush" Color="#45351E" />
             <SolidColorBrush x:Key="KcapPurpleBrush" Color="#A994FF" />
@@ -26,19 +33,78 @@
     <Application.Styles>
         <FluentTheme />
         <!-- Popup panels drawn on our tokens: the flyout presenter IS the panel (no inner Border
-             fighting the theme's own chrome). Opted into per flyout via FlyoutPresenterClasses. -->
+             fighting the theme's own chrome). Opted into per flyout via FlyoutPresenterClasses.
+             Fluent's ControlTheme defaults ScrollViewer.HorizontalScrollBarVisibility=Auto on the
+             presenter's OWN ScrollViewer — that is the horizontal bar on Activity, not the inner
+             one. Content that needs to scroll owns its own ScrollViewer. -->
         <Style Selector="FlyoutPresenter.kcapPanel">
             <Setter Property="Background" Value="{StaticResource KcapSurfaceBrush}" />
             <Setter Property="BorderBrush" Value="{StaticResource KcapBorderBrush}" />
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="CornerRadius" Value="12" />
             <Setter Property="Padding" Value="0" />
+            <Setter Property="MaxWidth" Value="10000" />
+            <Setter Property="MaxHeight" Value="10000" />
+            <Setter Property="ScrollViewer.HorizontalScrollBarVisibility" Value="Disabled" />
+            <Setter Property="ScrollViewer.VerticalScrollBarVisibility" Value="Disabled" />
         </Style>
         <!-- A TextBox inside one of our cards: the card is its boundary, so the theme's focused
-             ring and fill would read as a second box. -->
+             ring and fill would read as a second box. Fluent's default placeholder follows the
+             system theme and goes near-black on our dark surfaces — pin a readable muted tone. -->
+        <Style Selector="TextBox.kcapEmbedded">
+            <Setter Property="PlaceholderForeground" Value="{StaticResource KcapMutedBrush}" />
+        </Style>
         <Style Selector="TextBox.kcapEmbedded:focus /template/ Border#PART_BorderElement, TextBox.kcapEmbedded:pointerover /template/ Border#PART_BorderElement">
             <Setter Property="Background" Value="Transparent" />
             <Setter Property="BorderThickness" Value="0" />
+        </Style>
+        <!-- Fluent paints hover/pressed on PART_ContentPresenter, not the Button.Background local
+             value — so a chip that sets its own fill still gets a theme fill that clashes with
+             KcapTextBrush. These classes pin the template chrome to our tokens (same footgun
+             HomeView.sessionCard / SessionRail.railRow already call out). -->
+        <Style Selector="Button.kcapChip:pointerover /template/ ContentPresenter#PART_ContentPresenter,
+                         Button.kcapChip:pressed /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="{StaticResource KcapBorderBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource KcapBorderBrush}" />
+            <Setter Property="Foreground" Value="{StaticResource KcapTextBrush}" />
+        </Style>
+        <Style Selector="Button.kcapPrimary">
+            <Setter Property="Background" Value="{StaticResource KcapPrimaryBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource KcapPrimaryBrush}" />
+            <Setter Property="Foreground" Value="{StaticResource KcapOnPrimaryBrush}" />
+        </Style>
+        <Style Selector="Button.kcapPrimary:pointerover /template/ ContentPresenter#PART_ContentPresenter,
+                         Button.kcapPrimary:pressed /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="{StaticResource KcapPrimaryBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource KcapPrimaryBrush}" />
+            <Setter Property="Foreground" Value="{StaticResource KcapOnPrimaryBrush}" />
+        </Style>
+        <Style Selector="Button.kcapPrimary:disabled /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="{StaticResource KcapBorderBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource KcapBorderBrush}" />
+            <Setter Property="Foreground" Value="{StaticResource KcapFaintBrush}" />
+        </Style>
+        <Style Selector="Button.kcapGhost:pointerover /template/ ContentPresenter#PART_ContentPresenter,
+                         Button.kcapGhost:pressed /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="{StaticResource KcapSurfaceRaisedBrush}" />
+            <Setter Property="BorderBrush" Value="Transparent" />
+            <Setter Property="Foreground" Value="{StaticResource KcapTextBrush}" />
+        </Style>
+        <!-- Live tool-call status: a soft pulse so an in-flight row is never a blank gap. -->
+        <Style Selector="Border.toolRunning">
+            <Style.Animations>
+                <Animation Duration="0:0:1.1" IterationCount="Infinite">
+                    <KeyFrame Cue="0%">
+                        <Setter Property="Opacity" Value="0.35" />
+                    </KeyFrame>
+                    <KeyFrame Cue="50%">
+                        <Setter Property="Opacity" Value="1" />
+                    </KeyFrame>
+                    <KeyFrame Cue="100%">
+                        <Setter Property="Opacity" Value="0.35" />
+                    </KeyFrame>
+                </Animation>
+            </Style.Animations>
         </Style>
     </Application.Styles>
 </Application>

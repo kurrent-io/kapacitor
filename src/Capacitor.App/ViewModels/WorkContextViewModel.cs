@@ -3,6 +3,7 @@ using System.Reactive.Concurrency;
 using System.Reactive.Disposables;
 using System.Reactive.Disposables.Fluent;
 using System.Reactive.Linq;
+using System.Reactive.Subjects;
 using Avalonia.Threading;
 using Capacitor.App.Services;
 using Capacitor.Cli.Core.LocalIpc;
@@ -26,7 +27,7 @@ public sealed partial class WorkContextViewModel : ReactiveObject {
     internal const string WaitingNote      = "Waiting for the session to register…";
     internal const string LoadingNote      = "Loading work context…";
     internal const string NoWorkItemNote   = "No work item attached yet. The agent's declare tool attaches one.";
-    internal const string NoRepositoryNote = "This session has no repository. A work item cannot attach until the work lands in one — breakdown and blockers come with it.";
+    internal const string NoRepositoryNote = "This session has no repository. A work item cannot attach until the work lands in one.";
     internal const string SignedOutNote    = "Sign in to see the work context.";
     internal const string NotInPlanNote    = "Work items are not in this workspace's plan.";
     internal const string UnreachableNote  = "Couldn't reach the server.";
@@ -41,6 +42,7 @@ public sealed partial class WorkContextViewModel : ReactiveObject {
 
     readonly IWorkContextSource _source;
     readonly IUrlOpener _opener;
+    readonly TimeProvider _time;
     readonly CompositeDisposable _disposables = new();
     readonly List<ReadLease> _outstanding = [];
     ReadLease? _current;
@@ -97,9 +99,31 @@ public sealed partial class WorkContextViewModel : ReactiveObject {
     bool _isStale;
     public bool IsStale { get => _isStale; private set => this.RaiseAndSetIfChanged(ref _isStale, value); }
     bool _isReading;
-    public bool IsReading { get => _isReading; private set => this.RaiseAndSetIfChanged(ref _isReading, value); }
+    public bool IsReading {
+        get => _isReading;
+        private set {
+            if (_isReading == value) return;
+            this.RaiseAndSetIfChanged(ref _isReading, value);
+            this.RaisePropertyChanged(nameof(RefreshTip));
+        }
+    }
     bool _hasSession;
-    public bool HasSession { get => _hasSession; private set => this.RaiseAndSetIfChanged(ref _hasSession, value); }
+    // Subject, not WhenAnyValue — same RxAppBuilder init trap as SessionRailViewModel.SelectedAgentId.
+    readonly BehaviorSubject<bool> _hasSessionChanges = new(false);
+    public bool HasSession {
+        get => _hasSession;
+        private set {
+            if (_hasSession == value) return;
+            this.RaiseAndSetIfChanged(ref _hasSession, value);
+            _hasSessionChanges.OnNext(value);
+            this.RaisePropertyChanged(nameof(RefreshTip));
+        }
+    }
+
+    /// Tip on the header refresh control — bound with ShowOnDisabled so a greyed icon still explains itself.
+    public string RefreshTip => HasSession
+        ? IsReading ? "Refreshing…" : "Refresh"
+        : "Waiting for the session ID";
 
     public ReactiveCommand<Unit, Unit> RefreshCommand { get; }
     public ReactiveCommand<Unit, Unit> SignInCommand { get; }
@@ -112,11 +136,20 @@ public sealed partial class WorkContextViewModel : ReactiveObject {
             Action? requestSignIn = null, IObservable<Unit>? signInCompleted = null) {
         _source = source;
         _opener = opener;
+        _time = time;
         InitializeProjections();
+        _disposables.Add(_hasSessionChanges);
 
+        // Enabled for any known session id. A click while a read is in flight queues one follow-up
+        // (RefreshPending) instead of disabling the control — a greyed icon looked broken and ate
+        // the click with no feedback.
         RefreshCommand = ReactiveCommand.Create(
-            () => { if (_current is { IsReading: false } lease) StartRead(lease); },
-            this.WhenAnyValue(x => x.HasSession, x => x.IsReading, (has, reading) => has && !reading));
+            () => {
+                if (_current is null) return;
+                if (_current.IsReading) _current.RefreshPending = true;
+                else StartRead(_current);
+            },
+            _hasSessionChanges);
         _disposables.Add(RefreshCommand);
         SignInCommand = ReactiveCommand.Create(() => { requestSignIn?.Invoke(); });
         _disposables.Add(SignInCommand);

@@ -102,7 +102,7 @@ public class WorkspaceViewSmokeTests {
             Dispatcher.UIThread.RunJobs();
 
             var names = new[] {
-                "WorkspaceTitle", "WorkspaceRepo", "WorkspaceVendorChip", "ChatTabButton",
+                "WorkspaceTitle", "WorkspaceSubtitle", "ChatTabButton",
                 "TerminalTabButton", "NoTerminalNote", "TerminalHost", "TerminalBanners",
                 "DetachButton", "ReattachButton", "SessionEndedNote", "ChatHost", "WorkContextHost",
             };
@@ -115,9 +115,9 @@ public class WorkspaceViewSmokeTests {
 
             var pane = Find<WorkContextView>(window, "WorkContextHost")!;
             foreach (var name in new[] {
-                "RefreshButton", "StaleDot", "WorkContextKey", "WorkContextTitle", "PartOfLine", "PartsToggle", "PartsList",
-                "BlockedByBlock", "CycleNoteText", "PhaseNoteText", "SignInButton", "RetryButton", "LinkCards", "IssueSoonCard",
-                "WhoToggle", "SessionToggle", "SessionSummaryText", "SessionFacts",
+                "RefreshButton", "StaleDot", "StatePill", "WorkContextKey", "WorkContextTitle", "OverviewText", "PartOfLine", "PartsToggle", "PartsList",
+                "BlockedByBlock", "CycleNoteText", "PhaseNoteText", "SignInButton", "RetryButton", "LinkCards", "IssueCard",
+                "WhoToggle", "ContributorStack", "ContributorList", "SessionCountText", "RequesterRow", "SessionToggle", "SessionSummaryText", "SessionFacts",
             })
                 await Assert.That(pane.FindControl<Control>(name)).IsNotNull().Because($"{name} should resolve");
 
