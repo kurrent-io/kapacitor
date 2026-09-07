@@ -726,26 +726,38 @@ public class HomeViewModelTests {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             using var tmp = TempDir.WithPathTo("app-state.json", out var path);
             var daemon = new FakeDaemonClientService();
+            var store = new AppStateStore(path);
             var remote = new FakeRemoteAgents();
             remote.DaemonsSubject.OnNext([
                 new DaemonInfo {
                     Name = "home-pc", OwnerUserId = "u1", Connected = true,
-                    RepoPaths = ["/w/repo"], SupportedVendors = ["codex"],
+                    RepoPaths = ["/w/repo", "/w/repo2"], SupportedVendors = ["codex"],
                 },
             ]);
             using var vm = new HomeViewModel(
-                daemon, new AppStateStore(path), new RecordingLaunchClient(), Known(),
+                daemon, store, new RecordingLaunchClient(), Known(),
                 daemons: remote.Daemons, viewerId: _ => Task.FromResult<string?>("u1"));
 
             await vm.SelectMachineAsync("home-pc");
 
             await Assert.That(vm.SelectedRepoPath).IsEqualTo("/w/repo");
             var repos = await vm.ListRepositoriesAsync();
-            await Assert.That(repos.Count).IsEqualTo(1);
-            await Assert.That(repos[0].RepoPath).IsEqualTo("/w/repo");
+            await Assert.That(repos.Count).IsEqualTo(2);
+            await Assert.That(repos.Any(r => r.RepoPath == "/w/repo")).IsTrue();
             await Assert.That(vm.Harnesses.Single(h => h.Vendor == "codex").Available).IsTrue();
             await Assert.That(vm.Harnesses.Single(h => h.Vendor == "claude").Available).IsFalse();
             await Assert.That(vm.SelectedVendor).IsEqualTo("codex");
+
+            // Picking another of the MACHINE's own repo paths must revalidate against that
+            // machine's supported vendors — never fall through to the local HarnessByRepo/
+            // DefaultVendor rule, which would reset onto "claude" (unsupported here) since
+            // "/w/repo2" has no local entry.
+            await vm.SelectRepositoryAsync("/w/repo2");
+            await Assert.That(vm.SelectedRepoPath).IsEqualTo("/w/repo2");
+            await Assert.That(vm.SelectedVendor).IsEqualTo("codex");
+
+            var saved = await store.LoadAsync();
+            await Assert.That(saved.HarnessByRepo is null || saved.HarnessByRepo.Count == 0).IsTrue();
         });
     }
 
