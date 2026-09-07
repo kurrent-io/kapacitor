@@ -70,10 +70,21 @@ public sealed class ServerConnectionService : IServerLane, ILaunchClient, IAsync
     /// triggered from outside it — RemoteAgentsService's onUnauthorized, when its own HTTP fetch
     /// hits a 401 the hub connection itself never saw. RestartAsync (wired to sign-in completion)
     /// is what revives it.
-    public void ParkSignedOut() {
+    public void ParkSignedOut() => ParkSignedOutCore(ifEpoch: null);
+
+    /// Parks only when the lane's current publish epoch still equals `ifEpoch` — the epoch of the
+    /// Connected status a delayed caller's own decision was made under. RemoteAgentsService reads
+    /// its own generation check and releases its lock before invoking onUnauthorized, so by the
+    /// time this runs the lane may already have moved on; re-validating here, atomically with the
+    /// park itself, is what a lock taken around the callback could not do without inverting this
+    /// lane's _statusLock against RemoteAgentsService's own cache lock.
+    public void ParkSignedOut(int ifEpoch) => ParkSignedOutCore(ifEpoch);
+
+    void ParkSignedOutCore(int? ifEpoch) {
         lock (_statusLock) {
+            if (ifEpoch is { } epoch && epoch != _publishEpoch) return;
             _publishEpoch++;
-            _status.OnNext(new(ServerLaneState.SignedOut));
+            _status.OnNext(new(ServerLaneState.SignedOut, Epoch: _publishEpoch));
         }
         _loopCts?.Cancel();
     }
@@ -96,7 +107,16 @@ public sealed class ServerConnectionService : IServerLane, ILaunchClient, IAsync
     async Task RunAsync(CancellationToken ct) {
         var attempt = 0;
         while (!ct.IsCancellationRequested) {
-            _status.OnNext(new(ServerLaneState.Connecting));
+            // Captured together with the Connecting publish, under the same lock: every other
+            // publish this attempt makes — Reconnecting's Retrying, the post-close Retrying, the
+            // generic-catch Retrying, Connected — reuses this SAME value, so a park landing at any
+            // point during the attempt (its epoch bump happens under the same lock) makes every
+            // later publish from this now-superseded attempt a no-op instead of overwriting the park.
+            int attemptEpoch;
+            lock (_statusLock) {
+                attemptEpoch = _publishEpoch;
+                _status.OnNext(new(ServerLaneState.Connecting, Epoch: attemptEpoch));
+            }
             HubConnection? hub = null;
             try {
                 hub = Build();
@@ -108,43 +128,41 @@ public sealed class ServerConnectionService : IServerLane, ILaunchClient, IAsync
                 var closed = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
                 hub.Closed += ex => { closed.TrySetResult(ex); return Task.CompletedTask;  };
                 hub.Reconnecting += _ => {
-                    lock (_statusLock) _status.OnNext(new(ServerLaneState.Retrying, "reconnecting"));
+                    PublishIfCurrentEpoch(attemptEpoch, ServerLaneState.Retrying, "reconnecting");
                     return Task.CompletedTask;
                 };
                 hub.Reconnected += async _ => {
-                    int reconnectEpoch;
-                    lock (_statusLock) reconnectEpoch = _publishEpoch;
                     var (diagnostic, subject) = await DiagnoseAsync().ConfigureAwait(false);
-                    PublishConnectedIfCurrent(capturedHub, reconnectEpoch, diagnostic, subject);
+                    PublishConnectedIfCurrent(capturedHub, attemptEpoch, diagnostic, subject);
                 };
 
-                int connectEpoch;
-                lock (_statusLock) connectEpoch = _publishEpoch;
                 await hub.StartAsync(ct).ConfigureAwait(false);
                 _hub = hub;
                 attempt = 0;
                 var (connectedDiagnostic, connectedSubject) = await DiagnoseAsync().ConfigureAwait(false);
-                PublishConnectedIfCurrent(capturedHub, connectEpoch, connectedDiagnostic, connectedSubject);
+                PublishConnectedIfCurrent(capturedHub, attemptEpoch, connectedDiagnostic, connectedSubject);
 
                 Exception? closeReason;
                 await using (ct.Register(() => closed.TrySetResult(null)))
                     closeReason = await closed.Task.ConfigureAwait(false);
 
                 if (!ct.IsCancellationRequested)
-                    _status.OnNext(new(ServerLaneState.Retrying, closeReason?.Message));
+                    PublishIfCurrentEpoch(attemptEpoch, ServerLaneState.Retrying, closeReason?.Message);
             } catch (OperationCanceledException) {
                 break;
             } catch (Exception ex) when (IsUnauthorized(ex)) {
                 // The credential is what kcap login repairs, not this loop — retrying a 401
                 // negotiate forever would just burn the backoff ladder for no reason. The lane
                 // parks here until RestartAsync (wired to sign-in completion) starts a fresh loop.
+                // This attempt IS the park (not a stale follower of one), so it bumps the epoch
+                // itself rather than checking against attemptEpoch.
                 lock (_statusLock) {
                     _publishEpoch++;
-                    _status.OnNext(new(ServerLaneState.SignedOut, ex.Message));
+                    _status.OnNext(new(ServerLaneState.SignedOut, ex.Message, Epoch: _publishEpoch));
                 }
                 return;
             } catch (Exception ex) {
-                _status.OnNext(new(ServerLaneState.Retrying, ex.Message));
+                PublishIfCurrentEpoch(attemptEpoch, ServerLaneState.Retrying, ex.Message);
             } finally {
                 _hub = null;
                 if (hub is not null) await hub.DisposeAsync().ConfigureAwait(false);
@@ -153,6 +171,15 @@ public sealed class ServerConnectionService : IServerLane, ILaunchClient, IAsync
             if (ct.IsCancellationRequested) break;
             var delay = Backoff[Math.Min(attempt++, Backoff.Length - 1)];
             try { await Task.Delay(delay, ct).ConfigureAwait(false); } catch (OperationCanceledException) { break; }
+        }
+    }
+
+    /// Publishes only when `epoch` still equals the lane's current publish epoch — the shared
+    /// guard every Retrying/Connecting publish from a connect attempt takes, so a park landing
+    /// mid-attempt is never overwritten by that attempt's own remaining lifecycle noise.
+    void PublishIfCurrentEpoch(int epoch, ServerLaneState state, string? detail = null) {
+        lock (_statusLock) {
+            if (epoch == _publishEpoch) _status.OnNext(new(state, detail, Epoch: epoch));
         }
     }
 
@@ -177,7 +204,7 @@ public sealed class ServerConnectionService : IServerLane, ILaunchClient, IAsync
     void PublishConnectedIfCurrent(HubConnection hub, int epoch, string? diagnostic, string? subject) {
         lock (_statusLock) {
             if (epoch == _publishEpoch && ReferenceEquals(_hub, hub) && hub.State == HubConnectionState.Connected)
-                _status.OnNext(new(ServerLaneState.Connected, Diagnostic: diagnostic, Subject: subject));
+                _status.OnNext(new(ServerLaneState.Connected, Diagnostic: diagnostic, Subject: subject, Epoch: epoch));
         }
     }
 

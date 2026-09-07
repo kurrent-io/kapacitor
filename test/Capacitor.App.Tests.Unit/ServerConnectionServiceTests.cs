@@ -169,6 +169,50 @@ public class ServerConnectionServiceTests {
         await Next(lane.Status, s => s.State == ServerLaneState.Connected);
     }
 
+    [Test]
+    public async Task ParkSignedOutWithIfEpochIgnoresAStaleEpochButHonorsTheCurrentOne() {
+        await using var host = await HubTestHost.StartAsync();
+        await using var lane = Lane(host);
+        lane.Start();
+        var connected = await Next(lane.Status, s => s.State == ServerLaneState.Connected);
+        var staleEpoch = connected.Epoch;
+
+        lane.ParkSignedOut();
+        var parked = await Next(lane.Status, s => s.State == ServerLaneState.SignedOut);
+        var currentEpoch = parked.Epoch;
+
+        await lane.RestartAsync();
+        await Next(lane.Status, s => s.State == ServerLaneState.Connected); // "a fresh Connected"
+
+        lane.ParkSignedOut(staleEpoch); // captured before the park above — must be ignored
+        await Task.Delay(200);
+        var stillConnected = await lane.Status.Take(1).ToTask();
+        await Assert.That(stillConnected.State).IsEqualTo(ServerLaneState.Connected);
+
+        lane.ParkSignedOut(currentEpoch); // the epoch the reconnect never changed — must still park
+        await Next(lane.Status, s => s.State == ServerLaneState.SignedOut);
+    }
+
+    [Test]
+    public async Task ParkSignedOutDuringATransportLossRetryingSequenceStaysParked() {
+        await using var host = await HubTestHost.StartAsync();
+        await using var lane = Lane(host);
+        lane.Start();
+        await Next(lane.Status, s => s.State == ServerLaneState.Connected);
+
+        await host.StopAsync(); // triggers SignalR's own automatic-reconnect cycle
+        await Next(lane.Status, s => s.State == ServerLaneState.Retrying, seconds: 15);
+
+        lane.ParkSignedOut();
+        await Next(lane.Status, s => s.State == ServerLaneState.SignedOut);
+
+        // A further reconnect attempt from the SAME (now epoch-stale) loop, if the guard failed,
+        // would overwrite this — give the retry policy's next tick a chance to (wrongly) land.
+        await Task.Delay(4000);
+        var latest = await lane.Status.Take(1).ToTask();
+        await Assert.That(latest.State).IsEqualTo(ServerLaneState.SignedOut);
+    }
+
     // Each connect attempt's token provider calls are: SignalR's own two internal reads
     // (negotiate + transport, resolved fast so hub.StartAsync completes normally), then
     // DiagnoseAsync's own third read, gated so the park below deterministically lands while that
