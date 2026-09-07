@@ -250,9 +250,9 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
     /// shutdown, so an in-flight hub invoke holding no token races that teardown.
     readonly CancellationToken _shutdown;
 
-    // Launch-outcome correlation (spec §5): the id RequestLaunchAgentV2 hands back is
-    // request-accepted, not success. StartAsync tracks it here (id -> recorded-at UTC) until a
-    // LaunchFailed narrows it to failure or a directory row confirms it; one lock covers both maps
+    // The id RequestLaunchAgentV2 hands back is request-accepted, not success: failure arrives
+    // later as a LaunchFailed broadcast, success as the agent's row appearing. StartAsync tracks
+    // the id here (id -> recorded-at UTC) until one of those settles it; one lock covers both maps
     // since StartAsync, the failure subscription and the rows subscription all touch them.
     readonly object _launchTrackingLock = new();
     readonly Dictionary<string, DateTime> _pendingLaunches = new(StringComparer.Ordinal);
