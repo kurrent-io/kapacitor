@@ -167,7 +167,7 @@ public class RemoteAgentsServiceTests {
                 first = false;
                 return Task.FromResult(result);
             },
-            TimeSpan.Zero, onUnauthorized: () => Interlocked.Increment(ref unauthorizedCalls));
+            TimeSpan.Zero, onUnauthorized: _ => Interlocked.Increment(ref unauthorizedCalls));
 
         lane.StatusSubject.OnNext(new(ServerLaneState.Connected));
         await Eventually(() => svc.Agents.Count == 1);
@@ -189,7 +189,7 @@ public class RemoteAgentsServiceTests {
         using var svc = new RemoteAgentsService(lane, async _ => {
             var n = Interlocked.Increment(ref callCount);
             return n == 1 ? await gate.Task : new RemoteFetch([Agent("a2")]);
-        }, TimeSpan.Zero, onUnauthorized: () => Interlocked.Increment(ref parkCalls));
+        }, TimeSpan.Zero, onUnauthorized: _ => Interlocked.Increment(ref parkCalls));
 
         lane.StatusSubject.OnNext(new(ServerLaneState.Connected, Subject: "u1")); // fetch #1 in flight
         await Eventually(() => Volatile.Read(ref callCount) == 1);
@@ -214,7 +214,7 @@ public class RemoteAgentsServiceTests {
         using var svc = new RemoteAgentsService(lane, async _ => {
             var n = Interlocked.Increment(ref callCount);
             return n == 1 ? await gate.Task : new RemoteFetch(null, Unauthorized: true);
-        }, TimeSpan.Zero, onUnauthorized: () => Interlocked.Increment(ref parkCalls));
+        }, TimeSpan.Zero, onUnauthorized: _ => Interlocked.Increment(ref parkCalls));
 
         lane.StatusSubject.OnNext(new(ServerLaneState.Connected, Subject: "u1")); // fetch #1 in flight
         await Eventually(() => Volatile.Read(ref callCount) == 1);
@@ -228,5 +228,23 @@ public class RemoteAgentsServiceTests {
 
         lane.AgentsChangedSubject.OnNext(System.Reactive.Unit.Default); // a fresh post-reconnect fetch
         await Eventually(() => Volatile.Read(ref parkCalls) == 1);
+    }
+
+    // onUnauthorized must carry the lane's OWN Epoch off the Connected the fetch started under —
+    // ServerConnectionService.ParkSignedOut(int) re-validates against this at the moment it
+    // actually parks, rather than trusting a decision this service already committed to before
+    // releasing its own lock.
+    [Test]
+    public async Task OnUnauthorizedReceivesTheLaneEpochOfTheConnectedTheFetchStartedUnder() {
+        int? receivedEpoch = null;
+        var lane = new FakeServerLane();
+        using var svc = new RemoteAgentsService(
+            lane, _ => Task.FromResult(new RemoteFetch(null, Unauthorized: true)), TimeSpan.Zero,
+            onUnauthorized: epoch => receivedEpoch = epoch);
+
+        lane.StatusSubject.OnNext(new(ServerLaneState.Connected, Epoch: 7));
+
+        await Eventually(() => receivedEpoch is not null);
+        await Assert.That(receivedEpoch).IsEqualTo(7);
     }
 }

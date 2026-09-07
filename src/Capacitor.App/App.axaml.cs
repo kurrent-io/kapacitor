@@ -342,7 +342,7 @@ public partial class App : Application {
         var machineId = new MachineId(_config).ReadPersisted();
         var remoteAgents = new RemoteAgentsService(
             serverLane, RemoteAgentsService.HttpFetch(_config, profiles),
-            onUnauthorized: () => serverLane.ParkSignedOut());
+            onUnauthorized: epoch => serverLane.ParkSignedOut(epoch));
         var repoIdentity = new RepoIdentityResolver();
         var directory = new AgentDirectory(
             service, remoteAgents, serverLane, repoIdentity, GitRepository.ResolveMainRepoRoot,

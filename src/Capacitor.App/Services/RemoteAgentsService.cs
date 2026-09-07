@@ -16,7 +16,7 @@ public interface IRemoteAgentsService {
 }
 
 /// An agents fetch's outcome: Rows is null on any failure (including Unauthorized), so a caller
-/// that only cares about data keeps reading it exactly as before; Unauthorized additionally
+/// that only cares about data can ignore Unauthorized entirely; Unauthorized additionally
 /// distinguishes the one failure kind that needs to reach the sign-in surface rather than being
 /// swallowed as ordinary lane loss.
 public sealed record RemoteFetch(AgentInstanceDto[]? Rows, bool Unauthorized = false);
@@ -37,15 +37,20 @@ public sealed class RemoteAgentsService : IRemoteAgentsService, IDisposable {
     readonly Lock _lock = new();
     int _generation;
     string? _lastSubject;
+    // The lane's own Epoch off the latest Connected status seen — captured per fetch and handed
+    // to onUnauthorized, so ServerConnectionService.ParkSignedOut(int) can re-validate a delayed
+    // park decision against the lane's CURRENT epoch rather than trusting this generation check
+    // alone, whose lock releases before the callback runs.
+    int _lastLaneEpoch;
     bool _agentsBusy;
     bool _agentsRerun;
     bool _daemonsBusy;
     bool _daemonsRerun;
-    readonly Action? _onUnauthorized;
+    readonly Action<int>? _onUnauthorized;
 
     public RemoteAgentsService(
             IServerLane lane, Func<CancellationToken, Task<RemoteFetch>> fetchAgents,
-            TimeSpan? debounce = null, Action? onUnauthorized = null) {
+            TimeSpan? debounce = null, Action<int>? onUnauthorized = null) {
         _onUnauthorized = onUnauthorized;
         var wait = debounce ?? TimeSpan.FromMilliseconds(250);
         var connected = lane.Status
@@ -57,17 +62,21 @@ public sealed class RemoteAgentsService : IRemoteAgentsService, IDisposable {
         // Subscribed before the refresh triggers below (same lane.Status), so on a Connected
         // status this runs first: nothing seeded under one identity survives into another, even
         // when the refresh that follows fetches null and would otherwise leave stale rows in
-        // place.
+        // place. _lastLaneEpoch tracks every Connected regardless of Subject — the identity
+        // (generation/clear) rule below stays Subject-scoped, unchanged.
         var identityChange = lane.Status
-            .Where(s => s.State == ServerLaneState.Connected && s.Subject is not null)
+            .Where(s => s.State == ServerLaneState.Connected)
             .Subscribe(s => {
                 lock (_lock) {
-                    if (_lastSubject is not null && _lastSubject != s.Subject) {
-                        _agents.Clear();
-                        _daemons.OnNext([]);
+                    if (s.Subject is not null) {
+                        if (_lastSubject is not null && _lastSubject != s.Subject) {
+                            _agents.Clear();
+                            _daemons.OnNext([]);
+                        }
+                        _generation++;
+                        _lastSubject = s.Subject;
                     }
-                    _generation++;
-                    _lastSubject = s.Subject;
+                    _lastLaneEpoch = s.Epoch;
                 }
             });
 
@@ -93,8 +102,8 @@ public sealed class RemoteAgentsService : IRemoteAgentsService, IDisposable {
             _agentsBusy = true;
         }
         while (true) {
-            int generation;
-            lock (_lock) generation = _generation;
+            int generation, laneEpoch;
+            lock (_lock) { generation = _generation; laneEpoch = _lastLaneEpoch; }
             RemoteFetch? result = null;
             try {
                 result = await fetch(CancellationToken.None).ConfigureAwait(false);
@@ -116,7 +125,11 @@ public sealed class RemoteAgentsService : IRemoteAgentsService, IDisposable {
                 if (rerun) _agentsRerun = false;
                 else _agentsBusy = false;
             }
-            if (notifyUnauthorized) _onUnauthorized?.Invoke();
+            // Invoked outside this lock (arbitrary caller code — ServerConnectionService.
+            // ParkSignedOut in production), carrying the lane epoch this fetch started under so
+            // the lane itself re-validates the park at the moment it actually runs, rather than
+            // trusting a decision this method already committed to before releasing its own lock.
+            if (notifyUnauthorized) _onUnauthorized?.Invoke(laneEpoch);
             if (!rerun) return;
         }
     }
