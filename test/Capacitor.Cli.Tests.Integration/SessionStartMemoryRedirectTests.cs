@@ -1,6 +1,8 @@
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Commands.Harness;
 using Capacitor.Cli.Core.Config;
+using Capacitor.Cli.Core.Http;
+using Microsoft.Extensions.DependencyInjection;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
 using WireMock.Server;
@@ -12,6 +14,9 @@ namespace Capacitor.Cli.Tests.Integration;
 /// reads as a non-answer rather than as content. Following one would let whatever the hop resolves
 /// to be injected into the agent's context, and a cross-origin hop drops the credential on the way,
 /// so the substituted body would not even be one the server authenticated.
+///
+/// <para>Resolves the client from a real container: a stub one would answer for the seam rather
+/// than for the lane the hook actually sends on, which is the only thing this pins.</para>
 /// </summary>
 public class SessionStartMemoryRedirectTests : IDisposable {
     [TempConfigRoot] public required TempConfigRoot Config { get; init; }
@@ -72,9 +77,21 @@ public class SessionStartMemoryRedirectTests : IDisposable {
               }
               """;
 
+        var profiles = Resolutions.At(_server.Url!, Config.Root);
+
+        var services = new ServiceCollection();
+        services.AddSingleton(Config.Root);
+        services.AddSingleton(profiles);
+        services.AddSingleton(new CapacitorServer(_server.Url!, Config.Root, profiles));
+        services.AddCapacitorHttp();
+
+        await using var sp = services.BuildServiceProvider();
+
         using var capture = ConsoleOutput.StartCapture();
 
-        var exit = await new GeminiHookCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), new HookClock(TimeProvider.System), Home)
+        var exit = await new GeminiHookCommand(
+                Config.Root, profiles, new HookClock(TimeProvider.System), Home,
+                sp.GetRequiredService<ICapacitorHttpClient>())
             .Handle(new StringReader(payload));
 
         return (exit, capture.GetCapturedOutput());

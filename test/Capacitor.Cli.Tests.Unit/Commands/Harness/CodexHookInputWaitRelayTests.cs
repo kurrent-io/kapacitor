@@ -27,7 +27,7 @@ public class CodexHookInputWaitRelayTests {
         using var agentId   = EnvScope.Exclusive("KCAP_AGENT_ID", "agent-1");
         using var capture   = ConsoleOutput.StartCapture();
 
-        var exit = await new CodexHookCommand(Config.Root, Resolutions.At("http://server.example", Config.Root), new HookClock(TimeProvider.System), Home)
+        var exit = await new CodexHookCommand(Config.Root, Resolutions.At("http://server.example", Config.Root), new HookClock(TimeProvider.System), Home, new FixedCapacitorHttpClient())
             .Handle(new StringReader($$"""{"hook_event_name":"{{eventName}}","session_id":"019e0322-05fc-7570-be65-75719c3ea861","cwd":"/tmp"}"""));
 
         await Assert.That(exit).IsEqualTo(0);

@@ -1,5 +1,6 @@
 using Capacitor.Cli.Commands;
-using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Http;
+using Microsoft.Extensions.DependencyInjection;
 using Capacitor.Cli.Core.Auth;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
@@ -19,16 +20,16 @@ public class PermissionRequestRecoveryTests : IDisposable {
 
     readonly WireMockServer _server = WireMockServer.Start();
 
-    public void Dispose() => _server.Stop();
+    public void Dispose() {
+        foreach (var sp in _containers) sp.Dispose();
+
+        _server.Stop();
+    }
 
     string Url => _server.Url!;
 
     [Test]
     public async Task A_refused_token_is_rotated_and_the_permission_request_resent() {
-        // The provider memo is process-wide, so a peer test's answer would otherwise decide this
-        // one's: a cached None sends no bearer, and neither stub below would match.
-        HttpClientExtensions.ResetProviderCacheForTesting();
-
         await AuthenticateAsync("tok_1");
 
         _server.Given(Request.Create().WithPath("/auth/refresh").UsingPost())
@@ -66,8 +67,24 @@ public class PermissionRequestRecoveryTests : IDisposable {
          "tool_input":{"command":"ls"},"cwd":"/tmp"}
         """;
 
-    PermissionRequestCommand CommandAsync() =>
-        new(Config.Root, Resolutions.At(Url, Config.Root));
+    /// The client comes from a real container: a stub one would answer for the seam rather than for
+    /// the lane this command actually sends on, which is the only thing this pins.
+    PermissionRequestCommand CommandAsync() {
+        var profiles = Resolutions.At(Url, Config.Root);
+        var services = new ServiceCollection();
+
+        services.AddSingleton(Config.Root);
+        services.AddSingleton(profiles);
+        services.AddSingleton(new CapacitorServer(Url, Config.Root, profiles));
+        services.AddCapacitorHttp();
+
+        var sp = services.BuildServiceProvider();
+        _containers.Add(sp);
+
+        return new(Config.Root, profiles, sp.GetRequiredService<ICapacitorHttpClient>());
+    }
+
+    readonly List<ServiceProvider> _containers = [];
 
     async Task AuthenticateAsync(string accessToken) {
         _server.Given(Request.Create().WithPath("/auth/config").UsingGet())
@@ -75,7 +92,7 @@ public class PermissionRequestRecoveryTests : IDisposable {
                 .WithHeader("Content-Type", "application/json")
                 .WithBody($$"""{"provider":"{{AuthProvider.GitHubApp}}"}"""));
 
-        await new TokenStore(Config.Root).SaveAsync(
+        await AuthFixtures.NewTokenStore(Config.Root).SaveAsync(
             Resolutions.At(Url, Config.Root).Name,
             new StoredTokens {
                 AccessToken    = accessToken,
