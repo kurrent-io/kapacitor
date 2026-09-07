@@ -13,9 +13,9 @@ public class AgentActionServiceTests {
     static AgentActionService NewService(
             ScriptedLocalControlOps ops, RecordingNotifier notifier, RecordingOpener opener,
             IObservable<DaemonStatusDto>? snapshots = null, CancellationToken shutdownToken = default,
-            Func<string, Task<bool>>? confirmForceStop = null) =>
+            Func<string, Task<bool>>? confirmForceStop = null, string? fallbackServerUrl = null) =>
         new(ops, notifier, opener, snapshots ?? new ReplaySubject<DaemonStatusDto>(1), shutdownToken,
-            confirmForceStop ?? NeverConfirm.Confirm);
+            confirmForceStop ?? NeverConfirm.Confirm, fallbackServerUrl);
 
     static async Task WaitUntilAsync(Func<bool> condition, TimeSpan? timeout = null, string what = "condition") {
         var deadline = DateTime.UtcNow + (timeout ?? TimeSpan.FromSeconds(5));
@@ -263,6 +263,39 @@ public class AgentActionServiceTests {
 
         await Assert.That(notifier.Notified).IsEquivalentTo(
             ["Couldn't open the browser: no handler registered"], CollectionOrdering.Matching);
+    }
+
+    // ---- open in web: local vs remote origin (finding 5) ----
+
+    [Test]
+    public async Task OpenInWeb_and_OpenInWebRemote_use_different_servers() {
+        var ops = new ScriptedLocalControlOps();
+        var notifier = new RecordingNotifier();
+        var opener = new RecordingOpener();
+        var snapshots = new ReplaySubject<DaemonStatusDto>(1);
+        var service = NewService(ops, notifier, opener, snapshots, fallbackServerUrl: "https://a.kcap.ai");
+
+        snapshots.OnNext(FakeDaemonClientService.Snap(serverUrl: "https://b.kcap.ai"));
+
+        service.OpenInWeb("a1");
+        service.OpenInWebRemote("a1");
+
+        await Assert.That(opener.Opened).IsEquivalentTo(
+            ["https://b.kcap.ai/agents/a1", "https://a.kcap.ai/agents/a1"], CollectionOrdering.Matching);
+        await Assert.That(notifier.Notified).IsEmpty();
+    }
+
+    [Test]
+    public async Task OpenInWebRemote_without_a_profile_notifies_and_returns() {
+        var ops = new ScriptedLocalControlOps();
+        var notifier = new RecordingNotifier();
+        var opener = new RecordingOpener();
+        var service = NewService(ops, notifier, opener);
+
+        service.OpenInWebRemote("a1");
+
+        await Assert.That(opener.Opened).IsEmpty();
+        await Assert.That(notifier.Notified).IsEquivalentTo(["Not signed in to a server"], CollectionOrdering.Matching);
     }
 
     // ---- confirm-then-force for protected kinds (decision 5) ----

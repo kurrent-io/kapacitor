@@ -24,6 +24,10 @@ public sealed class AgentActionService {
     readonly Lock _lock = new();
     ImmutableHashSet<string> _inFlight = ImmutableHashSet<string>.Empty;
     string? _serverUrl;
+    // Never touched by a snapshot: OpenInWebRemote's fixed server, distinct from _serverUrl's
+    // local-snapshot-fed one — a remote row's daemon can live behind a different server than
+    // this machine's local one, so the two must never share one mutable URL.
+    readonly string? _remoteServerUrl;
 
     readonly BehaviorSubject<IReadOnlySet<string>> _stopsInFlight;
 
@@ -34,9 +38,9 @@ public sealed class AgentActionService {
     /// itself; that is the caller's job (App.axaml.cs, via Dispatcher.UIThread.InvokeAsync).
     /// </param>
     /// <param name="fallbackServerUrl">
-    /// OpenInWeb's server URL before any local snapshot has ever arrived — a remote row with the
-    /// local daemon down otherwise has no ServerUrl to build a link from. Null keeps today's
-    /// behavior for every caller without a resolved profile.
+    /// OpenInWeb's server URL before any local snapshot has ever arrived, AND the fixed server
+    /// OpenInWebRemote always uses. Null keeps today's behavior for every caller without a
+    /// resolved profile.
     /// </param>
     public AgentActionService(
             ILocalControlOps ops, IAppNotifier notifier, IUrlOpener opener,
@@ -49,6 +53,7 @@ public sealed class AgentActionService {
         _confirmForceStop = confirmForceStop;
         _stopsInFlight = new BehaviorSubject<IReadOnlySet<string>>(_inFlight);
         _serverUrl = fallbackServerUrl;
+        _remoteServerUrl = fallbackServerUrl;
 
         // Held for the service's lifetime, same as TrayViewModel's constructor-scoped
         // subscriptions — this service is a singleton for the app's lifetime, never disposed
@@ -128,9 +133,18 @@ public sealed class AgentActionService {
     public void OpenInWeb(string agentId) {
         string? serverUrl;
         lock (_lock) serverUrl = _serverUrl;
+        OpenAgentUrl(serverUrl, agentId, "Not connected to a daemon yet"); // cannot happen from live UI; defensive only
+    }
 
+    /// Same URL shape as OpenInWeb, but always against the app profile's own server rather than
+    /// the local daemon's latest snapshot — a remote row's daemon can live behind a different
+    /// server than this machine's local one. Never throws.
+    public void OpenInWebRemote(string agentId) =>
+        OpenAgentUrl(_remoteServerUrl, agentId, "Not signed in to a server");
+
+    void OpenAgentUrl(string? serverUrl, string agentId, string missingServerMessage) {
         if (serverUrl is null) {
-            _notifier.Notify("Not connected to a daemon yet"); // cannot happen from live UI; defensive only
+            _notifier.Notify(missingServerMessage);
             return;
         }
 
