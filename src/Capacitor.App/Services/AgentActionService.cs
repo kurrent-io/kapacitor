@@ -39,7 +39,7 @@ public sealed class AgentActionService {
     /// </param>
     /// <param name="fallbackServerUrl">
     /// OpenInWeb's server URL before any local snapshot has ever arrived, AND the fixed server
-    /// OpenInWebRemote always uses. Null keeps today's behavior for every caller without a
+    /// OpenInWebRemote always uses. Null leaves both without a server URL for a caller with no
     /// resolved profile.
     /// </param>
     public AgentActionService(
@@ -129,7 +129,7 @@ public sealed class AgentActionService {
     }
 
     /// Opens {ServerUrl trimmed of trailing '/'}/agents/{Uri.EscapeDataString(id)} from the
-    /// latest snapshot in the default browser (spec §7). Never throws.
+    /// latest snapshot in the default browser. Never throws.
     public void OpenInWeb(string agentId) {
         string? serverUrl;
         lock (_lock) serverUrl = _serverUrl;
