@@ -1015,4 +1015,56 @@ public class HomeViewModelTests {
             await Assert.That(vm.StartError).IsNull();
         });
     }
+
+    /// The hub can return either id shape (NormalizeAgentId's own comment) — a failure carrying
+    /// the DASHED form must still correlate against the "N"-normalized key StartAsync recorded.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task DashedGuidFailureCorrelatesWithTheNormalizedPendingKey() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            using var tmp = TempDir.WithPathTo("app-state.json", out var path);
+            var daemon = new FakeDaemonClientService();
+            Connect(daemon);
+            var dashed = Guid.Parse(LaunchedId).ToString("D");
+            var launch = new RecordingLaunchClient { Next = new LaunchOutcome(true, dashed, null) };
+            var failures = new Subject<LaunchFailure>();
+            using var vm = new HomeViewModel(
+                daemon, new AppStateStore(path), launch, Known(), launchFailures: failures);
+
+            await vm.SelectRepositoryAsync("/repo/a");
+            await vm.StartCommand.Execute();
+            failures.OnNext(new LaunchFailure(dashed, "launch_denied_by_owner: default"));
+
+            await Assert.That(vm.StartError).Contains("consent policy denied");
+        });
+    }
+
+    /// Same id-shape mismatch as above, on the row-confirmation path: a directory row carrying
+    /// the dashed form must still clear the "N"-normalized pending entry.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task DashedGuidRowClearsThePendingEntrySoALateDashedFailureIsIgnored() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            using var tmp = TempDir.WithPathTo("app-state.json", out var path);
+            var daemon = new FakeDaemonClientService();
+            Connect(daemon);
+            var dashed = Guid.Parse(LaunchedId).ToString("D");
+            var launch = new RecordingLaunchClient { Next = new LaunchOutcome(true, dashed, null) };
+            var failures = new Subject<LaunchFailure>();
+            using var directory = new AgentDirectory(
+                daemon, new FakeRemoteAgents(), new FakeServerLane(), new RepoIdentityResolver(_ => null),
+                p => p, null, null);
+            using var vm = new HomeViewModel(
+                daemon, new AppStateStore(path), launch, Known(),
+                launchFailures: failures, directory: directory);
+
+            await vm.SelectRepositoryAsync("/repo/a");
+            await vm.StartCommand.Execute();
+
+            daemon.Agents.AddOrUpdate(Agent(dashed, "/repo/a"));
+            failures.OnNext(new LaunchFailure(dashed, "launch_denied_by_owner: default"));
+
+            await Assert.That(vm.StartError).IsNull();
+        });
+    }
 }

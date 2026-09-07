@@ -828,8 +828,9 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
     }
 
     void RecordRecentFailure(LaunchFailure failure) {
+        if (NormalizeAgentId(failure.AgentId) is not { } agentId) return;
         lock (_launchTrackingLock) {
-            _recentFailures[failure.AgentId] = (failure.Reason, DateTime.UtcNow);
+            _recentFailures[agentId] = (failure.Reason, DateTime.UtcNow);
             var cutoff = DateTime.UtcNow - RecentFailureTtl;
             foreach (var stale in _recentFailures.Where(kv => kv.Value.At < cutoff).Select(kv => kv.Key).ToList())
                 _recentFailures.Remove(stale);
@@ -837,25 +838,29 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
     }
 
     /// A failure for an id nothing here is tracking is another client's launch — ignored. A
-    /// pending entry consulted past its 10-minute TTL is treated the same way.
+    /// pending entry consulted past its 10-minute TTL is treated the same way. Compared under
+    /// NormalizeAgentId so a dashed-Guid failure id still matches the "N"-normalized key StartAsync
+    /// recorded — the hub returns either shape (NormalizeAgentId's own comment).
     void ApplyFailureIfPending(LaunchFailure failure) {
+        if (NormalizeAgentId(failure.AgentId) is not { } agentId) return;
         bool applies;
         lock (_launchTrackingLock) {
-            applies = _pendingLaunches.TryGetValue(failure.AgentId, out var recordedAt)
+            applies = _pendingLaunches.TryGetValue(agentId, out var recordedAt)
                 && DateTime.UtcNow - recordedAt <= PendingLaunchTtl;
-            _pendingLaunches.Remove(failure.AgentId);
+            _pendingLaunches.Remove(agentId);
         }
         if (applies) StartError = FriendlyLaunchFailure(failure.Reason);
     }
 
     /// A row for a tracked id is success confirmation: drop the pending entry and any buffered
-    /// failure so a later, stale LaunchFailed for the same id cannot override it.
+    /// failure so a later, stale LaunchFailed for the same id cannot override it. Same
+    /// NormalizeAgentId comparison as ApplyFailureIfPending, for the same id-shape reason.
     void ConfirmPendingRows(IChangeSet<AgentRow, string> changes) {
         lock (_launchTrackingLock) {
             foreach (var change in changes)
-                if (change.Reason == ChangeReason.Add) {
-                    _pendingLaunches.Remove(change.Current.Id);
-                    _recentFailures.Remove(change.Current.Id);
+                if (change.Reason == ChangeReason.Add && NormalizeAgentId(change.Current.Id) is { } agentId) {
+                    _pendingLaunches.Remove(agentId);
+                    _recentFailures.Remove(agentId);
                 }
         }
     }
