@@ -250,6 +250,16 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
     /// shutdown, so an in-flight hub invoke holding no token races that teardown.
     readonly CancellationToken _shutdown;
 
+    // Launch-outcome correlation (spec §5): the id RequestLaunchAgentV2 hands back is
+    // request-accepted, not success. StartAsync tracks it here (id -> recorded-at UTC) until a
+    // LaunchFailed narrows it to failure or a directory row confirms it; one lock covers both maps
+    // since StartAsync, the failure subscription and the rows subscription all touch them.
+    readonly object _launchTrackingLock = new();
+    readonly Dictionary<string, DateTime> _pendingLaunches = new(StringComparer.Ordinal);
+    readonly Dictionary<string, (string Reason, DateTime At)> _recentFailures = new(StringComparer.Ordinal);
+    static readonly TimeSpan PendingLaunchTtl = TimeSpan.FromMinutes(10);
+    static readonly TimeSpan RecentFailureTtl = TimeSpan.FromSeconds(30);
+
     /// knownRepos is RepoPathStore.GetSortedPathsAsync in production — the same persisted list
     /// DaemonConnect.RepoPaths feeds the server's launch dialog. Required (no defaulted overload)
     /// so a test can never silently read the developer's own ~/.config/kcap/repos.json.
@@ -275,6 +285,12 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
     /// launch's availability gates on, independent of the local daemon's own connection word.</param>
     /// <param name="localMachineId">This machine's id, for excluding the local daemon's own remote
     /// registry twin from the picker's remote options.</param>
+    /// <param name="launchFailures">The app's own server lane (IServerLane.LaunchFailures). A
+    /// failure whose id is being tracked renders as StartError; an unknown id is another client's
+    /// launch and is ignored. Null ⇒ launch failures are never correlated.</param>
+    /// <param name="directory">The merged local+remote rows (IAgentDirectory.Rows). A row for a
+    /// tracked id is success confirmation and stops tracking it. Null ⇒ only a LaunchFailed or the
+    /// pending entry's own 10-minute timeout ever stops tracking.</param>
     public HomeViewModel(
             IDaemonClientService daemon, IAppStateStore state, ILaunchClient launch,
             Func<Task<string[]>> knownRepos, CancellationToken shutdown = default,
@@ -282,7 +298,8 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
             Action<string, int>? openSessionIfCurrent = null, Action? requestSignIn = null,
             IObservable<IReadOnlyList<DaemonInfo>>? daemons = null,
             Func<CancellationToken, Task<string?>>? viewerId = null,
-            IObservable<ServerLaneStatus>? laneStatus = null, string? localMachineId = null) {
+            IObservable<ServerLaneStatus>? laneStatus = null, string? localMachineId = null,
+            IObservable<LaunchFailure>? launchFailures = null, IAgentDirectory? directory = null) {
         _daemon = daemon;
         _state = state;
         _launch = launch;
@@ -407,6 +424,16 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
             .DisposeWith(_disposables);
 
         SignInCommand = ReactiveCommand.Create(() => { _requestSignIn?.Invoke(); });
+
+        (launchFailures ?? Observable.Empty<LaunchFailure>())
+            .Do(RecordRecentFailure)
+            .ObserveOn(RxSchedulers.MainThreadScheduler)
+            .Subscribe(ApplyFailureIfPending)
+            .DisposeWith(_disposables);
+
+        (directory?.Rows.Connect() ?? Observable.Empty<IChangeSet<AgentRow, string>>())
+            .Subscribe(ConfirmPendingRows)
+            .DisposeWith(_disposables);
 
         // Adopt a recent known repo when the launcher starts empty — fire-and-forget; the picker
         // also calls EnsureDefaultRepositoryAsync before listing.
@@ -768,8 +795,68 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
             return;
         }
 
+        // The accepted id is request-accepted, not success — track it until a LaunchFailed or a
+        // directory row settles it. RecordPendingLaunch also resolves the race where the failure
+        // already arrived (and was buffered) while the invoke above was still in flight.
+        RecordPendingLaunch(agentId);
         _openSessionIfCurrent?.Invoke(agentId, generation);
     }
+
+    void RecordPendingLaunch(string agentId) {
+        string? bufferedReason = null;
+        lock (_launchTrackingLock) {
+            _pendingLaunches[agentId] = DateTime.UtcNow;
+            if (_recentFailures.TryGetValue(agentId, out var recent)) {
+                if (DateTime.UtcNow - recent.At <= RecentFailureTtl) {
+                    bufferedReason = recent.Reason;
+                    _pendingLaunches.Remove(agentId);
+                }
+                _recentFailures.Remove(agentId);
+            }
+        }
+        if (bufferedReason is not null) StartError = FriendlyLaunchFailure(bufferedReason);
+    }
+
+    void RecordRecentFailure(LaunchFailure failure) {
+        lock (_launchTrackingLock) {
+            _recentFailures[failure.AgentId] = (failure.Reason, DateTime.UtcNow);
+            var cutoff = DateTime.UtcNow - RecentFailureTtl;
+            foreach (var stale in _recentFailures.Where(kv => kv.Value.At < cutoff).Select(kv => kv.Key).ToList())
+                _recentFailures.Remove(stale);
+        }
+    }
+
+    /// A failure for an id nothing here is tracking is another client's launch — ignored. A
+    /// pending entry consulted past its 10-minute TTL is treated the same way.
+    void ApplyFailureIfPending(LaunchFailure failure) {
+        bool applies;
+        lock (_launchTrackingLock) {
+            applies = _pendingLaunches.TryGetValue(failure.AgentId, out var recordedAt)
+                && DateTime.UtcNow - recordedAt <= PendingLaunchTtl;
+            _pendingLaunches.Remove(failure.AgentId);
+        }
+        if (applies) StartError = FriendlyLaunchFailure(failure.Reason);
+    }
+
+    /// A row for a tracked id is success confirmation: drop the pending entry and any buffered
+    /// failure so a later, stale LaunchFailed for the same id cannot override it.
+    void ConfirmPendingRows(IChangeSet<AgentRow, string> changes) {
+        lock (_launchTrackingLock) {
+            foreach (var change in changes)
+                if (change.Reason == ChangeReason.Add) {
+                    _pendingLaunches.Remove(change.Current.Id);
+                    _recentFailures.Remove(change.Current.Id);
+                }
+        }
+    }
+
+    /// <see cref="WireTokens.LaunchDeniedByOwnerPrefix"/> is a consent-gate denial on the target
+    /// machine; every other reason passes through verbatim (the server already truncates to 400
+    /// characters).
+    internal static string FriendlyLaunchFailure(string reason) =>
+        reason.StartsWith(WireTokens.LaunchDeniedByOwnerPrefix, StringComparison.Ordinal)
+            ? "That machine's consent policy denied the launch. Approve it there, or pre-set a rule with kcap consent."
+            : reason;
 
     /// Null for Manual (the harness's own default) and for any vendor that takes no mode.
     internal static string? PermissionModeFor(string vendor, string mode) =>

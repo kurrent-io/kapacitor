@@ -1,4 +1,5 @@
 using System.Reactive.Linq;
+using System.Reactive.Subjects;
 using Capacitor.App.Services;
 using Capacitor.App.ViewModels;
 using Capacitor.Cli.Core.LocalIpc;
@@ -893,6 +894,113 @@ public class HomeViewModelTests {
             // codex isn't in the local daemon's advertised set ("kiro") — revalidated, not left at
             // whatever the remote machine last set it to.
             await Assert.That(vm.SelectedVendor).IsEqualTo("kiro");
+        });
+    }
+
+    // Launch-outcome correlation: the accepted id is request-accepted, not success.
+
+    /// Pushes the failure before returning the launch Task, to exercise the race where a
+    /// LaunchFailed arrives while StartAsync's invoke is still in flight.
+    sealed class FailureBeforeReturnLaunchClient : ILaunchClient {
+        public required Subject<LaunchFailure> Failures { get; init; }
+        public required string AgentId { get; init; }
+        public required string Reason { get; init; }
+
+        public Task<LaunchOutcome> StartAsync(LaunchRequest request, CancellationToken ct) {
+            Failures.OnNext(new LaunchFailure(AgentId, Reason));
+            return Task.FromResult(new LaunchOutcome(true, AgentId, null));
+        }
+    }
+
+    [Test]
+    public async Task DenialReasonRendersFriendly() =>
+        await Assert.That(HomeViewModel.FriendlyLaunchFailure("launch_denied_by_owner: prompt_no_ui"))
+            .Contains("consent policy denied");
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task LaunchFailureAfterAcceptSetsStartError() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            using var tmp = TempDir.WithPathTo("app-state.json", out var path);
+            var daemon = new FakeDaemonClientService();
+            Connect(daemon);
+            var launch = new RecordingLaunchClient { Next = new LaunchOutcome(true, "agent-9", null) };
+            var failures = new Subject<LaunchFailure>();
+            using var vm = new HomeViewModel(
+                daemon, new AppStateStore(path), launch, Known(), launchFailures: failures);
+
+            await vm.SelectRepositoryAsync("/repo/a");
+            await vm.StartCommand.Execute();
+            failures.OnNext(new LaunchFailure("agent-9", "launch_denied_by_owner: default"));
+
+            await Assert.That(vm.StartError).Contains("consent policy denied");
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task FailureBeforeInvokeReturnsIsStillApplied() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            using var tmp = TempDir.WithPathTo("app-state.json", out var path);
+            var daemon = new FakeDaemonClientService();
+            Connect(daemon);
+            var failures = new Subject<LaunchFailure>();
+            var launch = new FailureBeforeReturnLaunchClient {
+                Failures = failures, AgentId = "agent-9", Reason = "launch_denied_by_owner: default",
+            };
+            using var vm = new HomeViewModel(
+                daemon, new AppStateStore(path), launch, Known(), launchFailures: failures);
+
+            await vm.SelectRepositoryAsync("/repo/a");
+            await vm.StartCommand.Execute();
+
+            await Assert.That(vm.StartError).Contains("consent policy denied");
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task ForeignFailuresAreIgnored() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            using var tmp = TempDir.WithPathTo("app-state.json", out var path);
+            var daemon = new FakeDaemonClientService();
+            Connect(daemon);
+            var launch = new RecordingLaunchClient { Next = new LaunchOutcome(true, "agent-9", null) };
+            var failures = new Subject<LaunchFailure>();
+            using var vm = new HomeViewModel(
+                daemon, new AppStateStore(path), launch, Known(), launchFailures: failures);
+
+            await vm.SelectRepositoryAsync("/repo/a");
+            await vm.StartCommand.Execute();
+            failures.OnNext(new LaunchFailure("other-id", "launch_denied_by_owner: default"));
+
+            await Assert.That(vm.StartError).IsNull();
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task RowAppearanceClearsPendingSoLateFailureIsIgnored() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            using var tmp = TempDir.WithPathTo("app-state.json", out var path);
+            var daemon = new FakeDaemonClientService();
+            Connect(daemon);
+            var launch = new RecordingLaunchClient { Next = new LaunchOutcome(true, "agent-9", null) };
+            var failures = new Subject<LaunchFailure>();
+            using var directory = new AgentDirectory(
+                daemon, new FakeRemoteAgents(), new FakeServerLane(), new RepoIdentityResolver(_ => null),
+                p => p, null, null);
+            using var vm = new HomeViewModel(
+                daemon, new AppStateStore(path), launch, Known(),
+                launchFailures: failures, directory: directory);
+
+            await vm.SelectRepositoryAsync("/repo/a");
+            await vm.StartCommand.Execute();
+
+            daemon.Agents.AddOrUpdate(Agent("agent-9", "/repo/a"));
+            failures.OnNext(new LaunchFailure("agent-9", "launch_denied_by_owner: default"));
+
+            await Assert.That(vm.StartError).IsNull();
         });
     }
 }
