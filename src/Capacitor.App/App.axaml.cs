@@ -360,7 +360,8 @@ public partial class App : Application {
 
         ILaunchClient launch = serverLane;
         _serverClients = serverClients;
-        // A completed sign-in restarts the lane too — not just BuildWorkspace's own consumer below.
+        // The single restart trigger for a completed sign-in — RestartAsync serializes rather
+        // than coalesces, so RefreshAfterReauthAsync deliberately does not also await it.
         serverClients.SignInCompleted.Subscribe(signedIn => { _ = serverLane.RestartAsync(); });
 
         // One attach client per attempt, dialed at the daemon's own control socket; 80x24 is a
@@ -466,12 +467,13 @@ public partial class App : Application {
         if (ReferenceEquals(_signInWindow, window)) window.Close();
     }
 
-    /// Clears the launcher's expired/disconnected sign-in banner path, drops a stale launch hub,
-    /// nudges work-context refresh, and kicks attach so snapshots catch up sooner after new tokens land.
+    /// Clears the launcher's expired/disconnected sign-in banner path, nudges work-context
+    /// refresh, and kicks attach so snapshots catch up sooner after new tokens land. The server
+    /// lane's own restart is NOT awaited here — NotifySignInCompleted's subscription
+    /// (BuildDaemonGraph) is the single trigger for it.
     async Task RefreshAfterReauthAsync() {
         _home?.NotifySignInCompleted();
         _serverClients?.NotifySignInCompleted();
-        if (_serverLane is not null) await _serverLane.RestartAsync().ConfigureAwait(true);
         if (_service is not null) await _service.RestartLoopAsync().ConfigureAwait(true);
     }
 
