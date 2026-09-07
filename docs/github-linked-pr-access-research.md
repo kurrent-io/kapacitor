@@ -48,7 +48,7 @@ GitHub documents:
    tokens, and fine-grained PATs, with **Metadata: read** for fine-grained tokens.
    Source: the endpoint's fine-grained token section at the same official URL.
 
-Proposed private-PR admission sequence:
+Private-PR admission sequence:
 
 - Authenticate the Capacitor caller and retain the existing Full-session,
   repository visibility, and linked-PR identity gates.
@@ -74,7 +74,7 @@ still needs sufficient access to read the underlying PR/check/comment content.
 An independent feature switch could disable interactive reads without disabling
 tracker enrichment.
 
-### Limits and checks before adopting it
+### Limits and deployment validation
 
 - This is a server-enforced **repository-role check**, not a GitHub request made
   with the caller's token. Do not describe it as full per-user GitHub session/SSO/IP
@@ -86,11 +86,12 @@ tracker enrichment.
   before using publication as evidence; do not derive it from a session label.
 - A renamed username must not transfer access to a different numeric account. A
   permission response with a missing or mismatched target user cannot authorize.
-- The deployed integration token's ability to call the permission endpoint has not
-  been tested here. No server token was retrieved. Before implementation planning,
-  the operator/driver must verify it in its protected deployment environment with
-  a public repository and an authorized private test repository,
-  including team/base-role access and a denied user. Use only read operations.
+- The [deployment preflight](github-pr-context-preflight.md) verified numeric-ID
+  lookup and the permission endpoint for the current operator on both approved
+  repositories, using the existing fine-grained PAT inside the server container.
+  No credential left that environment. Team-only and denied-user controls remain
+  untested. Private check-suite/status/commit endpoints returned scope-related
+  403s; the full preflight is blocked pending compatible read permissions.
 - This introduces permission-query traffic; it belongs in the interactive request
   budget and must not starve background enrichment.
 
@@ -115,6 +116,7 @@ The approved read-only v1 approach is linked GitHub identity plus a fail-closed
 repository-role gate. The design specifies the public-repository case, proof
 lifetime and cache/page admission. Server fetches remain fail-closed; the draft gives
 already visible client content a bounded, labelled transient-outage display grace,
-never a grant to fetch or reveal more content. Deployed-token compatibility remains
-unverified and blocks implementation planning.
+never a grant to fetch or reveal more content. Deployment validation is partial:
+the tested user's permission gate works, but missing private CI/commit-read
+capabilities and remaining identity controls still block implementation planning.
 Use delegated user tokens if exact user-to-server authorization is required.

@@ -304,6 +304,9 @@ remain text in v1; no repository-relative URL inference. Disallowed schemes are 
 
 ## Preflight gate before implementation planning
 
+[Deployment probe results](../../github-pr-context-preflight.md) record partial
+verification and outstanding permission/identity controls; the gate is not passed.
+
 Before planning or building either part, the implementation driver and operator
 must run a read-only probe using the intended deployment's actual integration
 credential **in its existing protected environment**. The agent must not retrieve,
@@ -401,7 +404,8 @@ measured query cost, not one assumed point. Sixty starts/minute leaves section
 capacity at the faster cadence. Excess workloads yield rather than promise freshness.
 
 Documented profiles are fine-grained PAT or App installation with Metadata read
-plus PR/issue/check/status read permissions. An existing classic PAT needs private-
+plus PR/issue/check/status read permissions and Contents read for the specified
+GraphQL commit-connection overview. An existing classic PAT needs private-
 repo `repo` scope and the same live admission probes; enrichment success alone
 never certifies it. Do not add scopes or change credential type automatically. Preflight must
 verify at least 5,000/hour REST and GraphQL primary limits and measured headroom
