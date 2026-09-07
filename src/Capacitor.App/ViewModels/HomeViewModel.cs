@@ -644,13 +644,16 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
         return options;
     }
 
-    /// Picking the local name restores the local repository/vendor flow (revalidated below) for
-    /// every non-machine-picking caller; picking a remote name switches the repository and
+    /// isLocal comes from the clicked MachineOption's own IsLocal, never re-derived from name
+    /// equality here — an owned REMOTE daemon can be named identically to the local one (they
+    /// live on different servers), so matching by name alone would make that remote entry
+    /// unselectable. Picking local restores the local repository/vendor flow (revalidated below)
+    /// for every non-machine-picking caller; picking a remote name switches the repository and
     /// harness sources to that machine's own advertised set and resets the vendor off one it
-    /// cannot host. A name that fails the ownership filter is refused outright — the selection is
-    /// left exactly as it was, the same as clicking a menu row that was never offered.
-    public async Task SelectMachineAsync(string daemonName) {
-        if (string.Equals(daemonName, _daemon.DaemonName, StringComparison.Ordinal)) {
+    /// cannot host. A remote name that fails the ownership filter is refused outright — the
+    /// selection is left exactly as it was, the same as clicking a menu row that was never offered.
+    public async Task SelectMachineAsync(string daemonName, bool isLocal) {
+        if (isLocal) {
             var wasRemote = RemoteMachineSelected;
             SetMachineSelection(daemonName, remote: false);
             _selectedRemoteMachine = null;

@@ -172,9 +172,10 @@ public partial class LauncherPaneView : UserControl {
         grid.Children.Add(subtitle);
 
         var daemonName = option.DaemonName;
+        var isLocal = option.IsLocal;
         var row = ChoiceButton(grid, () => {
             flyout.Hide();
-            _ = SelectMachineObservedAsync(vm, daemonName);
+            _ = SelectMachineObservedAsync(vm, daemonName, isLocal);
         });
         row.IsEnabled = option.Connected;
         return row;
@@ -182,9 +183,11 @@ public partial class LauncherPaneView : UserControl {
 
     // ChoiceButton's click is sync; keep flyout-close immediate and observe the async load so a
     // failed state read is not an unobserved task (SelectRepositoryObservedAsync's identical shape).
-    static async Task SelectMachineObservedAsync(HomeViewModel vm, string daemonName) {
+    // isLocal comes from the clicked option itself — an owned remote daemon can share the local
+    // daemon's name (different servers), so routing by name alone would misselect it.
+    static async Task SelectMachineObservedAsync(HomeViewModel vm, string daemonName, bool isLocal) {
         try {
-            await vm.SelectMachineAsync(daemonName);
+            await vm.SelectMachineAsync(daemonName, isLocal);
         } catch (Exception ex) {
             Console.Error.WriteLine($"kcap: select machine failed: {ex}");
         }

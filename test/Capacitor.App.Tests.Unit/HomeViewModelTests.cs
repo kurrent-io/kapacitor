@@ -775,6 +775,36 @@ public class HomeViewModelTests {
         });
     }
 
+    /// The local daemon (server B) and an owned remote daemon (server A) can share a name — name-
+    /// based routing alone can never tell them apart, so the caller's own isLocal (from the
+    /// clicked MachineOption) is what SelectMachineAsync must trust.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task SelectingARemoteEntryThatSharesTheLocalDaemonsNameSelectsTheRemoteOne() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            using var tmp = TempDir.WithPathTo("app-state.json", out var path);
+            var daemon = new FakeDaemonClientService { DaemonName = "work" };
+            var remote = new FakeRemoteAgents();
+            remote.DaemonsSubject.OnNext([
+                new DaemonInfo {
+                    Name = "work", OwnerUserId = "u1", Connected = true,
+                    RepoPaths = ["/a/repo"], SupportedVendors = ["codex"],
+                },
+            ]);
+            using var vm = new HomeViewModel(
+                daemon, new AppStateStore(path), new RecordingLaunchClient(), Known(),
+                daemons: remote.Daemons, viewerId: _ => Task.FromResult<string?>("u1"));
+
+            await vm.SelectMachineAsync("work", isLocal: false);
+
+            await Assert.That(vm.RemoteMachineSelected).IsTrue();
+            await Assert.That(vm.SelectedMachine).IsEqualTo("work");
+            await Assert.That(vm.SelectedRepoPath).IsEqualTo("/a/repo");
+            await Assert.That(vm.Harnesses.Single(h => h.Vendor == "codex").Available).IsTrue();
+            await Assert.That(vm.Harnesses.Single(h => h.Vendor == "claude").Available).IsFalse();
+        });
+    }
+
     [Test]
     [NotInParallel("AvaloniaSession")]
     public async Task SelectingRemoteMachineSwitchesRepoAndVendorSources() {
@@ -793,7 +823,7 @@ public class HomeViewModelTests {
                 daemon, store, new RecordingLaunchClient(), Known(),
                 daemons: remote.Daemons, viewerId: _ => Task.FromResult<string?>("u1"));
 
-            await vm.SelectMachineAsync("home-pc");
+            await vm.SelectMachineAsync("home-pc", isLocal: false);
 
             await Assert.That(vm.SelectedRepoPath).IsEqualTo("/w/repo");
             var repos = await vm.ListRepositoriesAsync();
@@ -834,7 +864,7 @@ public class HomeViewModelTests {
                 daemon, new AppStateStore(path), launch, Known(),
                 daemons: remote.Daemons, viewerId: _ => Task.FromResult<string?>("u1"), laneStatus: lane.Status);
 
-            await vm.SelectMachineAsync("home-pc");
+            await vm.SelectMachineAsync("home-pc", isLocal: false);
             await vm.StartCommand.Execute();
 
             await Assert.That(launch.Last!.DaemonName).IsEqualTo("home-pc");
@@ -862,7 +892,7 @@ public class HomeViewModelTests {
                 openSessionIfCurrent: (id, generation) => opened.Add((id, generation)),
                 daemons: remote.Daemons, viewerId: _ => Task.FromResult<string?>("u1"), laneStatus: lane.Status);
 
-            await vm.SelectMachineAsync("home-pc");
+            await vm.SelectMachineAsync("home-pc", isLocal: false);
             await vm.StartCommand.Execute();
 
             await Assert.That(opened.Count).IsEqualTo(0);
@@ -907,14 +937,14 @@ public class HomeViewModelTests {
                 daemon, new AppStateStore(path), new RecordingLaunchClient(), Known(),
                 daemons: remote.Daemons, viewerId: _ => Task.FromResult<string?>("u1"));
 
-            await vm.SelectMachineAsync("home-pc");
+            await vm.SelectMachineAsync("home-pc", isLocal: false);
             await WaitUntilAsync(() => vm.MachinePickerVisible, "picker visible after selecting home-pc");
 
             remote.DaemonsSubject.OnNext([]);
             await Task.Delay(20); // let the CombineLatest re-run over the now-empty owned list
             await Assert.That(vm.MachinePickerVisible).IsTrue();
 
-            await vm.SelectMachineAsync(daemon.DaemonName);
+            await vm.SelectMachineAsync(daemon.DaemonName, isLocal: true);
             await Assert.That(vm.RemoteMachineSelected).IsFalse();
         });
     }
@@ -941,7 +971,7 @@ public class HomeViewModelTests {
                 daemon, new AppStateStore(path), new RecordingLaunchClient(), Known(),
                 daemons: remote.Daemons, viewerId: _ => Task.FromResult<string?>("u1"), laneStatus: lane.Status);
 
-            await vm.SelectMachineAsync("home-pc");
+            await vm.SelectMachineAsync("home-pc", isLocal: false);
             await Assert.That(await vm.StartCommand.CanExecute.FirstAsync()).IsFalse();
 
             lane.StatusSubject.OnNext(new ServerLaneStatus(ServerLaneState.Connected));
@@ -968,7 +998,7 @@ public class HomeViewModelTests {
             // "work-mac" never passed ListMachinesAsync's own-daemons filter (it's u2's) — calling
             // SelectMachineAsync with it directly (a stale menu row, a forged binding) must be a
             // no-op, not a silent remote selection.
-            await vm.SelectMachineAsync("work-mac");
+            await vm.SelectMachineAsync("work-mac", isLocal: false);
 
             await Assert.That(vm.RemoteMachineSelected).IsFalse();
             await Assert.That(vm.SelectedMachine).IsEqualTo(daemon.DaemonName);
@@ -993,7 +1023,7 @@ public class HomeViewModelTests {
                 daemon, new AppStateStore(path), launch, Known(),
                 daemons: remote.Daemons, viewerId: _ => Task.FromResult<string?>("u1"), laneStatus: lane.Status);
 
-            await vm.SelectMachineAsync("home-pc");
+            await vm.SelectMachineAsync("home-pc", isLocal: false);
             await Assert.That(await vm.StartCommand.CanExecute.FirstAsync()).IsTrue();
 
             // Same name, now a different owner — a registry refresh racing the earlier selection.
@@ -1032,11 +1062,11 @@ public class HomeViewModelTests {
                 daemon, new AppStateStore(path), new RecordingLaunchClient(), Known("/repo/local"),
                 daemons: remote.Daemons, viewerId: _ => Task.FromResult<string?>("u1"));
 
-            await vm.SelectMachineAsync("home-pc");
+            await vm.SelectMachineAsync("home-pc", isLocal: false);
             await Assert.That(vm.SelectedRepoPath).IsEqualTo("/w/repo");
             await Assert.That(vm.SelectedVendor).IsEqualTo("codex");
 
-            await vm.SelectMachineAsync(daemon.DaemonName);
+            await vm.SelectMachineAsync(daemon.DaemonName, isLocal: true);
 
             await Assert.That(vm.RemoteMachineSelected).IsFalse();
             // The existing local flow (EnsureDefaultRepositoryAsync) adopts the known repo —
