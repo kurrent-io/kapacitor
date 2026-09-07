@@ -794,4 +794,105 @@ public class HomeViewModelTests {
             await Assert.That(await vm.StartCommand.CanExecute.FirstAsync()).IsTrue();
         });
     }
+
+    // Fix round 1: display-list filtering alone doesn't protect the launch path — a name can
+    // reach SelectMachineAsync/StartCommand without ever having passed through ListMachinesAsync.
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task SelectingAnUnownedNameIsRefused() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            using var tmp = TempDir.WithPathTo("app-state.json", out var path);
+            var daemon = new FakeDaemonClientService();
+            var remote = new FakeRemoteAgents();
+            remote.DaemonsSubject.OnNext([new DaemonInfo { Name = "work-mac", OwnerUserId = "u2", Connected = true }]);
+            using var vm = new HomeViewModel(
+                daemon, new AppStateStore(path), new RecordingLaunchClient(), Known(),
+                daemons: remote.Daemons, viewerId: _ => Task.FromResult<string?>("u1"));
+            await vm.SelectRepositoryAsync("/repo/a");
+
+            // "work-mac" never passed ListMachinesAsync's own-daemons filter (it's u2's) — calling
+            // SelectMachineAsync with it directly (a stale menu row, a forged binding) must be a
+            // no-op, not a silent remote selection.
+            await vm.SelectMachineAsync("work-mac");
+
+            await Assert.That(vm.RemoteMachineSelected).IsFalse();
+            await Assert.That(vm.SelectedMachine).IsEqualTo(daemon.DaemonName);
+            await Assert.That(vm.SelectedRepoPath).IsEqualTo("/repo/a");
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task ReassignedDaemonOwnerRevokesAnAlreadySelectedMachine() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            using var tmp = TempDir.WithPathTo("app-state.json", out var path);
+            var daemon = new FakeDaemonClientService();
+            var launch = new RecordingLaunchClient();
+            var remote = new FakeRemoteAgents();
+            remote.DaemonsSubject.OnNext([
+                new DaemonInfo { Name = "home-pc", OwnerUserId = "u1", Connected = true, RepoPaths = ["/w/repo"] },
+            ]);
+            var lane = new FakeServerLane();
+            lane.StatusSubject.OnNext(new ServerLaneStatus(ServerLaneState.Connected));
+            using var vm = new HomeViewModel(
+                daemon, new AppStateStore(path), launch, Known(),
+                daemons: remote.Daemons, viewerId: _ => Task.FromResult<string?>("u1"), laneStatus: lane.Status);
+
+            await vm.SelectMachineAsync("home-pc");
+            await Assert.That(await vm.StartCommand.CanExecute.FirstAsync()).IsTrue();
+
+            // Same name, now a different owner — a registry refresh racing the earlier selection.
+            remote.DaemonsSubject.OnNext([
+                new DaemonInfo { Name = "home-pc", OwnerUserId = "u2", Connected = true, RepoPaths = ["/w/repo"] },
+            ]);
+
+            await Assert.That(await vm.StartCommand.CanExecute.FirstAsync()).IsFalse();
+
+            // ReactiveCommand.Execute() does not itself gate on CanExecute (verified directly: an
+            // unguarded call here reaches StartAsync regardless) — the actual boundary is
+            // StartAsync's own fresh ownership re-check, so calling it straight through must still
+            // refuse rather than reach the wire.
+            await vm.StartCommand.Execute();
+
+            await Assert.That(vm.StartError).IsEqualTo(HomeViewModel.MachineUnavailableMessage);
+            await Assert.That(launch.Last).IsNull();
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task SwitchingBackToLocalRestoresTheLocalRepoAndRevalidatesTheVendor() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            using var tmp = TempDir.WithPathTo("app-state.json", out var path);
+            var daemon = new FakeDaemonClientService();
+            daemon.SnapshotsSubject.OnNext(FakeDaemonClientService.Snap(supportedVendors: ["kiro"]));
+            var remote = new FakeRemoteAgents();
+            remote.DaemonsSubject.OnNext([
+                new DaemonInfo {
+                    Name = "home-pc", OwnerUserId = "u1", Connected = true,
+                    RepoPaths = ["/w/repo"], SupportedVendors = ["codex"],
+                },
+            ]);
+            using var vm = new HomeViewModel(
+                daemon, new AppStateStore(path), new RecordingLaunchClient(), Known("/repo/local"),
+                daemons: remote.Daemons, viewerId: _ => Task.FromResult<string?>("u1"));
+
+            await vm.SelectMachineAsync("home-pc");
+            await Assert.That(vm.SelectedRepoPath).IsEqualTo("/w/repo");
+            await Assert.That(vm.SelectedVendor).IsEqualTo("codex");
+
+            await vm.SelectMachineAsync(daemon.DaemonName);
+
+            await Assert.That(vm.RemoteMachineSelected).IsFalse();
+            // The existing local flow (EnsureDefaultRepositoryAsync) adopts the known repo —
+            // never the remote machine's path.
+            await Assert.That(vm.SelectedRepoPath).IsEqualTo("/repo/local");
+            var repos = await vm.ListRepositoriesAsync();
+            await Assert.That(repos.Any(r => r.RepoPath == "/w/repo")).IsFalse();
+            // codex isn't in the local daemon's advertised set ("kiro") — revalidated, not left at
+            // whatever the remote machine last set it to.
+            await Assert.That(vm.SelectedVendor).IsEqualTo("kiro");
+        });
+    }
 }

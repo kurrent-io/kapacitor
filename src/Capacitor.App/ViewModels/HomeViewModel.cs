@@ -57,6 +57,11 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
     /// it from the session list rather than treating this as a launch failure.
     public const string UnusableIdMessage = "Launched, but the session ID was unusable. Open it from the session list.";
 
+    /// StartAsync's own re-check refuses this even if a caller invoked ReactiveCommand.Execute()
+    /// straight past CanExecute — the wire request is never built for a machine that failed the
+    /// ownership/connected check at the moment of launch, whatever the UI-affordance state said.
+    public const string MachineUnavailableMessage = "This machine is no longer available. Choose a different one.";
+
     internal const string ConnectingNotice     = "Connecting to the server…";
     internal const string FinishingSignInNotice =
         "Finishing sign-in. Reconnecting to the server…";
@@ -191,6 +196,17 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
     /// ListMachinesAsync to stamp the local MachineOption's Connected flag at the moment asked.
     LaunchAvailability _currentAvailability = LaunchAvailability.Pending;
 
+    /// Live mirror of the local daemon's latest advertised SupportedVendors — read (never bound
+    /// directly) when a machine selection reverts to local, to revalidate SelectedVendor against
+    /// what the local daemon actually hosts rather than leaving whatever a prior remote pick set.
+    string[]? _currentLocalVendors;
+
+    /// Set by OwnDaemonsAsync every time it resolves viewerId — the CanExecute pipeline
+    /// (FindMachine) reads it to re-verify ownership synchronously, since it cannot itself await
+    /// viewerId on every lane/daemons emission. Null until first resolved, or whenever viewerId
+    /// itself resolves to null.
+    string? _lastViewerId;
+
     string _selectedMachine;
     /// Which daemon a launch targets: the local one until SelectMachineAsync picks a remote name.
     public string SelectedMachine {
@@ -199,8 +215,8 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
     }
 
     bool _remoteMachineSelected;
-    /// False ⇒ every existing repo/harness/launch behavior is untouched — the mechanism that lets
-    /// this task's ctor defaults leave every current caller's behavior exactly as it was.
+    /// False ⇒ every existing repo/harness/launch behavior is untouched by a HomeViewModel that
+    /// never wires the machine picker.
     public bool RemoteMachineSelected {
         get => _remoteMachineSelected;
         private set => this.RaiseAndSetIfChanged(ref _remoteMachineSelected, value);
@@ -329,13 +345,19 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
         var availability = daemon.Status.CombineLatest(
             daemon.Snapshots.Select(s => s.Daemon.Connection).StartWith(""), AvailabilityFor);
         availability.Subscribe(a => _currentAvailability = a).DisposeWith(_disposables);
+        daemon.Snapshots.Select(s => s.Daemon.SupportedVendors)
+            .Subscribe(v => _currentLocalVendors = v)
+            .DisposeWith(_disposables);
 
         // A remote selection swaps in RemoteAvailabilityFor (lane + the selected daemon's latest
-        // Connected) rather than changing AvailabilityFor itself — the local gate stays exactly
-        // what every existing (non-machine-picking) caller already exercises.
+        // Connected AND still-owned-by-the-viewer) rather than changing AvailabilityFor itself —
+        // the local gate stays exactly what every existing (non-machine-picking) caller already
+        // exercises. FindMachine re-verifies ownership against _lastViewerId on every emission, so
+        // a registry update that reassigns an already-selected name to a different owner revokes
+        // launch readiness rather than trusting the selection made when it was still valid.
         var canLaunch = availability.CombineLatest(
             _laneStatus, _daemons, _machineSelectionChanges,
-            (local, lane, list, sel) => (sel.Remote ? RemoteAvailabilityFor(lane, FindMachine(list, sel.Name)) : local)
+            (local, lane, list, sel) => (sel.Remote ? RemoteAvailabilityFor(lane, FindMachine(list, sel.Name, _lastViewerId)) : local)
                 == LaunchAvailability.Ready);
 
         // Explicit ObserveOn: ReactiveCommand does NOT reschedule the supplied canExecute, and a
@@ -564,32 +586,47 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
         return options;
     }
 
-    /// Picking the local name leaves the repository/harness/launch flow exactly as it is for
+    /// Picking the local name restores the local repository/vendor flow (revalidated below) for
     /// every non-machine-picking caller; picking a remote name switches the repository and
-    /// harness sources to that machine's own advertised set and resets the
-    /// vendor off one it cannot host.
+    /// harness sources to that machine's own advertised set and resets the vendor off one it
+    /// cannot host. A name that fails the ownership filter is refused outright — the selection is
+    /// left exactly as it was, the same as clicking a menu row that was never offered.
     public async Task SelectMachineAsync(string daemonName) {
         if (string.Equals(daemonName, _daemon.DaemonName, StringComparison.Ordinal)) {
+            var wasRemote = RemoteMachineSelected;
             SetMachineSelection(daemonName, remote: false);
             _selectedRemoteMachine = null;
             _remoteVendorOverride.OnNext(null);
+            if (!wasRemote) return; // already local — nothing a remote pick could have left behind
+
+            // A remote machine's path/vendor can never carry over into the local menu — restore
+            // exactly the flow a fresh, no-selection launcher would run.
+            SelectedRepoPath = ScratchRepoPath;
+            await EnsureDefaultRepositoryAsync();
+            RevalidateVendorAgainst(_currentLocalVendors);
             return;
         }
 
         DaemonInfo? match = null;
         foreach (var d in await OwnRemoteDaemonsAsync())
             if (string.Equals(d.Name, daemonName, StringComparison.Ordinal)) { match = d; break; }
-        var machine = match is null
-            ? null
-            : new MachineOption(match.Name, false, match.Connected, match.Platform,
-                match.RepoPaths ?? [], match.SupportedVendors, true);
+        if (match is null) return; // not one of the viewer's own daemons — never guess ownership
+
+        var machine = new MachineOption(match.Name, false, match.Connected, match.Platform,
+            match.RepoPaths ?? [], match.SupportedVendors, true);
 
         SetMachineSelection(daemonName, remote: true);
         _selectedRemoteMachine = machine;
-        _remoteVendorOverride.OnNext(machine?.SupportedVendors);
-        SelectedRepoPath = machine?.RepoPaths.FirstOrDefault() is { Length: > 0 } first ? first : ScratchRepoPath;
+        _remoteVendorOverride.OnNext(machine.SupportedVendors);
+        SelectedRepoPath = machine.RepoPaths.FirstOrDefault() is { Length: > 0 } first ? first : ScratchRepoPath;
+        RevalidateVendorAgainst(machine.SupportedVendors);
+    }
 
-        var options = HostedHarnessCatalog.Build(machine?.SupportedVendors);
+    /// Resets SelectedVendor to the first vendor Available in supportedVendors' Build() when the
+    /// current one isn't — shared so a machine's OWN advertised set is what a selection (either
+    /// direction) is checked against, never whatever a PRIOR machine last set it to.
+    void RevalidateVendorAgainst(string[]? supportedVendors) {
+        var options = HostedHarnessCatalog.Build(supportedVendors);
         var current = options.FirstOrDefault(o => string.Equals(o.Vendor, SelectedVendor, StringComparison.OrdinalIgnoreCase));
         if (current is not { Available: true })
             SetVendor(options.FirstOrDefault(o => o.Available)?.Vendor ?? DefaultVendor);
@@ -610,21 +647,28 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
         && string.Equals(d.Name, _daemon.DaemonName, StringComparison.Ordinal);
 
     /// The one ownership filter: every remote daemon this ViewModel ever offers or resolves by
-    /// name goes through this, so "the viewer's own daemons" has exactly one definition.
+    /// name goes through this, so "the viewer's own daemons" has exactly one definition. Also
+    /// caches the resolved id in _lastViewerId, which FindMachine reads to re-verify ownership
+    /// synchronously — the CanExecute pipeline cannot itself await viewerId on every tick.
     async Task<IReadOnlyList<DaemonInfo>> OwnDaemonsAsync(IReadOnlyList<DaemonInfo> all) {
-        var viewer = await _viewerId(CancellationToken.None);
+        var viewer = await _viewerId(_shutdown);
+        _lastViewerId = viewer;
         if (viewer is null) return [];
         return all.Where(d => d.OwnerUserId == viewer && !IsLocalTwin(d)).ToList();
     }
 
     async Task<IReadOnlyList<DaemonInfo>> OwnRemoteDaemonsAsync() => await OwnDaemonsAsync(await _daemons.FirstAsync());
 
-    /// Live lookup by name against the raw (unfiltered) daemons list — used only by the CanExecute
-    /// pipeline, where the name already came from a selection ListMachinesAsync had ownership-
-    /// filtered, so re-awaiting viewerId on every lane/daemons tick would add nothing.
-    static MachineOption? FindMachine(IReadOnlyList<DaemonInfo> daemons, string name) {
+    /// Live lookup by name AND owner against the raw (unfiltered) daemons list, for the CanExecute
+    /// pipeline. A name that ListMachinesAsync/SelectMachineAsync ownership-filtered earlier is
+    /// re-checked against viewerId here too: if a later registry update reassigns that same name
+    /// to a different owner, the match fails and the selection stops being launchable, rather than
+    /// trusting a filter that only ran once, at selection time. A null viewerId (never resolved,
+    /// or resolved to signed-out) means no remote daemon is ever treated as owned.
+    static MachineOption? FindMachine(IReadOnlyList<DaemonInfo> daemons, string name, string? viewerId) {
+        if (viewerId is null) return null;
         foreach (var d in daemons)
-            if (string.Equals(d.Name, name, StringComparison.Ordinal))
+            if (string.Equals(d.Name, name, StringComparison.Ordinal) && d.OwnerUserId == viewerId)
                 return new MachineOption(d.Name, false, d.Connected, d.Platform, d.RepoPaths ?? [], d.SupportedVendors, true);
         return null;
     }
@@ -687,6 +731,19 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
     public void OpenSessionRequested(string agentId) => _openSession?.Invoke(agentId);
 
     async Task StartAsync() {
+        // ReactiveCommand.Execute() does not itself gate on CanExecute — a caller that bypasses
+        // the bound Button (or the canExecute observable's own staleness, however small) can still
+        // reach here, so a remote target gets one more, fully fresh ownership+connected check
+        // right before the wire request is built. This is the actual boundary; canLaunch/
+        // FindMachine above are the UI-responsive affordance, not a substitute for it.
+        if (RemoteMachineSelected) {
+            var owned = await OwnRemoteDaemonsAsync();
+            if (!owned.Any(d => string.Equals(d.Name, SelectedMachine, StringComparison.Ordinal) && d.Connected)) {
+                StartError = MachineUnavailableMessage;
+                return;
+            }
+        }
+
         var request = new LaunchRequest(
             SelectedMachine, SelectedRepoPath, SelectedVendor, Goal, SelectedModel, SelectedEffort,
             PermissionModeFor(SelectedVendor, SelectedPermissionMode));
