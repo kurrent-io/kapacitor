@@ -130,7 +130,8 @@ Reverse-proxy routing must preserve this binding.
 This anonymous field exposes supported protocols only, not token configuration,
 link state or repository access. Add the nullable set to `AuthDiscoveryResponse`;
 absence on a valid response means an older server. Advertise v1 even when disabled.
-Clients select a shared version and send `version=1` on all v1 routes. Additive,
+Clients select a shared version and send the query parameter `?version=1` on all
+v1 routes, alongside cursor/filter parameters. Additive,
 fixture-compatible changes retain v1. Breaking changes get a new version/bundle;
 servers continue serving/advertising v1 alongside newer versions for supported
 desktop releases. Removing v1 is an explicit breaking release, not a field addition.
@@ -148,18 +149,22 @@ Source precedence is explicit:
 1. With supported capability, the new link-list route is authoritative. Do not
    union its results with legacy links, resurrect missing entries, or override its
    ordering/titles from legacy data. A 404 clears protected PR state and triggers
-   rediscovery, not an inference of an old server. Three consecutive list 404s pause
-   automatic PR calls for five minutes and rediscover, with explicit Retry. If v1
-   remains advertised, explain unavailable/misconfigured access rather than silently
-   downgrading admission. Legacy fallback requires fresh confirmation of no shared
-   version, not status-code heuristics.
+   rediscovery, not an inference of an old server. Count consecutive list 404s per
+   (profile identity, session), never across subjects. After three, settle that
+   subject as unavailable and stop automatic retries until explicit Retry or a
+   real authentication/session-identity change. Other sessions continue normally.
+   A successful read resets the counter. Rediscovery respects the profile's
+   five-minute cache/backoff and coalescing; 404 cannot force an extra probe.
+   If v1 remains advertised, do not silently downgrade admission. Legacy fallback
+   requires fresh confirmation of no shared version, not status-code heuristics.
 2. Without capability, retain only legacy links from a successful, independently
    admitted session-summary read. Read that summary independently of work-item
    assignments for this fallback. Add a direct summary read to the PR source;
    reuse the transport lease, not WorkContextReader's gated aggregate. Leave that
    reader's work-item gating intact and regression-test its card.
    An empty legacy result says details unavailable,
-   not No PR linked. There is no live-details polling.
+   not No PR linked. Apply the same canonical repository/number ordering client-side
+   to these links. There is no live-details polling.
 3. A malformed response on an advertised new route is an unavailable protocol
    result, never route-unsupported or an authoritative empty list. Back off as
    above; do not downgrade authorization by switching to legacy detail data.
@@ -257,6 +262,15 @@ proof for already displayed content, unless a known lock/suspend, identity/profi
 change or denial occurred. Beyond that short grace, mask before redisplay and
 revalidate; the five-minute transient display allowance cannot restore a hidden or
 evicted view. Only separately admitted link metadata survives denied detail access.
+Where reliable lock/suspend signals are unavailable, disable the short foreground-
+return optimization: any foreground loss requires revalidation on return. Do not
+claim lock detection on such platforms.
+
+Conservative retained-display exposure is at most 30 seconds of positive evidence
+plus five minutes of transient grace, measured from access evidence reflected by
+GitHub; provider-side permission propagation is outside this bound. Explicit
+negative signals clear immediately. This does not extend the server's 30-second
+fetch-admission bound.
 
 This checks repository roles/publication, not all of GitHub's per-user SSO, session,
 IP, or conditional-access policies. Requests are made as the integration, not with
@@ -307,6 +321,10 @@ If it fails, stop and ask the operator to configure a compatible scoped credenti
 then repeat. Do not weaken the linked-user gate into an allowlist/shared-token-only
 policy. Credential replacement/renewal is separate operator work, not automatic.
 Design review may finish before the probe; implementation planning cannot.
+Record the initial sanitized outcome and renewal procedure in the shared design
+record. Re-run the protected probe before adopting a rotated credential or changed
+credential type/grants. Routine installation-token renewal may automate it; record
+each outcome in protected operational logs referenced by that design record.
 
 ## Server module and request budget
 
@@ -331,10 +349,12 @@ to discover that its normalized form exceeds the budget.
 
 The Checks section's suite-scoped latest set is canonical. Overview GraphQL rollup
 and counts are labelled **GitHub summary**, advisory rather than proof that the
-section has no failures. Once a complete fresh section for the same head exists,
-use its counts in both card and reader; head changes discard them. On disagreement,
-prefer the section and qualify source/time, not contradictory unlabeled green/red
-aggregates. Test disagreement explicitly.
+section has no failures. Section counts take precedence only when complete,
+for the same head, captured no more than 30 seconds ago, and not older than the
+overview's checks `fetched_at`. Age uses the capture's completion time, not a cache
+touch, proof renewal or body hydration. Otherwise the card uses the qualified
+GitHub rollup and the reader retains its dated snapshot with a refresh hint. Head
+changes discard old counts. Never show contradictory unlabeled green/red aggregates. Test disagreement explicitly.
 
 The lightweight overview uses one bounded GraphQL request for identity/lifecycle,
 head SHA, description, `reviewDecision`, the first 50 current-review/request rows,
@@ -390,6 +410,19 @@ GitHub documents 5,000 minimum, scaling to 12,500, or 15,000 for qualifying Ente
 Cloud installations. Credential provisioning/installation-token renewal remains
 operator-owned; the feature neither finds nor persists replacement credentials.
 
+A permission-probe HTTP 200 with matching user and `permission=none` is routine
+per-user denial. Authentication/scope failure of the probe itself is distinct:
+return `integration_capability_unavailable` with `access_failure=invalid` and an
+operator-action message. Rate-limit 403 is transient, not a scope diagnosis. Scope
+403/404 can be repository-specific; do not claim all repositories are broken from
+one such response. Emit a sanitized warning keyed by integration generation and
+repository (or global only for explicit invalid credential), throttled to once per
+five minutes. Repeated non-rate probe failures across distinct admitted subjects
+also emit an integration diagnostic, without claiming their users lack GitHub roles.
+Do not probe extra users/repos to generate that diagnostic. Existing protected
+server warning logs are its operator-visible surface; no new audit UI is required.
+A fresh successful compatible probe clears the diagnostic; this is not an allow grant.
+
 ## Stable pagination and bounded storage
 
 ### Collection snapshots
@@ -414,7 +447,11 @@ redacted/unreadable nodes with identity/publication evidence become placeholders
 and still count as enumerated; unexplained gaps do not. Compare the unfiltered
 count before dropping PENDING entries. Never expose a review/thread placeholder
 or count when publication cannot be established; pending drafts contribute no
-existence signal. Retry enumeration at most once
+existence signal. Page `total` counts published entries matching the requested
+filter (lower bound for limited coverage). `excluded_by_filter` is a separate count
+object for published rows excluded by the resolved filter, never draft counts.
+An empty complete default thread view says **No unresolved threads (N resolved)**
+when that excluded count is exact; otherwise omit N. It never says No reviews. Retry enumeration at most once
 within the same deadline, merging by stable ID; otherwise return a limited manifest
 with a changed-during-capture reason and an explicit Refresh action. An API without
 sufficient enumeration/completeness evidence also yields limited coverage. Complete
@@ -490,8 +527,8 @@ The manifest and all its handles share a fixed absolute expiry of 30 minutes fro
 capture start; paging never extends it. Bind to the numeric GitHub identity too. A cursor supplies position only:
 re-resolve the link and thread membership to build each upstream request. Unknown
 or foreign handles never cause a GitHub call. A well-formed handle missing from the
-bounded store returns generic `cursor_unavailable`; a known foreign handle returns
-400. Retained records can identify expiry/eviction/generation changes precisely;
+bounded store and a known foreign handle both return generic `cursor_unavailable`;
+only malformed handle syntax returns 400. Retained records can identify expiry/eviction/generation changes precisely;
 do not keep unbounded tombstones just to distinguish all forgotten handles.
 
 `has_more=true` iff `next_cursor` is non-null/non-empty. `has_more=false` only means
@@ -503,7 +540,9 @@ are a protocol failure. Stable IDs prevent duplicate appends on retried pages.
 Separate server budgets: body cache 64 MiB/256 entries; manifest store 128 MiB/256
 manifests; opaque-handle store 8 MiB/16,384 records. These operational defaults target
 four active PR readers with six collections and up to twenty expanded-thread
-manifests each, plus opportunistic idle retention. Body paging cannot evict manifests
+manifests each, plus opportunistic idle retention. On large PRs the byte ceiling
+binds before the manifest count; the capacity target is not 104 maximum-sized
+manifests simultaneously. Body paging cannot evict manifests
 or consume handle capacity. Byte accounting includes stored metadata/handle contents.
 Evict idle PRs first; if admission still cannot fit, return capacity unavailable
 rather than silently evict another active reader's manifest.
@@ -530,7 +569,16 @@ corresponding data is reloaded, not by retaining unbounded content.
 
 ## Wire contract
 
-Paths are additive and session-scoped:
+Paths are additive and session-scoped. Each requires one `version` query parameter;
+combine it with `cursor`/`resolved` using ordinary URL query encoding. Missing
+version returns HTTP 400 `{ "error":"protocol_version_required" }`; duplicate,
+non-decimal, non-positive, overflowing Int32 or malformed values return 400
+`protocol_version_invalid`; an unsupported
+positive integer returns 400 `protocol_version_unsupported`. These errors never use
+404/409 and never contact GitHub. Authentication still precedes request handling.
+The shared fixture bundle includes request method/path/query and these exact status/
+error cases, not only response-record examples. Protocol and cursor versions are
+independent.
 
 ```text
 GET /api/sessions/{sessionId}/pull-requests
@@ -596,13 +644,16 @@ The link list grants no lease. Each body response requires current authorization
 `access_failure` is null on admission, otherwise transient, denied or invalid.
 Transient means only network/timeout/5xx/rate/budget inability to check. Explicit
 401/non-rate 403/404, permission=none, unlink/configuration change, ID mismatch, malformed
-evidence and unknown classifications get no display grace. Resource-level signals
-use this field; item-level hydration outcomes do not change it.
+evidence and unknown classifications get no display grace. Client-observed timeout,
+DNS or connection failure with no HTTP envelope is transient. A Capacitor 401 after
+the established auth retry, unexpected origin or malformed protocol is not.
+Resource-level signals use this field; item-level hydration outcomes do not change it.
 
 Reasons: disabled, not_configured, github_not_linked, github_access_denied,
 github_access_unverifiable, provider_unauthorized, provider_forbidden,
 provider_not_found, rate_limited, budget_exhausted, timeout, provider_unavailable,
-protocol_error, capture_unstable, payload_unavailable, capacity_exhausted. Unknown reasons use a generic
+protocol_error, capture_unstable, payload_unavailable, capacity_exhausted,
+integration_capability_unavailable. Unknown reasons use a generic
 unavailable label. Only transient content failures/rate limits with a still-valid
 access proof may carry stale data. Unknown authorization status never may.
 
@@ -635,6 +686,7 @@ Page `data`:
   "coverage": "complete",
   "head_sha": null,
   "total": {"value":2,"kind":"exact"},
+  "excluded_by_filter": {"value":0,"kind":"exact"},
   "items": [{"id":"IC_example","availability":"available","reason":null,"url":"https://github.com/example/repo/pull/42#issuecomment-1","created_at":"2026-09-07T09:00:00Z","updated_at":"2026-09-07T09:00:00Z","author":null,"body":"Example comment","body_truncated":false}],
   "page_cursor": "opaque-current-page-handle",
   "has_more": true,
@@ -665,7 +717,8 @@ cache freshness is 30 seconds. Publication rules precede any placeholder.
 401 is Capacitor authentication failure only. Missing/hidden/below-Full/unlinked
 Capacitor subjects are indistinguishable 404s. GitHub denials are typed unavailable
 results for an already admitted Capacitor link, not a Capacitor 401/404. Malformed
-inputs or known-foreign/malformed cursor handles return 400 without upstream work.
+inputs or malformed cursor syntax return 400 without upstream work. Well-formed
+foreign/unknown handles share the generic restart outcome without upstream work.
 
 409 uses `{ "error":"restart_required", "reason":"…" }`, where reason is
 head_changed, cursor_expired, cursor_unavailable, snapshot_evicted,
@@ -729,6 +782,8 @@ labelled with its old fetch time. A fresh overview cannot label those bodies fre
 | Item miss/unreadable | Unavailable placeholder without old body/hunk; paging continues. |
 | Transport/5xx/timeout rechecking | No server data without proof; existing visible data gets labelled display grace. |
 | Rate/budget limit | Follow retry advice; no fetch on expired proof, same bounded display grace. |
+| Capacity exhausted | Temporary server capacity notice; `retry_at` defaults to 60 seconds ahead, normal bounded display grace. |
+| Integration capability unavailable | Server integration needs operator attention; no bodies/grace. |
 | Oversized item | Explicit truncated preview and its external link; paging continues. |
 | Limited manifest | Label loaded subset/lower bound; More on GitHub, never all-loaded. |
 | Caller sign-out/session 404 | Clear affected protected state immediately. |
@@ -758,7 +813,8 @@ Core/app tests pin tolerant JSON parsing, unknown status/enum handling, exact
 count/page invariants, source precedence, unsupported discovery/backoff, provider
 failure versus Capacitor sign-out, memory eviction, monotonic access expiry,
 five-minute display-grace expiry, short foreground return, long-hide masking,
-minimum reveal-lease floor, and profile/selection cancellation. Avalonia tests assert
+minimum reveal-lease floor, no-envelope transport classification, per-session 404
+settling, version query errors, check-source age precedence, and profile cancellation. Avalonia tests assert
 realized Chat/Terminal preservation, non-PTY and ended layouts, card-row focus,
 selected tab accessibility, live announcements, readable long content, and failures
 in one sidebar module not contaminating the other.
