@@ -541,9 +541,9 @@ public class DaemonRunnerCursorAvailabilityTests {
         await Assert.That(capability.BorrowedReviewContainment).IsEqualTo("independent-snapshot");
     }
 
-    /// <summary>The wording must mark the value as a daemon-startup observation, so nobody reads it
-    /// as the build a later reviewer actually ran — an update after startup makes it stale, which is
-    /// precisely the situation that caused this bug.</summary>
+    /// <summary>The wording must mark the value as a daemon-startup observation and say that a later
+    /// change is re-advertised, so nobody reads this line as the build a later reviewer actually ran
+    /// and nobody restarts the daemon to refresh it.</summary>
     [Test]
     public async Task LogUnattendedVendorIdentities_WordsTheVersionAsAStartupObservation_NotALaunchFact() {
         var logger = new CaptureLogger();
@@ -554,7 +554,8 @@ public class DaemonRunnerCursorAvailabilityTests {
 
         var line = logger.Entries.Single().Message;
         await Assert.That(line).Contains("daemon startup");
-        await Assert.That(line).Contains("stale");
+        await Assert.That(line).Contains("re-advertised");
+        await Assert.That(line).DoesNotContain("restart");
     }
 
     /// <summary>NEGATIVE test, and it is load-bearing: the startup line reports the version and

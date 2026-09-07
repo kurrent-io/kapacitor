@@ -55,23 +55,31 @@ internal sealed class SingleFlightRefresh {
     internal Task Current => Volatile.Read(ref _current);
 
     async Task RunHoldingGateAsync(Func<Task> refresh, Action<Exception>? onError) {
-        try {
-            do {
-                // Cleared BEFORE the work, so a request arriving during it sets the flag again and
-                // earns another pass. Clearing after would swallow it.
-                Interlocked.Exchange(ref _rerunRequested, 0);
+        while (true) {
+            try {
+                do {
+                    // Cleared BEFORE the work, so a request arriving during it sets the flag again and
+                    // earns another pass. Clearing after would swallow it.
+                    Interlocked.Exchange(ref _rerunRequested, 0);
 
-                try {
-                    await refresh().ConfigureAwait(false);
-                } catch (Exception ex) {
-                    // A refresh is a self-heal; a failure must never become a second, different
-                    // error for whatever triggered it.
-                    onError?.Invoke(ex);
-                }
-            } while (Interlocked.CompareExchange(ref _rerunRequested, 0, 1) == 1);
-        } finally {
-            // Release pairs with Trigger's interlocked acquire.
-            Volatile.Write(ref _passRunning, 0);
+                    try {
+                        await refresh().ConfigureAwait(false);
+                    } catch (Exception ex) {
+                        // A refresh is a self-heal; a failure must never become a second, different
+                        // error for whatever triggered it.
+                        onError?.Invoke(ex);
+                    }
+                } while (Interlocked.CompareExchange(ref _rerunRequested, 0, 1) == 1);
+            } finally {
+                // Release pairs with Trigger's interlocked acquire.
+                Volatile.Write(ref _passRunning, 0);
+            }
+
+            // A request that landed between the loop's last check and the release found the gate
+            // held and set the flag with no pass left to consume it. Take the gate back and serve
+            // it; a Trigger that already won the gate clears the flag itself before its work.
+            if (Volatile.Read(ref _rerunRequested) == 0) return;
+            if (Interlocked.CompareExchange(ref _passRunning, 1, 0) != 0) return;
         }
     }
 }

@@ -28,6 +28,39 @@ from the picker's own filtered list: `ReactiveCommand.Execute()` does not gate i
 `CanExecute`, so a selection whose daemon was reassigned to another owner between selection and
 launch is refused inside `StartAsync` itself, not left to the affordance alone.
 
+## A vendor update under a running daemon is re-advertised
+
+The vendor CLI version a daemon advertises was a startup probe cached for the process lifetime, and
+reconnects re-sent that cache. When Claude auto-updated under a daemon that had been up for days,
+the next review-flow launch failed the certification's swap arm, and the rejection told the
+operator to restart the daemon: the one action that tears down every hosted agent, on a daemon
+whose idle-gated restart can wait days. The rejection already re-advertised on the live connection
+(a same-connection `DaemonConnect` is an idempotent overwrite that keeps live agents), so the
+remedy was wrong twice over: a retry was enough, and only the first launch after the update was
+ever lost.
+
+**One refresh path, single-flighted.** `AgentOrchestrator.RefreshAdvertisedCapabilities` is the
+only writer of the advertisement while the daemon runs: `VendorCliWatcher` calls it when an
+advertised vendor's binary changes on disk, the certification rejection calls it with a forced
+republish because the server's copy has just proven wrong. The watcher fingerprints the file that
+actually runs — bare command resolved on PATH, symlink chain followed — plus size and mtime,
+because a vendor update is usually a symlink retargeted at a new version directory whose file may
+match the old one's size and land on a coarse clock. Its first baseline is the fingerprint taken
+at startup before the version probe, not the file it finds when the service starts: the probes can
+take the better part of a minute under load, and a vendor updating inside that window would
+otherwise become the baseline while the advertisement still named the old build. A refresh that
+finds nothing changed does not re-register: every registration bumps the slot's connection
+generation, which fails a reviewer launch pinned to the previous one, so a same-version reinstall
+must not cost a launch. The rejection's forced republish is a sticky flag the next pass consumes,
+because a request folded into a running pass reruns that pass's delegate, not its own.
+
+**A failed re-probe keeps the advertised version.** The server reads a null version as the vendor
+being gone, so publishing the probe's null would withdraw a reviewer that was advertised a moment
+ago. `RetainAdvertisedVersions` carries the previous version over a null re-probe; a later launch
+that still disagrees hits the swap arm and forces another refresh. The refresh probes the vendor set
+fixed at startup rather than re-classifying, which is also what `DaemonConnect` sends as the vendor
+list; a vendor withheld at startup for a version floor stays withheld until a restart.
+
 ## The desktop app shows a session waiting for input
 
 The web already marked a session whose turn was over; the desktop app lit its needs-you pip only
@@ -956,3 +989,54 @@ without waiting on the canonical schema, which has no field for it — a project
 `Kurrent.Agent.Schema` `ToolCallInfo`, so the persisted event stays kind-less until the package gains
 one. The shell-command rule is shared with the daemon rather than written twice: a hosted session and
 an import of it must not answer differently for the same call.
+
+## The machine beats, so a death that cannot speak is still visible
+
+The browser is told the machine has stopped by a relinquish the leg sends on its way out. That covers
+every exit it can reach, including through `Environment.Exit` once the notice is also sent from
+`AppDomain.ProcessExit` — but it is a statement, so anything that stops the process making statements
+sends nothing at all: a kill, a lost network, a shut lid. The flow's own lifetime was the only backstop,
+and it is twelve hours.
+
+A beat on its own timer turns that silence into something the server can observe.
+
+**It is not driven by the poll, and that is the whole design.** The import runs inline in the poll loop
+and stops polling for its duration, so liveness derived from the poll would declare the machine gone
+during the one stretch it is working hardest. A separate timer measures the process, which is the only
+thing a beat can honestly claim — a wedged leg goes on beating, and nothing here should ever be read as
+progress.
+
+**Nothing inspects the result for success.** A beat is a network call on a machine whose network may be
+exactly what is failing, so a failure is not handled and a throw does not end the loop: a run of them is
+the signal, and only the server is positioned to read it. Two statuses are read, because neither is
+discoverable by a later beat — a throttle, which is an instruction and would otherwise spend the budget
+the poll needs, and an absent route, which answers the same way every time it is asked.
+
+**A beat is never cancelled.** The beat rides the setup client, whose 401 handler rotates a single-use
+refresh token and then persists it, the rotation itself being uncancellable. A cancel landing between the
+two spends the credential server-side and never writes the replacement, logging the user out mid-setup.
+So the stop token is kept off the request entirely: what ends a beat is the client's own timeout, and what
+ends the loop is the token one level up.
+
+**Answers are carried across ticks rather than abandoned, and beats are capped rather than serialised.**
+A dropped verdict is never read, and a throttling or absent-route server is exactly the one whose answer
+outruns an interval — so the two statuses worth reading would be missed precisely when they matter. But
+allowing only one at a time makes a single slow request the whole liveness budget, so the bound is a
+count: enough that a slow answer cannot silence the machine, few enough that a wedged network cannot
+accumulate one open POST per interval on the very machine whose network is failing.
+
+**Several answers can then land at once, and they are the server's word at different moments.** The
+newest decides the quiet window outright rather than being folded onto it, and one older than the word
+already in force is counted but not obeyed. A fold can only push a window further out, so a route that
+answers again mid-drain would stay silenced by the refusals ahead of it — for the whole backoff, starting
+at the moment it recovered.
+
+**Backing off a missing route is a pause, not an ending.** A rolling deploy or a proxy reload is minutes
+long and the poll on the same client rides straight through it, so a beat that stopped for good would have
+the browser infer a death from a machine still demonstrably talking to it. It takes more refusals than may
+be outstanding at once, so a proxy that answers every open POST in the same instant is one blip rather than
+a run of them.
+
+**Stopping does not wait for a beat in flight**, and does not cancel it either. Nothing is owed to it:
+the relinquish that follows states the ending, and the browser reads a stated ending ahead of an inferred
+one.

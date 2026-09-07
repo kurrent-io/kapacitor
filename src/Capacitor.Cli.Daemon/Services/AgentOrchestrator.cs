@@ -543,6 +543,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     /// <summary>Serialises + coalesces the background capability refresh fired after a certification
     /// rejection. See SingleFlightRefresh for why bare fire-and-forget was unsafe here.</summary>
     readonly SingleFlightRefresh _capabilityRefresh = new();
+    int                          _republishRequested;
 
     // Hosted-agent PTYs are spawned at a fixed size and never resized. The daemon
     // reports these dims to the server right after the agent registers (and on
@@ -1225,8 +1226,8 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             return (false, $"could not read the installed {vendor} CLI version (the version probe " +
                            "failed or timed out) — this is usually transient under load; retry the flow");
 
-        // Range BEFORE swap: an out-of-range replacement would otherwise be told only to restart,
-        // and restarting re-advertises the same out-of-range version.
+        // Range BEFORE swap: an out-of-range replacement would otherwise be told only to retry,
+        // and the re-advertisement behind that retry carries the same out-of-range version.
         if (!DaemonRunner.CliVersionAllowed(probedVersion, certification.AllowedCliRanges))
             return (false, $"the installed {vendor} CLI '{probedVersion}' is outside the " +
                            $"server's allowed range '{certification.AllowedCliRanges}'");
@@ -1234,14 +1235,50 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         // A missing advertised version means the registration probe failed — not evidence of a CLI
         // swap, which is all this arm exists to catch. It falls through to the range check above.
         // Null or empty: declared non-nullable, but populated from a probe returning null over JSON.
+        // The remedy is a retry, never a restart: the rejection re-advertises the installed version
+        // on the live connection, while a restart tears down every hosted agent.
         if (!string.IsNullOrEmpty(certification.ExpectedCliVersion) &&
             !string.Equals(probedVersion, certification.ExpectedCliVersion, StringComparison.Ordinal))
             return (false, $"the installed {vendor} CLI is '{probedVersion}' but this daemon " +
                            $"advertised '{certification.ExpectedCliVersion}' at registration — " +
-                           "restart the daemon so it re-advertises");
+                           "the daemon is re-advertising the installed version; retry the flow");
 
         return (true, "");
     }
+
+    /// <summary>
+    /// Re-probes the vendors advertised at startup and re-registers when the advertisement changed
+    /// — the one path through which a running daemon updates what the server knows about its CLI
+    /// versions. Returns at once; the work is single-flighted off the caller's stack so a burst of
+    /// requests coalesces and the last publication is always the newest probe.
+    /// </summary>
+    /// <param name="republishUnchanged">Re-register even when the local advertisement already
+    /// reads the same, for a caller that knows the server's copy differs.</param>
+    internal void RefreshAdvertisedCapabilities(string reason, bool republishUnchanged = false) {
+        // Sticky rather than captured by the delegate: a request folded into a running pass reruns
+        // THAT pass's delegate, which would otherwise carry the earlier caller's answer.
+        if (republishUnchanged) Interlocked.Exchange(ref _republishRequested, 1);
+
+        _capabilityRefresh.Trigger(
+            async () => {
+                var republish = Interlocked.Exchange(ref _republishRequested, 0) == 1;
+                var current   = _config.UnattendedVendorCapabilities;
+                var fresh     = DaemonRunner.RetainAdvertisedVersions(current,
+                    DaemonRunner.ComputeUnattendedVendorCapabilities(_runtimeFactories.Values, _config, _config.UnattendedVendors));
+
+                if (!republish && current is not null && current.SequenceEqual(fresh)) return;
+
+                _config.UnattendedVendorCapabilities = fresh;
+                LogReAdvertising(_logger, reason,
+                    string.Join(", ", fresh.Select(c => $"{c.Vendor} {c.CliVersion ?? DaemonRunner.UnknownCliVersion}")));
+                await _server.ReRegisterAsync();
+            },
+            ex => _logger.LogDebug(ex,
+                "Capability refresh ({Reason}) failed; the next registration or launch re-evaluates it.", reason));
+    }
+
+    /// <summary>Test seam: the most recently scheduled capability refresh, for awaiting quiescence.</summary>
+    internal Task CapabilityRefreshForTest => _capabilityRefresh.Current;
 
     internal AgentLiveness ReadLiveness(string agentId) {
         // Order matters: check _agents first (Live/Quarantined-by-status), then _quarantine, then Dead.
@@ -1940,26 +1977,11 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 await _server.LaunchFailedAsync(cmd.AgentId,
                     $"reviewer_certification_changed: {certificationCheck.Reason}.");
 
-                // The self-heal (recompute + re-advertise) is genuinely useful — a certification
-                // mismatch usually means the advertisement is stale — but nothing waits on it, and
-                // the caller already has its answer.
-                //
-                // SINGLE-FLIGHT, not bare fire-and-forget. Codex review round 3: concurrent rejected
-                // launches each starting an independent refresh reintroduces this PR's own bug — a
-                // slow failing refresh can complete AFTER a fast successful one and overwrite valid
-                // capabilities with a failed-probe null, durably disabling the reviewer again.
-                // Serialising publication is necessary; coalescing keeps a burst of rejections from
-                // queueing a refresh each, and the rerun pass guarantees the LAST write is the
-                // NEWEST computation.
-                _capabilityRefresh.Trigger(
-                    async () => {
-                        _config.UnattendedVendorCapabilities =
-                            DaemonRunner.ComputeUnattendedVendorCapabilities(_runtimeFactories.Values, _config);
-                        await _server.ReRegisterAsync();
-                    },
-                    ex => _logger.LogDebug(ex,
-                        "Capability recompute after a certification rejection failed; the next " +
-                        "registration or launch re-evaluates it."));
+                // The self-heal: a certification mismatch usually means the advertisement is stale.
+                // Nothing waits on it — the caller already has its answer. Republished even when the
+                // local advertisement already reads the same, because the server's copy has just
+                // proven to disagree with the installed binary.
+                RefreshAdvertisedCapabilities("reviewer certification rejected", republishUnchanged: true);
                 return new CommandOutcome(
                     CommandOutcomeKind.LaunchRejected,
                     agentId,
@@ -5126,6 +5148,9 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     // Vendor belongs on the same line as the model: without it, a model that does not belong to the
     // launched vendor is only visible by correlating with a later runtime line, and PTY vendors emit
     // no such line at all.
+    [LoggerMessage(Level = LogLevel.Information, Message = "Re-advertising unattended vendor capabilities ({Reason}): {Versions}")]
+    static partial void LogReAdvertising(ILogger logger, string reason, string versions);
+
     [LoggerMessage(Level = LogLevel.Information, Message = "Launching agent {AgentId} for {Repo} (vendor={Vendor}, effort={Effort}, model={Model})")]
     partial void LogLaunching(string agentId, string repo, string vendor, string effort, string? model);
 
