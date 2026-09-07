@@ -722,9 +722,10 @@ public class HomeViewModelTests {
         });
     }
 
-    // The launcher's machine picker: name-based launch routing is only defined within one owner,
-    // so ListMachinesAsync is the one place that rule is enforced — every test below reads its
-    // output rather than trusting a wired-through daemon list.
+    // The launcher's machine picker: name-based launch routing is only defined within one owner.
+    // ListMachinesAsync applies that filter at listing time; every test below reads its output
+    // rather than trusting a wired-through daemon list. StartAsync separately re-verifies
+    // ownership at invocation time — see the launch-path tests further down for that layer.
 
     [Test]
     [NotInParallel("AvaloniaSession")]

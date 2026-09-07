@@ -623,9 +623,12 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
     }
 
     /// The launcher's machine chip menu: local first, always, then the viewer's own connected
-    /// remote daemons — this is the one place ownership is enforced, so nothing downstream needs
-    /// to re-check it. A null viewer id (signed out, or claims not readable yet) means no remote
-    /// options ever, never a guess.
+    /// remote daemons — filtered through the one ownership definition (OwnDaemonsAsync), so a row
+    /// is never offered for a daemon the viewer doesn't own AT LISTING TIME. That filter can go
+    /// stale the moment it's read, so it is the UI affordance layer only: StartAsync re-verifies
+    /// ownership fresh, immediately before the wire request is built, and is the actual boundary.
+    /// A null viewer id (signed out, or claims not readable yet) means no remote options ever,
+    /// never a guess.
     public async Task<IReadOnlyList<MachineOption>> ListMachinesAsync() {
         var (_, localPaths) = await GatherLocalRepoDataAsync();
         var options = new List<MachineOption> {
