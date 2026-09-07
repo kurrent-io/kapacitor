@@ -860,6 +860,43 @@ public class HomeViewModelTests {
         });
     }
 
+    /// The owned-remote list can legitimately empty out from under an already-selected remote
+    /// machine (a registry blip) — the picker must stay reachable so the user can switch back to
+    /// local, rather than hiding itself with no way to change the selection.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task PickerStaysVisibleForAnActiveRemoteSelectionEvenWhenTheOwnedListEmpties() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            using var tmp = TempDir.WithPathTo("app-state.json", out var path);
+            var daemon = new FakeDaemonClientService();
+            var remote = new FakeRemoteAgents();
+            remote.DaemonsSubject.OnNext([
+                new DaemonInfo { Name = "home-pc", OwnerUserId = "u1", Connected = true, RepoPaths = ["/w/repo"] },
+            ]);
+            using var vm = new HomeViewModel(
+                daemon, new AppStateStore(path), new RecordingLaunchClient(), Known(),
+                daemons: remote.Daemons, viewerId: _ => Task.FromResult<string?>("u1"));
+
+            await vm.SelectMachineAsync("home-pc");
+            await WaitUntilAsync(() => vm.MachinePickerVisible, "picker visible after selecting home-pc");
+
+            remote.DaemonsSubject.OnNext([]);
+            await Task.Delay(20); // let the CombineLatest re-run over the now-empty owned list
+            await Assert.That(vm.MachinePickerVisible).IsTrue();
+
+            await vm.SelectMachineAsync(daemon.DaemonName);
+            await Assert.That(vm.RemoteMachineSelected).IsFalse();
+        });
+    }
+
+    static async Task WaitUntilAsync(Func<bool> condition, string what, int ms = 2000) {
+        var deadline = DateTime.UtcNow.AddMilliseconds(ms);
+        while (!condition()) {
+            if (DateTime.UtcNow > deadline) throw new TimeoutException($"Timed out waiting for: {what}");
+            await Task.Delay(5);
+        }
+    }
+
     [Test]
     [NotInParallel("AvaloniaSession")]
     public async Task RemoteSelectionRequiresTheLane() {

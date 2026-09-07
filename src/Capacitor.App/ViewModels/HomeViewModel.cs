@@ -337,10 +337,14 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
         // A throw from viewerId (e.g. a claims-file read fault) is a missed visibility recompute,
         // never a fault that kills this OAPH's subscription forever (RemoteAgentsService's
         // identical philosophy for its own daemons refresh).
-        _machinePickerVisible = _daemons
+        var ownDaemonsNonEmpty = _daemons
             .Select(list => Observable.FromAsync(() => OwnDaemonsAsync(list)).Catch(Observable.Return<IReadOnlyList<DaemonInfo>>([])))
             .Switch()
-            .Select(own => own.Count > 0)
+            .Select(own => own.Count > 0);
+        // OR'd with the live selection so an active remote pick is never stranded behind a
+        // registry blip that empties the owned list out from under it.
+        _machinePickerVisible = ownDaemonsNonEmpty
+            .CombineLatest(_machineSelectionChanges, (hasOwn, sel) => hasOwn || sel.Remote)
             .ObserveOn(RxSchedulers.MainThreadScheduler)
             .ToProperty(this, x => x.MachinePickerVisible, initialValue: false)
             .DisposeWith(_disposables);
