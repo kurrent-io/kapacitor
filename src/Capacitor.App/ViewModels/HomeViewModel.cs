@@ -518,9 +518,12 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
         _daemonStartMessageFeed.Dispose();
     }
 
-    /// Sets the selection and persists it for SelectedRepoPath.
+    /// Sets the selection and persists it for SelectedRepoPath — except in remote mode, where the
+    /// choice applies for the session only; a remote repository is never written into the local
+    /// (this-machine-scoped) store.
     public async Task ChooseHarnessAsync(string vendor) {
         SetVendor(vendor);
+        if (RemoteMachineSelected) return;
 
         var repoPath = SelectedRepoPath;
         await _state.UpdateAsync(s => s with { HarnessByRepo = WithEntry(s.HarnessByRepo, repoPath, vendor) });
@@ -739,9 +742,16 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
     }
 
     /// Sets the repository and restores that repository's remembered harness, or DefaultVendor
-    /// when none — never the vendor a DIFFERENT repository had selected.
+    /// when none — never the vendor a DIFFERENT repository had selected. In remote mode the local
+    /// HarnessByRepo store is never consulted: the vendor is instead revalidated against the
+    /// selected remote machine's own advertised set (RevalidateVendorAgainst).
     public async Task SelectRepositoryAsync(string repoPath) {
         SelectedRepoPath = repoPath.Length == 0 ? ScratchRepoPath : PlatformPaths.Normalize(repoPath);
+        if (RemoteMachineSelected) {
+            RevalidateVendorAgainst(_selectedRemoteMachine?.SupportedVendors);
+            return;
+        }
+
         var saved = await _state.LoadAsync();
         SetVendor(Lookup(saved.HarnessByRepo, SelectedRepoPath) ?? DefaultVendor);
     }
