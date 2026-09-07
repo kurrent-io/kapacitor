@@ -41,6 +41,17 @@ sealed class CaptureServerConnection() : ServerConnection(
     /// <summary>Reasons passed to EndAgentSessionAsync, in call order.</summary>
     public List<string> EndSessionReasons { get; } = [];
 
+    int _registerDaemonCalls;
+
+    /// <summary>Full daemon re-registrations requested (the capability self-heal's
+    /// <c>ReRegisterAsync</c> lands here). No-op'd: there is no hub to register with.</summary>
+    public int RegisterDaemonCalls => Volatile.Read(ref _registerDaemonCalls);
+
+    internal override Task RegisterDaemonAsync() {
+        Interlocked.Increment(ref _registerDaemonCalls);
+        return Task.CompletedTask;
+    }
+
     public override async Task LaunchFailedAsync(string agentId, string reason) {
         LaunchFailedCalls.Add((agentId, reason));
         LaunchFailedEntered?.TrySetResult();
