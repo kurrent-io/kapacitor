@@ -3,6 +3,24 @@ using System.Text.Json;
 namespace Capacitor.Remote.Models.Tests.Unit;
 
 public class WireShapeTests {
+    // The full [JsonPropertyName] vocabulary for each type, driven from an array so a missed
+    // key on either side is a one-line addition rather than a second hand-written assertion.
+    static readonly string[] AgentInstanceKeys = [
+        "agent_id", "session_id", "status", "prompt", "model", "effort", "repo_path",
+        "client_connected", "registered_at", "repo_owner", "repo_name", "repo_hash",
+        "pr_number", "pr_url", "pr_title", "failure_reason", "owner_user_id",
+        "visibility_mode", "grants", "vendor", "ended_at", "status_changed_at",
+        "sandbox_policy", "approval_policy", "daemon_name", "permission_preset",
+    ];
+
+    static readonly string[] AccessGrantKeys = ["grant_type", "grantee_id", "grantee_name"];
+
+    static readonly string[] DaemonInfoKeys = [
+        "name", "platform", "repo_paths", "max_agents", "active_agents", "connected",
+        "connected_at", "owner_user_id", "version", "supported_vendors", "machine_id",
+        "unattended_vendors", "pr_review_vendors", "acp_preset_vendors", "permission_mode_vendors",
+    ];
+
     // The property name IS the wire contract: deserialize a captured server-shaped payload and
     // pin every field, so a rename on our side fails here before it fails against a live server.
     [Test]
@@ -23,11 +41,15 @@ public class WireShapeTests {
         await Assert.That(dto.DaemonName).IsEqualTo("work-mac");
         await Assert.That(dto.RepoOwner).IsEqualTo("kurrent-io");
         await Assert.That(dto.Grants![0].GranteeId).IsEqualTo("g1");
+        // failure_reason is genuinely null on this fixture — the nullable-field representative,
+        // proving Contains below still finds a key System.Text.Json serializes as `"key":null`.
+        await Assert.That(dto.FailureReason).IsNull();
 
         var back = JsonSerializer.Serialize(dto, RemoteModelsJsonContext.Default.AgentInstanceDto);
-        await Assert.That(back).Contains("\"agent_id\"");
-        await Assert.That(back).Contains("\"owner_user_id\"");
-        await Assert.That(back).Contains("\"daemon_name\"");
+        foreach (var key in AgentInstanceKeys)
+            await Assert.That(back).Contains($"\"{key}\"");
+        foreach (var key in AccessGrantKeys)
+            await Assert.That(back).Contains($"\"{key}\"");
     }
 
     [Test]
@@ -44,9 +66,12 @@ public class WireShapeTests {
         await Assert.That(dto.MachineId).IsEqualTo("m-abc");
         await Assert.That(dto.OwnerUserId).IsEqualTo("u1");
         await Assert.That(dto.SupportedVendors).IsEquivalentTo(new[] { "claude", "codex" });
+        // pr_review_vendors is genuinely null on this fixture — the nullable-field representative.
+        await Assert.That(dto.PrReviewVendors).IsNull();
+
         var back = JsonSerializer.Serialize(dto, RemoteModelsJsonContext.Default.DaemonInfo);
-        await Assert.That(back).Contains("\"machine_id\"");
-        await Assert.That(back).Contains("\"owner_user_id\"");
+        foreach (var key in DaemonInfoKeys)
+            await Assert.That(back).Contains($"\"{key}\"");
     }
 
     [Test]
