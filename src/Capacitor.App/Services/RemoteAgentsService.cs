@@ -23,6 +23,10 @@ public sealed class RemoteAgentsService : IRemoteAgentsService, IDisposable {
     readonly IDisposable _subscriptions;
     readonly SemaphoreSlim _agentsFlight = new(1, 1);
     readonly SemaphoreSlim _daemonsFlight = new(1, 1);
+    // Guards _generation and _lastSubject together with the identity-change clear, so a refresh
+    // that captured its generation before the clear can never publish after it.
+    readonly Lock _generationLock = new();
+    int _generation;
     bool _agentsRerun;
     bool _daemonsRerun;
     string? _lastSubject;
@@ -44,11 +48,14 @@ public sealed class RemoteAgentsService : IRemoteAgentsService, IDisposable {
         var identityChange = lane.Status
             .Where(s => s.State == ServerLaneState.Connected && s.Subject is not null)
             .Subscribe(s => {
-                if (_lastSubject is not null && _lastSubject != s.Subject) {
-                    _agents.Clear();
-                    _daemons.OnNext([]);
+                lock (_generationLock) {
+                    if (_lastSubject is not null && _lastSubject != s.Subject) {
+                        _agents.Clear();
+                        _daemons.OnNext([]);
+                        _generation++;
+                    }
+                    _lastSubject = s.Subject;
                 }
-                _lastSubject = s.Subject;
             });
 
         // Merge, not Concat: triggers must reach the refresh methods concurrently so a busy
@@ -72,8 +79,15 @@ public sealed class RemoteAgentsService : IRemoteAgentsService, IDisposable {
         try {
             do {
                 Volatile.Write(ref _agentsRerun, false);
+                int generation;
+                lock (_generationLock) generation = _generation;
                 var result = await fetch(CancellationToken.None).ConfigureAwait(false);
-                if (result is not null) _agents.EditDiff(result, EqualityComparer<AgentInstanceDto>.Default);
+                // A completion from before an identity-change clear must never repopulate what
+                // that clear just emptied — checked under the same lock the clear itself takes.
+                lock (_generationLock) {
+                    if (result is not null && generation == _generation)
+                        _agents.EditDiff(result, EqualityComparer<AgentInstanceDto>.Default);
+                }
             } while (Volatile.Read(ref _agentsRerun));
         } catch (Exception) {
             // Data-plane refresh: a throw here is a missed refresh, never an app fault.
@@ -87,8 +101,13 @@ public sealed class RemoteAgentsService : IRemoteAgentsService, IDisposable {
         try {
             do {
                 Volatile.Write(ref _daemonsRerun, false);
+                int generation;
+                lock (_generationLock) generation = _generation;
                 var result = await lane.GetConnectedDaemonsAsync(CancellationToken.None).ConfigureAwait(false);
-                if (result is not null) _daemons.OnNext(result);
+                lock (_generationLock) {
+                    if (result is not null && generation == _generation)
+                        _daemons.OnNext(result);
+                }
             } while (Volatile.Read(ref _daemonsRerun));
         } catch (Exception) {
         } finally {

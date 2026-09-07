@@ -80,6 +80,32 @@ public class RemoteAgentsServiceTests {
         await Eventually(() => seen is { Count: 0 });
     }
 
+    // Pins the P1 fix: a fetch started under u1 that is still gated when u2's identity-change
+    // clear lands must never repopulate the cache the clear just emptied.
+    [Test]
+    public async Task StaleFetchCompletingAfterIdentityChangeIsDiscarded() {
+        var callCount = 0;
+        var gate = new TaskCompletionSource<AgentInstanceDto[]?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var lane = new FakeServerLane();
+        using var svc = new RemoteAgentsService(lane, async _ => {
+            var n = Interlocked.Increment(ref callCount);
+            return n == 1 ? await gate.Task : [Agent("a2")];
+        }, TimeSpan.Zero);
+
+        lane.StatusSubject.OnNext(new(ServerLaneState.Connected, Subject: "u1")); // fetch #1 in flight
+        await Eventually(() => Volatile.Read(ref callCount) == 1);
+
+        lane.StatusSubject.OnNext(new(ServerLaneState.Connected, Subject: "u2")); // clear + generation bump
+
+        gate.SetResult([Agent("a1")]); // u1's stale rows land after the identity change
+
+        await Task.Delay(150); // give the stale completion a chance to (wrongly) publish
+        await Assert.That(svc.Agents.Count).IsEqualTo(0);
+
+        lane.AgentsChangedSubject.OnNext(System.Reactive.Unit.Default); // a fresh fetch under u2
+        await Eventually(() => svc.Agents.Count == 1 && svc.Agents.Lookup("a2").HasValue);
+    }
+
     [Test]
     public async Task ReconnectWithTheSameSubjectDoesNotClearTheCache() {
         var lane = new FakeServerLane();
