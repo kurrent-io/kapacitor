@@ -968,9 +968,13 @@ A dropped verdict is never read, and a throttling or absent-route server is exac
 outruns an interval — so the two statuses worth reading would be missed precisely when they matter. But
 allowing only one at a time makes a single slow request the whole liveness budget, so the bound is a
 count: enough that a slow answer cannot silence the machine, few enough that a wedged network cannot
-accumulate one open POST per interval on the very machine whose network is failing. Several answers can
-then land in one drain, and they are the server's word at different moments — so the drain is read oldest
-first and the newest instruction is the one left standing.
+accumulate one open POST per interval on the very machine whose network is failing.
+
+**Several answers can then land at once, and they are the server's word at different moments.** The
+newest decides the quiet window outright rather than being folded onto it, and one older than the word
+already in force is counted but not obeyed. A fold can only push a window further out, so a route that
+answers again mid-drain would stay silenced by the refusals ahead of it — for the whole backoff, starting
+at the moment it recovered.
 
 **Backing off a missing route is a pause, not an ending.** A rolling deploy or a proxy reload is minutes
 long and the poll on the same client rides straight through it, so a beat that stopped for good would have

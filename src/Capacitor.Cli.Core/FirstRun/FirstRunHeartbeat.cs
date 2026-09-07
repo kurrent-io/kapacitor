@@ -116,46 +116,54 @@ public sealed class FirstRunHeartbeat : IDisposable {
 
         using var timer = new PeriodicTimer(interval, clock);
 
-        var inFlight = new List<Task<FirstRunHeartbeatOutcome>>(MaxInFlight);
+        var inFlight = new List<(long Issued, Task<FirstRunHeartbeatOutcome> Beat)>(MaxInFlight);
 
         var quietUntil  = DateTimeOffset.MinValue;
         var unavailable = 0;
+        var issued      = 0L;
+        var decided     = 0L;
 
         try {
             while (!ct.IsCancellationRequested) {
-                // Oldest first, so a drain holding several answers ends on the newest one and the verdict
-                // that stands is the server's latest word. Walking the other way lets a stale
-                // `Retry-After` outrank the instruction that superseded it.
+                // Oldest first, so a drain ends on the server's latest word.
                 for (var i = 0; i < inFlight.Count;) {
-                    if (!inFlight[i].IsCompleted) {
+                    if (!inFlight[i].Beat.IsCompleted) {
                         i++;
 
                         continue;
                     }
 
-                    var outcome = await inFlight[i];
+                    var outcome = await inFlight[i].Beat;
+                    var order   = inFlight[i].Issued;
 
                     inFlight.RemoveAt(i);
 
-                    if (outcome.StatusCode is 404 or 405) {
-                        if (++unavailable >= UnavailableBeforeBackingOff) {
-                            quietUntil  = clock.GetUtcNow() + UnavailableBackoff;
-                            unavailable = 0;
-                        }
-                    } else {
+                    unavailable = outcome.StatusCode is 404 or 405 ? unavailable + 1 : 0;
+
+                    // Answers can arrive out of the order they were asked for — separate connections,
+                    // no ordering guarantee — so one older than the word already in force says nothing
+                    // about what the route is doing now.
+                    if (order < decided) continue;
+
+                    decided = order;
+
+                    // The newest answer decides the window outright. Folding each answer onto the last
+                    // can only push the pause further out, so a route that comes back mid-drain would
+                    // stay silenced by the refusals ahead of it — for two minutes, starting at the
+                    // moment it recovered.
+                    quietUntil = outcome.StatusCode switch {
+                        429 => clock.GetUtcNow() + Quiet(outcome.RetryAfter ?? ThrottleBackoff),
+                        404 or 405 when unavailable >= UnavailableBeforeBackingOff =>
+                            clock.GetUtcNow() + UnavailableBackoff,
+                        _ => DateTimeOffset.MinValue
+                    };
+
+                    if (quietUntil > DateTimeOffset.MinValue && outcome.StatusCode is 404 or 405)
                         unavailable = 0;
-                    }
-
-                    if (outcome.StatusCode is 429) {
-                        var asked = outcome.RetryAfter ?? ThrottleBackoff;
-
-                        quietUntil = clock.GetUtcNow()
-                                   + (asked > MaxThrottleBackoff ? MaxThrottleBackoff : asked);
-                    }
                 }
 
                 if (inFlight.Count < MaxInFlight && clock.GetUtcNow() >= quietUntil)
-                    inFlight.Add(SendAsync(channel, serverUrl, flowId));
+                    inFlight.Add((++issued, SendAsync(channel, serverUrl, flowId)));
 
                 if (!await timer.WaitForNextTickAsync(ct)) return;
             }
@@ -166,6 +174,8 @@ public sealed class FirstRunHeartbeat : IDisposable {
             // the source can be disposed there at all: nothing below this line reads it.
         }
     }
+
+    static TimeSpan Quiet(TimeSpan asked) => asked > MaxThrottleBackoff ? MaxThrottleBackoff : asked;
 
     /// <summary>
     /// One beat, issued with no cancellation and swallowing everything.

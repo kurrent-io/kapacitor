@@ -50,6 +50,11 @@ public class FirstRunHeartbeatTests {
         /// ticks exists for, and one no synchronous fake can produce.</summary>
         public bool HoldAnswers { get; init; }
 
+        /// <summary>Beat numbers (1-based) to hold until <see cref="ReleaseHeld"/>, so a test can have
+        /// some answer at once and the rest land together. Models a server whose answers arrive out of
+        /// the order they were asked for.</summary>
+        public HashSet<int>? Hold { get; init; }
+
         readonly TaskCompletionSource _held = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public void ReleaseHeld() => _held.TrySetResult();
@@ -60,7 +65,7 @@ public class FirstRunHeartbeatTests {
 
         public async Task<FirstRunHeartbeatOutcome> HeartbeatAsync(
                 string serverUrl, string flowId, CancellationToken ct) {
-            Interlocked.Increment(ref _beats);
+            var number = Interlocked.Increment(ref _beats);
 
             lock (Tokens) Tokens.Add(ct);
 
@@ -73,6 +78,7 @@ public class FirstRunHeartbeatTests {
 
             if (BlockForever) await Task.Delay(Timeout.Infinite, ct);
             if (HoldAnswers) await _held.Task;
+            if (Hold?.Contains(number) is true) await _held.Task;
             if (Block) await _gate.Task;
             if (Throws is { } boom) throw boom;
 
@@ -417,6 +423,41 @@ public class FirstRunHeartbeatTests {
         await Assert.That(await ReachesWithinAsync(channel, clock, MaxInFlightForTest + 1,
                                                    TimeSpan.FromSeconds(30))).IsTrue()
                     .Because("a superseded Retry-After outlasted the one that replaced it");
+    }
+
+    /// <summary>
+    /// A route that comes back has to be able to lift the pause its own refusals bought. A rolling
+    /// deploy is the concrete case: drained pods refuse and new ones answer, and the two land in the
+    /// same drain — so a window pushed out by the refusals would silence the machine for two minutes
+    /// starting at the moment it recovered, on a client whose poll is succeeding throughout.
+    /// </summary>
+    [Test]
+    public async Task An_answer_after_the_refusals_lifts_the_pause_they_would_have_bought() {
+        var channel = new FakeChannel {
+            Hold = [3, 4, 5],
+            Sequence = new([
+                new FirstRunHeartbeatOutcome(404),
+                new FirstRunHeartbeatOutcome(404),
+                new FirstRunHeartbeatOutcome(404),
+                new FirstRunHeartbeatOutcome(404),
+                new FirstRunHeartbeatOutcome(204)
+            ])
+        };
+
+        var clock = new FakeTimeProvider();
+
+        using var beat = FirstRunHeartbeat.Start(channel, Server, Flow, clock, Beat);
+
+        // Two refusals answered on their own, then the lane fills with three that are still held —
+        // enough that the drain crosses the threshold on its way to the answer that clears it.
+        await Assert.That(await ReachesAsync(channel, clock, 2 + MaxInFlightForTest)).IsTrue()
+                    .Because("the drain this test is about never formed");
+
+        channel.ReleaseHeld();
+
+        await Assert.That(await ReachesWithinAsync(channel, clock, 2 + MaxInFlightForTest + 1,
+                                                   TimeSpan.FromSeconds(30))).IsTrue()
+                    .Because("a route answering again was still held silent by the refusals ahead of it");
     }
 
     /// <summary>Mirrors the loop's own cap. Named here rather than read from the class, so a change to the
