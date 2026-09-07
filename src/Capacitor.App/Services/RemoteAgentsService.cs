@@ -3,6 +3,7 @@ using System.Reactive.Linq;
 using System.Reactive.Subjects;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Config;
+using Capacitor.Cli.Core.Http;
 using Capacitor.Remote.Models;
 using DynamicData;
 
@@ -160,16 +161,17 @@ public sealed class RemoteAgentsService : IRemoteAgentsService, IDisposable {
     }
 
     /// Production fetch: authenticated GET {server}/api/agent-instances via the
-    /// HttpClientExtensions choke point, client built per call. Unreachable/non-auth failures
+    /// authenticated lane, client leased per call. Unreachable/non-auth failures
     /// come back as an empty (non-Unauthorized) RemoteFetch — lane loss is data, not a sign-in
     /// problem.
     public static Func<CancellationToken, Task<RemoteFetch>> HttpFetch(
-            ConfigRoot config, ProfileContext? profiles) => async ct => {
+            ICapacitorHttpClient? http, ProfileContext? profiles) => async ct => {
         var serverUrl = profiles?.Resolution.ServerUrl;
-        if (profiles is null || string.IsNullOrEmpty(serverUrl)) return new RemoteFetch(null);
+        if (http is null || profiles is null || string.IsNullOrEmpty(serverUrl)) return new RemoteFetch(null);
         try {
-            var (client, status) = await HttpClientExtensions.CreateClientWithAuthStatusAsync(
-                config, profiles, serverUrl, ct, autoRetryUnauthorized: true).ConfigureAwait(false);
+            // The waiting verb: the rail keeps polling across a token's lifetime, so this leg has to
+            // recover from a 401 rather than read one as the sign-out it reports to its caller.
+            var (client, status, _, _) = await http.ForWaitAsync(ct).ConfigureAwait(false);
             using (client) {
                 if (status is not (AuthStatus.Ok or AuthStatus.NoAuthRequired))
                     return new RemoteFetch(null, Unauthorized: true);

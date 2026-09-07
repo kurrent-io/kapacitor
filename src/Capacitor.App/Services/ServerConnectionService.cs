@@ -2,7 +2,6 @@ using System.Reactive;
 using System.Reactive.Linq;
 using System.Reactive.Subjects;
 using System.Text.Json;
-using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.Config;
 using Capacitor.Remote.Models;
@@ -46,12 +45,12 @@ public sealed class ServerConnectionService : IServerLane, ILaunchClient, IAsync
     Task _loop = Task.CompletedTask;
     volatile HubConnection? _hub;
 
-    public ServerConnectionService(ConfigRoot config, ProfileContext? profiles)
+    public ServerConnectionService(ProfileContext? profiles, TokenStore tokenStore)
         : this(
             profiles?.Resolution.ServerUrl,
             profiles is null
                 ? () => Task.FromResult<string?>(null)
-                : async () => (await new TokenStore(config).GetValidTokensForServerAsync(
+                : async () => (await tokenStore.GetValidTokensForServerAsync(
                     profiles.Name, profiles.Resolution.ServerUrl!)).Tokens?.AccessToken) { }
 
     internal ServerConnectionService(string? serverUrl, Func<Task<string?>> accessTokenProvider) {

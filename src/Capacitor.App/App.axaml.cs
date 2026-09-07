@@ -17,8 +17,10 @@ using Capacitor.App.Views.Onboarding;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.Config;
+using Capacitor.Cli.Core.Http;
 using Capacitor.Cli.Core.LocalIpc;
 using Capacitor.Cli.Core.Setup;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Capacitor.App;
 
@@ -43,6 +45,31 @@ public partial class App : Application {
     // And its one read of KCAP_CONFIG_DIR.
     readonly ConfigRoot _config = ConfigRoot.FromEnvironment();
     readonly UserHome   _userHome = UserHome.FromEnvironment();
+
+    /// Process-lifetime rather than per wizard run — a provisioning poll can outlive the window that
+    /// started it, and this client degrades a transport failure but not a disposed handler. What it
+    /// holds, and why it holds only that, is <see cref="AppHttpServices.AddAppForeignHttp"/>.
+    readonly ServiceProvider _foreignHttp;
+
+    public App() => _foreignHttp = new ServiceCollection().AddAppForeignHttp(_config).BuildValidated();
+
+    /// The authenticated lanes. They cannot join <see cref="_foreignHttp"/>: their handlers need a
+    /// resolved server, and the app starts before a profile has named one. Process-lifetime for the
+    /// same reason that one is — what draws from it outlives any single window.
+    ServiceProvider? _serverHttp;
+
+    ICapacitorHttpClient? ServerHttp(ProfileContext? profiles) {
+        if (profiles?.Resolution.ServerUrl is not { Length: > 0 } url) return null;
+
+        _serverHttp ??= new ServiceCollection()
+            .AddSingleton(_config)
+            .AddSingleton(profiles)
+            .AddSingleton(new CapacitorServer(url, _config, profiles))
+            .AddCapacitorHttp()
+            .BuildValidated();
+
+        return _serverHttp.GetRequiredService<ICapacitorHttpClient>();
+    }
 
     // And its one read of KCAP_APP_PTY_DUMP: a file every terminal feed frame is appended to as
     // received, for seeing what the emulator was given.
@@ -170,7 +197,7 @@ public partial class App : Application {
                 TimeProvider.System);
             _lane = lane;
 
-            var (gate, profiles) = await ResolveAndEvaluateGateAsync(_config, _shutdown.Token);
+            var (gate, profiles) = await ResolveAndEvaluateGateAsync(_config, _foreignHttp.GetRequiredService<TokenStore>(), _shutdown.Token);
             // A graph built while the lane still owns a live action must not also drive automatic
             // ones (spec §6a) — only the wizard's own handoff can answer this with anything but true.
             var laneQuiesced = true;
@@ -181,7 +208,7 @@ public partial class App : Application {
             if (gate is GateResult.Incomplete) {
                 laneQuiesced = await RunWizardModeAsync(desktop, lane, channel, laneRunner, laneProbe, profiles);
                 if (_shutdown.IsCancellationRequested) return; // quit during onboarding — nothing left to build
-                (gate, profiles) = await ResolveAndEvaluateGateAsync(_config, _shutdown.Token);
+                (gate, profiles) = await ResolveAndEvaluateGateAsync(_config, _foreignHttp.GetRequiredService<TokenStore>(), _shutdown.Token);
             }
 
             BuildDaemonGraph(desktop, lane, channel, gate, profiles, laneQuiesced);
@@ -239,8 +266,8 @@ public partial class App : Application {
     // cannot be read off a second one, and the post-wizard build re-runs this rather than reusing a
     // startup value the wizard may have invalidated.
     internal static Task<(GateResult Gate, ProfileContext? Profiles)> ResolveAndEvaluateGateAsync(
-            ConfigRoot config, CancellationToken ct) =>
-        EvaluateGateSafelyAsync(new OnboardingGate(config).EvaluateAsync, ct);
+            ConfigRoot config, TokenStore tokenStore, CancellationToken ct) =>
+        EvaluateGateSafelyAsync(new OnboardingGate(config, tokenStore).EvaluateAsync, ct);
 
     // The steady-state graph, over the resolution the gate was evaluated on (never a second resolve).
     void BuildDaemonGraph(
@@ -333,7 +360,7 @@ public partial class App : Application {
         // One launch client and one work-context source for the app, not one per window the
         // coordinator builds — each owns a live transport, and only a held instance can be
         // disposed at teardown.
-        var serverLane = new ServerConnectionService(_config, profiles);
+        var serverLane = new ServerConnectionService(profiles, _foreignHttp.GetRequiredService<TokenStore>());
         serverLane.Start();
         var workContext = new ServerWorkContextSource(_config, profiles);
         var serverClients = new ServerClients(serverLane, workContext);
@@ -341,8 +368,8 @@ public partial class App : Application {
 
         var machineId = new MachineId(_config).ReadPersisted();
         var remoteAgents = new RemoteAgentsService(
-            serverLane, RemoteAgentsService.HttpFetch(_config, profiles),
-            onUnauthorized: epoch => serverLane.ParkSignedOut(epoch));
+            serverLane, RemoteAgentsService.HttpFetch(ServerHttp(profiles), profiles),
+            onUnauthorized: serverLane.ParkSignedOut);
         var repoIdentity = new RepoIdentityResolver();
         var directory = new AgentDirectory(
             service, remoteAgents, serverLane, repoIdentity, GitRepository.ResolveMainRepoRoot,
@@ -354,7 +381,7 @@ public partial class App : Application {
         // since a re-auth or profile switch must be reflected on the very next read.
         Func<CancellationToken, Task<string?>> viewerId = async ct => {
             if (profiles is null) return null;
-            var resolution = await new TokenStore(_config).GetValidTokensForServerAsync(
+            var resolution = await _foreignHttp.GetRequiredService<TokenStore>().GetValidTokensForServerAsync(
                 profiles.Name, profiles.Resolution.ServerUrl!, ct).ConfigureAwait(false);
             var token = resolution.Tokens?.AccessToken;
             return token is null ? null : JwtClaims.TryGetString(token, "sub");
@@ -377,7 +404,8 @@ public partial class App : Application {
 
         _coordinator = new MainWindowCoordinator(
             () => BuildAndShowMainWindow(
-                service, _config, actions, notifier, ticker, _shutdown.Token, activity, launch, lifecycle.StartActionAsync,
+                service, _config, actions, notifier, ticker,
+                _shutdown.Token, activity, launch, lifecycle.StartActionAsync,
                 lifecycleStatus, _navigation, _workspaceTeardown.Track, BuildWorkspace,
                 // The tenant slug the rail footer shows — profiles are named after it at sign-in.
                 tenantName: profiles?.Resolution?.ProfileName, agentsWithPending: permissions.AgentsWithPending,
@@ -429,8 +457,16 @@ public partial class App : Application {
         }
 
         var graph = ReauthComposition.Build(
-            _config, profiles.Name, serverUrl,
-            WizardComposition.BuildBridges(action => Dispatcher.UIThread.Post(action)),
+            _config,
+            _foreignHttp.GetRequiredService<TokenStore>(),
+            _foreignHttp.GetRequiredService<IHttpClientFactory>(),
+            _foreignHttp.GetRequiredService<IAuthProxyClient>(),
+            _foreignHttp.GetRequiredService<GitHubOAuthClient>(),
+            _foreignHttp.GetRequiredService<WorkOSClient>(),
+            profiles.Name, serverUrl,
+            WizardComposition.BuildBridges(
+                action => Dispatcher.UIThread.Post(action),
+                _foreignHttp.GetRequiredService<TenantProvisioningClient>()),
             new ConsentFlipClaims(_config),
             new AppStateStore(_config.Path("app-state.json")),
             new ShellUrlOpener(),
@@ -504,11 +540,18 @@ public partial class App : Application {
         var shimTarget = cliPath is not null && Path.IsPathRooted(cliPath) ? cliPath : null;
         var shimApplicable = await ResolveShimApplicableAsync(
             OperatingSystem.IsMacOS(), shimTarget, ct => probe.KcapOnPathAsync(ct), _shutdown.Token);
-        var bridges = WizardComposition.BuildBridges(action => Dispatcher.UIThread.Post(action));
+        var bridges = WizardComposition.BuildBridges(
+            action => Dispatcher.UIThread.Post(action),
+            _foreignHttp.GetRequiredService<TenantProvisioningClient>());
         var surface = new WizardLifecycleSurface(ConfirmLifecyclePromptAsync, action => Dispatcher.UIThread.Post(action));
 
         var graph = WizardComposition.BuildGraph(new WizardGraphOptions(
             _config,
+            _foreignHttp.GetRequiredService<TokenStore>(),
+            _foreignHttp.GetRequiredService<IHttpClientFactory>(),
+            _foreignHttp.GetRequiredService<IAuthProxyClient>(),
+            _foreignHttp.GetRequiredService<GitHubOAuthClient>(),
+            _foreignHttp.GetRequiredService<WorkOSClient>(),
             // Nothing resolved means the gate's evaluation threw; sign-in then targets the name every
             // fallback lands on, which is what an unresolved config would have answered anyway.
             profiles?.Name ?? ProfileConfig.DefaultName,
