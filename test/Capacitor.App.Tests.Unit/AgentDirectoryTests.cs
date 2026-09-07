@@ -126,6 +126,30 @@ public class AgentDirectoryTests {
         await Assert.That(dir.Rows.Lookup("local:a1").HasValue).IsTrue();
     }
 
+    /// Proving the twin establishes correspondence with THAT daemon's rows and no others, so a
+    /// same-id agent on a different daemon — a different agent that merely shares an id — can never
+    /// stand in for the local one, however stale the local socket is.
+    [Test]
+    public async Task ADisconnectedTwinIgnoresASameIdAgentOnAnotherDaemon() {
+        var (local, remote, _, dir) = Build();
+        using var _d = dir;
+        local.SnapshotsSubject.OnNext(FakeDaemonClientService.Snap());
+        local.StatusSubject.OnNext(new(AttachState.Connected, null, ["status/1"]));
+        local.Agents.AddOrUpdate(LocalAgent("x1"));
+        remote.DaemonsSubject.OnNext([new DaemonInfo { Name = "daemon-a", MachineId = "m1", OwnerUserId = "u1", Connected = true }]);
+        remote.Cache.AddOrUpdate(Remote("x1", daemon: "daemon-b", owner: "u2"));
+
+        local.StatusSubject.OnNext(new(AttachState.Unreachable, "daemon_unreachable", null));
+
+        await Assert.That(dir.Rows.Lookup("local:x1").HasValue).IsTrue();  // no twin-side row for x1
+        await Assert.That(dir.Rows.Lookup("remote:x1").HasValue).IsTrue();
+
+        remote.Cache.AddOrUpdate(Remote("x1", daemon: "daemon-a")); // now the twin's OWN row for x1
+
+        await Assert.That(dir.Rows.Lookup("local:x1").HasValue).IsFalse();
+        await Assert.That(dir.Rows.Lookup("remote:x1").HasValue).IsTrue();
+    }
+
     [Test]
     public async Task UncertainTwinFailsOpenToDuplicates() {
         var (local, remote, _, dir) = Build(machineId: null); // no persisted machine id

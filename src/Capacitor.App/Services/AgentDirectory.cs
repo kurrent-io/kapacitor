@@ -15,11 +15,11 @@ public interface IAgentDirectory {
 }
 
 /// Merges the local daemon's agents with the server registry's into source-scoped rows.
-/// Suppression is evidence-based, symmetric and pairwise — one lane's row hides only where the
-/// other lane holds a row for the SAME agent. While the twin is proven, the remote twin's row
-/// hides whenever the local socket is Connected (the local view is current), and the local row
-/// hides once it isn't (the server's row for that agent wins). An unproven identity keeps both
-/// lanes' rows, never hidden.
+/// Suppression is evidence-based, symmetric and pairwise — a row hides only where the twin daemon's
+/// other lane holds a row for the SAME agent. While the twin is proven, its remote row hides
+/// whenever the local socket is Connected (the local view is current), and the local row hides once
+/// it isn't (the twin's own server row wins). Another daemon's rows never take part: an unproven
+/// identity, an unpaired agent and a same-id agent elsewhere all keep both lanes' rows.
 public sealed class AgentDirectory : IAgentDirectory, IDisposable {
     readonly SourceCache<AgentRow, string> _rows = new(r => r.Key);
     readonly CompositeDisposable _subscriptions = new();
@@ -87,22 +87,26 @@ public sealed class AgentDirectory : IAgentDirectory, IDisposable {
     // stale edit overwrite a fresher one. DynamicData's own cache lock is separate, so nesting
     // _rows.Edit inside _lock is deadlock-free. Owns BOTH lanes' rows in one pass, because
     // precedence is pairwise: while the twin is proven and the local socket is down, a local row
-    // yields to the server's row for the SAME agent — but only to that row. Absent server data is
+    // yields to the twin's own row for the SAME agent — but only to that row. Absent server data is
     // not evidence an agent ended (a private agent is never registered, and the registry has a
     // seed gap after every connect), so an unpaired local row stands as display-only history.
     void Recompute() {
         lock (_lock) {
             var twin = LocalDaemonTwin.Find(_daemons, _localMachineId, _local.DaemonName, _localServerUrl, _appServerUrl);
             var twinProven = twin is not null;
+            bool OnTwin(AgentInstanceDto a) =>
+                twinProven && a.OwnerUserId == twin!.Value.OwnerUserId && a.DaemonName == twin.Value.DaemonName;
 
             var remote = _remoteAgents
                 .Where(a => a.Status is "Starting" or "Running")
-                .Where(a => !(twinProven && _localConnected
-                              && a.OwnerUserId == twin!.Value.OwnerUserId && a.DaemonName == twin.Value.DaemonName))
+                .Where(a => !(_localConnected && OnTwin(a)))
                 .ToList();
-            var remoteIds = remote.Select(a => a.AgentId).ToHashSet(StringComparer.Ordinal);
+            // The counterpart set is the TWIN's own rows, never every remote row: proving this
+            // daemon's registry twin establishes no correspondence with an agent of the same id
+            // running on some other daemon, which is a different agent entirely.
+            var twinIds = remote.Where(OnTwin).Select(a => a.AgentId).ToHashSet(StringComparer.Ordinal);
             var localRows = _localAgents
-                .Where(a => !(twinProven && !_localConnected && remoteIds.Contains(a.Id)))
+                .Where(a => !(twinProven && !_localConnected && twinIds.Contains(a.Id)))
                 .Select(ProjectLocal);
             var next = localRows.Concat(remote.Select(AgentRow.FromRemote)).ToList();
 
