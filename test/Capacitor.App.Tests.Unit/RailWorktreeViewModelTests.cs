@@ -53,6 +53,20 @@ public class RailWorktreeViewModelTests {
 
     [Test]
     [NotInParallel("AvaloniaSession")]
+    public async Task Pip_follows_a_sessions_awaiting_input_verdict() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var cache = new SourceCache<AgentStatusDto, string>(a => a.Id);
+            using var wt = Build(cache);
+            cache.AddOrUpdate(Dto("a1") with { AwaitingInput = true });
+            await Assert.That(wt.NeedsYou).IsTrue();
+
+            cache.AddOrUpdate(Dto("a1") with { AwaitingInput = false }); // the user answered
+            await Assert.That(wt.NeedsYou).IsFalse();
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
     public async Task Every_worktree_defaults_expanded_main_checkout_included() {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var cache = new SourceCache<AgentStatusDto, string>(a => a.Id);

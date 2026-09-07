@@ -105,6 +105,11 @@ public class ChatComposerTests {
             await Assert.That(chat.StatusText).IsEqualTo("Running");
             await Assert.That(chat.StatusDot).IsSameReferenceAs(SessionStatusDots.For("Running"));
 
+            // A finished turn keeps the running dot: the process is live, it is the user's move.
+            daemon.Agents.AddOrUpdate(Agent("a1", "claude", hasTerminal: true, repoPath: "/repo") with { AwaitingInput = true });
+            await Assert.That(chat.StatusText).IsEqualTo("Waiting for input");
+            await Assert.That(chat.StatusDot).IsSameReferenceAs(SessionStatusDots.For("Running"));
+
             daemon.Agents.AddOrUpdate(Agent("a1", "claude", hasTerminal: true, repoPath: "/repo") with { Status = "Failed" });
             await Assert.That(chat.StatusText).IsEqualTo("Failed");
             await Assert.That(chat.ModelLabel).IsEqualTo("Default");

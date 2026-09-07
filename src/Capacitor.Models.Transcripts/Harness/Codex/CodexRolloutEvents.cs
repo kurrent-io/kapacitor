@@ -28,7 +28,11 @@ public sealed class CodexRolloutEvents : ITranscriptProjection {
             if (root.Str("type") != "response_item" || root.Obj("payload") is not { } payload) return ProjectionResult.Empty;
 
             var (at, recordTimestamp) = TranscriptTime.Resolve(root.Str("timestamp"), receivedAt);
-            var ts = Timestamp.FromDateTimeOffset(at);
+            var ts       = Timestamp.FromDateTimeOffset(at);
+            var recordId = TranscriptIds.CodexRecord(line);
+
+            if (payload.Str("type") == "web_search_call")
+                return ProjectionResult.Of(WebSearch(payload, recordId, at, recordTimestamp, ts));
 
             IMessage? evt = payload.Str("type") switch {
                 "message"          => Message(payload, ts),
@@ -36,11 +40,14 @@ public sealed class CodexRolloutEvents : ITranscriptProjection {
                 "custom_tool_call" => ToolCall(payload, Wrap("input", payload.Str("input") ?? ""), ts),
                 "function_call_output" or "custom_tool_call_output"
                                    => new ToolResultReceived { CallId = payload.Str("call_id") ?? "", Result = OutputText(payload), Timestamp = ts },
+                "tool_search_call" => ToolSearchCall(payload, ts),
+                "tool_search_output"
+                                   => new ToolResultReceived { CallId = payload.Str("call_id") ?? "", Result = ToolsText(payload), Timestamp = ts },
                 "reasoning"        => Reasoning(payload, ts),
                 _                  => null,
             };
             if (evt is null) return ProjectionResult.Empty;
-            return ProjectionResult.Of([new CanonicalEvent(CanonicalEventTypes.Of(evt), evt, TranscriptIds.CodexRecord(line), at, recordTimestamp)]);
+            return ProjectionResult.Of([new CanonicalEvent(CanonicalEventTypes.Of(evt), evt, recordId, at, recordTimestamp)]);
         }
     }
 
@@ -59,6 +66,43 @@ public sealed class CodexRolloutEvents : ITranscriptProjection {
                 return null;
         }
     }
+
+    /// A web search is written already settled, carries no id of its own, and keeps its results in
+    /// the `event_msg` lane this projection does not read. So it projects as a PAIR whose call id is
+    /// the record's — a consumer pairs a result to its call by that id, and a call that never gets
+    /// one reads as still running. The result carries the status, the only outcome available here.
+    static IReadOnlyList<CanonicalEvent> WebSearch(
+            JsonElement payload, Guid recordId, DateTimeOffset at, string? recordTimestamp, Timestamp ts) {
+        var callId = recordId.ToString();
+
+        var call = new AssistantToolCallsGenerated { Timestamp = ts };
+        call.ToolCalls.Add(new ToolCallInfo {
+            CallId    = callId,
+            ToolName  = "web_search",
+            Arguments = payload.Obj("action") is { } action ? StructOf(action) : new Struct(),
+        });
+
+        var result = new ToolResultReceived { CallId = callId, Result = payload.Str("status") ?? "", Timestamp = ts };
+
+        return [
+            new CanonicalEvent(CanonicalEventTypes.Of(call), call, recordId, at, recordTimestamp),
+            new CanonicalEvent(CanonicalEventTypes.Of(result), result, TranscriptIds.Sibling(recordId, "result"), at, recordTimestamp),
+        ];
+    }
+
+    /// A tool-registry lookup. It has a call_id and its own `tool_search_output`, so it pairs like
+    /// any other call; only the tool name is ours to supply, the payload carrying none.
+    static AssistantToolCallsGenerated ToolSearchCall(JsonElement payload, Timestamp ts) {
+        var call = new AssistantToolCallsGenerated { Timestamp = ts };
+        call.ToolCalls.Add(new ToolCallInfo {
+            CallId    = payload.Str("call_id") ?? "",
+            ToolName  = "tool_search",
+            Arguments = payload.Obj("arguments") is { } args ? StructOf(args) : new Struct(),
+        });
+        return call;
+    }
+
+    static string ToolsText(JsonElement payload) => payload.Arr("tools")?.GetRawText() ?? "";
 
     static AssistantToolCallsGenerated ToolCall(JsonElement payload, Struct arguments, Timestamp ts) {
         var call = new AssistantToolCallsGenerated { Timestamp = ts };

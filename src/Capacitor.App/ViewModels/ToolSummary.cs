@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using Capacitor.Cli.Core;
 using Capacitor.Models.Transcripts.Harness.Codex;
 
 namespace Capacitor.App.ViewModels;
@@ -52,7 +53,7 @@ public static class ToolSummary {
             if (!root.IsObject) return category;
             if (category == ToolCategory.Read)
                 return IsSkillFile(root.Str("file_path")) ? ToolCategory.Skill : category;
-            var hint = CodexCommandClassifier.Classify(CommandText(root));
+            var hint = CodexCommandClassifier.Classify(ToolCommandText.From(root));
             return hint?.Type switch {
                 "read"                   => IsSkillFile(hint.Name) ? ToolCategory.Skill : ToolCategory.Read,
                 "search" or "list_files" => ToolCategory.Search,
@@ -98,16 +99,4 @@ public static class ToolSummary {
 
     static bool IsSkillFile(string? path) =>
         path is not null && (path == "SKILL.md" || path.EndsWith("/SKILL.md", StringComparison.Ordinal));
-
-    /// `cmd` (unified exec), then `command` as a string, then `command` as an argv array — a
-    /// `bash -lc &lt;script&gt;` array hands its script through, since the classifier only peels the
-    /// wrapper when the script is one quoted token.
-    static string? CommandText(JsonElement root) {
-        if (root.Str("cmd") is { } cmd) return cmd;
-        if (root.Str("command") is { } command) return command;
-        if (root.Arr("command") is not { } argv) return null;
-        var parts = argv.EnumerateArray().Where(p => p.ValueKind == JsonValueKind.String).Select(p => p.GetString()!).ToList();
-        if (parts.Count == 3 && parts[1] is "-lc" or "-c" && parts[0].EndsWith("sh", StringComparison.Ordinal)) return parts[2];
-        return string.Join(' ', parts);
-    }
 }

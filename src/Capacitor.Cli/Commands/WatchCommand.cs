@@ -3193,7 +3193,7 @@ partial class WatchCommand(ConfigRoot config, ProfileContext profiles, UserHome 
 
     async Task GenerateTitleAsync(HubConnection hubConnection, string sessionId, WatchState state, string vendor) {
         try {
-            var result = await TitleGenerator.GenerateAsync(state.FirstUserText!, state.FirstAssistantText, Log, profiles.Resolution.Profile, home, vendor);
+            var result = await TitleGeneration.GenerateAsync(state.FirstUserText!, state.FirstAssistantText, Log, profiles.Resolution.Profile, home, vendor);
 
             if (result is null) {
                 Log($"Title generation attempt {state.TitleAttempts}/5 returned no usable result (CLI failure, refusal-like output, or empty title)");

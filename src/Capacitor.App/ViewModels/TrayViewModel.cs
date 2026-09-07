@@ -282,7 +282,14 @@ public sealed class TrayViewModel : ReactiveObject, IDisposable {
             .ToList();
     }
 
-    static string Label(AgentStatusDto agent) => $"{agent.Kind} · {agent.Vendor} · {RepoLabel.Leaf(agent.RepoPath)}";
+    static string Label(AgentStatusDto agent) {
+        var line = $"{agent.Kind} · {agent.Vendor} · {RepoLabel.Leaf(agent.RepoPath)}";
+
+        // A native menu row cannot ellipsize itself, so the title is cut before the separator.
+        return agent.Title is null ? line
+            : agent.Title.Length > 40 ? $"{agent.Title[..39]}… · {line}"
+            : $"{agent.Title} · {line}";
+    }
 
     static TrayPauseItem BuildPause(AttachStatus status, PauseState pauseState) {
         var connected = status.State == AttachState.Connected;

@@ -85,6 +85,44 @@ public class CodexChatRulesTests {
         await Assert.That(P(Item("""{"type":"message","role":"user","content":"not-an-array"}"""))).IsEmpty();
     }
 
+    /// Pins the vendor-neutral kind beside the raw name. Codex's shell tools have no name of their
+    /// own for a read or a search, so the command decides; `exec` is its JavaScript sandbox and never
+    /// reaches the shell classifier; MCP tools arrive under a bare name and land on `other` with
+    /// every other unrecognised tool.
+    [Test]
+    public async Task Tool_calls_carry_a_vendor_neutral_kind() {
+        foreach (var (payload, kind) in new[] {
+            ("""{"type":"custom_tool_call","name":"apply_patch","call_id":"c","input":"*** Begin Patch"}""",                     AcpToolKind.Edit),
+            ("""{"type":"function_call","name":"exec_command","call_id":"c","arguments":"{\"cmd\":\"cargo build\"}"}""",          AcpToolKind.Execute),
+            ("""{"type":"function_call","name":"exec_command","call_id":"c","arguments":"{\"cmd\":\"sed -n '1,40p' a.rs\"}"}""",  AcpToolKind.Read),
+            ("""{"type":"function_call","name":"exec_command","call_id":"c","arguments":"{\"cmd\":\"rg needle src\"}"}""",        AcpToolKind.Search),
+            ("""{"type":"function_call","name":"exec_command","call_id":"c","arguments":"{\"cmd\":\"ls src\"}"}""",               AcpToolKind.Search),
+            ("""{"type":"function_call","name":"shell","call_id":"c","arguments":"{\"command\":[\"bash\",\"-lc\",\"cat a.rs\"]}"}""", AcpToolKind.Read),
+            ("""{"type":"function_call","name":"write_stdin","call_id":"c","arguments":"{\"chars\":\"y\\n\"}"}""",                AcpToolKind.Execute),
+            ("""{"type":"custom_tool_call","name":"exec","call_id":"c","input":"await tool.read('cat a.rs')"}""",                 AcpToolKind.Execute),
+            ("""{"type":"function_call","name":"get_issue","call_id":"c","arguments":"{\"id\":\"1\"}"}""",                        AcpToolKind.Other),
+            ("""{"type":"tool_search_call","call_id":"c","arguments":{"query":"x"}}""",                                           AcpToolKind.Other),
+        }) {
+            var e = P(Item(payload));
+            await Assert.That(e[0].ToolKind).IsEqualTo(kind).Because(payload);
+        }
+    }
+
+    /// A web search reaches the chat as a settled pair — an unpaired call would read as still
+    /// running — and is `fetch`, the kind a web tool gets in every lane.
+    [Test]
+    public async Task A_web_search_reaches_the_chat_as_a_settled_fetch_pair() {
+        var e = P(Item("""{"type":"web_search_call","status":"completed","action":{"type":"search","query":"acp"}}"""));
+
+        await Assert.That(e).Count().IsEqualTo(2);
+        await Assert.That(e[0].Kind).IsEqualTo(AcpEventKind.ToolCall);
+        await Assert.That(e[0].ToolName).IsEqualTo("web_search");
+        await Assert.That(e[0].ToolKind).IsEqualTo(AcpToolKind.Fetch);
+        await Assert.That(e[1].Kind).IsEqualTo(AcpEventKind.ToolResult);
+        await Assert.That(e[1].ToolCallId).IsEqualTo(e[0].ToolCallId);
+        await Assert.That(e[0].ToolCallId).IsNotNull();
+    }
+
     [Test]
     public async Task An_unknown_vendor_has_no_chat_projection() {
         await Assert.That(TranscriptChat.For("cursor")).IsNull();

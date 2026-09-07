@@ -26,6 +26,102 @@ relaunch so that restart can land, and offers the dialog only to a daemon that s
 guard and the prerelease rule, and never on an update relaunch — a failed apply relaunches the old
 version with the same package still cached.
 
+## The desktop app shows a session waiting for input
+
+The web already marked a session whose turn was over; the desktop app lit its needs-you pip only
+for a failed status or a pending ask, because the local status payload carried nothing about turn
+boundaries. Both of the web's sources bypass the app: the Claude Stop hook posts to the server, and
+the daemon's turn attestation (`TurnInFlight`) rode only the server-bound status report.
+
+**The daemon owns the verdict, on the agent's activity clock.** The clock already brackets every
+runtime-attested turn (ACP vendors, Pi, Codex app-server, Antigravity), so its falling edge is the
+one place "the turn ended" is known, and the rising edge, a delivered input, or a relayed prompt
+submit clears it. A delivered input is the server's send or a local client's Enter on the attach
+socket: the desktop composer and terminal both arrive as raw PTY bytes there, never through the
+server's send path, and the plugin routes Claude's prompt-submit hook to a title script rather
+than to kcap. A delivery clears only the wait it answered: the clock counts every observed turn
+end — a second Stop on a flag already set counts, since a PTY vendor relays nothing else — the
+sender samples the count before writing and clears against it afterwards, because Codex can
+complete a turn before the send that started it returns, and a PTY submit spray runs for seconds
+in which a short turn's Stop lands. The flag is deliberately not activity: it never moves `ActivitySeq` or
+`IdleForMs`, which the reaper and the server's idle episodes read, so a display hint cannot delay a
+reap or open a durable idle marker. The payload emits `awaiting_input` only while Running — a
+terminal agent keeps whatever its clock last saw, and that must not read as a pending ask — and
+null from an older daemon, which a client reads as unknown, never as working.
+
+**PTY vendors relay their hooks to the daemon's loopback bridge.** PTY silence attests nothing, so
+Claude and Codex report their own turn boundaries: Stop marks the wait, prompt submit and a tool
+call clear it, on `/{token}/{vendor}/input-wait` beside the permission route. The relay runs ahead
+of every gate in the hook — client creation, auth, exclusion — because it is local display state
+and a server outage is exactly when the app is the surface that matters; it is best effort on a
+one-second cap, bounded further by the hook's own remaining budget, so a wedged daemon cannot push
+a policy decision past the host's kill. Only a daemon-spawned agent has both `KCAP_AGENT_ID` and a
+loopback `KCAP_DAEMON_URL`; anything else relays nothing, and neither does a subagent's tool
+call (`agent_id` set), which runs the same hook with the parent's environment but is not the
+parent's turn. The route trusts the same shared token
+and attribution ladder as the permission route, on the same footing: every caller is one of the
+owner's own hosted processes, and the verdict moves nothing but a display hint.
+
+**The app folds the flag into the existing pip**, gated on an answerable kind: a flow participant
+between rounds waits on the flow, not the user. The card and chat footer read "Waiting for input"
+over the running dot, since the process is live. The tray is unchanged.
+
+## The desktop app shows the same session titles as the web
+
+The daemon resolves a title per hosted agent and carries it in the existing `AgentStatusDto.Title`
+field, so every status consumer — rail, Home cards, tray, remote clients — upgrades without a wire
+change. Resolution is a ladder in `TitleResolveLoop`: the vendor's native transcript title (Claude
+writes `ai-title` lines; the older `summary` shape must keep being accepted), then the server's
+title, then at most one local generation per agent.
+
+**A server title that prefixes the launch prompt counts as no title.** The watcher's initial title
+and the daemon's own seed are both prefix-truncations of the prompt's first line, so adopting the
+echo would overwrite a better native title with what the seed already shows — and treating it as
+real would block both the convergence push and the generation fallback.
+
+**An unreadable server is not a silent one.** Generation costs an LLM call, and for a recorded
+session the watcher is already making that call; a fetch failure (auth lapse, outage) must not be
+read as "the watcher produced nothing" and trigger a second spend. The port throws on failure so
+the loop can tell the two apart, and generation waits out a grace period for the watcher's title
+to land.
+
+**Locally resolved titles converge via `/hooks/set-title`.** The watcher stays a legitimate
+concurrent writer — last writer wins on the server, and the loop adopts the server's title whenever
+it differs, so web and desktop settle on the identical string. A private agent's view carries no
+session id at all: its contract is no per-agent server calls, so only the local lanes apply.
+
+## Declared work structure is bounded by visibility, not by repository
+
+The server takes a breakdown or a relation whose other end lives in another repository — it bounds
+both by what the caller can see, and repository is display only. The `declare_work_breakdown` and
+`declare_work_relation` descriptions, the `kcap-workitems` preamble, the skill and the README state
+that boundary, because an agent reads them before it calls: a repository rule in that text costs
+declarations the server would have accepted, and the loss is silent — the structure is simply never
+declared.
+
+## The reviewer lookup places a session running in a linked worktree
+
+`RepoPathStore` collapses a linked worktree to its main repository before storing it, and
+`GitRepository.FindRoot` stops at the worktree's own `.git` file — so comparing the session's root
+against the advertised paths answers `no_repo_hosting_daemon` for a repository the daemon does host,
+from every session inside `<repo>/.claude/worktrees/<slug>`. That the same session can
+`start_review_flow` is not a contradiction: the server matches daemons by repository identity, not by
+path.
+
+**Both shapes of advertised path match, because a daemon's `RepoPaths` carries two origins.** The
+store collapses what it persists; a configured `AllowedRepoPaths` entry is advertised as written, so
+an operator who allowlists a worktree root by hand has that root on the wire. The session's own root
+and its main repository are both compared, and either matching is enough — collapsing one side alone
+would trade the bug for its mirror image.
+
+**The collapse lives in the aggregation, which costs it its purity.** Resolving at the call site
+would leave the next caller free to compare a raw root again, and hashing the way the server does
+would put the server's identity algorithm on the client. It touches the filesystem, but a path that
+names nothing comes back unchanged, so a synthetic root still compares as itself.
+
+A submodule keeps its own identity through this: its `.git` points into `.git/modules`, which the
+resolver leaves alone, so a submodule checkout does not match a daemon hosting the superproject.
+
 ## The work-context pane reads the work item from one endpoint
 
 **AI-2521** fills the sidebar's SOON slots — the item's state, its overview, per-part completion,
@@ -811,3 +907,101 @@ narrower than before: several text blocks in one Claude user record are one bubb
 tool results is not shown; the envelope carries no model; a user record opening with an
 available-deferred-tools injection is dropped, as the server drops it; and a meta record's tool
 results settle their tool rows instead of vanishing with the record.
+
+## A vendor-neutral tool kind on canonical tool-call events
+
+**#746** puts an `AcpToolKind` beside `ToolName` on `AcpEventEnvelope`, so a consumer that wants to
+know what a tool call *did* reads one closed vocabulary — the ten ACP `ToolKind` tokens — instead of
+keeping a per-vendor name table. `ToolName` stays raw vendor fidelity: the server's Codex handling
+pairs `exec_command` with `write_stdin` and reaches into `apply_patch` results by that name, so the
+name is not ours to normalise. The field is nullable and additive; `ContractVersion` stays 1.
+
+**A null kind means no lane classified the call, never "none of the above."** `AcpToolKind.Normalize`
+is what keeps the set closed — an agent-supplied token outside the vocabulary becomes `other` rather
+than reaching a consumer that switches on it — while an absent one stays absent. That leaves null free
+to say something else: the lanes that carry no kind yet.
+
+**A codex shell call is classified by its command, because it has no name of its own for a read or a
+search** — `sed -n`, `cat` and `rg` all arrive as one tool. An unclassifiable command is `execute`: a
+shell call did run something.
+
+**A hosted web search surfaces as a paired call and result.** It has no `item/started` row, so the
+completed item carries both halves, the same rule `fileChange` follows — an orphan tool call renders
+as running forever, since a result is what settles one. It is `fetch`, the kind a web tool gets
+wherever it appears, so the hosted lane and a later import of the same session cannot disagree.
+
+## Codex web and tool searches reach the transcript
+
+**#794** projects two `response_item` payloads the Codex rollout projection dropped, so a Codex web
+search no longer disappears: `web_search_call` and the `tool_search_call` / `tool_search_output` pair.
+Until now `fetch` was unreachable for Codex while Claude's `WebSearch` mapped straight to it, so the
+vocabulary was populated asymmetrically across vendors.
+
+**A web search projects as a synthesized pair.** It is written already settled, carries no id of its
+own — its payload is exactly `action` / `status` / `type` — and keeps its results in the `event_msg`
+lane this projection does not read. So the record supplies the call id for both halves, and the two
+events take the record id and its `result` sibling. A call with no result never settles for a consumer
+that pairs by id; the status is the only outcome available. A tool-registry lookup needs none of that:
+it has a `call_id` and its own output record.
+
+**`tool_search` is `other`, not `search`.** The ACP kind means searching for content, and counting a
+tool-registry lookup as one would skew every consumer measuring how much the agent searched the
+workspace.
+
+**The kind for an imported transcript is stamped by the vendor's chat rules**, which already rewrite
+envelopes and already live per vendor. That gives an import the same kinds the hosted lane carries
+without waiting on the canonical schema, which has no field for it — a projected tool call is a
+`Kurrent.Agent.Schema` `ToolCallInfo`, so the persisted event stays kind-less until the package gains
+one. The shell-command rule is shared with the daemon rather than written twice: a hosted session and
+an import of it must not answer differently for the same call.
+
+## The machine beats, so a death that cannot speak is still visible
+
+The browser is told the machine has stopped by a relinquish the leg sends on its way out. That covers
+every exit it can reach, including through `Environment.Exit` once the notice is also sent from
+`AppDomain.ProcessExit` — but it is a statement, so anything that stops the process making statements
+sends nothing at all: a kill, a lost network, a shut lid. The flow's own lifetime was the only backstop,
+and it is twelve hours.
+
+A beat on its own timer turns that silence into something the server can observe.
+
+**It is not driven by the poll, and that is the whole design.** The import runs inline in the poll loop
+and stops polling for its duration, so liveness derived from the poll would declare the machine gone
+during the one stretch it is working hardest. A separate timer measures the process, which is the only
+thing a beat can honestly claim — a wedged leg goes on beating, and nothing here should ever be read as
+progress.
+
+**Nothing inspects the result for success.** A beat is a network call on a machine whose network may be
+exactly what is failing, so a failure is not handled and a throw does not end the loop: a run of them is
+the signal, and only the server is positioned to read it. Two statuses are read, because neither is
+discoverable by a later beat — a throttle, which is an instruction and would otherwise spend the budget
+the poll needs, and an absent route, which answers the same way every time it is asked.
+
+**A beat is never cancelled.** The beat rides the setup client, whose 401 handler rotates a single-use
+refresh token and then persists it, the rotation itself being uncancellable. A cancel landing between the
+two spends the credential server-side and never writes the replacement, logging the user out mid-setup.
+So the stop token is kept off the request entirely: what ends a beat is the client's own timeout, and what
+ends the loop is the token one level up.
+
+**Answers are carried across ticks rather than abandoned, and beats are capped rather than serialised.**
+A dropped verdict is never read, and a throttling or absent-route server is exactly the one whose answer
+outruns an interval — so the two statuses worth reading would be missed precisely when they matter. But
+allowing only one at a time makes a single slow request the whole liveness budget, so the bound is a
+count: enough that a slow answer cannot silence the machine, few enough that a wedged network cannot
+accumulate one open POST per interval on the very machine whose network is failing.
+
+**Several answers can then land at once, and they are the server's word at different moments.** The
+newest decides the quiet window outright rather than being folded onto it, and one older than the word
+already in force is counted but not obeyed. A fold can only push a window further out, so a route that
+answers again mid-drain would stay silenced by the refusals ahead of it — for the whole backoff, starting
+at the moment it recovered.
+
+**Backing off a missing route is a pause, not an ending.** A rolling deploy or a proxy reload is minutes
+long and the poll on the same client rides straight through it, so a beat that stopped for good would have
+the browser infer a death from a machine still demonstrably talking to it. It takes more refusals than may
+be outstanding at once, so a proxy that answers every open POST in the same instant is one blip rather than
+a run of them.
+
+**Stopping does not wait for a beat in flight**, and does not cancel it either. Nothing is owed to it:
+the relinquish that follows states the ending, and the browser reads a stated ending ahead of an inferred
+one.
