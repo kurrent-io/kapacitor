@@ -1040,3 +1040,12 @@ a run of them.
 **Stopping does not wait for a beat in flight**, and does not cancel it either. Nothing is owed to it:
 the relinquish that follows states the ending, and the browser reads a stated ending ahead of an inferred
 one.
+
+## The desktop app renders through OpenGL on macOS
+
+Avalonia puts Metal first in its macOS renderer order. On macOS 26 that path presents alternate frames
+with different colour matching, so any steady repaint flickers the whole window between two shades — the
+composer caret blinking while the window is focused is enough, and the flicker stops the moment focus
+leaves. Nothing in the app drives it: every surface is a static brush, and the shift covers the rail, the
+panes and the text alike. The renderer order leaves Metal out, OpenGL first with the software renderer
+behind it, and the flicker is gone.
