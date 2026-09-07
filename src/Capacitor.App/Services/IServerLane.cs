@@ -2,8 +2,10 @@ namespace Capacitor.App.Services;
 
 public enum ServerLaneState { Dormant, Connecting, Connected, Retrying, SignedOut }
 
-/// Diagnostic is the silent-deafness notice text, or null.
-public sealed record ServerLaneStatus(ServerLaneState State, string? Detail = null, string? Diagnostic = null);
+/// Diagnostic is the silent-deafness notice text, or null. Subject is the signed-in account's
+/// "sub" claim on a Connected status, for detecting a re-auth as a different account.
+public sealed record ServerLaneStatus(
+    ServerLaneState State, string? Detail = null, string? Diagnostic = null, string? Subject = null);
 
 public sealed record LaunchFailure(string AgentId, string Reason);
 

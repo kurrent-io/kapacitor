@@ -86,13 +86,16 @@ public sealed class ServerConnectionService : IServerLane, ILaunchClient, IAsync
                 var closed = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
                 hub.Closed += ex => { closed.TrySetResult(ex); return Task.CompletedTask;  };
                 hub.Reconnecting += _ => { _status.OnNext(new(ServerLaneState.Retrying, "reconnecting")); return Task.CompletedTask; };
-                hub.Reconnected += async _ =>
-                    _status.OnNext(new(ServerLaneState.Connected, Diagnostic: await DiagnoseAsync().ConfigureAwait(false)));
+                hub.Reconnected += async _ => {
+                    var (diagnostic, subject) = await DiagnoseAsync().ConfigureAwait(false);
+                    _status.OnNext(new(ServerLaneState.Connected, Diagnostic: diagnostic, Subject: subject));
+                };
 
                 await hub.StartAsync(ct).ConfigureAwait(false);
                 _hub = hub;
                 attempt = 0;
-                _status.OnNext(new(ServerLaneState.Connected, Diagnostic: await DiagnoseAsync().ConfigureAwait(false)));
+                var (connectedDiagnostic, connectedSubject) = await DiagnoseAsync().ConfigureAwait(false);
+                _status.OnNext(new(ServerLaneState.Connected, Diagnostic: connectedDiagnostic, Subject: connectedSubject));
 
                 Exception? closeReason;
                 await using (ct.Register(() => closed.TrySetResult(null)))
@@ -102,6 +105,12 @@ public sealed class ServerConnectionService : IServerLane, ILaunchClient, IAsync
                     _status.OnNext(new(ServerLaneState.Retrying, closeReason?.Message));
             } catch (OperationCanceledException) {
                 break;
+            } catch (Exception ex) when (IsUnauthorized(ex)) {
+                // The credential is what kcap login repairs, not this loop — retrying a 401
+                // negotiate forever would just burn the backoff ladder for no reason. The lane
+                // parks here until RestartAsync (wired to sign-in completion) starts a fresh loop.
+                _status.OnNext(new(ServerLaneState.SignedOut, ex.Message));
+                return;
             } catch (Exception ex) {
                 _status.OnNext(new(ServerLaneState.Retrying, ex.Message));
             } finally {
@@ -127,14 +136,14 @@ public sealed class ServerConnectionService : IServerLane, ILaunchClient, IAsync
         return hub;
     }
 
-    async Task<string?> DiagnoseAsync() {
+    async Task<(string? Diagnostic, string? Subject)> DiagnoseAsync() {
         try {
             var token = await _token().ConfigureAwait(false);
-            return token is not null && JwtClaims.TryGetString(token, "team_id") is null
-                ? TeamClaimMissingNotice
-                : null;
+            if (token is null) return (null, null);
+            var diagnostic = JwtClaims.TryGetString(token, "team_id") is null ? TeamClaimMissingNotice : null;
+            return (diagnostic, JwtClaims.TryGetString(token, "sub"));
         } catch {
-            return null;
+            return (null, null);
         }
     }
 
@@ -149,6 +158,8 @@ public sealed class ServerConnectionService : IServerLane, ILaunchClient, IAsync
     }
 
     public async Task<LaunchOutcome> StartAsync(LaunchRequest request, CancellationToken ct) {
+        if (_status.Value.State == ServerLaneState.SignedOut)
+            return new LaunchOutcome(false, null, "Not signed in to the server.", Unauthorized: true);
         try {
             var hub = _hub;
             if (hub is not { State: HubConnectionState.Connected })

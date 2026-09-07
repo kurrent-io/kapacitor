@@ -21,7 +21,7 @@ public sealed class HubTestHost : IAsyncDisposable {
     static int _launchCalls;
     public static int LaunchCalls => _launchCalls;
 
-    public static async Task<HubTestHost> StartAsync() {
+    public static async Task<HubTestHost> StartAsync(bool requireAuth = false) {
         DaemonsHandler = () => [];
         LaunchHandler = _ => "agent-1";
         _launchCalls = 0;
@@ -37,6 +37,14 @@ public sealed class HubTestHost : IAsyncDisposable {
         builder.Services.Configure<HostOptions>(o => o.ShutdownTimeout = TimeSpan.FromMilliseconds(500));
 
         var app = builder.Build();
+        if (requireAuth)
+            app.Use(async (ctx, next) => {
+                if (!ctx.Request.Headers.ContainsKey("Authorization")) {
+                    ctx.Response.StatusCode = 401;
+                    return;
+                }
+                await next();
+            });
         app.MapHub<SessionsHub>("/hubs/sessions");
         await app.StartAsync();
 

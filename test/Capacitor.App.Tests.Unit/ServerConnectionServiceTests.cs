@@ -130,6 +130,30 @@ public class ServerConnectionServiceTests {
     }
 
     [Test]
+    public async Task UnauthorizedNegotiateSurfacesSignedOutAndStaysThere() {
+        await using var host = await HubTestHost.StartAsync(requireAuth: true);
+        string? token = null;
+        await using var lane = new ServerConnectionService(host.Url, () => Task.FromResult(token));
+        lane.Start();
+
+        await Next(lane.Status, s => s.State == ServerLaneState.SignedOut);
+
+        // RunAsync's loop exits (never schedules a retry) on SignedOut, so the current value is
+        // the final one until RestartAsync runs — nothing further to race against here.
+        var latest = await lane.Status.Take(1).ToTask();
+        await Assert.That(latest.State).IsEqualTo(ServerLaneState.SignedOut);
+
+        var outcome = await ((ILaunchClient)lane).StartAsync(
+            new LaunchRequest("d", "/r", "claude", null), CancellationToken.None);
+        await Assert.That(outcome.Started).IsFalse();
+        await Assert.That(outcome.Unauthorized).IsTrue();
+
+        token = "some-token";
+        await lane.RestartAsync();
+        await Next(lane.Status, s => s.State == ServerLaneState.Connected);
+    }
+
+    [Test]
     public async Task UnauthorizedIsDetectedAnywhereInTheExceptionChain() {
         var wrapped = new InvalidOperationException(
             "outer", new HttpRequestException("401", null, System.Net.HttpStatusCode.Unauthorized));

@@ -25,6 +25,7 @@ public sealed class RemoteAgentsService : IRemoteAgentsService, IDisposable {
     readonly SemaphoreSlim _daemonsFlight = new(1, 1);
     bool _agentsRerun;
     bool _daemonsRerun;
+    string? _lastSubject;
 
     public RemoteAgentsService(
             IServerLane lane, Func<CancellationToken, Task<AgentInstanceDto[]?>> fetchAgents,
@@ -36,6 +37,20 @@ public sealed class RemoteAgentsService : IRemoteAgentsService, IDisposable {
             .Where(c => c)
             .Select(_ => System.Reactive.Unit.Default);
 
+        // Subscribed before the refresh triggers below (same lane.Status), so on a Connected
+        // status this runs first: nothing seeded under one identity survives into another, even
+        // when the refresh that follows fetches null and would otherwise leave stale rows in
+        // place.
+        var identityChange = lane.Status
+            .Where(s => s.State == ServerLaneState.Connected && s.Subject is not null)
+            .Subscribe(s => {
+                if (_lastSubject is not null && _lastSubject != s.Subject) {
+                    _agents.Clear();
+                    _daemons.OnNext([]);
+                }
+                _lastSubject = s.Subject;
+            });
+
         // Merge, not Concat: triggers must reach the refresh methods concurrently so a busy
         // refresh's WaitAsync(0) can actually observe contention and coalesce.
         var refreshAgents = connected.Merge(lane.AgentInstancesChanged.Throttle(wait))
@@ -46,7 +61,7 @@ public sealed class RemoteAgentsService : IRemoteAgentsService, IDisposable {
             .Select(_ => Observable.FromAsync(async () => await RefreshDaemonsAsync(lane)))
             .Merge()
             .Subscribe();
-        _subscriptions = new System.Reactive.Disposables.CompositeDisposable(refreshAgents, refreshDaemons);
+        _subscriptions = new System.Reactive.Disposables.CompositeDisposable(identityChange, refreshAgents, refreshDaemons);
     }
 
     public IObservableCache<AgentInstanceDto, string> Agents => _agents.AsObservableCache();
