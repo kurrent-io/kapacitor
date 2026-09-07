@@ -21,15 +21,19 @@ public sealed class RemoteAgentsService : IRemoteAgentsService, IDisposable {
     readonly SourceCache<AgentInstanceDto, string> _agents = new(a => a.AgentId);
     readonly BehaviorSubject<IReadOnlyList<DaemonInfo>> _daemons = new([]);
     readonly IDisposable _subscriptions;
-    readonly SemaphoreSlim _agentsFlight = new(1, 1);
-    readonly SemaphoreSlim _daemonsFlight = new(1, 1);
-    // Guards _generation and _lastSubject together with the identity-change clear, so a refresh
-    // that captured its generation before the clear can never publish after it.
-    readonly Lock _generationLock = new();
+    // Guards _generation/_lastSubject (so an identity-change clear and a refresh's generation
+    // check can never interleave) and each refresh kind's busy/rerun pair — admission (busy
+    // check / set rerun) and completion (rerun check / clear busy) share this one critical
+    // section, so a losing admission can never land between a drain loop reading rerun false and
+    // clearing busy, which is what leaked a rerun with no worker left under the semaphore this
+    // replaced.
+    readonly Lock _lock = new();
     int _generation;
-    bool _agentsRerun;
-    bool _daemonsRerun;
     string? _lastSubject;
+    bool _agentsBusy;
+    bool _agentsRerun;
+    bool _daemonsBusy;
+    bool _daemonsRerun;
 
     public RemoteAgentsService(
             IServerLane lane, Func<CancellationToken, Task<AgentInstanceDto[]?>> fetchAgents,
@@ -48,7 +52,7 @@ public sealed class RemoteAgentsService : IRemoteAgentsService, IDisposable {
         var identityChange = lane.Status
             .Where(s => s.State == ServerLaneState.Connected && s.Subject is not null)
             .Subscribe(s => {
-                lock (_generationLock) {
+                lock (_lock) {
                     if (_lastSubject is not null && _lastSubject != s.Subject) {
                         _agents.Clear();
                         _daemons.OnNext([]);
@@ -59,7 +63,7 @@ public sealed class RemoteAgentsService : IRemoteAgentsService, IDisposable {
             });
 
         // Merge, not Concat: triggers must reach the refresh methods concurrently so a busy
-        // refresh's WaitAsync(0) can actually observe contention and coalesce.
+        // refresh's admission check can actually observe contention and coalesce.
         var refreshAgents = connected.Merge(lane.AgentInstancesChanged.Throttle(wait))
             .Select(_ => Observable.FromAsync(async () => await RefreshAgentsAsync(fetchAgents)))
             .Merge()
@@ -75,43 +79,51 @@ public sealed class RemoteAgentsService : IRemoteAgentsService, IDisposable {
     public IObservable<IReadOnlyList<DaemonInfo>> Daemons => _daemons.AsObservable();
 
     async Task RefreshAgentsAsync(Func<CancellationToken, Task<AgentInstanceDto[]?>> fetch) {
-        if (!await _agentsFlight.WaitAsync(0)) { Volatile.Write(ref _agentsRerun, true); return; }
-        try {
-            do {
-                Volatile.Write(ref _agentsRerun, false);
-                int generation;
-                lock (_generationLock) generation = _generation;
-                var result = await fetch(CancellationToken.None).ConfigureAwait(false);
+        lock (_lock) {
+            if (_agentsBusy) { _agentsRerun = true; return; }
+            _agentsBusy = true;
+        }
+        while (true) {
+            int generation;
+            lock (_lock) generation = _generation;
+            AgentInstanceDto[]? result = null;
+            try {
+                result = await fetch(CancellationToken.None).ConfigureAwait(false);
+            } catch (Exception) {
+                // Data-plane refresh: a throw here is a missed refresh, never an app fault.
+            }
+            lock (_lock) {
                 // A completion from before an identity-change clear must never repopulate what
                 // that clear just emptied — checked under the same lock the clear itself takes.
-                lock (_generationLock) {
-                    if (result is not null && generation == _generation)
-                        _agents.EditDiff(result, EqualityComparer<AgentInstanceDto>.Default);
-                }
-            } while (Volatile.Read(ref _agentsRerun));
-        } catch (Exception) {
-            // Data-plane refresh: a throw here is a missed refresh, never an app fault.
-        } finally {
-            _agentsFlight.Release();
+                if (result is not null && generation == _generation)
+                    _agents.EditDiff(result, EqualityComparer<AgentInstanceDto>.Default);
+                if (_agentsRerun) { _agentsRerun = false; continue; }
+                _agentsBusy = false;
+                return;
+            }
         }
     }
 
     async Task RefreshDaemonsAsync(IServerLane lane) {
-        if (!await _daemonsFlight.WaitAsync(0)) { Volatile.Write(ref _daemonsRerun, true); return; }
-        try {
-            do {
-                Volatile.Write(ref _daemonsRerun, false);
-                int generation;
-                lock (_generationLock) generation = _generation;
-                var result = await lane.GetConnectedDaemonsAsync(CancellationToken.None).ConfigureAwait(false);
-                lock (_generationLock) {
-                    if (result is not null && generation == _generation)
-                        _daemons.OnNext(result);
-                }
-            } while (Volatile.Read(ref _daemonsRerun));
-        } catch (Exception) {
-        } finally {
-            _daemonsFlight.Release();
+        lock (_lock) {
+            if (_daemonsBusy) { _daemonsRerun = true; return; }
+            _daemonsBusy = true;
+        }
+        while (true) {
+            int generation;
+            lock (_lock) generation = _generation;
+            IReadOnlyList<DaemonInfo>? result = null;
+            try {
+                result = await lane.GetConnectedDaemonsAsync(CancellationToken.None).ConfigureAwait(false);
+            } catch (Exception) {
+            }
+            lock (_lock) {
+                if (result is not null && generation == _generation)
+                    _daemons.OnNext(result);
+                if (_daemonsRerun) { _daemonsRerun = false; continue; }
+                _daemonsBusy = false;
+                return;
+            }
         }
     }
 
@@ -141,7 +153,5 @@ public sealed class RemoteAgentsService : IRemoteAgentsService, IDisposable {
         _subscriptions.Dispose();
         _agents.Dispose();
         _daemons.Dispose();
-        _agentsFlight.Dispose();
-        _daemonsFlight.Dispose();
     }
 }
