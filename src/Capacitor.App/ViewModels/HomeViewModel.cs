@@ -854,9 +854,12 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
             }
     }
 
+    // Directory keys preserve the row's incoming id spelling (e.g. a dashed Guid never becomes
+    // "local:{N-form}"), so a lookup by the "N"-normalized pending id would miss it — scan and
+    // compare under NormalizeAgentId instead, the same comparison ConfirmPendingRows uses.
     bool RowExists(string agentId) =>
         _directory is { } directory
-        && (directory.Rows.Lookup($"local:{agentId}").HasValue || directory.Rows.Lookup($"remote:{agentId}").HasValue);
+        && directory.Rows.Items.Any(r => NormalizeAgentId(r.Id) == agentId);
 
     void RecordRecentFailure(LaunchFailure failure) {
         if (NormalizeAgentId(failure.AgentId) is not { } agentId) return;

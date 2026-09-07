@@ -1214,4 +1214,32 @@ public class HomeViewModelTests {
             await Assert.That(vm.StartError).IsNull();
         });
     }
+
+    /// Same predates-recording race as above, but with a DASHED-Guid row and a dashed accepted
+    /// id — RowExists must compare under NormalizeAgentId, not a raw "local:{id}" key lookup,
+    /// since the directory key preserves the row's incoming id spelling verbatim.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task ADashedGuidRowThatPredatesRecordingIsConfirmedImmediately() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            using var tmp = TempDir.WithPathTo("app-state.json", out var path);
+            var daemon = new FakeDaemonClientService();
+            Connect(daemon);
+            var dashed = Guid.Parse(LaunchedId).ToString("D");
+            var launch = new RowBeforeReturnLaunchClient { Daemon = daemon, AgentId = dashed };
+            var failures = new Subject<LaunchFailure>();
+            using var directory = new AgentDirectory(
+                daemon, new FakeRemoteAgents(), new FakeServerLane(), new RepoIdentityResolver(_ => null),
+                p => p, null, null);
+            using var vm = new HomeViewModel(
+                daemon, new AppStateStore(path), launch, Known(),
+                launchFailures: failures, directory: directory);
+
+            await vm.SelectRepositoryAsync("/repo/a");
+            await vm.StartCommand.Execute();
+            failures.OnNext(new LaunchFailure(dashed, "launch_denied_by_owner: default"));
+
+            await Assert.That(vm.StartError).IsNull();
+        });
+    }
 }
