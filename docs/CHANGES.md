@@ -709,7 +709,7 @@ progress.
 exactly what is failing, so a failure is not handled and a throw does not end the loop: a run of them is
 the signal, and only the server is positioned to read it. Two statuses are read, because neither is
 discoverable by a later beat — a throttle, which is an instruction and would otherwise spend the budget
-the poll needs, and an absent route, which answers the same way for the whole leg.
+the poll needs, and an absent route, which answers the same way every time it is asked.
 
 **A beat is never cancelled.** The beat rides the setup client, whose 401 handler rotates a single-use
 refresh token and then persists it, the rotation itself being uncancellable. A cancel landing between the
@@ -722,11 +722,15 @@ A dropped verdict is never read, and a throttling or absent-route server is exac
 outruns an interval — so the two statuses worth reading would be missed precisely when they matter. But
 allowing only one at a time makes a single slow request the whole liveness budget, so the bound is a
 count: enough that a slow answer cannot silence the machine, few enough that a wedged network cannot
-accumulate one open POST per interval on the very machine whose network is failing.
+accumulate one open POST per interval on the very machine whose network is failing. Several answers can
+then land in one drain, and they are the server's word at different moments — so the drain is read oldest
+first and the newest instruction is the one left standing.
 
 **Backing off a missing route is a pause, not an ending.** A rolling deploy or a proxy reload is minutes
 long and the poll on the same client rides straight through it, so a beat that stopped for good would have
-the browser infer a death from a machine still demonstrably talking to it.
+the browser infer a death from a machine still demonstrably talking to it. It takes more refusals than may
+be outstanding at once, so a proxy that answers every open POST in the same instant is one blip rather than
+a run of them.
 
 **Stopping does not wait for a beat in flight**, and does not cancel it either. Nothing is owed to it:
 the relinquish that follows states the ending, and the browser reads a stated ending ahead of an inferred

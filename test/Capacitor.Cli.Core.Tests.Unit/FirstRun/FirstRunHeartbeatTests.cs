@@ -37,6 +37,11 @@ public class FirstRunHeartbeatTests {
         /// <summary>Answered to every beat. Models a route that is simply not there.</summary>
         public FirstRunHeartbeatOutcome? Always { get; set; }
 
+        /// <summary>Answered to beats in the order they were issued. Taken at call time, so pairing it
+        /// with <see cref="HoldAnswers"/> makes a drain deterministic — which is what lets a test pin
+        /// whose verdict survives one.</summary>
+        public Queue<FirstRunHeartbeatOutcome>? Sequence { get; init; }
+
         /// <summary>Never completes, so the beat stays outstanding until the test ends.</summary>
         public bool BlockForever { get; init; }
 
@@ -59,10 +64,19 @@ public class FirstRunHeartbeatTests {
 
             lock (Tokens) Tokens.Add(ct);
 
+            FirstRunHeartbeatOutcome? sequenced = null;
+
+            if (Sequence is { } queue)
+                lock (queue)
+                    if (queue.Count > 0)
+                        sequenced = queue.Dequeue();
+
             if (BlockForever) await Task.Delay(Timeout.Infinite, ct);
             if (HoldAnswers) await _held.Task;
             if (Block) await _gate.Task;
             if (Throws is { } boom) throw boom;
+
+            if (sequenced is { } answer) return answer;
 
             if (Next is { } once) {
                 Next = null;
@@ -79,6 +93,27 @@ public class FirstRunHeartbeatTests {
         public Task<FirstRunImportReportOutcome> ReportImportAsync(string s, string f, ReportFirstRunImportRequest r, CancellationToken ct) => throw new NotSupportedException();
         public Task<FirstRunImportReportOutcome> ReportImportOutcomeAsync(string s, string f, ReportFirstRunImportOutcomeRequest r, CancellationToken ct) => throw new NotSupportedException();
         public Task<FirstRunRelinquishOutcome> RelinquishAsync(string s, string f, string reason, CancellationToken ct) => throw new NotSupportedException();
+    }
+
+    /// <summary>
+    /// As <see cref="ReachesAsync"/>, except the fake clock may only move <paramref name="budget"/>
+    /// forward. Polling continues on the real deadline afterwards, so a starved runner reads as slow
+    /// rather than as a shorter window than the test asked for.
+    /// </summary>
+    static async Task<bool> ReachesWithinAsync(
+            FakeChannel channel, FakeTimeProvider clock, int target, TimeSpan budget) {
+        var until    = DateTime.UtcNow + Patience;
+        var deadline = clock.GetUtcNow() + budget;
+
+        while (DateTime.UtcNow < until) {
+            if (channel.Beats >= target) return true;
+
+            if (clock.GetUtcNow() < deadline) clock.Advance(Beat);
+
+            await Task.Delay(5);
+        }
+
+        return channel.Beats >= target;
     }
 
     /// <summary>Advances the fake clock until the beat count reaches <paramref name="target"/>, or the
@@ -196,7 +231,7 @@ public class FirstRunHeartbeatTests {
     }
 
     /// <summary>
-    /// A hung beat is never cancelled, and never joined by a second.
+    /// A hung beat is never cancelled, and the ones behind it keep the cadence up to the cap.
     ///
     /// <para><b>The no-cancel half is the load-bearing one.</b> The beat rides the setup client, whose
     /// 401 handler rotates a single-use refresh token and then persists it, the rotation itself being
@@ -204,12 +239,12 @@ public class FirstRunHeartbeatTests {
     /// the replacement, logging the user out mid-setup — so the stop token is kept off the request
     /// entirely and the client's own timeout is what ends a beat.</para>
     ///
-    /// <para>The no-second half is the cost of that: an outstanding beat holds the lane, so a wedged
-    /// network is silent until the request times out rather than piling up one open POST per interval on
-    /// the very machine whose network is failing.</para>
+    /// <para>The cap is the other half: a wedged network must not silence the machine for a whole client
+    /// timeout, and must not accumulate one open POST per interval on the very machine whose network is
+    /// failing either.</para>
     /// </summary>
     [Test]
-    public async Task A_hung_beat_is_neither_cancelled_nor_joined() {
+    public async Task A_hung_beat_is_never_cancelled_and_does_not_hold_the_whole_budget() {
         var channel = new FakeChannel { BlockForever = true };
         var clock   = new FakeTimeProvider();
 
@@ -283,14 +318,15 @@ public class FirstRunHeartbeatTests {
     }
 
     /// <summary>
-    /// A route this server does not have answers the same way for the rest of the leg. Beating on is
-    /// hundreds of authenticated no-ops per run, which can trip the very limiter the throttle handling
-    /// exists to keep clear for the poll.
+    /// A route this server does not have answers the same way every time, and beating on is hundreds of
+    /// authenticated no-ops per run — enough to trip the very limiter the throttle handling exists to
+    /// keep clear for the poll. So the beat backs off it, and probes again afterwards rather than giving
+    /// up: a rolling deploy answers this way for minutes and then starts working.
     /// </summary>
     [Test]
     [Arguments(404)]
     [Arguments(405)]
-    public async Task A_route_that_is_never_there_stops_the_beat(int status) {
+    public async Task A_route_that_is_never_there_pauses_the_beat(int status) {
         var channel = new FakeChannel { Always = new FirstRunHeartbeatOutcome(status) };
         var clock   = new FakeTimeProvider();
 
@@ -303,15 +339,16 @@ public class FirstRunHeartbeatTests {
         }
 
         // Exactly the threshold: a lower number would pass here too, so an inequality would not pin the
-        // constant the test is named for.
-        await Assert.That(channel.Beats).IsEqualTo(3)
+        // constant the test is named for. Four, not three — the threshold sits above the in-flight cap so
+        // that one round of simultaneous refusals cannot fill it.
+        await Assert.That(channel.Beats).IsEqualTo(4)
                     .Because("the beat went on posting to a route the server does not have");
 
         // A pause, not an ending — the poll rides out a rolling deploy on the same client, so a beat that
         // stopped for good would have the browser infer a death from a machine still talking to it.
         clock.Advance(TimeSpan.FromMinutes(3));
 
-        await Assert.That(await ReachesAsync(channel, clock, 4)).IsTrue()
+        await Assert.That(await ReachesAsync(channel, clock, 5)).IsTrue()
                     .Because("the beat never probed the route again after backing off");
     }
 
@@ -347,6 +384,39 @@ public class FirstRunHeartbeatTests {
 
         await Assert.That(channel.Beats).IsEqualTo(issued)
                     .Because("a throttle answered late was dropped, so the beat kept posting through it");
+    }
+
+    /// <summary>
+    /// A drain can hold several answers, and each is the server's word at a different moment. One that
+    /// throttles hard and then recovers sends the shorter delay last, so ending the drain on the oldest
+    /// would obey an instruction the server had already withdrawn — two minutes of silence on a route
+    /// that is answering.
+    /// </summary>
+    [Test]
+    public async Task The_newest_answer_in_a_drain_is_the_one_that_stands() {
+        var channel = new FakeChannel {
+            HoldAnswers = true,
+            Sequence = new([
+                new FirstRunHeartbeatOutcome(429, TimeSpan.FromSeconds(120)),
+                new FirstRunHeartbeatOutcome(429, TimeSpan.FromSeconds(120)),
+                new FirstRunHeartbeatOutcome(429, TimeSpan.FromSeconds(1))
+            ])
+        };
+
+        var clock = new FakeTimeProvider();
+
+        using var beat = FirstRunHeartbeat.Start(channel, Server, Flow, clock, Beat);
+
+        // Nothing answers until the lane is full, so all three land in one drain.
+        await Assert.That(await ReachesAsync(channel, clock, MaxInFlightForTest)).IsTrue()
+                    .Because("the drain this test is about never formed");
+
+        channel.ReleaseHeld();
+
+        // Well inside the 120s the two stale answers asked for, so obeying either of them fails here.
+        await Assert.That(await ReachesWithinAsync(channel, clock, MaxInFlightForTest + 1,
+                                                   TimeSpan.FromSeconds(30))).IsTrue()
+                    .Because("a superseded Retry-After outlasted the one that replaced it");
     }
 
     /// <summary>Mirrors the loop's own cap. Named here rather than read from the class, so a change to the

@@ -28,10 +28,16 @@ public sealed class FirstRunHeartbeat : IDisposable {
     /// </summary>
     const int MaxInFlight = 3;
 
-    /// <summary>Consecutive not-found answers before the beat backs off the route. More than one, so a
-    /// blip cannot silence it; small, because a route that is genuinely absent answers this way every
-    /// time and beating on is hundreds of authenticated no-ops per run.</summary>
-    const int UnavailableBeforeBackingOff = 3;
+    /// <summary>
+    /// Consecutive not-found answers before the beat backs off the route.
+    ///
+    /// <para>Above <see cref="MaxInFlight"/> rather than merely above one, so the refusals cannot all be
+    /// beats of a single issuing round: a proxy reload can answer every outstanding POST at the same
+    /// instant, and a threshold the cap can fill would let one blip buy the whole quiet window. Past that
+    /// it stays small, because a route that is genuinely absent answers this way every time and beating
+    /// on is hundreds of authenticated no-ops per run.</para>
+    /// </summary>
+    const int UnavailableBeforeBackingOff = MaxInFlight + 1;
 
     /// <summary>
     /// How long to go quiet after the route has refused often enough to look absent.
@@ -117,8 +123,15 @@ public sealed class FirstRunHeartbeat : IDisposable {
 
         try {
             while (!ct.IsCancellationRequested) {
-                for (var i = inFlight.Count - 1; i >= 0; i--) {
-                    if (!inFlight[i].IsCompleted) continue;
+                // Oldest first, so a drain holding several answers ends on the newest one and the verdict
+                // that stands is the server's latest word. Walking the other way lets a stale
+                // `Retry-After` outrank the instruction that superseded it.
+                for (var i = 0; i < inFlight.Count;) {
+                    if (!inFlight[i].IsCompleted) {
+                        i++;
+
+                        continue;
+                    }
 
                     var outcome = await inFlight[i];
 
