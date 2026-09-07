@@ -98,7 +98,7 @@ public sealed class RailWorktreeViewModel : ReactiveObject, IDisposable {
         // selectedAgentId or an agentsWithPending member verbatim.
         _needsYou = sessionsCache.Connect().QueryWhenChanged()
             .CombineLatest(agentsWithPending, (q, set) =>
-                q.Items.Any(r => SessionStatusDots.NeedsAttention(r.Status) || set.Contains(r.Id)))
+                q.Items.Any(r => SessionStatusDots.NeedsAttention(r) || set.Contains(r.Id)))
             .ToProperty(this, x => x.NeedsYou, initialValue: false)
             .DisposeWith(_disposables);
 

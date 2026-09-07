@@ -3,7 +3,9 @@ using Avalonia.Threading;
 using Capacitor.App.Services;
 using Capacitor.App.ViewModels;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Harness.Claude;
 using Capacitor.Cli.Core.LocalIpc;
+using Capacitor.Models.Transcripts.Harness.Claude;
 using DynamicData;
 using Microsoft.Extensions.Time.Testing;
 using TUnit.Assertions.Enums;
@@ -41,7 +43,7 @@ public class ChatTabViewModelTests {
         public TerminalTabViewModel Terminal { get; }
         public ChatTabViewModel Chat { get; }
 
-        public Harness(ITranscriptProjection? projection, Action<FakePermissionService>? seed = null) {
+        public Harness(TranscriptChatProjection? projection, Action<FakePermissionService>? seed = null) {
             seed?.Invoke(Permissions);
             Terminal = new TerminalTabViewModel("a1", Daemon, Factory.Factory, () => new FakeTerminalSurface(), Time);
             Chat = new ChatTabViewModel("a1", Daemon, Terminal, projection, Opener, Time, Permissions);
@@ -64,7 +66,7 @@ public class ChatTabViewModelTests {
         }
     }
 
-    static Harness Claude(Action<FakePermissionService>? seed = null) => new(TranscriptProjection.For("claude"), seed);
+    static Harness Claude(Action<FakePermissionService>? seed = null) => new(TranscriptChat.For("claude"), seed);
 
     [Test]
     [NotInParallel("AvaloniaSession")]
@@ -285,9 +287,11 @@ public class ChatTabViewModelTests {
     }
 
     sealed class GatedProjection(ITranscriptProjection inner, string blockOn, TaskCompletionSource gate) : ITranscriptProjection {
-        public IReadOnlyList<AcpEventEnvelope> Project(string line) {
+        public TranscriptContext CreateContext(string sessionId, string? agentId) => inner.CreateContext(sessionId, agentId);
+
+        public ProjectionResult Project(string line, int lineNumber, DateTimeOffset receivedAt, TranscriptContext context) {
             if (line.Contains(blockOn, StringComparison.Ordinal)) gate.Task.GetAwaiter().GetResult();
-            return inner.Project(line);
+            return inner.Project(line, lineNumber, receivedAt, context);
         }
     }
 
@@ -296,7 +300,7 @@ public class ChatTabViewModelTests {
     public async Task A_path_switch_discards_a_read_still_in_flight_for_the_old_file() {
         await RunOnUiAsync(async () => {
             var gate = new TaskCompletionSource();
-            var h = new Harness(new GatedProjection(TranscriptProjection.For("claude")!, "OLD", gate));
+            var h = new Harness(new TranscriptChatProjection(new GatedProjection(ClaudeTranscriptEvents.Instance, "OLD", gate), ClaudeChatRules.Instance));
             var oldPath = Tmp.CreateFile("old.jsonl", [UserLine.Replace("hello", "OLD"), ToolCallLine]);
             var newPath = Tmp.CreateFile("new.jsonl", [AssistantLine]);
 
@@ -643,5 +647,38 @@ public class ChatTabViewModelTests {
             await WaitUntilAsync(() => !Group(h.Chat, 0).Calls[0].IsAwaitingPermission, what: "only the id-less request fitted t9");
             await h.TeardownAsync();
         });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task A_reset_starts_a_fresh_projection_context_and_line_count() {
+        await RunOnUiAsync(async () => {
+            var counting = new CountingProjection(ClaudeTranscriptEvents.Instance);
+            var h = new Harness(new TranscriptChatProjection(counting, ClaudeChatRules.Instance));
+            var path = Tmp.CreateFile("t.jsonl", [UserLine, AssistantLine]);
+            await h.PushAsync(Dto(path));
+            await Assert.That(counting.LineNumbers).IsEquivalentTo(new[] { 1, 2 });
+
+            Tmp.CreateFile("t.jsonl", [UserLine]);    // shorter: the tail resets
+            await h.TickAsync();
+            await Assert.That(counting.LineNumbers).IsEquivalentTo(new[] { 1, 2, 1 });
+            await Assert.That(counting.ContextsCreated).IsEqualTo(2);
+            await h.TeardownAsync();
+        });
+    }
+
+    sealed class CountingProjection(ITranscriptProjection inner) : ITranscriptProjection {
+        public List<int> LineNumbers { get; } = [];
+        public int ContextsCreated { get; private set; }
+
+        public TranscriptContext CreateContext(string sessionId, string? agentId) {
+            ContextsCreated++;
+            return inner.CreateContext(sessionId, agentId);
+        }
+
+        public ProjectionResult Project(string line, int lineNumber, DateTimeOffset receivedAt, TranscriptContext context) {
+            LineNumbers.Add(lineNumber);
+            return inner.Project(line, lineNumber, receivedAt, context);
+        }
     }
 }

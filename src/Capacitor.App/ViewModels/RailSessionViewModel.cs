@@ -49,7 +49,8 @@ public sealed class RailSessionViewModel : ReactiveObject, IDisposable {
             ? Join(row.Model, age)
             : Join(vendorLine, row.Model, age);
         StatusDot = SessionStatusDots.For(row.Status);
-        Tooltip = Join(row.Id, row.Status, row.RequesterDisplay, row.BorrowedFrom is null ? null : $"borrowed {row.BorrowedFrom}");
+        Tooltip = Join(row.Id, row.Status, SessionStatusDots.WaitsOnUser(row) ? "waiting for input" : null,
+            row.RequesterDisplay, row.BorrowedFrom is null ? null : $"borrowed {row.BorrowedFrom}");
         MachineBadge = row.MachineBadge;
         IsRemote = row.Origin == AgentOrigin.Remote;
 
@@ -57,7 +58,7 @@ public sealed class RailSessionViewModel : ReactiveObject, IDisposable {
             .ToProperty(this, x => x.IsSelected, initialValue: false)
             .DisposeWith(_disposables);
 
-        var byStatus = SessionStatusDots.NeedsAttention(row.Status);
+        var byStatus = SessionStatusDots.NeedsAttention(row);
         _needsYou = agentsWithPending.Select(set => byStatus || set.Contains(row.Id))
             .ToProperty(this, x => x.NeedsYou, initialValue: byStatus)
             .DisposeWith(_disposables);

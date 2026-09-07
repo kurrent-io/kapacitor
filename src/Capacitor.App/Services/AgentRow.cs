@@ -12,7 +12,9 @@ public sealed record AgentRow(
         DateTime CreatedAt, string? RepoPath, string? Title, string? Model, string? RequesterDisplay,
         string? WorktreePath, string? WorkLocation, string? BorrowedFrom,
         string? MachineBadge, // remote rows: the daemon name; local rows: null
-        string RepoGroupKey, string RepoGroupLabel, string CheckoutKey, string CheckoutLabel) {
+        string RepoGroupKey, string RepoGroupLabel, string CheckoutKey, string CheckoutLabel,
+        // Null means unknown (the server registry carries no turn verdict), never "working".
+        bool? AwaitingInput = null) {
 
     public static AgentRow FromLocal(AgentStatusDto dto, RepoIdentity repo) => new(
         Key: $"local:{dto.Id}", Origin: AgentOrigin.Local, Id: dto.Id, Kind: dto.Kind,
@@ -20,7 +22,8 @@ public sealed record AgentRow(
         Title: dto.Title, Model: dto.Model, RequesterDisplay: dto.RequesterDisplay,
         WorktreePath: dto.WorktreePath, WorkLocation: dto.WorkLocation, BorrowedFrom: dto.BorrowedFrom,
         MachineBadge: null, RepoGroupKey: repo.Key, RepoGroupLabel: repo.Label,
-        CheckoutKey: ViewModels.SessionRailViewModel.WorktreeKeyFor(dto), CheckoutLabel: "");
+        CheckoutKey: ViewModels.SessionRailViewModel.WorktreeKeyFor(dto), CheckoutLabel: "",
+        AwaitingInput: dto.AwaitingInput);
 
     public static AgentRow FromRemote(AgentInstanceDto dto) {
         var daemonKey = $"{dto.OwnerUserId}/{dto.DaemonName}";

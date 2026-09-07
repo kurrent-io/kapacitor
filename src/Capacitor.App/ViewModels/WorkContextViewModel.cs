@@ -27,7 +27,7 @@ public sealed partial class WorkContextViewModel : ReactiveObject {
     internal const string WaitingNote      = "Waiting for the session to register…";
     internal const string LoadingNote      = "Loading work context…";
     internal const string NoWorkItemNote   = "No work item attached yet. The agent's declare tool attaches one.";
-    internal const string NoRepositoryNote = "This session has no repository. A work item cannot attach until the work lands in one — breakdown and blockers come with it.";
+    internal const string NoRepositoryNote = "This session has no repository. A work item cannot attach until the work lands in one.";
     internal const string SignedOutNote    = "Sign in to see the work context.";
     internal const string NotInPlanNote    = "Work items are not in this workspace's plan.";
     internal const string UnreachableNote  = "Couldn't reach the server.";
@@ -42,6 +42,7 @@ public sealed partial class WorkContextViewModel : ReactiveObject {
 
     readonly IWorkContextSource _source;
     readonly IUrlOpener _opener;
+    readonly TimeProvider _time;
     readonly CompositeDisposable _disposables = new();
     readonly List<ReadLease> _outstanding = [];
     ReadLease? _current;
@@ -135,6 +136,7 @@ public sealed partial class WorkContextViewModel : ReactiveObject {
             Action? requestSignIn = null, IObservable<Unit>? signInCompleted = null) {
         _source = source;
         _opener = opener;
+        _time = time;
         InitializeProjections();
         _disposables.Add(_hasSessionChanges);
 

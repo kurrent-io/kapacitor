@@ -23,5 +23,6 @@
     </ItemGroup>
     <ItemGroup>
         <Using Include="Capacitor.Tests.Helpers" />
+        <Using Include="Capacitor.Models.Transcripts" />
     </ItemGroup>
 </Project>

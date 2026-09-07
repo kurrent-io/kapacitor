@@ -13,10 +13,10 @@ namespace Capacitor.App.Tests.Unit;
 public class RailWorktreeViewModelTests {
     static readonly RepoIdentity Repo = new("path:/repo", "repo");
 
-    static AgentRow Row(string id, string status = "Running", DateTime? created = null) =>
+    static AgentRow Row(string id, string status = "Running", DateTime? created = null, bool? awaitingInput = null) =>
         AgentRow.FromLocal(
             new(id, "agent", "claude", "/repo/.claude/worktrees/wt-a", status,
-                null, null, null, created ?? DateTime.UtcNow, null, null),
+                null, null, null, created ?? DateTime.UtcNow, null, null, AwaitingInput: awaitingInput),
             Repo);
 
     static RailWorktreeViewModel Build(
@@ -51,6 +51,20 @@ public class RailWorktreeViewModelTests {
             await Assert.That(wt.NeedsYou).IsTrue();
 
             cache.AddOrUpdate(Row("a2", status: "Running")); // recovery clears the pip
+            await Assert.That(wt.NeedsYou).IsFalse();
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Pip_follows_a_sessions_awaiting_input_verdict() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var cache = new SourceCache<AgentRow, string>(r => r.Key);
+            using var wt = Build(cache);
+            cache.AddOrUpdate(Row("a1", awaitingInput: true));
+            await Assert.That(wt.NeedsYou).IsTrue();
+
+            cache.AddOrUpdate(Row("a1", awaitingInput: false)); // the user answered
             await Assert.That(wt.NeedsYou).IsFalse();
         });
     }

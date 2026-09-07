@@ -16,8 +16,11 @@ public class RailSessionViewModelTests {
 
     static AgentRow Row(
             string id = "a1", string kind = "agent", string vendor = "claude", string status = "Running",
-            string? model = "Opus 5", string? title = "Fix the flaky test") =>
-        AgentRow.FromLocal(new(id, kind, vendor, "/repo", status, null, null, null, DateTime.UtcNow, model, null, Title: title), Repo);
+            string? model = "Opus 5", string? title = "Fix the flaky test", bool? awaitingInput = null) =>
+        AgentRow.FromLocal(
+            new(id, kind, vendor, "/repo", status, null, null, null, DateTime.UtcNow, model, null,
+                Title: title, AwaitingInput: awaitingInput),
+            Repo);
 
     [Test]
     [NotInParallel("AvaloniaSession")]
@@ -79,6 +82,35 @@ public class RailSessionViewModelTests {
             using var bad = new RailSessionViewModel(Row(status: "Failed"), new BehaviorSubject<string?>(null), NoPending, _ => { }, _ => { });
             await Assert.That(ok.NeedsYou).IsFalse();
             await Assert.That(bad.NeedsYou).IsTrue();
+        });
+    }
+
+    /// The daemon's own verdict that the agent finished its turn lights the same pip a pending
+    /// ask does, and the tooltip says which it is.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Awaiting_input_sets_the_pip_and_names_it_in_the_tooltip() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            using var waiting = new RailSessionViewModel(Row(awaitingInput: true), new BehaviorSubject<string?>(null), NoPending, _ => { }, _ => { });
+            using var working = new RailSessionViewModel(Row(awaitingInput: false), new BehaviorSubject<string?>(null), NoPending, _ => { }, _ => { });
+            using var older   = new RailSessionViewModel(Row(awaitingInput: null), new BehaviorSubject<string?>(null), NoPending, _ => { }, _ => { });
+            await Assert.That(waiting.NeedsYou).IsTrue();
+            await Assert.That(waiting.Tooltip).Contains("waiting for input");
+            await Assert.That(working.NeedsYou).IsFalse();
+            await Assert.That(working.Tooltip).DoesNotContain("waiting for input");
+            await Assert.That(older.NeedsYou).IsFalse();
+        });
+    }
+
+    /// A flow participant between rounds waits on the flow, not on the user, who cannot message
+    /// it anyway.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Awaiting_input_on_a_flow_participant_does_not_set_the_pip() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            using var row = new RailSessionViewModel(Row(kind: "review-flow", awaitingInput: true), new BehaviorSubject<string?>(null), NoPending, _ => { }, _ => { });
+            await Assert.That(row.NeedsYou).IsFalse();
+            await Assert.That(row.Tooltip).DoesNotContain("waiting for input");
         });
     }
 

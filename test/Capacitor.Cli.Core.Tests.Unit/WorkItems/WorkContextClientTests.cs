@@ -61,6 +61,19 @@ public class WorkContextClientTests {
     }
 
     [Test]
+    public async Task The_work_item_route_hits_its_path_and_parses_the_body() {
+        using var server = Serve("/api/work-items/w1", 200, """{"work_item_id":"w1","title":"T","enriched_title":null,"overview":null,"is_overview_mechanical":false,"key":null,"state":{"kind":"in_flight","settled_at":null},"links":[],"parts":[],"contributors":[],"session_count":1}""");
+        using var http = new HttpClient();
+
+        var item = await new WorkContextClient(http, server.Urls[0]).GetWorkItemAsync(" w1 ", CancellationToken.None);
+
+        await Assert.That(item.Succeeded).IsTrue();
+        await Assert.That(item.Body!.Title).IsEqualTo("T");
+        await Assert.That(item.Body.State!.Kind).IsEqualTo("in_flight");
+        await Assert.That(server.LogEntries.Single().RequestMessage.Path).IsEqualTo("/api/work-items/w1");
+    }
+
+    [Test]
     [Arguments(".")]
     [Arguments("..")]
     [Arguments("")]
@@ -73,10 +86,12 @@ public class WorkContextClientTests {
         var assignments = await client.GetSessionAssignmentsAsync(id, CancellationToken.None);
         var summary = await client.GetSessionSummaryAsync(id, CancellationToken.None);
         var topology = await client.GetTopologyAsync(id == "---" ? "." : id, CancellationToken.None);
+        var item = await client.GetWorkItemAsync(id == "---" ? ".." : id, CancellationToken.None);
 
         await Assert.That(assignments.StatusCode).IsEqualTo(0);
         await Assert.That(summary.StatusCode).IsEqualTo(0);
         await Assert.That(topology.StatusCode).IsEqualTo(0);
+        await Assert.That(item.StatusCode).IsEqualTo(0);
     }
 
     [Test]
@@ -89,6 +104,7 @@ public class WorkContextClientTests {
 
         await client.GetSessionAssignmentsAsync("a/b%25c", CancellationToken.None);
         await client.GetTopologyAsync("x/y", CancellationToken.None);
+        await client.GetWorkItemAsync("x/y", CancellationToken.None);
 
         var urls = server.LogEntries.Select(e => e.RequestMessage.AbsoluteUrl).ToList();
         // AbsoluteUrl is a System.Uri round-tripped through ToString(), which keeps %2F (the escaped
@@ -96,6 +112,7 @@ public class WorkContextClientTests {
         // here even though EscapeDataString produced %25 on the wire.
         await Assert.That(urls[0]).EndsWith("/api/work-items/session/a%2Fb%25c");
         await Assert.That(urls[1]).EndsWith("/api/work-items/x%2Fy/topology");
+        await Assert.That(urls[2]).EndsWith("/api/work-items/x%2Fy");
     }
 
     [Test]

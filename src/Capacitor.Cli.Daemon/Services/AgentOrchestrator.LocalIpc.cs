@@ -54,12 +54,15 @@ internal partial class AgentOrchestrator {
                 // unchanged) — but the wire contract pins absent = null. Normalize here, at the
                 // wire boundary, rather than changing what AgentInstance stores.
                 string.IsNullOrWhiteSpace(a.Model) ? null : a.Model, a.RequesterDisplay,
-                HasTerminal: a.Runtime.EmitsTerminalOutput, Title: a.Title, TranscriptPath: a.TranscriptPath,
+                HasTerminal: a.Runtime.EmitsTerminalOutput, Title: a.ResolvedTitle ?? a.Title, TranscriptPath: a.TranscriptPath,
                 WorktreePath: a.Checkout.Worktree,
                 WorkLocation: a.Checkout.BorrowedFrom is null ? WorkLocationText.Owned : WorkLocationText.Borrowed,
                 BorrowedFrom: a.Checkout.BorrowedFrom,
                 SessionId: a.SessionId ?? (a.Runtime as IAcpTranscriptSource)?.AcpSessionId,
-                Branch: string.IsNullOrWhiteSpace(a.Worktree.Branch) ? null : a.Worktree.Branch))];
+                Branch: string.IsNullOrWhiteSpace(a.Worktree.Branch) ? null : a.Worktree.Branch,
+                // Only a live agent can wait on the user; a terminal one keeps whatever its clock
+                // last recorded, which must not read as a pending ask.
+                AwaitingInput: a.Status == "Running" && a.ActivityClock.AwaitingInput))];
 
     /// <summary>
     /// Serves the legacy <c>Stop</c> frame from older clients that predate --force. That frame
@@ -337,8 +340,15 @@ internal partial class AgentOrchestrator {
                     if (f.Type == FrameType.Stdin) {
                         if (readOnly) continue; // protected agent: input is never delivered
 
+                        // A local client's Enter is the input-delivery edge for a PTY agent: the
+                        // desktop composer and terminal both arrive here, never through
+                        // HandleSendInput, and a hook may not report the submit at all. Sampled
+                        // before the write so a wait that begins during it survives.
+                        var waitGeneration = agent.ActivityClock.WaitGeneration;
+
                         try {
                             await agent.Runtime.SendRawInputAsync(f.Bytes);
+                            if (IsSubmit(f.Bytes)) agent.ActivityClock.ClearAwaitingInputSince(waitGeneration);
                         } catch (NotSupportedException) {
                             // ACP-backed runtimes (e.g. cursor) have no raw-input surface —
                             // AcpHostedAgentRuntime.SendRawInputAsync throws by design. Tell the
@@ -382,6 +392,8 @@ internal partial class AgentOrchestrator {
             if (!agent.IsPrivate) _ = SafeSendDimsAsync(agent);
         }
     }
+
+    static bool IsSubmit(byte[] input) => Array.IndexOf(input, (byte) '\r') >= 0 || Array.IndexOf(input, (byte) '\n') >= 0;
 
     void ApplyResizeClamp(AgentInstance agent, ITerminalSink sink, ushort cols, ushort rows) {
         lock (agent.SinksLock) {

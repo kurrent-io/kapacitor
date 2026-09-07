@@ -19,7 +19,7 @@ public class ChatComposerTests {
         var time = new FakeTimeProvider();
         var opener = new RecordingOpener();
         var terminal = new TerminalTabViewModel("a1", daemon, factory.Factory, () => new FakeTerminalSurface(), time);
-        var chat = new ChatTabViewModel("a1", daemon, terminal, TranscriptProjection.For("claude"), opener, time, new FakePermissionService());
+        var chat = new ChatTabViewModel("a1", daemon, terminal, TranscriptChat.For("claude"), opener, time, new FakePermissionService());
         daemon.SnapshotsSubject.OnNext(FakeDaemonClientService.Snap(supportedVendors: ["claude", "codex"]));
         daemon.Agents.AddOrUpdate(Agent("a1", "claude", hasTerminal: true, repoPath: "/repo", model: "claude-opus-5") with { Status = "Running" });
         await (terminal.PendingResolveWorkForTesting ?? Task.CompletedTask);
@@ -105,6 +105,11 @@ public class ChatComposerTests {
             await Assert.That(chat.StatusText).IsEqualTo("Running");
             await Assert.That(chat.StatusDot).IsSameReferenceAs(SessionStatusDots.For("Running"));
 
+            // A finished turn keeps the running dot: the process is live, it is the user's move.
+            daemon.Agents.AddOrUpdate(Agent("a1", "claude", hasTerminal: true, repoPath: "/repo") with { AwaitingInput = true });
+            await Assert.That(chat.StatusText).IsEqualTo("Waiting for input");
+            await Assert.That(chat.StatusDot).IsSameReferenceAs(SessionStatusDots.For("Running"));
+
             daemon.Agents.AddOrUpdate(Agent("a1", "claude", hasTerminal: true, repoPath: "/repo") with { Status = "Failed" });
             await Assert.That(chat.StatusText).IsEqualTo("Failed");
             await Assert.That(chat.ModelLabel).IsEqualTo("Default");
@@ -141,7 +146,7 @@ public class ChatComposerTests {
             var time = new FakeTimeProvider();
             var terminal = new TerminalTabViewModel("r1", daemon, factory.Factory, () => new FakeTerminalSurface(), time);
             var chat = new ChatTabViewModel(
-                "r1", daemon, terminal, TranscriptProjection.For("claude"), new RecordingOpener(), time, new FakePermissionService());
+                "r1", daemon, terminal, TranscriptChat.For("claude"), new RecordingOpener(), time, new FakePermissionService());
             daemon.Agents.AddOrUpdate(
                 Agent("r1", "claude", hasTerminal: true, kind: "review-flow") with { FlowRunId = "f1", FlowRole = "reviewer" });
             await (terminal.PendingResolveWorkForTesting ?? Task.CompletedTask);

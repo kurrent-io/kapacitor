@@ -1,6 +1,5 @@
 using System.Text.Json;
 using Capacitor.App.Services;
-using Capacitor.Cli.Core;
 
 namespace Capacitor.App.Tests.Unit;
 

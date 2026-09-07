@@ -25,10 +25,12 @@ internal sealed class AgentActivityClock(TimeProvider time) {
     long    _lastAdvanceTimestamp = time.GetTimestamp();
     ulong   _activitySeq = 1;
     bool    _turnInFlight;
+    bool    _awaitingInput;
+    ulong   _waitGeneration;
     string? _launchStage;
 
-    /// <summary>Starts at 1 on spawn (spec §0) — a freshly-launched agent is never "already idle";
-    /// the daemon's own first report always shows real activity, never a zero-evidence agent.</summary>
+    /// <summary>Starts at 1 on spawn — a freshly-launched agent is never "already idle"; the
+    /// daemon's own first report always shows real activity, never a zero-evidence agent.</summary>
     public ulong ActivitySeq {
         get { lock (_gate) return _activitySeq; }
     }
@@ -39,10 +41,32 @@ internal sealed class AgentActivityClock(TimeProvider time) {
         get { lock (_gate) return _turnInFlight; }
     }
 
+    /// <summary>The agent finished a turn and nothing has been handed to it since — the state a
+    /// user surface renders as "waiting for you". Set on the turn gate's falling edge and by the
+    /// hook relay of a PTY vendor's Stop; cleared on the rising edge, on a delivered input, and by
+    /// the relay of a prompt submit or tool call. Deliberately NOT activity: a flip never moves
+    /// <see cref="ActivitySeq"/> or <see cref="IdleForMs"/>, which the reaper reads.</summary>
+    public bool AwaitingInput {
+        get { lock (_gate) return _awaitingInput; }
+    }
+
+    /// <summary>Fires outside <see cref="_gate"/> on every genuine <see cref="AwaitingInput"/>
+    /// change, with the new value.</summary>
+    public Action<bool>? OnAwaitingInputChanged { get; set; }
+
+    /// <summary>Counts every observed turn end, whether or not it moved the flag: a PTY vendor
+    /// relays only Stop, so a wait nothing cleared sees the next turn end as a second Stop with the
+    /// flag already true. A delivery samples it before writing and clears through
+    /// <see cref="ClearAwaitingInputSince"/>, so a turn that ends while the write is still in
+    /// flight — Codex can complete a turn before the send that started it returns, and a PTY submit
+    /// spray runs for seconds — keeps the wait it began.</summary>
+    public ulong WaitGeneration {
+        get { lock (_gate) return _waitGeneration; }
+    }
+
     /// <summary><c>Starting</c>-only stage stamp (spawned/initialized/session_created/model_set, per
-    /// the ACP handshake — wired in a later task); null once the agent reaches Running. Deliberately
-    /// excluded from the wire's "steady-state capable" group (spec §2) — its absence must never look
-    /// like a lost capability.</summary>
+    /// the ACP handshake); null once the agent reaches Running. Deliberately excluded from the
+    /// wire's "steady-state capable" group — its absence must never look like a lost capability.</summary>
     public string? LaunchStage {
         get { lock (_gate) return _launchStage; }
     }
@@ -116,15 +140,44 @@ internal sealed class AgentActivityClock(TimeProvider time) {
     /// <summary>Turn start/end — also counts as activity, independent of accompanying envelope
     /// traffic.</summary>
     public void SetTurnInFlight(bool value) {
-        bool ended;
+        bool ended, awaitingChanged;
         lock (_gate) {
             ended = _turnInFlight && !value;
             _turnInFlight = value;
+            // Only a genuine falling edge means a turn finished; a gate cleared without ever being
+            // held (a runtime going terminal) says nothing about waiting.
+            var awaiting = value ? false : ended || _awaitingInput;
+            awaitingChanged = awaiting != _awaitingInput;
+            if (ended) _waitGeneration++;
+            _awaitingInput = awaiting;
             AdvanceLocked();
         }
         // Outside the lock, same rule as OnLaunchStageChanged: the callback's send reads this
         // clock's own (independently guarded) properties.
         if (ended) OnTurnEnded?.Invoke();
+        if (awaitingChanged) OnAwaitingInputChanged?.Invoke(!value);
+    }
+
+    /// <summary>The explicit path for sources that see no turn gate: a PTY vendor's hook relay
+    /// and a delivered input. Moves the flag alone — see <see cref="AwaitingInput"/>.</summary>
+    public void SetAwaitingInput(bool value) {
+        bool changed;
+        lock (_gate) {
+            changed = _awaitingInput != value;
+            if (value) _waitGeneration++;
+            _awaitingInput = value;
+        }
+        if (changed) OnAwaitingInputChanged?.Invoke(value);
+    }
+
+    /// <summary>Clears the wait a delivery answered, unless a newer one began since the caller
+    /// sampled <see cref="WaitGeneration"/> — that one is the agent's latest word.</summary>
+    public void ClearAwaitingInputSince(ulong sampledGeneration) {
+        lock (_gate) {
+            if (!_awaitingInput || _waitGeneration != sampledGeneration) return;
+            _awaitingInput = false;
+        }
+        OnAwaitingInputChanged?.Invoke(false);
     }
 
     /// <summary>A handshake stage transition (spawned → initialized → session_created → model_set) —

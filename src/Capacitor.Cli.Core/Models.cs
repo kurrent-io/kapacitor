@@ -986,6 +986,7 @@ public sealed record CurationApplyResponse {
 [JsonSerializable(typeof(CliProjectError))]
 [JsonSerializable(typeof(List<WorkItems.SessionWorkItemAssignmentDto>))]
 [JsonSerializable(typeof(WorkItems.WorkItemTopologyDto))]
+[JsonSerializable(typeof(WorkItems.WorkItemDto))]
 [JsonSerializable(typeof(WorkItems.SessionSummaryDto))]
 [JsonSerializable(typeof(WorkItems.WorkItemErrorDto))]
 [JsonSerializable(typeof(RepositoryPayload))]
@@ -1295,8 +1296,9 @@ public static class AcpEventKind {
     public const string Usage              = "usage";
 
     /// <summary>Daemon-synthesized informational note rendered as system-attributed text (never as
-    /// user or assistant speech) — today emitted only by the ACP reconnect path after a successful
-    /// resume. Additive: a server that predates this kind skips it while still advancing its ack
+    /// user or assistant speech) — emitted by the ACP reconnect path after a successful resume and
+    /// by the chat's Claude display rules for a finished-background-task record. Additive: a server
+    /// that predates this kind skips it while still advancing its ack
     /// cursor (verified against <c>CapacitorHub.AcpSessionEvents</c>'s unrecognised-Kind branch), so
     /// a newer daemon degrades to log-only rather than wedging the forwarder.</summary>
     public const string SystemNote         = "system_note";
@@ -1317,6 +1319,33 @@ public static class AcpEventKind {
     /// existing additive folds (session totals, per-model attribution, cost) count them unchanged. An
     /// older server treats it as an unrecognised Kind (dropped, cursor still advances).</summary>
     public const string TokenUsage         = "token_usage";
+}
+
+/// <summary>
+/// The vendor-neutral vocabulary for <see cref="AcpEventEnvelope.ToolKind"/> — the ACP
+/// <c>ToolKind</c> tokens, which ACP vendors already put on the wire and the other vendors' lanes map
+/// their raw tool names onto. Closed set: a consumer may switch on these ten and need no per-vendor
+/// name table.
+/// </summary>
+public static class AcpToolKind {
+    public const string Read       = "read";
+    public const string Edit       = "edit";
+    public const string Delete     = "delete";
+    public const string Move       = "move";
+    public const string Search     = "search";
+    public const string Execute    = "execute";
+    public const string Think      = "think";
+    public const string Fetch      = "fetch";
+    public const string SwitchMode = "switch_mode";
+    public const string Other      = "other";
+
+    /// <summary>Maps an agent-supplied kind onto the closed set: a recognised token passes through,
+    /// anything else present becomes <see cref="Other"/>, and an absent one stays null. Null is what
+    /// tells a consumer no lane classified this call — never that the call was none-of-the-above.</summary>
+    public static string? Normalize(string? kind) =>
+        string.IsNullOrWhiteSpace(kind)                                                                        ? null
+        : kind is Read or Edit or Delete or Move or Search or Execute or Think or Fetch or SwitchMode or Other ? kind
+        : Other;
 }
 
 /// <summary>
@@ -1351,6 +1380,12 @@ public readonly record struct AcpEventEnvelope(
         string? ToolCallId        = null,
         string? ToolName          = null,
         string? ToolInputJson     = null, // JSON object string
+
+        // The vendor-neutral counterpart of ToolName: one of AcpToolKind's tokens, or null when the
+        // producing lane classifies nothing. ToolName stays raw vendor fidelity — a consumer that
+        // needs to know what a call DID reads this instead of keeping its own name table. Additive
+        // and nullable, so ContractVersion stays 1.
+        string? ToolKind          = null,
 
         // tool_result
         string? ToolResult        = null,
