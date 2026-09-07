@@ -169,6 +169,40 @@ public class ServerConnectionServiceTests {
         await Next(lane.Status, s => s.State == ServerLaneState.Connected);
     }
 
+    // Each connect attempt's token provider calls are: SignalR's own two internal reads
+    // (negotiate + transport, resolved fast so hub.StartAsync completes normally), then
+    // DiagnoseAsync's own third read, gated so the park below deterministically lands while that
+    // continuation is still pending. The per-attempt counter resets on every Connecting so a
+    // retry (should one happen under load) re-fast-paths its own first two reads rather than
+    // inheriting a stale count from an earlier attempt.
+    [Test]
+    public async Task ParkSignedOutDuringAnInFlightConnectDiscardsTheRacingConnectedPublish() {
+        var attemptCallIndex = 0;
+        var gate = new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var host = await HubTestHost.StartAsync();
+        await using var lane = new ServerConnectionService(host.Url, () => {
+            var n = Interlocked.Increment(ref attemptCallIndex);
+            return n <= 2 ? Task.FromResult<string?>(null) : gate.Task;
+        });
+        using var attemptReset = lane.Status
+            .Where(s => s.State == ServerLaneState.Connecting)
+            .Subscribe(_ => Interlocked.Exchange(ref attemptCallIndex, 0));
+        lane.Start();
+
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        while (Volatile.Read(ref attemptCallIndex) < 3) {
+            if (DateTime.UtcNow > deadline) throw new TimeoutException("DiagnoseAsync's token read was never reached");
+            await Task.Delay(5);
+        }
+
+        lane.ParkSignedOut();
+        gate.SetResult(null); // release DiagnoseAsync — its Connected publish must be discarded
+
+        await Task.Delay(200); // give the racing Connected publish, if any, time to (wrongly) land
+        var latest = await lane.Status.Take(1).ToTask();
+        await Assert.That(latest.State).IsEqualTo(ServerLaneState.SignedOut);
+    }
+
     [Test]
     public async Task UnauthorizedIsDetectedAnywhereInTheExceptionChain() {
         var wrapped = new InvalidOperationException(

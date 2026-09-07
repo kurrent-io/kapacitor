@@ -30,8 +30,14 @@ public sealed class ServerConnectionService : IServerLane, ILaunchClient, IAsync
     readonly Subject<LaunchFailure> _launchFailures = new();
     readonly SemaphoreSlim _restartGate = new(1, 1);
     // Guards a Connected publish's hub-is-current-and-still-connected check against the
-    // Reconnecting handler's own publish, so the two can never interleave.
+    // Reconnecting handler's own publish, and against _publishEpoch, so none of the three can
+    // interleave.
     readonly Lock _statusLock = new();
+    // Bumped whenever a park (ParkSignedOut or the negotiate-401 catch) publishes SignedOut. A
+    // Connected publish captures the epoch before it starts connecting and only fires if the
+    // epoch is still current — otherwise a park mid-connect (mid-DiagnoseAsync, say) would be
+    // silently overwritten by the connect attempt that raced it.
+    int _publishEpoch;
     readonly CancellationTokenSource _lifetime = new();
     CancellationTokenSource? _loopCts;
     Task _loop = Task.CompletedTask;
@@ -65,7 +71,10 @@ public sealed class ServerConnectionService : IServerLane, ILaunchClient, IAsync
     /// hits a 401 the hub connection itself never saw. RestartAsync (wired to sign-in completion)
     /// is what revives it.
     public void ParkSignedOut() {
-        lock (_statusLock) _status.OnNext(new(ServerLaneState.SignedOut));
+        lock (_statusLock) {
+            _publishEpoch++;
+            _status.OnNext(new(ServerLaneState.SignedOut));
+        }
         _loopCts?.Cancel();
     }
 
@@ -103,15 +112,19 @@ public sealed class ServerConnectionService : IServerLane, ILaunchClient, IAsync
                     return Task.CompletedTask;
                 };
                 hub.Reconnected += async _ => {
+                    int reconnectEpoch;
+                    lock (_statusLock) reconnectEpoch = _publishEpoch;
                     var (diagnostic, subject) = await DiagnoseAsync().ConfigureAwait(false);
-                    PublishConnectedIfCurrent(capturedHub, diagnostic, subject);
+                    PublishConnectedIfCurrent(capturedHub, reconnectEpoch, diagnostic, subject);
                 };
 
+                int connectEpoch;
+                lock (_statusLock) connectEpoch = _publishEpoch;
                 await hub.StartAsync(ct).ConfigureAwait(false);
                 _hub = hub;
                 attempt = 0;
                 var (connectedDiagnostic, connectedSubject) = await DiagnoseAsync().ConfigureAwait(false);
-                PublishConnectedIfCurrent(capturedHub, connectedDiagnostic, connectedSubject);
+                PublishConnectedIfCurrent(capturedHub, connectEpoch, connectedDiagnostic, connectedSubject);
 
                 Exception? closeReason;
                 await using (ct.Register(() => closed.TrySetResult(null)))
@@ -125,7 +138,10 @@ public sealed class ServerConnectionService : IServerLane, ILaunchClient, IAsync
                 // The credential is what kcap login repairs, not this loop — retrying a 401
                 // negotiate forever would just burn the backoff ladder for no reason. The lane
                 // parks here until RestartAsync (wired to sign-in completion) starts a fresh loop.
-                _status.OnNext(new(ServerLaneState.SignedOut, ex.Message));
+                lock (_statusLock) {
+                    _publishEpoch++;
+                    _status.OnNext(new(ServerLaneState.SignedOut, ex.Message));
+                }
                 return;
             } catch (Exception ex) {
                 _status.OnNext(new(ServerLaneState.Retrying, ex.Message));
@@ -152,14 +168,15 @@ public sealed class ServerConnectionService : IServerLane, ILaunchClient, IAsync
         return hub;
     }
 
-    /// Publishes Connected only when `hub` is still the live one AND actually connected at
-    /// publish time — the awaited DiagnoseAsync above can outlast a close that already moved the
-    /// lane to Retrying/SignedOut or a fresh reconnect, and publishing anyway would let a stale
-    /// Connected reach downstream DistinctUntilChanged and swallow the real transition that
-    /// followed it. Locked against the Reconnecting handler so the two can never interleave.
-    void PublishConnectedIfCurrent(HubConnection hub, string? diagnostic, string? subject) {
+    /// Publishes Connected only when `hub` is still the live one, actually connected at publish
+    /// time, AND no park (ParkSignedOut or a negotiate 401) has published SignedOut since `epoch`
+    /// was captured — the awaited DiagnoseAsync above can outlast any of the three, and
+    /// publishing anyway would either let a stale Connected reach downstream DistinctUntilChanged
+    /// and swallow the real transition that followed it, or silently overwrite a park. Locked
+    /// against the Reconnecting handler and against a park so none of the three can interleave.
+    void PublishConnectedIfCurrent(HubConnection hub, int epoch, string? diagnostic, string? subject) {
         lock (_statusLock) {
-            if (ReferenceEquals(_hub, hub) && hub.State == HubConnectionState.Connected)
+            if (epoch == _publishEpoch && ReferenceEquals(_hub, hub) && hub.State == HubConnectionState.Connected)
                 _status.OnNext(new(ServerLaneState.Connected, Diagnostic: diagnostic, Subject: subject));
         }
     }
