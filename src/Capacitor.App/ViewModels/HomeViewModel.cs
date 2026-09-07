@@ -841,6 +841,18 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
     }
 
     void RecordPendingLaunch(string agentId) {
+        // A directory row for this id can already exist here — the launch succeeded before this
+        // method ever ran. Checked FIRST and returned on: a failure buffered for this same id
+        // (the race where it arrived while the invoke above was still in flight) must never
+        // render once the row itself already confirms success, however it got buffered.
+        if (RowExists(agentId)) {
+            lock (_launchTrackingLock) {
+                _pendingLaunches.Remove(agentId);
+                _recentFailures.Remove(agentId);
+            }
+            return;
+        }
+
         string? bufferedReason = null;
         lock (_launchTrackingLock) {
             _pendingLaunches[agentId] = DateTime.UtcNow;
@@ -853,15 +865,6 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
             }
         }
         if (bufferedReason is not null) StartError = FriendlyLaunchFailure(bufferedReason);
-
-        // A directory row for this id can already exist here — the launch succeeded before this
-        // method ever ran. Confirm it now, the same as ConfirmPendingRows would for a row that
-        // arrives later, so a stale buffered failure can never surface for it afterward.
-        if (RowExists(agentId))
-            lock (_launchTrackingLock) {
-                _pendingLaunches.Remove(agentId);
-                _recentFailures.Remove(agentId);
-            }
     }
 
     // Directory keys preserve the row's incoming id spelling (e.g. a dashed Guid never becomes

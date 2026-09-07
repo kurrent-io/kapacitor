@@ -1271,4 +1271,46 @@ public class HomeViewModelTests {
             await Assert.That(vm.StartError).IsNull();
         });
     }
+
+    /// Adds the directory row AND pushes a LaunchFailure for the same id before StartAsync's own
+    /// invoke returns — RecordPendingLaunch must confirm the row and discard the buffered failure
+    /// without ever rendering it, whichever order its own two checks run in.
+    sealed class RowAndFailureBeforeReturnLaunchClient : ILaunchClient {
+        public required FakeDaemonClientService Daemon { get; init; }
+        public required Subject<LaunchFailure> Failures { get; init; }
+        public required string AgentId { get; init; }
+        public required string Reason { get; init; }
+
+        public Task<LaunchOutcome> StartAsync(LaunchRequest request, CancellationToken ct) {
+            Daemon.Agents.AddOrUpdate(Agent(AgentId, request.RepoPath));
+            Failures.OnNext(new LaunchFailure(AgentId, Reason));
+            return Task.FromResult(new LaunchOutcome(true, AgentId, null));
+        }
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task ARowPresentAndABufferedFailureBeforeReturnNeverRendersTheFailure() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            using var tmp = TempDir.WithPathTo("app-state.json", out var path);
+            var daemon = new FakeDaemonClientService();
+            Connect(daemon);
+            var failures = new Subject<LaunchFailure>();
+            var launch = new RowAndFailureBeforeReturnLaunchClient {
+                Daemon = daemon, Failures = failures, AgentId = "agent-9",
+                Reason = "launch_denied_by_owner: default",
+            };
+            using var directory = new AgentDirectory(
+                daemon, new FakeRemoteAgents(), new FakeServerLane(), new RepoIdentityResolver(_ => null),
+                p => p, null, null);
+            using var vm = new HomeViewModel(
+                daemon, new AppStateStore(path), launch, Known(),
+                launchFailures: failures, directory: directory);
+
+            await vm.SelectRepositoryAsync("/repo/a");
+            await vm.StartCommand.Execute();
+
+            await Assert.That(vm.StartError).IsNull();
+        });
+    }
 }
