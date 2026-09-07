@@ -66,13 +66,16 @@
                  version, server, agent count) one hover away rather than a block of chrome. -->
             <Border DockPanel.Dock="Bottom" BorderThickness="0,1,0,0" BorderBrush="{StaticResource KcapBorderBrush}">
                 <ToolTip.Tip>
-                    <StackPanel Spacing="3">
+                    <StackPanel Spacing="3" MaxWidth="260">
                         <StackPanel Orientation="Horizontal" Spacing="6">
                             <TextBlock Text="{Binding DaemonName}" FontWeight="Bold" />
                             <TextBlock Text="{Binding VersionDisplay}" />
                         </StackPanel>
                         <TextBlock Text="{Binding ServerUrl}" />
                         <TextBlock Text="{Binding AgentCountText}" />
+                        <TextBlock Text="{Binding ServerLaneTip}" TextWrapping="Wrap"
+                                   Foreground="{StaticResource KcapWarningBrush}"
+                                   IsVisible="{Binding ServerLaneTip, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
                     </StackPanel>
                 </ToolTip.Tip>
                 <DockPanel Margin="16,10,16,14" Background="Transparent">

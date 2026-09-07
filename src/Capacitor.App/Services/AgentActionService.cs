@@ -33,16 +33,22 @@ public sealed class AgentActionService {
     /// UI glue (a dialog Window) — this service only awaits it, never marshals to the UI thread
     /// itself; that is the caller's job (App.axaml.cs, via Dispatcher.UIThread.InvokeAsync).
     /// </param>
+    /// <param name="fallbackServerUrl">
+    /// OpenInWeb's server URL before any local snapshot has ever arrived — a remote row with the
+    /// local daemon down otherwise has no ServerUrl to build a link from. Null keeps today's
+    /// behavior for every caller without a resolved profile.
+    /// </param>
     public AgentActionService(
             ILocalControlOps ops, IAppNotifier notifier, IUrlOpener opener,
             IObservable<DaemonStatusDto> snapshots, CancellationToken shutdownToken,
-            Func<string, Task<bool>> confirmForceStop) {
+            Func<string, Task<bool>> confirmForceStop, string? fallbackServerUrl = null) {
         _ops = ops;
         _notifier = notifier;
         _opener = opener;
         _shutdownToken = shutdownToken;
         _confirmForceStop = confirmForceStop;
         _stopsInFlight = new BehaviorSubject<IReadOnlySet<string>>(_inFlight);
+        _serverUrl = fallbackServerUrl;
 
         // Held for the service's lifetime, same as TrayViewModel's constructor-scoped
         // subscriptions — this service is a singleton for the app's lifetime, never disposed

@@ -8,6 +8,8 @@ using Capacitor.App.Services.Mutation;
 using Capacitor.App.ViewModels;
 using Capacitor.App.Views;
 using Capacitor.Cli.Core.LocalIpc;
+using Capacitor.Remote.Models;
+using DynamicData;
 using TUnit.Assertions.Enums;
 using AppUnderTest = Capacitor.App.App;
 using Capacitor.Cli.Core;
@@ -58,6 +60,43 @@ public class AppStartupTests {
     static (AgentActionService Actions, IAppNotifier Notifier) NewActions(FakeDaemonClientService service) {
         var notifier = new AppNotifier();
         return (new AgentActionService(new ScriptedLocalControlOps(), notifier, new RecordingOpener(), service.SnapshotsSubject, CancellationToken.None, NeverConfirm.Confirm), notifier);
+    }
+
+    /// Task 13: BuildAndShowMainWindow's new directory/remoteAgents/lane parameters must actually
+    /// reach Home/Rail/the footer, not just compile — a fallback that silently rebuilt its own
+    /// local-only AgentDirectory (the placeholder this task replaces) would leave the window
+    /// looking identical for every LOCAL assertion, so this pins two REMOTE-only signals: the
+    /// lane's own diagnostic (ServerLaneTip) and a remote-only row (never producible by the
+    /// NoRemoteAgents/NoServerLane fallback) reaching the rail's hosted count.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task BuildAndShowMainWindow_threads_the_injected_directory_and_lane_through() {
+        var (tip, hostedText) = await AvaloniaSession.DispatchAsync(() => {
+            var service = new FakeDaemonClientService();
+            var (actions, notifier) = NewActions(service);
+            var remoteAgents = new FakeRemoteAgents();
+            remoteAgents.Cache.AddOrUpdate(new AgentInstanceDto { AgentId = "r1", Status = "Running" });
+            var lane = new FakeServerLane();
+            lane.StatusSubject.OnNext(new ServerLaneStatus(ServerLaneState.Connected, Diagnostic: "diagnostic-marker"));
+            var directory = new AgentDirectory(
+                service, remoteAgents, lane, new RepoIdentityResolver(_ => null), p => p,
+                localMachineId: null, appServerUrl: null);
+
+            var window = AppUnderTest.BuildAndShowMainWindow(
+                service, Config.Root, actions, notifier, new FakeTicker(), CancellationToken.None, TestActivity.New(),
+                new NeverLaunchClient(), directory: directory, remoteAgents: remoteAgents, lane: lane);
+            Dispatcher.UIThread.RunJobs(); // ReactiveWindow<T>'s Loaded->Activator.Activate() wiring
+
+            var vm = (MainWindowViewModel)window.DataContext!;
+            var result = (vm.ServerLaneTip, vm.Rail?.HostedText);
+
+            window.Close();
+            Dispatcher.UIThread.RunJobs();
+            return result;
+        });
+
+        await Assert.That(tip).IsEqualTo("diagnostic-marker");
+        await Assert.That(hostedText).IsEqualTo("1 hosted");
     }
 
     /// Regression coverage for a P2 bug found in review: the startup catch used to write to
