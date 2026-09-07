@@ -582,6 +582,74 @@ public class PluginCommandCodexInstallIntegrationTests {
         await Assert.That(toml).Contains("[mcp_servers.kcap-memory]");
     }
 
+    /// <summary>A refresh with current hooks still adds the kcap servers the last full install
+    /// predates, and touches nothing else: the legacy entries stay unclaimed and hooks.json is
+    /// not rewritten.</summary>
+    [Test]
+    public async Task InstallCodex_if_installed_registers_missing_mcp_servers_when_hooks_are_current() {
+        using var fakeHome = new TempDir();
+        var configPath = SeedCodexConfigWithKcapServers(fakeHome.GetResolvedPath());
+        var codexDir   = fakeHome.CreateDir(".codex");
+        var hooksPath  = codexDir.CreateFile("hooks.json", """{"sentinel": "must-survive"}""");
+        codexDir.CreateFile(CodexHooksInstaller.MarkerFileName, CapacitorVersion.Current());
+
+        var exit = await new PluginCommand(TestEnv(fakeHome.GetResolvedPath())).HandleAsync(
+            ["plugin", "install", "--codex", "--if-installed"]);
+        await Assert.That(exit).IsEqualTo(0);
+
+        var toml = await File.ReadAllTextAsync(configPath);
+        await Assert.That(toml).Contains("[mcp_servers.kcap-flows]");
+        await Assert.That(toml).Contains("[mcp_servers.kcap-workitems]");
+        await Assert.That(toml).Contains("[mcp_servers.kcap-analytics]");
+        await Assert.That(toml).Contains("[mcp_servers.my-tool]");
+        // Both sides normalized: a Windows checkout gives the literal CRLF, the TOML writer emits LF.
+        await Assert.That(toml.ReplaceLineEndings("\n")).Contains("""
+            [mcp_servers.kcap-review]
+            command = "kcap"
+            """.ReplaceLineEndings("\n"));
+
+        var hooks = JsonNode.Parse(await File.ReadAllTextAsync(hooksPath))!.AsObject();
+        await Assert.That(hooks["sentinel"]!.GetValue<string>()).IsEqualTo("must-survive");
+    }
+
+    [Test]
+    public async Task InstallCodex_if_installed_registers_missing_mcp_servers_after_refreshing_stale_hooks() {
+        using var fakeHome = new TempDir();
+        var configPath = SeedCodexConfigWithKcapServers(fakeHome.GetResolvedPath());
+        var hooksPath  = fakeHome.PathTo(".codex", "hooks.json");
+        PluginCommand.InstallCodexHooks(hooksPath);
+        CodexHooksInstaller.DeleteMarker(hooksPath);
+
+        var exit = await new PluginCommand(TestEnv(fakeHome.GetResolvedPath())).HandleAsync(
+            ["plugin", "install", "--codex", "--if-installed"]);
+        await Assert.That(exit).IsEqualTo(0);
+
+        await Assert.That(CodexHooksInstaller.ReadMarker(hooksPath)).IsEqualTo(CapacitorVersion.Current());
+        var toml = await File.ReadAllTextAsync(configPath);
+        await Assert.That(toml).Contains("[mcp_servers.kcap-flows]");
+    }
+
+    /// <summary>The opt-in gate stays ahead of the healing: a user who never installed the Codex
+    /// integration gets no MCP entries from a refresh.</summary>
+    [Test]
+    public async Task InstallCodex_if_installed_leaves_config_toml_alone_when_never_installed() {
+        using var fakeHome = new TempDir();
+        var codexDir   = fakeHome.CreateDir(".codex");
+        var configPath = codexDir.CreateFile("config.toml", """
+            [mcp_servers.my-tool]
+            command = "my-tool"
+            args = ["serve"]
+            """);
+
+        var exit = await new PluginCommand(TestEnv(fakeHome.GetResolvedPath())).HandleAsync(
+            ["plugin", "install", "--codex", "--if-installed"]);
+        await Assert.That(exit).IsEqualTo(0);
+
+        var toml = await File.ReadAllTextAsync(configPath);
+        await Assert.That(toml).DoesNotContain("kcap-flows");
+        await Assert.That(File.Exists(codexDir.PathTo("hooks.json"))).IsFalse();
+    }
+
     [Test]
     public async Task RemoveCodex_user_scope_preserves_unowned_manual_mcp_servers() {
         using var fakeHome = new TempDir();
