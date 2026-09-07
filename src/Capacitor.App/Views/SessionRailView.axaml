@@ -176,17 +176,21 @@
                                                                                 <Ellipse Grid.Column="0" Width="7" Height="7" Fill="{Binding StatusDot}"
                                                                                          VerticalAlignment="Top" Margin="0,4,0,0" />
                                                                                 <StackPanel Grid.Column="1" Spacing="2">
-                                                                                    <StackPanel Orientation="Horizontal" Spacing="0">
-                                                                                        <TextBlock Text="{Binding Primary}" FontSize="13" LineHeight="18"
+                                                                                    <!-- Star column bounds the title so CharacterEllipsis can actually
+                                                                                         trim it; a horizontal StackPanel gives Primary unbounded width
+                                                                                         and CharacterEllipsis never engages, badge or no badge. -->
+                                                                                    <Grid ColumnDefinitions="*,Auto">
+                                                                                        <TextBlock Grid.Column="0" Text="{Binding Primary}" FontSize="13" LineHeight="18"
                                                                                                    Foreground="{StaticResource KcapTextBrush}"
                                                                                                    TextTrimming="CharacterEllipsis" />
-                                                                                        <Border IsVisible="{Binding MachineBadge, Converter={x:Static ObjectConverters.IsNotNull}}"
+                                                                                        <Border Grid.Column="1"
+                                                                                                IsVisible="{Binding MachineBadge, Converter={x:Static ObjectConverters.IsNotNull}}"
                                                                                                 Background="{StaticResource KcapSurfaceRaisedBrush}"
                                                                                                 CornerRadius="3" Padding="4,0" Margin="6,0,0,0" VerticalAlignment="Center">
                                                                                             <TextBlock Text="{Binding MachineBadge}" FontSize="10"
                                                                                                        Foreground="{StaticResource KcapFaintBrush}" />
                                                                                         </Border>
-                                                                                    </StackPanel>
+                                                                                    </Grid>
                                                                                     <TextBlock Text="{Binding Sub}" FontSize="11"
                                                                                                Foreground="{StaticResource KcapFaintBrush}"
                                                                                                TextTrimming="CharacterEllipsis" />
