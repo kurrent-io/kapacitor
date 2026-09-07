@@ -5,6 +5,7 @@ using Capacitor.App.ViewModels;
 using Capacitor.Cli.Core.LocalIpc;
 using Capacitor.Remote.Models;
 using DynamicData;
+using ReactiveUI;
 
 namespace Capacitor.App.Tests.Unit;
 
@@ -1450,6 +1451,43 @@ public class HomeViewModelTests {
             await vm.StartCommand.Execute();
 
             await Assert.That(vm.StartError).IsNull();
+        });
+    }
+
+    /// The daemon lifecycle feed speaks for the LOCAL machine, so it may pre-empt the connection
+    /// notice only while local is selected: under a healthy remote pick it must yield, and it must
+    /// come back the moment the selection does.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task ALocalStartMessageBannerYieldsToARemoteSelection() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            using var tmp = TempDir.WithPathTo("app-state.json", out var path);
+            const string startMessageText = "App and daemon are incompatible.";
+            var daemon = new FakeDaemonClientService();
+            daemon.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "not running", null));
+            var remote = new FakeRemoteAgents();
+            remote.DaemonsSubject.OnNext([
+                new DaemonInfo { Name = "home-pc", OwnerUserId = "u1", Connected = true, RepoPaths = ["/w/repo"] },
+            ]);
+            var lane = new FakeServerLane();
+            using var vm = new HomeViewModel(
+                daemon, new AppStateStore(path), new RecordingLaunchClient(), Known(),
+                daemons: remote.Daemons, viewerId: _ => Task.FromResult<string?>("u1"), laneStatus: lane.Status);
+            using var startMessage = new BehaviorSubject<string?>(startMessageText);
+            vm.AttachDaemonRecovery(
+                ReactiveCommand.Create(() => { }), ReactiveCommand.Create(() => { }),
+                Observable.Return(true), Observable.Return(false), startMessage);
+
+            await Assert.That(vm.BannerMessage).IsEqualTo(startMessageText);
+
+            lane.StatusSubject.OnNext(new ServerLaneStatus(ServerLaneState.Connected));
+            await vm.SelectMachineAsync("home-pc", isLocal: false);
+
+            await Assert.That(vm.BannerMessage).IsNull();
+            await Assert.That(vm.ConnectionBannerVisible).IsFalse();
+
+            await vm.SelectMachineAsync(daemon.DaemonName, isLocal: true);
+            await Assert.That(vm.BannerMessage).IsEqualTo(startMessageText);
         });
     }
 }

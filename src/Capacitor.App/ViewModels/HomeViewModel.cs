@@ -426,7 +426,12 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
         _connectionNotice = notices
             .ToProperty(this, x => x.ConnectionNotice, ConnectingNotice)
             .DisposeWith(_disposables);
-        var bannerMessages = notices.CombineLatest(_daemonStartMessageFeed, BannerMessageFor);
+        // The lifecycle feed speaks for the LOCAL daemon (start attempts, version mismatch), so it
+        // may only pre-empt the notice while the local machine is the selected one — under a remote
+        // selection its banner would outrank a healthy remote's own (absent) notice.
+        var bannerMessages = notices.CombineLatest(
+            _daemonStartMessageFeed, _machineSelectionChanges,
+            (notice, startMessage, sel) => BannerMessageFor(notice, sel.Remote ? null : startMessage));
         _bannerMessage = bannerMessages
             .ToProperty(this, x => x.BannerMessage, ConnectingNotice)
             .DisposeWith(_disposables);
