@@ -34,14 +34,17 @@ public class ReviewerCertificationArmTests {
 
     // ...but a genuine swap must still be caught, or the relaxation above would gut the arm.
     // In-range on purpose: an out-of-range replacement is the range arm's business (above), so this
-    // pins the swap arm specifically.
-    [Test] public async Task A_genuine_in_range_cli_swap_is_still_rejected() {
+    // pins the swap arm specifically. The remedy is a retry: the rejection itself re-advertises the
+    // installed version, and a restart would tear down every hosted agent for nothing.
+    [Test] public async Task A_genuine_in_range_cli_swap_is_rejected_with_a_retry_remedy() {
         var (ok, reason) = AgentOrchestrator.EvaluateReviewerCertification(
             "claude", "2.9.9", Conn, Cert(expectedCliVersion: "2.1.212"));
 
         await Assert.That(ok).IsFalse();
         await Assert.That(reason).Contains("2.1.212");
-        await Assert.That(reason).Contains("restart the daemon");
+        await Assert.That(reason).Contains("2.9.9");
+        await Assert.That(reason).Contains("retry the flow");
+        await Assert.That(reason).DoesNotContain("restart");
     }
 
     // A null ADVERTISED version must still fall through to the RANGE check -- that is the real gate,
@@ -72,17 +75,17 @@ public class ReviewerCertificationArmTests {
         await Assert.That(reason).DoesNotContain("restart");      // not the swap remedy
     }
 
-    // Codex review P2 #3: a CLI genuinely replaced with an OUT-OF-RANGE version must be told about
-    // the range, not told to restart -- restarting re-advertises the same out-of-range version, so
-    // that remedy can never work.
-    [Test] public async Task An_out_of_range_replacement_reports_the_range_not_a_restart() {
+    // A CLI genuinely replaced with an OUT-OF-RANGE version must be told about the range, not told
+    // to retry -- the re-advertisement carries the same out-of-range version, so that remedy can
+    // never work.
+    [Test] public async Task An_out_of_range_replacement_reports_the_range_not_a_retry() {
         var (ok, reason) = AgentOrchestrator.EvaluateReviewerCertification(
             "claude", "9.9.9", Conn, Cert(expectedCliVersion: "2.1.212"));
 
         await Assert.That(ok).IsFalse();
         await Assert.That(reason).Contains("outside");
         await Assert.That(reason).Contains(">=2.0.0 <3.0.0");
-        await Assert.That(reason).DoesNotContain("restart the daemon");
+        await Assert.That(reason).DoesNotContain("retry the flow");
     }
 
     // Each arm names ITSELF. The old single message reported the certification revision -- which

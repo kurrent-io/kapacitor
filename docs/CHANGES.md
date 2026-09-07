@@ -6,6 +6,39 @@ diff. `CLAUDE.md` holds the invariants; `docs/superpowers/specs/` holds the full
 Not release notes. Each entry is written as of the change that produced it and is not revised as the
 code moves on; where an entry disagrees with the code, the code wins.
 
+## A vendor update under a running daemon is re-advertised
+
+The vendor CLI version a daemon advertises was a startup probe cached for the process lifetime, and
+reconnects re-sent that cache. When Claude auto-updated under a daemon that had been up for days,
+the next review-flow launch failed the certification's swap arm, and the rejection told the
+operator to restart the daemon: the one action that tears down every hosted agent, on a daemon
+whose idle-gated restart can wait days. The rejection already re-advertised on the live connection
+(a same-connection `DaemonConnect` is an idempotent overwrite that keeps live agents), so the
+remedy was wrong twice over: a retry was enough, and only the first launch after the update was
+ever lost.
+
+**One refresh path, single-flighted.** `AgentOrchestrator.RefreshAdvertisedCapabilities` is the
+only writer of the advertisement while the daemon runs: `VendorCliWatcher` calls it when an
+advertised vendor's binary changes on disk, the certification rejection calls it with a forced
+republish because the server's copy has just proven wrong. The watcher fingerprints the file that
+actually runs — bare command resolved on PATH, symlink chain followed — plus size and mtime,
+because a vendor update is usually a symlink retargeted at a new version directory whose file may
+match the old one's size and land on a coarse clock. Its first baseline is the fingerprint taken
+at startup before the version probe, not the file it finds when the service starts: the probes can
+take the better part of a minute under load, and a vendor updating inside that window would
+otherwise become the baseline while the advertisement still named the old build. A refresh that
+finds nothing changed does not re-register: every registration bumps the slot's connection
+generation, which fails a reviewer launch pinned to the previous one, so a same-version reinstall
+must not cost a launch. The rejection's forced republish is a sticky flag the next pass consumes,
+because a request folded into a running pass reruns that pass's delegate, not its own.
+
+**A failed re-probe keeps the advertised version.** The server reads a null version as the vendor
+being gone, so publishing the probe's null would withdraw a reviewer that was advertised a moment
+ago. `RetainAdvertisedVersions` carries the previous version over a null re-probe; a later launch
+that still disagrees hits the swap arm and forces another refresh. The refresh probes the vendor set
+fixed at startup rather than re-classifying, which is also what `DaemonConnect` sends as the vendor
+list; a vendor withheld at startup for a version floor stays withheld until a restart.
+
 ## The desktop app shows a session waiting for input
 
 The web already marked a session whose turn was over; the desktop app lit its needs-you pip only
