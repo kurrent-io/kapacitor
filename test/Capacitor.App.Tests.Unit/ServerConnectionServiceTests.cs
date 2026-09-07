@@ -53,11 +53,8 @@ public class ServerConnectionServiceTests {
 
     [Test]
     public async Task ColdStartFailureRetriesUntilServerAppears() {
-        // Reserve a port by starting and stopping a host, then start the lane against the dead
-        // URL — it must sit in Retrying, then connect once a server appears... but the OS may
-        // reassign the port. Instead: start lane against a fresh host, kill it, watch Retrying,
-        // then verify the lane recovers when broadcasting resumes is NOT possible on a new port —
-        // so this test pins only: dead server → Retrying with no throw.
+        // Pins only: a cold connect against a dead URL (a started-then-stopped host, so the URL
+        // is real but nothing answers) settles on Retrying, never throwing out of RunAsync.
         await using var host = await HubTestHost.StartAsync();
         var url = host.Url;
         await host.StopAsync();

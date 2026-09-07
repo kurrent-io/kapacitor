@@ -5,8 +5,9 @@ using DynamicData;
 
 namespace Capacitor.App.Services;
 
-/// Local-only stand-in for the composition root until the remote lane is wired (rail
-/// grouping/machine-badge wiring lands in a later task): never reports a remote agent or daemon.
+/// The no-server fallback for a composition root with no live remote lane (most tests, and any
+/// caller that builds its own AgentDirectory without one): never reports a remote agent or
+/// daemon, so the directory it feeds stays a pure mirror of the local daemon.
 internal sealed class NoRemoteAgents : IRemoteAgentsService {
     public IObservableCache<AgentInstanceDto, string> Agents { get; } =
         new SourceCache<AgentInstanceDto, string>(a => a.AgentId).AsObservableCache();
