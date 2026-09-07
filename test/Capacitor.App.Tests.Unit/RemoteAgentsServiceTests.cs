@@ -81,8 +81,8 @@ public class RemoteAgentsServiceTests {
         await Eventually(() => seen is { Count: 0 });
     }
 
-    // Pins the P1 fix: a fetch started under u1 that is still gated when u2's identity-change
-    // clear lands must never repopulate the cache the clear just emptied.
+    // A fetch started under u1 that is still gated when u2's identity-change clear lands must
+    // never repopulate the cache the clear just emptied.
     [Test]
     public async Task StaleFetchCompletingAfterIdentityChangeIsDiscarded() {
         var callCount = 0;
@@ -153,8 +153,8 @@ public class RemoteAgentsServiceTests {
         await Assert.That(Volatile.Read(ref callCount)).IsEqualTo(2);
     }
 
-    // Pins finding 4a: an Unauthorized fetch must invoke onUnauthorized, once per occurrence,
-    // without disturbing whatever rows the cache already holds.
+    // An Unauthorized fetch must invoke onUnauthorized, once per occurrence, without disturbing
+    // whatever rows the cache already holds.
     [Test]
     public async Task UnauthorizedFetchInvokesTheCallbackAndLeavesTheCacheUntouched() {
         var unauthorizedCalls = 0;
@@ -175,5 +175,58 @@ public class RemoteAgentsServiceTests {
         lane.AgentsChangedSubject.OnNext(System.Reactive.Unit.Default);
         await Eventually(() => Volatile.Read(ref unauthorizedCalls) == 1);
         await Assert.That(svc.Agents.Count).IsEqualTo(1);
+    }
+
+    // An Unauthorized completion from a fetch issued under the OLD identity must never park the
+    // NEW (healthy) lane — the generation bump on the u2 connect makes u1's fetch obsolete for
+    // the callback exactly as it already is for the cache publish.
+    [Test]
+    public async Task StaleUnauthorizedAfterIdentityChangeDoesNotParkTheNewLane() {
+        var parkCalls = 0;
+        var callCount = 0;
+        var gate = new TaskCompletionSource<RemoteFetch>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var lane = new FakeServerLane();
+        using var svc = new RemoteAgentsService(lane, async _ => {
+            var n = Interlocked.Increment(ref callCount);
+            return n == 1 ? await gate.Task : new RemoteFetch([Agent("a2")]);
+        }, TimeSpan.Zero, onUnauthorized: () => Interlocked.Increment(ref parkCalls));
+
+        lane.StatusSubject.OnNext(new(ServerLaneState.Connected, Subject: "u1")); // fetch #1 in flight
+        await Eventually(() => Volatile.Read(ref callCount) == 1);
+
+        lane.StatusSubject.OnNext(new(ServerLaneState.Connected, Subject: "u2")); // generation bump
+
+        gate.SetResult(new RemoteFetch(null, Unauthorized: true)); // u1's stale Unauthorized lands late
+
+        await Task.Delay(150); // give the stale completion a chance to (wrongly) park
+        await Assert.That(Volatile.Read(ref parkCalls)).IsEqualTo(0);
+    }
+
+    // A same-subject reconnect still bumps the generation (a fresh connect, even under the same
+    // identity, supersedes anything issued before it), so a pre-reconnect fetch's stale
+    // Unauthorized never parks — but a fetch issued after the reconnect still does.
+    [Test]
+    public async Task StaleUnauthorizedAcrossASameSubjectReconnectDoesNotParkButAFreshOneDoes() {
+        var parkCalls = 0;
+        var callCount = 0;
+        var gate = new TaskCompletionSource<RemoteFetch>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var lane = new FakeServerLane();
+        using var svc = new RemoteAgentsService(lane, async _ => {
+            var n = Interlocked.Increment(ref callCount);
+            return n == 1 ? await gate.Task : new RemoteFetch(null, Unauthorized: true);
+        }, TimeSpan.Zero, onUnauthorized: () => Interlocked.Increment(ref parkCalls));
+
+        lane.StatusSubject.OnNext(new(ServerLaneState.Connected, Subject: "u1")); // fetch #1 in flight
+        await Eventually(() => Volatile.Read(ref callCount) == 1);
+
+        lane.StatusSubject.OnNext(new(ServerLaneState.Connected, Subject: "u1")); // same-subject reconnect
+
+        gate.SetResult(new RemoteFetch(null, Unauthorized: true)); // pre-reconnect fetch's stale Unauthorized
+
+        await Task.Delay(150);
+        await Assert.That(Volatile.Read(ref parkCalls)).IsEqualTo(0);
+
+        lane.AgentsChangedSubject.OnNext(System.Reactive.Unit.Default); // a fresh post-reconnect fetch
+        await Eventually(() => Volatile.Read(ref parkCalls) == 1);
     }
 }

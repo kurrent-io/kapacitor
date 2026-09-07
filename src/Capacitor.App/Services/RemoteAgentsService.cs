@@ -28,12 +28,12 @@ public sealed class RemoteAgentsService : IRemoteAgentsService, IDisposable {
     readonly SourceCache<AgentInstanceDto, string> _agents = new(a => a.AgentId);
     readonly BehaviorSubject<IReadOnlyList<DaemonInfo>> _daemons = new([]);
     readonly IDisposable _subscriptions;
-    // Guards _generation/_lastSubject (so an identity-change clear and a refresh's generation
-    // check can never interleave) and each refresh kind's busy/rerun pair — admission (busy
-    // check / set rerun) and completion (rerun check / clear busy) share this one critical
-    // section, so a losing admission can never land between a drain loop reading rerun false and
-    // clearing busy, which is what leaked a rerun with no worker left under the semaphore this
-    // replaced.
+    // Guards _generation/_lastSubject and each refresh kind's busy/rerun pair. _generation bumps
+    // on every Connected status, not only a subject change, so any fetch issued before the
+    // latest connect is stale for both the cache-publish and the onUnauthorized check below.
+    // Admission (busy check / set rerun) and completion (rerun check / clear busy) share this
+    // same critical section, so a losing admission can never land between a drain loop reading
+    // rerun false and clearing busy.
     readonly Lock _lock = new();
     int _generation;
     string? _lastSubject;
@@ -65,8 +65,8 @@ public sealed class RemoteAgentsService : IRemoteAgentsService, IDisposable {
                     if (_lastSubject is not null && _lastSubject != s.Subject) {
                         _agents.Clear();
                         _daemons.OnNext([]);
-                        _generation++;
                     }
+                    _generation++;
                     _lastSubject = s.Subject;
                 }
             });
@@ -101,16 +101,23 @@ public sealed class RemoteAgentsService : IRemoteAgentsService, IDisposable {
             } catch (Exception) {
                 // Data-plane refresh: a throw here is a missed refresh, never an app fault.
             }
-            if (result is { Unauthorized: true }) _onUnauthorized?.Invoke();
+            var notifyUnauthorized = false;
+            bool rerun;
             lock (_lock) {
-                // A completion from before an identity-change clear must never repopulate what
-                // that clear just emptied — checked under the same lock the clear itself takes.
-                if (result?.Rows is { } rows && generation == _generation)
-                    _agents.EditDiff(rows, EqualityComparer<AgentInstanceDto>.Default);
-                if (_agentsRerun) { _agentsRerun = false; continue; }
-                _agentsBusy = false;
-                return;
+                // A completion from before the latest connect must never repopulate the cache or
+                // report an auth failure a fresher connect may already have superseded — checked
+                // under the same lock a connect's generation bump takes.
+                if (generation == _generation) {
+                    if (result?.Rows is { } rows)
+                        _agents.EditDiff(rows, EqualityComparer<AgentInstanceDto>.Default);
+                    if (result is { Unauthorized: true }) notifyUnauthorized = true;
+                }
+                rerun = _agentsRerun;
+                if (rerun) _agentsRerun = false;
+                else _agentsBusy = false;
             }
+            if (notifyUnauthorized) _onUnauthorized?.Invoke();
+            if (!rerun) return;
         }
     }
 
