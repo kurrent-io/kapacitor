@@ -268,8 +268,14 @@ sealed class McpWorkItemsServer(ConfigRoot config, ProfileContext profiles) {
     /// dashless key the server expects, instead of silently missing the intended session.
     /// </summary>
     internal static string ResolveSessionId(JsonObject? args) {
-        if (args?["session_id"]?.GetValue<string>() is { Length: > 0 } explicitId)
-            return WorkContextIds.CanonicalSessionId(explicitId) ?? throw new ArgumentException(NoSessionIdMessage);
+        if (args?["session_id"] is { } node) {
+            // Shape-tested like RequireString: a number or object here must answer as a field error,
+            // not fall out of the dispatcher as a generic internal failure.
+            if (node is not JsonValue value || !value.TryGetValue<string>(out var explicitId))
+                throw new ArgumentException("'session_id' must be a string.");
+            if (explicitId.Length > 0)
+                return WorkContextIds.CanonicalSessionId(explicitId) ?? throw new ArgumentException(NoSessionIdMessage);
+        }
         if (ArgParsing.ResolveSessionIdFromEnv() is { Length: > 0 } fromEnv) return fromEnv;
 
         throw new ArgumentException(NoSessionIdMessage);

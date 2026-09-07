@@ -172,8 +172,6 @@ public class McpWorkItemsServerTests {
         });
     }
 
-    // ── merge + detach ───────────────────────────────────────────────────────
-
     [Test]
     public async Task Merge_body_carries_the_survivor_under_the_servers_name() {
         var body = McpWorkItemsServer.BuildMergeBody(Args("""{"work_item_id":"wi-dup","into_work_item_id":"wi-keyed"}"""));
@@ -194,6 +192,14 @@ public class McpWorkItemsServerTests {
         var body = McpWorkItemsServer.BuildDetachBody(Args("""{"work_item_id":"wi-1","session_id":"s1"}"""));
 
         await Assert.That(body["session_id"]!.GetValue<string>()).IsEqualTo("s1");
+    }
+
+    [Test]
+    public async Task Detach_body_rejects_a_non_string_session_id_as_a_field_error() {
+        // A wrong-typed explicit session_id must surface as the field's own error, the shape
+        // HandleToolCallAsync relays — not as the dispatcher's generic internal failure.
+        await Assert.That(() => McpWorkItemsServer.BuildDetachBody(Args("""{"work_item_id":"wi-1","session_id":42}""")))
+            .Throws<ArgumentException>().WithMessageContaining("session_id");
     }
 
     [Test]
