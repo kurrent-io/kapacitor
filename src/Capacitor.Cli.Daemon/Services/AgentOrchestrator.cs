@@ -543,6 +543,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     /// <summary>Serialises + coalesces the background capability refresh fired after a certification
     /// rejection. See SingleFlightRefresh for why bare fire-and-forget was unsafe here.</summary>
     readonly SingleFlightRefresh _capabilityRefresh = new();
+    int                          _republishRequested;
 
     // Hosted-agent PTYs are spawned at a fixed size and never resized. The daemon
     // reports these dims to the server right after the agent registers (and on
@@ -1254,13 +1255,18 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     /// <param name="republishUnchanged">Re-register even when the local advertisement already
     /// reads the same, for a caller that knows the server's copy differs.</param>
     internal void RefreshAdvertisedCapabilities(string reason, bool republishUnchanged = false) {
+        // Sticky rather than captured by the delegate: a request folded into a running pass reruns
+        // THAT pass's delegate, which would otherwise carry the earlier caller's answer.
+        if (republishUnchanged) Interlocked.Exchange(ref _republishRequested, 1);
+
         _capabilityRefresh.Trigger(
             async () => {
-                var current = _config.UnattendedVendorCapabilities;
-                var fresh   = DaemonRunner.RetainAdvertisedVersions(current,
+                var republish = Interlocked.Exchange(ref _republishRequested, 0) == 1;
+                var current   = _config.UnattendedVendorCapabilities;
+                var fresh     = DaemonRunner.RetainAdvertisedVersions(current,
                     DaemonRunner.ComputeUnattendedVendorCapabilities(_runtimeFactories.Values, _config, _config.UnattendedVendors));
 
-                if (!republishUnchanged && current is not null && current.SequenceEqual(fresh)) return;
+                if (!republish && current is not null && current.SequenceEqual(fresh)) return;
 
                 _config.UnattendedVendorCapabilities = fresh;
                 LogReAdvertising(_logger, reason,

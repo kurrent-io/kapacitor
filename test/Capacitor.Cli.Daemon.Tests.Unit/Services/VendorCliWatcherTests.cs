@@ -119,6 +119,22 @@ public class VendorCliWatcherTests {
         await Assert.That(h.Refreshes[0]).DoesNotContain("claude");
     }
 
+    // The advertised versions are probed at daemon startup, before this service starts; a vendor
+    // that updates in between must not be taken as the baseline, or the stale advertisement is
+    // never corrected. A fingerprint recorded before the probe wins over the file seen at start.
+    [Test]
+    public async Task A_baseline_recorded_before_the_startup_probe_wins_over_the_file_at_start() {
+        var refreshes = new List<string>();
+        var watcher = VendorCliWatcher.ForTest(
+            [("claude", "/bin/claude")], refreshes.Add, _ => New,
+            baselines: new Dictionary<string, CliBinaryStat?> { ["claude"] = Old });
+        watcher.PrimeBaselines();
+
+        watcher.Tick();
+
+        await Assert.That(refreshes.Count).IsEqualTo(1);
+    }
+
     // The fingerprint follows every link to the file that actually runs: a bare command name is
     // resolved on PATH, and a symlink chain is walked to its final target.
     [Test]
@@ -128,8 +144,8 @@ public class VendorCliWatcherTests {
         var target = tmp.CreateFile("versions/2.1.263/claude", "#!/bin/sh\necho 2.1.263\n");
         if (!OperatingSystem.IsWindows())
             File.SetUnixFileMode(target, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        tmp.CreateDir("bin");
         var link = tmp.PathTo("bin/claude");
-        Directory.CreateDirectory(Path.GetDirectoryName(link)!);
         File.CreateSymbolicLink(link, target);
 
         var stat = VendorCliWatcher.StatCliBinary(link);

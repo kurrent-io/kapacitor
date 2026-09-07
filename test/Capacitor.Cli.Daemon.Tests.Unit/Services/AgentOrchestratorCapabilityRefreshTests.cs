@@ -100,4 +100,22 @@ public class AgentOrchestratorCapabilityRefreshTests {
 
         await Assert.That(server.RegisterDaemonCalls).IsEqualTo(2);
     }
+
+    // The refresh is single-flighted, so a rejection's republish request that lands while a
+    // watcher-triggered pass is running is folded into that pass or its rerun. Folding must not
+    // drop the republish, or the retry the rejection promised meets the same stale server copy.
+    [Test]
+    public async Task A_republish_request_folded_into_a_running_pass_still_re_registers() {
+        var (orch, server, _) = Build(MissingCli, advertised: null);
+        await using var __ = orch;
+
+        orch.RefreshAdvertisedCapabilities("first");
+        await orch.CapabilityRefreshForTest;
+
+        orch.RefreshAdvertisedCapabilities("watcher");
+        orch.RefreshAdvertisedCapabilities("rejection", republishUnchanged: true);
+        await orch.CapabilityRefreshForTest;
+
+        await Assert.That(server.RegisterDaemonCalls).IsEqualTo(2);
+    }
 }

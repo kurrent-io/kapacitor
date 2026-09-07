@@ -1,4 +1,9 @@
+using System.Runtime.Versioning;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Daemon.Services;
+using Capacitor.Cli.Daemon.Tests.Unit.Pty;
+using Capacitor.Cli.Daemon.Tests.Unit.Services;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Capacitor.Cli.Daemon.Tests.Unit;
 
@@ -54,5 +59,27 @@ public class DaemonRunnerCapabilityRefreshTests {
             [Cap("codex", "0.153.0", borrowed: false)], [Cap("codex", null, borrowed: true)]);
 
         await Assert.That(merged.Single()).IsEqualTo(Cap("codex", "0.153.0", borrowed: true));
+    }
+
+    static PtyHostedAgentRuntimeFactory Factory(string vendor, string cliPath) =>
+        new(new SpyHostedAgentLauncher(vendor, cliPath), new SpyPtyProcessFactory(),
+            NullLogger<PtyHostedAgentRuntimeFactory>.Instance);
+
+    // The startup fingerprint is what the watcher compares against, so it must describe the same
+    // file the version probe ran, through the same factory-owned path.
+    [Test]
+    [UnsupportedOSPlatform("windows")]
+    public async Task Startup_fingerprints_describe_each_advertised_vendors_binary() {
+        Skip.Unless(!OperatingSystem.IsWindows(), "The stub binary is a POSIX shell script.");
+        using var tmp = new TempDir();
+        var claude = tmp.CreateFile("claude", "#!/bin/sh\necho 2.1.263\n");
+        if (!OperatingSystem.IsWindows())
+            File.SetUnixFileMode(claude, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+
+        var baselines = DaemonRunner.FingerprintUnattendedVendors(
+            [Factory("claude", claude), Factory("codex", tmp.PathTo("missing-codex"))], ["claude", "codex"]);
+
+        await Assert.That(baselines["claude"]!.Value.ResolvedPath).IsEqualTo(new FileInfo(claude).FullName);
+        await Assert.That(baselines["codex"]).IsNull();
     }
 }

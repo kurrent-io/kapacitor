@@ -605,6 +605,9 @@ public static partial class DaemonRunner {
         var unattendedStatuses = ClassifyUnattendedVendors(runtimeFactories);
 
         config.UnattendedVendors = AdvertisedUnattendedVendors(unattendedStatuses);
+        // Fingerprinted BEFORE the probe: a vendor that updates between the two then reads as a
+        // change to the watcher, instead of as the baseline the stale advertisement already matches.
+        config.UnattendedVendorBaselines = FingerprintUnattendedVendors(runtimeFactories, config.UnattendedVendors);
         config.UnattendedVendorCapabilities =
             ComputeUnattendedVendorCapabilities(runtimeFactories, config, config.UnattendedVendors);
 
@@ -1427,6 +1430,19 @@ public static partial class DaemonRunner {
                 SupportsLaunchPosture: string.Equals(vendor, "codex", StringComparison.Ordinal)));
         }
         return capabilities;
+    }
+
+    /// <summary>Fingerprints each advertised vendor's binary through the factory that launches it —
+    /// the same path the version probe runs. A vendor with no locatable binary maps to null.</summary>
+    internal static IReadOnlyDictionary<string, CliBinaryStat?> FingerprintUnattendedVendors(
+            IEnumerable<IHostedAgentRuntimeFactory> factories, IEnumerable<string> vendors) {
+        var byVendor = factories.ToDictionary(f => f.Vendor, StringComparer.Ordinal);
+        return vendors.ToDictionary(
+            vendor => vendor,
+            vendor => byVendor.TryGetValue(vendor, out var factory) && !string.IsNullOrEmpty(factory.CliPath)
+                ? VendorCliWatcher.StatCliBinary(factory.CliPath)
+                : null,
+            StringComparer.Ordinal);
     }
 
     /// <summary>Carries a version already advertised over a re-probe that returned none. The server

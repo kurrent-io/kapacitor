@@ -23,9 +23,14 @@ advertised vendor's binary changes on disk, the certification rejection calls it
 republish because the server's copy has just proven wrong. The watcher fingerprints the file that
 actually runs — bare command resolved on PATH, symlink chain followed — plus size and mtime,
 because a vendor update is usually a symlink retargeted at a new version directory whose file may
-match the old one's size and land on a coarse clock. A refresh that finds nothing changed does not
-re-register: every registration bumps the slot's connection generation, which fails a reviewer
-launch pinned to the previous one, so a same-version reinstall must not cost a launch.
+match the old one's size and land on a coarse clock. Its first baseline is the fingerprint taken
+at startup before the version probe, not the file it finds when the service starts: the probes can
+take the better part of a minute under load, and a vendor updating inside that window would
+otherwise become the baseline while the advertisement still named the old build. A refresh that
+finds nothing changed does not re-register: every registration bumps the slot's connection
+generation, which fails a reviewer launch pinned to the previous one, so a same-version reinstall
+must not cost a launch. The rejection's forced republish is a sticky flag the next pass consumes,
+because a request folded into a running pass reruns that pass's delegate, not its own.
 
 **A failed re-probe keeps the advertised version.** The server reads a null version as the vendor
 being gone, so publishing the probe's null would withdraw a reviewer that was advertised a moment

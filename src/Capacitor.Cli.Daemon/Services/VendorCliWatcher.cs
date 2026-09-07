@@ -27,6 +27,11 @@ internal sealed partial class VendorCliWatcher : BackgroundService {
 
     readonly Dictionary<string, CliBinaryStat?> _baselines = new(StringComparer.Ordinal);
 
+    /// <summary>Fingerprints recorded when the advertised versions were probed. The advertisement
+    /// describes the binary as it was then, so a vendor that updates before this service starts
+    /// must read as a change on the first tick rather than become the baseline.</summary>
+    IReadOnlyDictionary<string, CliBinaryStat?>? _recorded;
+
     static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(15);
 
     public VendorCliWatcher(
@@ -41,21 +46,24 @@ internal sealed partial class VendorCliWatcher : BackgroundService {
     }
 
     VendorCliWatcher(IReadOnlyList<(string Vendor, string CliPath)> watched, Action<string> refresh,
-            Func<string, CliBinaryStat?> stat) {
+            Func<string, CliBinaryStat?> stat, IReadOnlyDictionary<string, CliBinaryStat?>? baselines) {
         _logger    = NullLogger.Instance;
+        _recorded  = baselines;
         Watched    = watched;
         Refresh    = refresh;
         StatBinary = stat;
     }
 
-    /// <summary>Test factory — bypasses DI; the caller supplies every seam.</summary>
     internal static VendorCliWatcher ForTest(
             IReadOnlyList<(string Vendor, string CliPath)> watched, Action<string> refresh,
-            Func<string, CliBinaryStat?> stat) =>
-        new(watched, refresh, stat);
+            Func<string, CliBinaryStat?> stat, IReadOnlyDictionary<string, CliBinaryStat?>? baselines = null) =>
+        new(watched, refresh, stat, baselines);
 
     internal void PrimeBaselines() {
-        foreach (var (vendor, cliPath) in Watched) _baselines[vendor] = StatBinary(cliPath);
+        foreach (var (vendor, cliPath) in Watched)
+            _baselines[vendor] = _recorded is { } recorded && recorded.TryGetValue(vendor, out var baseline)
+                ? baseline
+                : StatBinary(cliPath);
     }
 
     /// <summary>One poll iteration (timer-driven; also the unit-test entry point). All vendors
@@ -94,12 +102,14 @@ internal sealed partial class VendorCliWatcher : BackgroundService {
     }
 
     protected override async Task ExecuteAsync(CancellationToken ct) {
-        if (_config is not null && _factories is not null)
-            Watched = (_config.UnattendedVendors ?? [])
+        if (_config is not null && _factories is not null) {
+            _recorded = _config.UnattendedVendorBaselines;
+            Watched   = (_config.UnattendedVendors ?? [])
                 .Where(_factories.ContainsKey)
                 .Select(vendor => (vendor, _factories[vendor].CliPath))
                 .Where(pair => !string.IsNullOrEmpty(pair.CliPath))
                 .ToArray();
+        }
         PrimeBaselines();
 
         using var timer = new PeriodicTimer(PollInterval);
