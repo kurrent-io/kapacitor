@@ -60,6 +60,15 @@ ago. `RetainAdvertisedVersions` carries the previous version over a null re-prob
 that still disagrees hits the swap arm and forces another refresh. The refresh probes the vendor set
 fixed at startup rather than re-classifying, which is also what `DaemonConnect` sends as the vendor
 list; a vendor withheld at startup for a version floor stays withheld until a restart.
+## A Codex refresh heals the MCP registration
+
+**#807** registers the kcap MCP servers on every Codex refresh, the `plugin install --codex
+--if-installed` that `kcap update` and the npm postinstall run. The hooks version marker gates only
+the hooks write: it says nothing about `~/.codex/config.toml`, so a server that joined the Codex set
+after the last full install stayed unregistered however current the hooks were, and Codex loaded a
+session with the session and review tools but no flow tools. The registration is idempotent and
+leaves every unclaimed or user entry alone, so repeating it is safe; the opt-in gate stays ahead of
+it, so a user who never installed the Codex integration still gets no entries.
 
 ## The desktop app shows a session waiting for input
 

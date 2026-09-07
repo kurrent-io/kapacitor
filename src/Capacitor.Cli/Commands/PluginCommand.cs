@@ -329,24 +329,29 @@ public sealed class PluginCommand(PluginEnvironment env) {
             ? Path.Combine(Environment.CurrentDirectory, ".codex", "hooks.json")
             : env.Paths.Codex.UserHooksJson;
 
-        // --if-installed: refresh-only mode used by the npm postinstall hook.
-        // Skip when the user never opted in; short-circuit when the marker
-        // already matches the current CLI version. Skills are NOT touched
+        // --if-installed: refresh-only mode used by the npm postinstall hook and
+        // `kcap update`. Skip when the user never opted in. Skills are NOT touched
         // here — `--skills --if-installed` is its own postinstall call.
         var refreshOnly = args.Contains("--if-installed");
 
-        switch (refreshOnly) {
-            case true when !CodexHooksInstaller.IsInstalled(hooksPath):
-            case true when CodexHooksInstaller.ReadMarker(hooksPath) == CapacitorVersion.Current():
-            // Hooks-only refresh: rewrite the kcap entries in hooks.json,
-            // stamp the marker, exit. No skills, no plugin folder needed.
-            // Never fail the npm install path.
-            case true when !InstallCodexHooks(hooksPath):
-                return 0;
-            case true:
-                await env.Stdout.WriteLineAsync($"Codex hooks refreshed ({scope}: {hooksPath})");
+        if (refreshOnly) {
+            if (!CodexHooksInstaller.IsInstalled(hooksPath)) return 0;
 
-                return 0;
+            // The marker gates only the hooks write. The MCP registration is healed on every
+            // refresh: the marker says nothing about config.toml, and a server that joined the
+            // Codex set after the last full install is otherwise never registered.
+            // Never fail the npm install path.
+            if (CodexHooksInstaller.ReadMarker(hooksPath) != CapacitorVersion.Current()) {
+                if (InstallCodexHooks(hooksPath))
+                    await env.Stdout.WriteLineAsync($"Codex hooks refreshed ({scope}: {hooksPath})");
+                else
+                    await env.Stderr.WriteLineAsync(
+                        $"Warning: could not refresh Codex hooks ({hooksPath}); continuing with MCP registration.");
+            }
+
+            await RegisterCodexMcpServersAsync();
+
+            return 0;
         }
 
         // `--codex` is an atomic hooks AND skills contract. Resolve the
@@ -427,9 +432,7 @@ public sealed class PluginCommand(PluginEnvironment env) {
 
         // Register the kcap MCP servers in ~/.codex/config.toml so Codex CLI picks them up
         // with no manual TOML edit (the plugin descriptor path alone isn't enough — many
-        // users never run `codex plugin add`). Non-destructive + idempotent. `kcap-flows`
-        // stays Claude-only. The --if-installed refresh returns earlier, so npm
-        // postinstall never touches config.toml here.
+        // users never run `codex plugin add`). Non-destructive + idempotent.
         await RegisterCodexMcpServersAsync();
 
         if (scope == "project") {
