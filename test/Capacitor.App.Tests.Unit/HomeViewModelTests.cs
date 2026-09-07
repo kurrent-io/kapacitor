@@ -786,6 +786,55 @@ public class HomeViewModelTests {
         });
     }
 
+    /// A remote workspace opens against the LOCAL daemon socket, which can never find a remote
+    /// agent — the auto-open must never fire for a launch that targeted a remote machine.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task ARemoteLaunchNeverAutoOpensTheWorkspace() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            using var tmp = TempDir.WithPathTo("app-state.json", out var path);
+            var daemon = new FakeDaemonClientService();
+            var launch = new RecordingLaunchClient();
+            var remote = new FakeRemoteAgents();
+            remote.DaemonsSubject.OnNext([
+                new DaemonInfo { Name = "home-pc", OwnerUserId = "u1", Connected = true, RepoPaths = ["/w/repo"] },
+            ]);
+            var lane = new FakeServerLane();
+            lane.StatusSubject.OnNext(new ServerLaneStatus(ServerLaneState.Connected));
+            var opened = new List<(string AgentId, int Generation)>();
+            using var vm = new HomeViewModel(
+                daemon, new AppStateStore(path), launch, Known(),
+                openSessionIfCurrent: (id, generation) => opened.Add((id, generation)),
+                daemons: remote.Daemons, viewerId: _ => Task.FromResult<string?>("u1"), laneStatus: lane.Status);
+
+            await vm.SelectMachineAsync("home-pc");
+            await vm.StartCommand.Execute();
+
+            await Assert.That(opened.Count).IsEqualTo(0);
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task ALocalLaunchStillAutoOpensTheWorkspace() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            using var tmp = TempDir.WithPathTo("app-state.json", out var path);
+            var daemon = new FakeDaemonClientService();
+            Connect(daemon);
+            var launch = new RecordingLaunchClient();
+            var opened = new List<(string AgentId, int Generation)>();
+            using var vm = new HomeViewModel(
+                daemon, new AppStateStore(path), launch, Known(),
+                openSessionIfCurrent: (id, generation) => opened.Add((id, generation)));
+
+            await vm.SelectRepositoryAsync("/repo/a");
+            await vm.StartCommand.Execute();
+
+            await Assert.That(opened.Count).IsEqualTo(1);
+            await Assert.That(opened[0].AgentId).IsEqualTo(LaunchedId);
+        });
+    }
+
     [Test]
     [NotInParallel("AvaloniaSession")]
     public async Task RemoteSelectionRequiresTheLane() {
@@ -808,8 +857,8 @@ public class HomeViewModelTests {
         });
     }
 
-    // Fix round 1: display-list filtering alone doesn't protect the launch path — a name can
-    // reach SelectMachineAsync/StartCommand without ever having passed through ListMachinesAsync.
+    // Display-list filtering alone doesn't protect the launch path — a name can reach
+    // SelectMachineAsync/StartCommand without ever having passed through ListMachinesAsync.
 
     [Test]
     [NotInParallel("AvaloniaSession")]
@@ -1063,6 +1112,42 @@ public class HomeViewModelTests {
 
             daemon.Agents.AddOrUpdate(Agent(dashed, "/repo/a"));
             failures.OnNext(new LaunchFailure(dashed, "launch_denied_by_owner: default"));
+
+            await Assert.That(vm.StartError).IsNull();
+        });
+    }
+
+    /// Adds the directory row before the launch call returns, so it exists before RecordPendingLaunch
+    /// ever runs — the race a directory-row Add event can never observe (nothing was pending yet).
+    sealed class RowBeforeReturnLaunchClient : ILaunchClient {
+        public required FakeDaemonClientService Daemon { get; init; }
+        public required string AgentId { get; init; }
+
+        public Task<LaunchOutcome> StartAsync(LaunchRequest request, CancellationToken ct) {
+            Daemon.Agents.AddOrUpdate(Agent(AgentId, request.RepoPath));
+            return Task.FromResult(new LaunchOutcome(true, AgentId, null));
+        }
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task ARowThatPredatesRecordingIsConfirmedImmediately() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            using var tmp = TempDir.WithPathTo("app-state.json", out var path);
+            var daemon = new FakeDaemonClientService();
+            Connect(daemon);
+            var launch = new RowBeforeReturnLaunchClient { Daemon = daemon, AgentId = "agent-9" };
+            var failures = new Subject<LaunchFailure>();
+            using var directory = new AgentDirectory(
+                daemon, new FakeRemoteAgents(), new FakeServerLane(), new RepoIdentityResolver(_ => null),
+                p => p, null, null);
+            using var vm = new HomeViewModel(
+                daemon, new AppStateStore(path), launch, Known(),
+                launchFailures: failures, directory: directory);
+
+            await vm.SelectRepositoryAsync("/repo/a");
+            await vm.StartCommand.Execute();
+            failures.OnNext(new LaunchFailure("agent-9", "launch_denied_by_owner: default"));
 
             await Assert.That(vm.StartError).IsNull();
         });

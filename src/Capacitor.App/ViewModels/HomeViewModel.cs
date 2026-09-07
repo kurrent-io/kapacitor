@@ -259,6 +259,7 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
     readonly Dictionary<string, (string Reason, DateTime At)> _recentFailures = new(StringComparer.Ordinal);
     static readonly TimeSpan PendingLaunchTtl = TimeSpan.FromMinutes(10);
     static readonly TimeSpan RecentFailureTtl = TimeSpan.FromSeconds(30);
+    readonly IAgentDirectory? _directory;
 
     /// knownRepos is RepoPathStore.GetSortedPathsAsync in production — the same persisted list
     /// DaemonConnect.RepoPaths feeds the server's launch dialog. Required (no defaulted overload)
@@ -269,11 +270,12 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
     /// </param>
     /// <param name="navigationGeneration">
     /// Read BEFORE the launch call, never after: the captured value is what makes a success that
-    /// lands after the user navigated away open nothing (spec §3).
+    /// lands after the user navigated away open nothing.
     /// </param>
     /// <param name="openSessionIfCurrent">
     /// The launch auto-open (MainWindowViewModel.OpenSessionIfCurrent), carrying that captured
-    /// generation.
+    /// generation. Never invoked for a launch that targeted a remote machine — that workspace is
+    /// backed by the local daemon socket, which can never find the remote agent.
     /// </param>
     /// <param name="requestSignIn">Opens the re-auth sign-in surface (App owns the window). Null
     /// leaves the Sign in button inert — a HomeViewModel with no windows to open.</param>
@@ -313,6 +315,7 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
         _viewerId = viewerId ?? (_ => Task.FromResult<string?>(null));
         _laneStatus = laneStatus ?? Observable.Return(new ServerLaneStatus(ServerLaneState.Dormant));
         _localMachineId = localMachineId;
+        _directory = directory;
         _selectedMachine = daemon.DaemonName;
         _machineSelectionChanges = new((daemon.DaemonName, false));
 
@@ -784,9 +787,10 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
         var request = new LaunchRequest(
             SelectedMachine, SelectedRepoPath, SelectedVendor, Goal, SelectedModel, SelectedEffort,
             PermissionModeFor(SelectedVendor, SelectedPermissionMode));
-        // Captured BEFORE the call, never after (spec §3): the whole point is to notice a navigation
-        // that happened WHILE the launch was in flight.
+        // Both captured BEFORE the call, never after: the whole point is to notice a navigation —
+        // or a machine selection — that changed WHILE the launch was in flight.
         var generation = _navigationGeneration?.Invoke() ?? 0;
+        var launchedRemote = RemoteMachineSelected;
 
         var outcome = await _launch.StartAsync(request, _shutdown);
         if (!outcome.Started) {
@@ -809,7 +813,9 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
         // directory row settles it. RecordPendingLaunch also resolves the race where the failure
         // already arrived (and was buffered) while the invoke above was still in flight.
         RecordPendingLaunch(agentId);
-        _openSessionIfCurrent?.Invoke(agentId, generation);
+        // A remote launch's workspace is backed by the local daemon socket, which can never find
+        // an agent that isn't there — auto-open only ever applies to a local target.
+        if (!launchedRemote) _openSessionIfCurrent?.Invoke(agentId, generation);
     }
 
     void RecordPendingLaunch(string agentId) {
@@ -825,7 +831,20 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
             }
         }
         if (bufferedReason is not null) StartError = FriendlyLaunchFailure(bufferedReason);
+
+        // A directory row for this id can already exist here — the launch succeeded before this
+        // method ever ran. Confirm it now, the same as ConfirmPendingRows would for a row that
+        // arrives later, so a stale buffered failure can never surface for it afterward.
+        if (RowExists(agentId))
+            lock (_launchTrackingLock) {
+                _pendingLaunches.Remove(agentId);
+                _recentFailures.Remove(agentId);
+            }
     }
+
+    bool RowExists(string agentId) =>
+        _directory is { } directory
+        && (directory.Rows.Lookup($"local:{agentId}").HasValue || directory.Rows.Lookup($"remote:{agentId}").HasValue);
 
     void RecordRecentFailure(LaunchFailure failure) {
         if (NormalizeAgentId(failure.AgentId) is not { } agentId) return;
