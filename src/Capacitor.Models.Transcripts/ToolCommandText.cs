@@ -1,6 +1,6 @@
 using System.Text.Json;
 
-namespace Capacitor.Cli.Core;
+namespace Capacitor.Models.Transcripts;
 
 /// The command a shell tool call was given, dug out of the tool input each vendor shapes
 /// differently: Codex writes `cmd`, Claude writes `command` as a string, and the argv form is a

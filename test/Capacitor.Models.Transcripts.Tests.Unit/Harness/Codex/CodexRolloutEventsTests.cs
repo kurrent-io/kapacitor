@@ -102,6 +102,45 @@ public class CodexRolloutEventsTests {
         await Assert.That(customCall.Arguments.Fields["input"].StringValue).IsEqualTo("const r = 1;");
     }
 
+    /// The persisted kind comes from the table the chat lane and the daemon stamp, so an import and a
+    /// hosted session never disagree. A shell tool is classified by its command, which only the raw
+    /// input carries; `exec` is the JavaScript sandbox and stays `execute` whatever it runs; a tool
+    /// the table does not list, or a nameless call, is a PRESENT `other` — the key being there is how
+    /// a consumer tells "none of these" from the absence a lane with no table leaves behind.
+    [Test]
+    public async Task Tool_calls_carry_a_vendor_neutral_kind_and_an_unlisted_tool_is_a_present_other() {
+        foreach (var (payload, kind) in new[] {
+            ("""{"type":"custom_tool_call","name":"apply_patch","call_id":"c","input":"*** Begin Patch"}""",                     AcpToolKind.Edit),
+            ("""{"type":"function_call","name":"exec_command","call_id":"c","arguments":"{\"cmd\":\"cargo build\"}"}""",          AcpToolKind.Execute),
+            ("""{"type":"function_call","name":"exec_command","call_id":"c","arguments":"{\"cmd\":\"sed -n '1,40p' a.rs\"}"}""",  AcpToolKind.Read),
+            ("""{"type":"function_call","name":"exec_command","call_id":"c","arguments":"{\"cmd\":\"rg needle src\"}"}""",        AcpToolKind.Search),
+            ("""{"type":"function_call","name":"shell","call_id":"c","arguments":"{\"command\":[\"bash\",\"-lc\",\"cat a.rs\"]}"}""", AcpToolKind.Read),
+            ("""{"type":"function_call","name":"write_stdin","call_id":"c","arguments":"{\"chars\":\"y\\n\"}"}""",                AcpToolKind.Execute),
+            ("""{"type":"custom_tool_call","name":"exec","call_id":"c","input":"await tool.read('cat a.rs')"}""",                 AcpToolKind.Execute),
+            ("""{"type":"function_call","name":"get_issue","call_id":"c","arguments":"{\"id\":\"1\"}"}""",                        AcpToolKind.Other),
+            ("""{"type":"function_call","call_id":"c","arguments":"{}"}""",                                                       AcpToolKind.Other),
+            ("""{"type":"tool_search_call","call_id":"c","arguments":{"query":"x"}}""",                                           AcpToolKind.Other),
+        }) {
+            var call = ((AssistantToolCallsGenerated)E(Item(payload))[0].Payload).ToolCalls[0];
+            await Assert.That(call.HasToolKind).IsTrue().Because(payload);
+            await Assert.That(call.ToolKind).IsEqualTo(kind).Because(payload);
+        }
+    }
+
+    /// The kind is assigned per tool, not per action: every web-search action is a fetch.
+    [Test]
+    public async Task Every_web_search_action_is_a_fetch() {
+        foreach (var action in new[] {
+            """{"type":"search","query":"acp"}""",
+            """{"type":"openPage","url":"https://x/y"}""",
+            """{"type":"find_in_page","url":"https://x/y","pattern":"kind"}""",
+        }) {
+            var e    = E(Item($$$"""{"type":"web_search_call","status":"completed","action":{{{action}}}}"""));
+            var call = ((AssistantToolCallsGenerated)e[0].Payload).ToolCalls[0];
+            await Assert.That(call.ToolKind).IsEqualTo(AcpToolKind.Fetch).Because(action);
+        }
+    }
+
     [Test]
     public async Task Tool_outputs_carry_string_or_block_output_uncapped() {
         var str = E(Item("""{"type":"function_call_output","call_id":"c1","output":"{\"ok\":true}"}"""));

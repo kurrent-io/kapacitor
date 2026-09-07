@@ -1,6 +1,4 @@
-using Capacitor.Models.Transcripts.Harness.Codex;
-
-namespace Capacitor.Cli.Core.Harness.Codex;
+namespace Capacitor.Models.Transcripts.Harness.Codex;
 
 /// What a codex tool call did, in the vendor-neutral vocabulary. The one place that rule lives: the
 /// daemon's hosted lane and an imported rollout must not answer differently for the same call.

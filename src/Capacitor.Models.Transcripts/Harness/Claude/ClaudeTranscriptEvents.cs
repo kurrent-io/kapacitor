@@ -153,7 +153,12 @@ public sealed class ClaudeTranscriptEvents : ITranscriptProjection {
                 }
                 case "tool_use": {
                     var call = new AssistantToolCallsGenerated { Timestamp = record.ProtoTimestamp };
-                    call.ToolCalls.Add(new ToolCallInfo { CallId = block.Str("id") ?? "", ToolName = block.Str("name") ?? "", Arguments = ToolInput(block) });
+                    call.ToolCalls.Add(new ToolCallInfo {
+                        CallId    = block.Str("id") ?? "",
+                        ToolName  = block.Str("name") ?? "",
+                        Arguments = ToolInput(block),
+                        ToolKind  = ClaudeToolKinds.Of(block.Str("name")),
+                    });
                     emitter.Add(index, call, ClaudeCodeExtension.Flags(record.IsSidechain));
                     break;
                 }

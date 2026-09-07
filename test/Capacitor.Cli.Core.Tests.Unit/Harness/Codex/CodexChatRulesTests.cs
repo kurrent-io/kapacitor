@@ -109,7 +109,8 @@ public class CodexChatRulesTests {
     }
 
     /// A web search reaches the chat as a settled pair — an unpaired call would read as still
-    /// running — and is `fetch`, the kind a web tool gets in every lane.
+    /// running — and is `fetch`, the kind a web tool gets in every lane, whichever of its actions
+    /// it performs.
     [Test]
     public async Task A_web_search_reaches_the_chat_as_a_settled_fetch_pair() {
         var e = P(Item("""{"type":"web_search_call","status":"completed","action":{"type":"search","query":"acp"}}"""));
@@ -121,6 +122,10 @@ public class CodexChatRulesTests {
         await Assert.That(e[1].Kind).IsEqualTo(AcpEventKind.ToolResult);
         await Assert.That(e[1].ToolCallId).IsEqualTo(e[0].ToolCallId);
         await Assert.That(e[0].ToolCallId).IsNotNull();
+
+        foreach (var action in new[] { """{"type":"openPage","url":"https://x/y"}""", """{"type":"find_in_page","url":"https://x/y","pattern":"acp"}""" })
+            await Assert.That(P(Item($$$"""{"type":"web_search_call","status":"completed","action":{{{action}}}}"""))[0].ToolKind)
+                .IsEqualTo(AcpToolKind.Fetch).Because(action);
     }
 
     [Test]

@@ -1,5 +1,4 @@
 using System.Diagnostics.CodeAnalysis;
-using Capacitor.Cli.Core;
 
 namespace Capacitor.Cli.Daemon.Acp;
 
