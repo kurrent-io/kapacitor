@@ -178,19 +178,77 @@ public class ServerConnectionServiceTests {
         var staleEpoch = connected.Epoch;
 
         lane.ParkSignedOut();
-        var parked = await Next(lane.Status, s => s.State == ServerLaneState.SignedOut);
-        var currentEpoch = parked.Epoch;
+        await Next(lane.Status, s => s.State == ServerLaneState.SignedOut);
 
         await lane.RestartAsync();
-        await Next(lane.Status, s => s.State == ServerLaneState.Connected); // "a fresh Connected"
+        var reconnected = await Next(lane.Status, s => s.State == ServerLaneState.Connected && s.Epoch != staleEpoch);
 
         lane.ParkSignedOut(staleEpoch); // captured before the park above — must be ignored
         await Task.Delay(200);
         var stillConnected = await lane.Status.Take(1).ToTask();
         await Assert.That(stillConnected.State).IsEqualTo(ServerLaneState.Connected);
 
-        lane.ParkSignedOut(currentEpoch); // the epoch the reconnect never changed — must still park
+        lane.ParkSignedOut(reconnected.Epoch); // the generation actually running — must park
         await Next(lane.Status, s => s.State == ServerLaneState.SignedOut);
+    }
+
+    /// Every restart is a new connection generation, so the epoch captured from the Connected the
+    /// restart replaced cannot park the lane — even though nothing parked it in between and it is
+    /// Connected again, the decision that epoch was made under is about a connection that is gone.
+    [Test]
+    public async Task ParkWithTheEpochOfAConnectionARestartReplacedIsIgnored() {
+        await using var host = await HubTestHost.StartAsync();
+        await using var lane = Lane(host);
+        lane.Start();
+        var first = await Next(lane.Status, s => s.State == ServerLaneState.Connected);
+
+        await lane.RestartAsync();
+        var second = await Next(lane.Status, s => s.State == ServerLaneState.Connected && s.Epoch != first.Epoch);
+
+        lane.ParkSignedOut(first.Epoch);
+        await Task.Delay(200);
+        var stillConnected = await lane.Status.Take(1).ToTask();
+        await Assert.That(stillConnected.State).IsEqualTo(ServerLaneState.Connected);
+
+        lane.ParkSignedOut(second.Epoch);
+        await Next(lane.Status, s => s.State == ServerLaneState.SignedOut);
+    }
+
+    /// A park landing while a restart is between retiring one loop and admitting the next must
+    /// stand: the restart admits nothing (the generation it reserved is no longer current), and the
+    /// retired loop's remaining publishes — the Connecting a fresh attempt opens with included —
+    /// are dropped rather than reviving the lane. DiagnoseAsync's token read observes no
+    /// cancellation, so gating it holds the retired loop, and with it the whole handover window,
+    /// open for as long as the test needs.
+    [Test]
+    public async Task ParkWhileARestartAwaitsTheRetiredLoopLeavesTheLaneSignedOut() {
+        var attemptCallIndex = 0;
+        var gate = new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var host = await HubTestHost.StartAsync();
+        await using var lane = new ServerConnectionService(host.Url, () => {
+            var n = Interlocked.Increment(ref attemptCallIndex);
+            return n <= 2 ? Task.FromResult<string?>(null) : gate.Task;
+        });
+        using var attemptReset = lane.Status
+            .Where(s => s.State == ServerLaneState.Connecting)
+            .Subscribe(_ => Interlocked.Exchange(ref attemptCallIndex, 0));
+        lane.Start();
+
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        while (Volatile.Read(ref attemptCallIndex) < 3) {
+            if (DateTime.UtcNow > deadline) throw new TimeoutException("DiagnoseAsync's token read was never reached");
+            await Task.Delay(5);
+        }
+
+        var restart = lane.RestartAsync();
+        await Task.Delay(100); // it cannot pass the retired loop until the gate below releases it
+        lane.ParkSignedOut();
+        gate.SetResult(null);
+        await restart;
+
+        await Task.Delay(2000); // ample for a re-admitted loop to connect and publish over the park
+        var latest = await lane.Status.Take(1).ToTask();
+        await Assert.That(latest.State).IsEqualTo(ServerLaneState.SignedOut);
     }
 
     [Test]

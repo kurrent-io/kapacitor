@@ -29,17 +29,20 @@ public sealed class ServerConnectionService : IServerLane, ILaunchClient, IAsync
     readonly Subject<Unit> _daemonsChanged = new();
     readonly Subject<LaunchFailure> _launchFailures = new();
     readonly SemaphoreSlim _restartGate = new(1, 1);
-    // Guards a Connected publish's hub-is-current-and-still-connected check against the
-    // Reconnecting handler's own publish, and against _publishEpoch, so none of the three can
-    // interleave.
-    readonly Lock _statusLock = new();
-    // Bumped whenever a park (ParkSignedOut or the negotiate-401 catch) publishes SignedOut. A
-    // Connected publish captures the epoch before it starts connecting and only fires if the
-    // epoch is still current — otherwise a park mid-connect (mid-DiagnoseAsync, say) would be
-    // silently overwritten by the connect attempt that raced it.
-    int _publishEpoch;
-    readonly CancellationTokenSource _lifetime = new();
+    // One lock owns the whole lane lifecycle: the generation, the current loop's cancellation
+    // source, and EVERY status publish. A generation names one admitted connect loop; a park, a
+    // restart and teardown each advance it, so a publish carrying an older generation belongs to a
+    // loop that has been superseded and is dropped rather than overwriting whatever superseded it.
+    readonly Lock _lifecycleLock = new();
+    int _generation;
+    // The admitted loop's own source, so a park cancels the loop that was running when it decided
+    // to park — never one a concurrent restart has since put in its place. Null between a restart
+    // retiring the old loop and admitting the new one.
     CancellationTokenSource? _loopCts;
+    // Set under the lock before the subjects are disposed, so no publish can be in flight when
+    // they go.
+    bool _closed;
+    readonly CancellationTokenSource _lifetime = new();
     Task _loop = Task.CompletedTask;
     volatile HubConnection? _hub;
 
@@ -70,53 +73,71 @@ public sealed class ServerConnectionService : IServerLane, ILaunchClient, IAsync
     /// triggered from outside it — RemoteAgentsService's onUnauthorized, when its own HTTP fetch
     /// hits a 401 the hub connection itself never saw. RestartAsync (wired to sign-in completion)
     /// is what revives it.
-    public void ParkSignedOut() => ParkSignedOutCore(ifEpoch: null);
+    public void ParkSignedOut() => ParkSignedOutCore(ifGeneration: null, detail: null);
 
-    /// Parks only when the lane's current publish epoch still equals `ifEpoch` — the epoch of the
-    /// Connected status a delayed caller's own decision was made under. RemoteAgentsService reads
-    /// its own generation check and releases its lock before invoking onUnauthorized, so by the
-    /// time this runs the lane may already have moved on; re-validating here, atomically with the
-    /// park itself, is what a lock taken around the callback could not do without inverting this
-    /// lane's _statusLock against RemoteAgentsService's own cache lock.
-    public void ParkSignedOut(int ifEpoch) => ParkSignedOutCore(ifEpoch);
+    /// Parks only while `ifEpoch` is still the lane's current generation — the generation of the
+    /// Connected status the caller's own decision was made under. RemoteAgentsService releases its
+    /// cache lock before invoking onUnauthorized (taking it around the callback would invert it
+    /// against this lane's lock), so by the time this runs a park, a restart or a teardown may have
+    /// moved the lane on; re-validating here, atomically with the park itself, is what that
+    /// callback could not do for itself.
+    public void ParkSignedOut(int ifEpoch) => ParkSignedOutCore(ifEpoch, detail: null);
 
-    void ParkSignedOutCore(int? ifEpoch) {
-        lock (_statusLock) {
-            if (ifEpoch is { } epoch && epoch != _publishEpoch) return;
-            _publishEpoch++;
-            _status.OnNext(new(ServerLaneState.SignedOut, Epoch: _publishEpoch));
+    void ParkSignedOutCore(int? ifGeneration, string? detail) {
+        lock (_lifecycleLock) {
+            if (_closed) return;
+            if (ifGeneration is { } generation && generation != _generation) return;
+            // Advancing first is what makes the park terminal: every publish the parked loop still
+            // has in flight — its Connecting, its Retrying, a Connected waiting on DiagnoseAsync —
+            // now carries a stale generation and is dropped. Cancelling the captured source under
+            // the same lock stops the loop admitted at THIS generation and no other.
+            _generation++;
+            _status.OnNext(new(ServerLaneState.SignedOut, detail, Epoch: _generation));
+            _loopCts?.Cancel();
         }
-        _loopCts?.Cancel();
     }
 
+    /// Retires the running loop and admits a new one under a fresh generation. A park landing while
+    /// the old loop is still being awaited wins: the generation this restart reserved is no longer
+    /// current, so no loop is admitted and the lane stays parked until the next restart.
     public async Task RestartAsync(CancellationToken ct = default) {
         if (_serverUrl is null || _lifetime.IsCancellationRequested) return;
         await _restartGate.WaitAsync(ct).ConfigureAwait(false);
         try {
             if (_lifetime.IsCancellationRequested) return;
-            _loopCts?.Cancel();
+            CancellationTokenSource? previous;
+            int generation;
+            lock (_lifecycleLock) {
+                if (_closed) return;
+                previous = _loopCts;
+                // Unreachable to a park from here, so disposing it below cannot race one.
+                _loopCts = null;
+                _generation++;
+                generation = _generation;
+            }
+            previous?.Cancel();
             await AwaitQuietly(_loop).ConfigureAwait(false);
-            _loopCts?.Dispose();
-            _loopCts = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
-            _loop = Task.Run(() => RunAsync(_loopCts.Token), CancellationToken.None);
+            previous?.Dispose();
+
+            CancellationToken token;
+            lock (_lifecycleLock) {
+                if (_closed || generation != _generation) return;
+                var cts = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+                _loopCts = cts;
+                token = cts.Token;
+            }
+            _loop = Task.Run(() => RunAsync(generation, token), CancellationToken.None);
         } finally {
             _restartGate.Release();
         }
     }
 
-    async Task RunAsync(CancellationToken ct) {
+    async Task RunAsync(int generation, CancellationToken ct) {
         var attempt = 0;
         while (!ct.IsCancellationRequested) {
-            // Captured together with the Connecting publish, under the same lock: every other
-            // publish this attempt makes — Reconnecting's Retrying, the post-close Retrying, the
-            // generic-catch Retrying, Connected — reuses this SAME value, so a park landing at any
-            // point during the attempt (its epoch bump happens under the same lock) makes every
-            // later publish from this now-superseded attempt a no-op instead of overwriting the park.
-            int attemptEpoch;
-            lock (_statusLock) {
-                attemptEpoch = _publishEpoch;
-                _status.OnNext(new(ServerLaneState.Connecting, Epoch: attemptEpoch));
-            }
+            // A refused publish means this loop has been superseded — parked, restarted or torn
+            // down — and has nothing left to dial for.
+            if (!Publish(generation, new(ServerLaneState.Connecting))) return;
             HubConnection? hub = null;
             try {
                 hub = Build();
@@ -128,41 +149,37 @@ public sealed class ServerConnectionService : IServerLane, ILaunchClient, IAsync
                 var closed = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
                 hub.Closed += ex => { closed.TrySetResult(ex); return Task.CompletedTask;  };
                 hub.Reconnecting += _ => {
-                    PublishIfCurrentEpoch(attemptEpoch, ServerLaneState.Retrying, "reconnecting");
+                    Publish(generation, new(ServerLaneState.Retrying, "reconnecting"));
                     return Task.CompletedTask;
                 };
                 hub.Reconnected += async _ => {
                     var (diagnostic, subject) = await DiagnoseAsync().ConfigureAwait(false);
-                    PublishConnectedIfCurrent(capturedHub, attemptEpoch, diagnostic, subject);
+                    PublishConnected(generation, capturedHub, diagnostic, subject);
                 };
 
                 await hub.StartAsync(ct).ConfigureAwait(false);
                 _hub = hub;
                 attempt = 0;
                 var (connectedDiagnostic, connectedSubject) = await DiagnoseAsync().ConfigureAwait(false);
-                PublishConnectedIfCurrent(capturedHub, attemptEpoch, connectedDiagnostic, connectedSubject);
+                PublishConnected(generation, capturedHub, connectedDiagnostic, connectedSubject);
 
                 Exception? closeReason;
                 await using (ct.Register(() => closed.TrySetResult(null)))
                     closeReason = await closed.Task.ConfigureAwait(false);
 
                 if (!ct.IsCancellationRequested)
-                    PublishIfCurrentEpoch(attemptEpoch, ServerLaneState.Retrying, closeReason?.Message);
+                    Publish(generation, new(ServerLaneState.Retrying, closeReason?.Message));
             } catch (OperationCanceledException) {
                 break;
             } catch (Exception ex) when (IsUnauthorized(ex)) {
                 // The credential is what kcap login repairs, not this loop — retrying a 401
                 // negotiate forever would just burn the backoff ladder for no reason. The lane
-                // parks here until RestartAsync (wired to sign-in completion) starts a fresh loop.
-                // This attempt IS the park (not a stale follower of one), so it bumps the epoch
-                // itself rather than checking against attemptEpoch.
-                lock (_statusLock) {
-                    _publishEpoch++;
-                    _status.OnNext(new(ServerLaneState.SignedOut, ex.Message, Epoch: _publishEpoch));
-                }
+                // parks here until RestartAsync (wired to sign-in completion) admits a fresh loop,
+                // through the same park a delayed unauthorized fetch takes.
+                ParkSignedOutCore(generation, ex.Message);
                 return;
             } catch (Exception ex) {
-                PublishIfCurrentEpoch(attemptEpoch, ServerLaneState.Retrying, ex.Message);
+                Publish(generation, new(ServerLaneState.Retrying, ex.Message));
             } finally {
                 _hub = null;
                 if (hub is not null) await hub.DisposeAsync().ConfigureAwait(false);
@@ -174,12 +191,14 @@ public sealed class ServerConnectionService : IServerLane, ILaunchClient, IAsync
         }
     }
 
-    /// Publishes only when `epoch` still equals the lane's current publish epoch — the shared
-    /// guard every Retrying/Connecting publish from a connect attempt takes, so a park landing
-    /// mid-attempt is never overwritten by that attempt's own remaining lifecycle noise.
-    void PublishIfCurrentEpoch(int epoch, ServerLaneState state, string? detail = null) {
-        lock (_statusLock) {
-            if (epoch == _publishEpoch) _status.OnNext(new(state, detail, Epoch: epoch));
+    /// The one place a lifecycle status reaches subscribers: it carries the generation that
+    /// produced it, and lands only while that generation is still current. False means the caller
+    /// has been superseded.
+    bool Publish(int generation, ServerLaneStatus status) {
+        lock (_lifecycleLock) {
+            if (_closed || generation != _generation) return false;
+            _status.OnNext(status with { Epoch = generation });
+            return true;
         }
     }
 
@@ -195,16 +214,15 @@ public sealed class ServerConnectionService : IServerLane, ILaunchClient, IAsync
         return hub;
     }
 
-    /// Publishes Connected only when `hub` is still the live one, actually connected at publish
-    /// time, AND no park (ParkSignedOut or a negotiate 401) has published SignedOut since `epoch`
-    /// was captured — the awaited DiagnoseAsync above can outlast any of the three, and
-    /// publishing anyway would either let a stale Connected reach downstream DistinctUntilChanged
-    /// and swallow the real transition that followed it, or silently overwrite a park. Locked
-    /// against the Reconnecting handler and against a park so none of the three can interleave.
-    void PublishConnectedIfCurrent(HubConnection hub, int epoch, string? diagnostic, string? subject) {
-        lock (_statusLock) {
-            if (epoch == _publishEpoch && ReferenceEquals(_hub, hub) && hub.State == HubConnectionState.Connected)
-                _status.OnNext(new(ServerLaneState.Connected, Diagnostic: diagnostic, Subject: subject, Epoch: epoch));
+    /// Connected additionally requires `hub` to still be the live connection and still be connected
+    /// at publish time: DiagnoseAsync's await can outlast either, and a Connected published over a
+    /// dead hub reaches downstream DistinctUntilChanged and swallows the real transition that
+    /// followed it. Folded into the same locked check as the generation, so neither the Reconnecting
+    /// handler nor a park can interleave with it.
+    void PublishConnected(int generation, HubConnection hub, string? diagnostic, string? subject) {
+        lock (_lifecycleLock) {
+            if (!ReferenceEquals(_hub, hub) || hub.State != HubConnectionState.Connected) return;
+            Publish(generation, new(ServerLaneState.Connected, Diagnostic: diagnostic, Subject: subject));
         }
     }
 
@@ -260,10 +278,16 @@ public sealed class ServerConnectionService : IServerLane, ILaunchClient, IAsync
         _lifetime.Cancel();
         await _restartGate.WaitAsync().ConfigureAwait(false);
         try {
-            _loopCts?.Cancel();
+            CancellationTokenSource? loop;
+            lock (_lifecycleLock) {
+                _closed = true;
+                _generation++;
+                loop = _loopCts;
+                _loopCts = null;
+            }
+            loop?.Cancel();
             await AwaitQuietly(_loop).ConfigureAwait(false);
-            _loopCts?.Dispose();
-            _loopCts = null;
+            loop?.Dispose();
         } finally {
             _restartGate.Release();
         }
