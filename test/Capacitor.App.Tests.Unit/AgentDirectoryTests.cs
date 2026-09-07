@@ -67,12 +67,11 @@ public class AgentDirectoryTests {
         await Assert.That(dir.Rows.Lookup("remote:b1").HasValue).IsTrue();
     }
 
-    /// While the twin is proven, precedence flips WITH the local socket: Connected shows the
-    /// local row and suppresses the remote twin's; disconnected, the retained local row is stale
-    /// and must yield entirely to the server's view — including its absence, so a server-side
-    /// termination never leaves a stale local "Running" with nothing to override it.
+    /// While the twin is proven, precedence flips WITH the local socket, one agent at a time:
+    /// Connected shows the local row and suppresses the remote twin's; disconnected, the local row
+    /// yields to the server's row for that SAME agent.
     [Test]
-    public async Task ProvenTwinYieldsToTheServersViewOnceLocalDisconnects() {
+    public async Task ProvenTwinYieldsToTheServersRowOnceLocalDisconnects() {
         var (local, remote, _, dir) = Build();
         using var _d = dir;
         local.SnapshotsSubject.OnNext(FakeDaemonClientService.Snap());
@@ -88,15 +87,9 @@ public class AgentDirectoryTests {
 
         local.StatusSubject.OnNext(new(AttachState.Unreachable, "daemon_unreachable", null));
 
-        // Local socket lost: the retained local row is now stale and yields to the server's view.
+        // Local socket lost: the server's own row for this agent is the current one and wins.
         await Assert.That(dir.Rows.Lookup("local:a1").HasValue).IsFalse();
         await Assert.That(dir.Rows.Lookup("remote:a1").HasValue).IsTrue();
-
-        remote.Cache.RemoveKey("a1"); // the server's own view: this agent has ended
-
-        // No row at all — never a stale local "Running" surviving a server-side termination.
-        await Assert.That(dir.Rows.Lookup("local:a1").HasValue).IsFalse();
-        await Assert.That(dir.Rows.Lookup("remote:a1").HasValue).IsFalse();
 
         local.StatusSubject.OnNext(new(AttachState.Connected, null, ["status/2"]));
 
@@ -104,6 +97,33 @@ public class AgentDirectoryTests {
         // disconnected) returns, and the remote twin's row is suppressed again.
         await Assert.That(dir.Rows.Lookup("local:a1").HasValue).IsTrue();
         await Assert.That(dir.Rows.Lookup("remote:a1").HasValue).IsFalse();
+    }
+
+    /// Missing server data is not evidence an agent ended: a private agent is never registered at
+    /// all, and the registry has a seed gap after every connect. An unpaired local row therefore
+    /// survives a proven twin's disconnect as display-only history, and a remote row that later
+    /// disappears leaves the local one standing rather than erasing the session from view.
+    [Test]
+    public async Task ADisconnectedTwinKeepsLocalRowsTheServerHasNoRowFor() {
+        var (local, remote, _, dir) = Build();
+        using var _d = dir;
+        local.SnapshotsSubject.OnNext(FakeDaemonClientService.Snap());
+        local.StatusSubject.OnNext(new(AttachState.Connected, null, ["status/1"]));
+        local.Agents.AddOrUpdate(LocalAgent("a1"));   // registered server-side
+        local.Agents.AddOrUpdate(LocalAgent("p1"));   // private: never registered
+        remote.DaemonsSubject.OnNext([new DaemonInfo { Name = "daemon-a", MachineId = "m1", OwnerUserId = "u1", Connected = true }]);
+        remote.Cache.AddOrUpdate(Remote("a1", daemon: "daemon-a"));
+
+        local.StatusSubject.OnNext(new(AttachState.Unreachable, "daemon_unreachable", null));
+
+        await Assert.That(dir.Rows.Lookup("local:a1").HasValue).IsFalse(); // paired: the server's row wins
+        await Assert.That(dir.Rows.Lookup("remote:a1").HasValue).IsTrue();
+        await Assert.That(dir.Rows.Lookup("local:p1").HasValue).IsTrue();  // unpaired: stands
+
+        remote.Cache.RemoveKey("a1"); // the server's own view: this agent has ended
+
+        await Assert.That(dir.Rows.Lookup("remote:a1").HasValue).IsFalse();
+        await Assert.That(dir.Rows.Lookup("local:a1").HasValue).IsTrue();
     }
 
     [Test]

@@ -15,10 +15,11 @@ public interface IAgentDirectory {
 }
 
 /// Merges the local daemon's agents with the server registry's into source-scoped rows.
-/// Suppression is daemon-level, evidence-based, and symmetric: while the twin is proven, remote
-/// twin rows hide whenever the local socket is Connected (the local view is current), and local
-/// rows hide once it isn't (the local view is stale, so the server's own view — including
-/// absence — becomes authoritative). An unproven identity keeps both lanes' rows, never hidden.
+/// Suppression is evidence-based, symmetric and pairwise — one lane's row hides only where the
+/// other lane holds a row for the SAME agent. While the twin is proven, the remote twin's row
+/// hides whenever the local socket is Connected (the local view is current), and the local row
+/// hides once it isn't (the server's row for that agent wins). An unproven identity keeps both
+/// lanes' rows, never hidden.
 public sealed class AgentDirectory : IAgentDirectory, IDisposable {
     readonly SourceCache<AgentRow, string> _rows = new(r => r.Key);
     readonly CompositeDisposable _subscriptions = new();
@@ -47,9 +48,9 @@ public sealed class AgentDirectory : IAgentDirectory, IDisposable {
 
         RemoteStale = lane.Status.Select(s => s.State != ServerLaneState.Connected).DistinctUntilChanged();
 
-        // ToCollection (not the raw changeset), matching remote.Agents below: Recompute needs the
-        // full current local set on every change, since a twin-proven disconnect can suppress ALL
-        // of it in one step — an incremental Add/Update/Remove-per-key handler can't express that.
+        // ToCollection (not the raw changeset), matching remote.Agents below: whether a local row
+        // shows depends on the whole remote set, so Recompute needs the full current local set on
+        // every change — an incremental Add/Update/Remove-per-key handler can't express that.
         local.Agents.Connect().ToCollection()
             .Subscribe(items => { lock (_lock) _localAgents = [.. items]; Recompute(); })
             .DisposeWith(_subscriptions);
@@ -84,23 +85,26 @@ public sealed class AgentDirectory : IAgentDirectory, IDisposable {
     // socket-thread Status flip racing a SignalR-thread Daemons refresh) that read-then-edit as
     // separate critical sections can land their _rows.Edit calls out of read order, letting a
     // stale edit overwrite a fresher one. DynamicData's own cache lock is separate, so nesting
-    // _rows.Edit inside _lock is deadlock-free. Owns BOTH lanes' rows in one pass — a twin-proven
-    // disconnect suppresses the WHOLE local set, not a per-row filter, since every local row is
-    // this same daemon's by construction.
+    // _rows.Edit inside _lock is deadlock-free. Owns BOTH lanes' rows in one pass, because
+    // precedence is pairwise: while the twin is proven and the local socket is down, a local row
+    // yields to the server's row for the SAME agent — but only to that row. Absent server data is
+    // not evidence an agent ended (a private agent is never registered, and the registry has a
+    // seed gap after every connect), so an unpaired local row stands as display-only history.
     void Recompute() {
         lock (_lock) {
             var twin = LocalDaemonTwin.Find(_daemons, _localMachineId, _local.DaemonName, _localServerUrl, _appServerUrl);
             var twinProven = twin is not null;
 
-            var localRows = twinProven && !_localConnected
-                ? []
-                : _localAgents.Select(ProjectLocal);
-            var remoteRows = _remoteAgents
+            var remote = _remoteAgents
                 .Where(a => a.Status is "Starting" or "Running")
                 .Where(a => !(twinProven && _localConnected
                               && a.OwnerUserId == twin!.Value.OwnerUserId && a.DaemonName == twin.Value.DaemonName))
-                .Select(AgentRow.FromRemote);
-            var next = localRows.Concat(remoteRows).ToList();
+                .ToList();
+            var remoteIds = remote.Select(a => a.AgentId).ToHashSet(StringComparer.Ordinal);
+            var localRows = _localAgents
+                .Where(a => !(twinProven && !_localConnected && remoteIds.Contains(a.Id)))
+                .Select(ProjectLocal);
+            var next = localRows.Concat(remote.Select(AgentRow.FromRemote)).ToList();
 
             _rows.Edit(cache => {
                 foreach (var key in cache.Keys.Where(k => !next.Any(r => r.Key == k)).ToList())
