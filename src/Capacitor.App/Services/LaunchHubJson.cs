@@ -3,7 +3,7 @@ using System.Text.Json;
 namespace Capacitor.App.Services;
 
 /// <summary>
-/// The EXACT SignalR JSON hub-protocol payload configuration ServerLaunchClient applies —
+/// The EXACT SignalR JSON hub-protocol payload configuration ServerConnectionService applies —
 /// extracted so wire-contract tests serialize with the genuine on-wire options instead of a
 /// hand-built approximation that could silently diverge from production (mirrors kcap-server's
 /// JsonDefaults.ConfigureSignalRPayload, extracted for the same reason). Matches

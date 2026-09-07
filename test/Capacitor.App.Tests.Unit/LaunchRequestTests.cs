@@ -5,7 +5,7 @@ using Capacitor.Cli.Core;
 namespace Capacitor.App.Tests.Unit;
 
 public class LaunchRequestTests {
-    // The genuine on-wire options — same JsonSerializerOptions ServerLaunchClient hands
+    // The genuine on-wire options — same JsonSerializerOptions ServerConnectionService hands
     // AddJsonProtocol, via the shared LaunchHubJson.Configure. Serializing through a bare
     // context (as this test used to) proves nothing about what SignalR actually sends: the
     // server applies snake_case to every hub payload, and camelCase keys here would have
