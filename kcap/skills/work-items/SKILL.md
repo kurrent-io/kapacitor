@@ -33,6 +33,9 @@ no breakdown.
 - The structure changed (a part was dropped, a dependency no longer holds) →
   retract it.
 - You want to see the current structure → read the topology.
+- Two items describe the same work (a title-only item you created and the
+  issue/PR-keyed item the server minted) → merge yours into the keyed one.
+- The session was attached to the wrong item → detach it.
 
 ## The flow
 
@@ -50,6 +53,22 @@ no breakdown.
 5. **Verify** with `get_work_item_topology` (pass the parent's `work_item_id`) —
    it returns the parent, parts, and dependencies you can see.
 
+## Duplicates and wrong attaches
+
+A `new_title` declare made before a PR or issue existed becomes a duplicate once the
+server mints the keyed item for that work. Do not declare a breakdown to connect the
+two — that records structure that isn't there. Merge instead:
+
+- `merge_work_item` with `work_item_id` = the title-only item and `into_work_item_id` =
+  the keyed item. The keyed item survives; the title item's sessions and links move to
+  it. Repeating a landed merge is a no-op.
+- The server refuses (409) when a user marked either item standalone, rejected the
+  pairing, or the items belong to different tracker hierarchies. Stop and tell the
+  user — they can merge from the dashboard. Do not retry.
+- `detach_work_item` removes this session from an item it was wrongly attached to. The
+  removal is durable for automated correlation; an attachment a user pinned cannot be
+  removed by an agent.
+
 ## Rules the server enforces
 
 - **Visibility, not repository.** Every item you name must be visible to you.
@@ -62,6 +81,8 @@ no breakdown.
   the server resolves the caller. Don't look for such arguments.
 - **Retract, don't delete.** Use `retract_work_breakdown` / `retract_work_relation`
   when the structure changes.
+- **Merges defer to user facts.** A standalone confirmation or a rejected pairing a
+  user recorded blocks an agent merge; only a user can lift it.
 
 ## Tool reference
 
@@ -74,6 +95,8 @@ no breakdown.
 | `declare_work_relation` | `from_id`, `to_id`, `relation_kind` (`blocks`\|`blocked_by`) | Declare a dependency. |
 | `retract_work_relation` | `from_id`, `to_id`, `relation_kind` | Retract a dependency. |
 | `get_work_item_topology` | `work_item_id` | Read parent, parts, and dependencies (visibility-scoped). |
+| `merge_work_item` | `work_item_id`, `into_work_item_id` | Merge a duplicate into the survivor (prefer the keyed item as survivor). |
+| `detach_work_item` | `work_item_id` | Detach the session from a wrongly attached item. `session_id` defaults to `KCAP_SESSION_ID`. |
 
 ## Requirements
 

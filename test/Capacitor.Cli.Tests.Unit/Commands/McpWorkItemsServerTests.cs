@@ -167,8 +167,53 @@ public class McpWorkItemsServerTests {
             "declare_work_item", "get_session_work_items",
             "declare_work_breakdown", "retract_work_breakdown",
             "declare_work_relation", "retract_work_relation",
-            "get_work_item_topology"
+            "get_work_item_topology",
+            "merge_work_item", "detach_work_item"
         });
+    }
+
+    [Test]
+    public async Task Merge_body_carries_the_survivor_under_the_servers_name() {
+        var body = McpWorkItemsServer.BuildMergeBody(Args("""{"work_item_id":"wi-dup","into_work_item_id":"wi-keyed"}"""));
+
+        await Assert.That(body["target_id"]!.GetValue<string>()).IsEqualTo("wi-keyed");
+        // The merged-away item is the route, never the body — a body copy could disagree with it.
+        await Assert.That(body.ContainsKey("work_item_id")).IsFalse();
+    }
+
+    [Test]
+    public async Task Merge_body_requires_the_survivor() {
+        await Assert.That(() => McpWorkItemsServer.BuildMergeBody(Args("""{"work_item_id":"wi-dup"}""")))
+            .Throws<ArgumentException>();
+    }
+
+    [Test]
+    public async Task Detach_body_carries_the_explicit_session_id() {
+        var body = McpWorkItemsServer.BuildDetachBody(Args("""{"work_item_id":"wi-1","session_id":"s1"}"""));
+
+        await Assert.That(body["session_id"]!.GetValue<string>()).IsEqualTo("s1");
+    }
+
+    [Test]
+    public async Task Detach_body_rejects_a_non_string_session_id_as_a_field_error() {
+        // A wrong-typed explicit session_id must surface as the field's own error, the shape
+        // HandleToolCallAsync relays — not as the dispatcher's generic internal failure.
+        await Assert.That(() => McpWorkItemsServer.BuildDetachBody(Args("""{"work_item_id":"wi-1","session_id":42}""")))
+            .Throws<ArgumentException>().WithMessageContaining("session_id");
+    }
+
+    [Test]
+    public async Task Merge_and_detach_declare_their_required_ids() {
+        var byName = McpWorkItemsServer.BuildToolsList().ToDictionary(t => t.Name);
+
+        await Assert.That(byName["merge_work_item"].InputSchema.Required).IsEquivalentTo(new[] { "work_item_id", "into_work_item_id" });
+        await Assert.That(byName["detach_work_item"].InputSchema.Required).IsEquivalentTo(new[] { "work_item_id" });
+    }
+
+    [Test]
+    public async Task Server_instructions_steer_duplicates_to_merge_not_breakdown() {
+        await Assert.That(McpWorkItemsServer.ServerInstructions).Contains("merge_work_item");
+        await Assert.That(McpWorkItemsServer.ServerInstructions).Contains("detach_work_item");
     }
 
     [Test]
