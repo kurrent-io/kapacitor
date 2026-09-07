@@ -29,6 +29,9 @@ public sealed class ServerConnectionService : IServerLane, ILaunchClient, IAsync
     readonly Subject<Unit> _daemonsChanged = new();
     readonly Subject<LaunchFailure> _launchFailures = new();
     readonly SemaphoreSlim _restartGate = new(1, 1);
+    // Guards a Connected publish's hub-is-current-and-still-connected check against the
+    // Reconnecting handler's own publish, so the two can never interleave.
+    readonly Lock _statusLock = new();
     readonly CancellationTokenSource _lifetime = new();
     CancellationTokenSource? _loopCts;
     Task _loop = Task.CompletedTask;
@@ -79,23 +82,27 @@ public sealed class ServerConnectionService : IServerLane, ILaunchClient, IAsync
             HubConnection? hub = null;
             try {
                 hub = Build();
+                var capturedHub = hub;
 
                 // Registered before StartAsync (SignalR supports that), so a close during the
                 // DiagnoseAsync token read below — or during StartAsync itself — is still
                 // observed, never lost with status stuck on a dead hub.
                 var closed = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
                 hub.Closed += ex => { closed.TrySetResult(ex); return Task.CompletedTask;  };
-                hub.Reconnecting += _ => { _status.OnNext(new(ServerLaneState.Retrying, "reconnecting")); return Task.CompletedTask; };
+                hub.Reconnecting += _ => {
+                    lock (_statusLock) _status.OnNext(new(ServerLaneState.Retrying, "reconnecting"));
+                    return Task.CompletedTask;
+                };
                 hub.Reconnected += async _ => {
                     var (diagnostic, subject) = await DiagnoseAsync().ConfigureAwait(false);
-                    _status.OnNext(new(ServerLaneState.Connected, Diagnostic: diagnostic, Subject: subject));
+                    PublishConnectedIfCurrent(capturedHub, diagnostic, subject);
                 };
 
                 await hub.StartAsync(ct).ConfigureAwait(false);
                 _hub = hub;
                 attempt = 0;
                 var (connectedDiagnostic, connectedSubject) = await DiagnoseAsync().ConfigureAwait(false);
-                _status.OnNext(new(ServerLaneState.Connected, Diagnostic: connectedDiagnostic, Subject: connectedSubject));
+                PublishConnectedIfCurrent(capturedHub, connectedDiagnostic, connectedSubject);
 
                 Exception? closeReason;
                 await using (ct.Register(() => closed.TrySetResult(null)))
@@ -134,6 +141,18 @@ public sealed class ServerConnectionService : IServerLane, ILaunchClient, IAsync
         hub.On(HubBroadcasts.DaemonsChanged, () => _daemonsChanged.OnNext(Unit.Default));
         hub.On<string, string>(HubBroadcasts.LaunchFailed, (agentId, reason) => _launchFailures.OnNext(new(agentId, reason)));
         return hub;
+    }
+
+    /// Publishes Connected only when `hub` is still the live one AND actually connected at
+    /// publish time — the awaited DiagnoseAsync above can outlast a close that already moved the
+    /// lane to Retrying/SignedOut or a fresh reconnect, and publishing anyway would let a stale
+    /// Connected reach downstream DistinctUntilChanged and swallow the real transition that
+    /// followed it. Locked against the Reconnecting handler so the two can never interleave.
+    void PublishConnectedIfCurrent(HubConnection hub, string? diagnostic, string? subject) {
+        lock (_statusLock) {
+            if (ReferenceEquals(_hub, hub) && hub.State == HubConnectionState.Connected)
+                _status.OnNext(new(ServerLaneState.Connected, Diagnostic: diagnostic, Subject: subject));
+        }
     }
 
     async Task<(string? Diagnostic, string? Subject)> DiagnoseAsync() {
