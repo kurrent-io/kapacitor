@@ -23,7 +23,7 @@ public sealed class VelopackAppUpdater : IAppUpdater {
         _manager.UpdatePendingRestart is { } asset ? new UpdateCandidate(asset.Version.ToString(), asset.Version.IsPrerelease) : null;
 
     public async Task<UpdateCandidate?> CheckAsync(CancellationToken ct) {
-        var info = await _manager.CheckForUpdatesAsync().ConfigureAwait(false);
+        var info = await _manager.CheckForUpdatesAsync().WaitAsync(ct).ConfigureAwait(false);
         _lastCheck = info;
         if (info is null) return null;
         var target = info.TargetFullRelease.Version;
