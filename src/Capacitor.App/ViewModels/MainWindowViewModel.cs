@@ -102,6 +102,11 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     ObservableAsPropertyHelper<string?>? _reason;
     public string? Reason => _reason?.Value;
 
+    // The server lane's silent-deafness diagnostic — informational only, never blocking; null
+    // while the lane is healthy or absent.
+    ObservableAsPropertyHelper<string?>? _serverLaneTip;
+    public string? ServerLaneTip => _serverLaneTip?.Value;
+
     readonly BehaviorSubject<string?> _startMessageChanges = new(null);
 
     /// Constructed once at the composition root; the prompt window's onConcluded callback nudges
@@ -220,13 +225,18 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     /// The Sessions rail. Null means this window has no rail to keep in sync — every existing
     /// caller that predates it keeps working the way it always has.
     /// </param>
+    /// <param name="laneStatus">
+    /// The app's own server lane (IServerLane.Status), for the footer's ServerLaneTip diagnostic.
+    /// Null means the tip never sets — every existing caller without a live lane.
+    /// </param>
     public MainWindowViewModel(
             IDaemonClientService service,
             CancellationToken shutdownToken, ActivityViewModel activity, Func<CancellationToken, Task>? startAction = null,
             IObservable<string?>? lifecycleStatus = null, TimeProvider? time = null, HomeViewModel? home = null,
             NavigationGate? navigation = null, Action<Func<Task>>? trackWorkspaceTeardown = null,
             Func<string, WorkspaceViewModel>? workspaceFactory = null, SessionRailViewModel? rail = null,
-            string? tenantName = null, IObservable<string?>? lifecycleAttention = null) {
+            string? tenantName = null, IObservable<string?>? lifecycleAttention = null,
+            IObservable<ServerLaneStatus>? laneStatus = null) {
         _service = service;
         _time = time ?? TimeProvider.System;
         Activity = activity;
@@ -333,6 +343,12 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
 
             _reason = status.Select(ReasonText)
                 .ToProperty(this, x => x.Reason, (string?)null)
+                .DisposeWith(disposables);
+
+            _serverLaneTip = (laneStatus ?? Observable.Empty<ServerLaneStatus>())
+                .Select(s => s.Diagnostic)
+                .ObserveOn(RxSchedulers.MainThreadScheduler)
+                .ToProperty(this, x => x.ServerLaneTip, (string?)null)
                 .DisposeWith(disposables);
 
             status.Where(s => s.State == AttachState.Connected)

@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using System.Net;
-using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -11,6 +10,8 @@ using Capacitor.Cli.Core.Telemetry;
 using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.WorkItems;
 
+using Capacitor.Cli.Core.Http;
+
 namespace Capacitor.Cli.Commands;
 
 /// <summary> P2 task 17: MCP tools for the work-items correlation surface — attach the
@@ -18,7 +19,7 @@ namespace Capacitor.Cli.Commands;
 /// already attached to. Cloned from <see cref="McpMemoryServer"/>'s stdio JSON-RPC loop; unlike
 /// memory this server has no repo/machine context to resolve — the only per-call input is the
 /// session id and the declare selector, both carried in the tool arguments.</summary>
-sealed class McpWorkItemsServer(ConfigRoot config, ProfileContext profiles) {
+sealed class McpWorkItemsServer(ConfigRoot config, ProfileContext profiles, TokenStore tokens, ICapacitorHttpClient http) {
     internal const string NotLoggedInMessage = AuthRejectionNotice.NotLoggedIn;
 
     internal const string NoSessionIdMessage =
@@ -34,7 +35,7 @@ sealed class McpWorkItemsServer(ConfigRoot config, ProfileContext profiles) {
         // "mcp-server" so per-tool-call events actually leave. Best-effort: a stale token on
         // disk must never block the server from starting.
         var loggedIn = false;
-        try { loggedIn = await new TokenStore(config).LoadForProfileAsync(profiles.Name) is not null; } catch { }
+        try { loggedIn = await tokens.LoadForProfileAsync(profiles.Name) is not null; } catch { }
         CliTelemetry.Initialize("mcp-server", baseUrl, loggedIn, config);
 
         // Validate the server_url shape once, locally (pure string check — no network, token,
@@ -48,16 +49,14 @@ sealed class McpWorkItemsServer(ConfigRoot config, ProfileContext profiles) {
         HttpClient? client = null;
 
         // Guarded tool dispatch: never let the stdio JSON-RPC loop die on one bad request. An
-        // unusable server_url would otherwise reach EnsureAbsolute inside the auth-client factory,
-        // which hard-exits the process (Environment.Exit(2)) mid-request; and an unexpected
-        // failure would bubble out of the loop. Return a JSON-RPC tool error in both cases so the
-        // server keeps serving.
+        // unexpected failure would otherwise bubble out of the loop and kill the server mid-protocol;
+        // return a JSON-RPC tool error instead so it keeps serving.
         async Task<string> DispatchToolCallAsync(JsonNode callId, JsonObject callRequest) {
             if (!urlOk)
                 return BuildToolResult(callId, HttpClientExtensions.SchemeMissingHint, isError: true);
 
             try {
-                client ??= await HttpClientExtensions.CreateAuthenticatedClientAsync(config, profiles, baseUrl, autoRetryUnauthorized: false);
+                client ??= await http.ForSessionAsync();
                 return await HandleToolCallAsync(callId, callRequest, client, baseUrl);
             } catch (Exception ex) {
                 // Unexpected: log the detail to stderr (not to the client, which could leak local
@@ -141,7 +140,10 @@ sealed class McpWorkItemsServer(ConfigRoot config, ProfileContext profiles) {
         "(declare_work_relation — 'blocks'/'blocked_by'). Breakdown and relations are DECLARED, never " +
         "inferred: if you don't declare them the work item's topology stays empty. Declare only real " +
         "structure you're confident of — every item must be visible to you, but parts and dependencies " +
-        "may cross repositories — and use the retract_* tools when it changes.";
+        "may cross repositories — and use the retract_* tools when it changes. Two items for the same " +
+        "work — a title-only item you created and the issue/PR-keyed item the server minted — are a " +
+        "duplicate: merge yours into the keyed one with merge_work_item. A wrong attach is undone with " +
+        "detach_work_item, never papered over with a breakdown.";
 
     static string BuildInitializeResponse(JsonNode id, JsonObject request) =>
         ToResponse<McpInitResult>(
@@ -169,22 +171,29 @@ sealed class McpWorkItemsServer(ConfigRoot config, ProfileContext profiles) {
 
         try {
             using var httpResponse = toolName switch {
-                "declare_work_item"      => await SendWithRefreshRetryAsync(client, baseUrl, c => c.PostAsync($"{baseUrl}/api/work-items/declare", ToJsonContent(BuildDeclareBody(arguments)))),
-                "get_session_work_items" => await SendWithRefreshRetryAsync(client, baseUrl, c => c.GetAsync(BuildSessionUrl(baseUrl, arguments))),
+                "declare_work_item"      => await client.PostAsync($"{baseUrl}/api/work-items/declare", ToJsonContent(BuildDeclareBody(arguments))),
+                "get_session_work_items" => await client.GetAsync(BuildSessionUrl(baseUrl, arguments)),
 
                 // The declared breakdown/relation surface. Every id is a
                 // REQUIRED argument here, unlike session_id: there is no ambient "current work item"
                 // to fall back to, and guessing one would attach the wrong graph edge.
-                "declare_work_breakdown" => await SendWithRefreshRetryAsync(client, baseUrl, c => c.PostAsync(
-                    ItemUrl(baseUrl, arguments, "parent_id", "breakdown"), ToJsonContent(BuildBreakdownBody(arguments)))),
-                "retract_work_breakdown" => await SendWithRefreshRetryAsync(client, baseUrl, c => c.PostAsync(
-                    ItemUrl(baseUrl, arguments, "parent_id", "breakdown/retract"), ToJsonContent(BuildBreakdownBody(arguments)))),
-                "declare_work_relation"  => await SendWithRefreshRetryAsync(client, baseUrl, c => c.PostAsync(
-                    ItemUrl(baseUrl, arguments, "from_id", "relations"), ToJsonContent(BuildRelationBody(arguments)))),
-                "retract_work_relation"  => await SendWithRefreshRetryAsync(client, baseUrl, c => c.PostAsync(
-                    ItemUrl(baseUrl, arguments, "from_id", "relations/retract"), ToJsonContent(BuildRelationBody(arguments)))),
-                "get_work_item_topology" => await SendWithRefreshRetryAsync(client, baseUrl, c => c.GetAsync(
-                    ItemUrl(baseUrl, arguments, "work_item_id", "topology"))),
+                "declare_work_breakdown" => await client.PostAsync(
+                    ItemUrl(baseUrl, arguments, "parent_id", "breakdown"), ToJsonContent(BuildBreakdownBody(arguments))),
+                "retract_work_breakdown" => await client.PostAsync(
+                    ItemUrl(baseUrl, arguments, "parent_id", "breakdown/retract"), ToJsonContent(BuildBreakdownBody(arguments))),
+                "declare_work_relation"  => await client.PostAsync(
+                    ItemUrl(baseUrl, arguments, "from_id", "relations"), ToJsonContent(BuildRelationBody(arguments))),
+                "retract_work_relation"  => await client.PostAsync(
+                    ItemUrl(baseUrl, arguments, "from_id", "relations/retract"), ToJsonContent(BuildRelationBody(arguments))),
+                "get_work_item_topology" => await client.GetAsync(
+                    ItemUrl(baseUrl, arguments, "work_item_id", "topology")),
+
+                // The corrections: the merged-away / detached item is the route, like the topology
+                // verbs; the survivor and the session ride in the body.
+                "merge_work_item"        => await client.PostAsync(
+                    ItemUrl(baseUrl, arguments, "work_item_id", "merge"), ToJsonContent(BuildMergeBody(arguments))),
+                "detach_work_item"       => await client.PostAsync(
+                    ItemUrl(baseUrl, arguments, "work_item_id", "detach"), ToJsonContent(BuildDetachBody(arguments))),
 
                 _                        => throw new ArgumentException($"Unknown tool: {toolName}")
             };
@@ -192,7 +201,7 @@ sealed class McpWorkItemsServer(ConfigRoot config, ProfileContext profiles) {
             var body = await httpResponse.Content.ReadAsStringAsync();
 
             if (httpResponse.StatusCode == HttpStatusCode.Unauthorized) {
-                return BuildToolResult(id, await AuthRejectionNotice.ForPersistentUnauthorizedAsync(config, profiles.Name, baseUrl), isError: true);
+                return BuildToolResult(id, await AuthRejectionNotice.ForPersistentUnauthorizedAsync(tokens, profiles.Name, baseUrl), isError: true);
             }
 
             if (!httpResponse.IsSuccessStatusCode) {
@@ -205,45 +214,6 @@ sealed class McpWorkItemsServer(ConfigRoot config, ProfileContext profiles) {
         } catch (HttpRequestException ex) {
             return BuildToolResult(id, $"Error: {ex.Message}", isError: true);
         }
-    }
-
-    /// <summary>
-    /// Sends an HTTP request with one-shot retry on 401. The MCP server reuses a single
-    /// <see cref="HttpClient"/> for the lifetime of the agent session, so a cached token
-    /// that was valid at startup may have expired by the time a tool call is made. On 401
-    /// we ask <see cref="TokenStore.GetValidTokensForProfileAsync"/> for a fresh token (which triggers
-    /// the refresh flow for WorkOS / GitHubApp), update the client's <c>Authorization</c>
-    /// header, and retry the same request once. If refresh fails (genuinely not logged in
-    /// or refresh-token expired), the original 401 is returned and the caller surfaces the
-    /// store-aware <see cref="AuthRejectionNotice"/> line (which keeps the legacy
-    /// "Not logged in" wording only for a genuinely missing login).
-    /// </summary>
-    async Task<HttpResponseMessage> SendWithRefreshRetryAsync(HttpClient client, string baseUrl, Func<HttpClient, Task<HttpResponseMessage>> send) {
-        var response = await send(client);
-
-        if (response.StatusCode != HttpStatusCode.Unauthorized) return response;
-
-        // Force a refresh against the token this client actually sent: the 401 proves the server
-        // rejected it even though it may still look unexpired locally, which a plain load would
-        // not heal. Passing the rejected token also means a peer process that already refreshed is
-        // adopted rather than rotated a second time. With no token attached at all — this MCP
-        // process outlives a `kcap login` that finished after the client was built — there is
-        // nothing to refresh, so just pick up whatever is stored now.
-        var rejected = client.DefaultRequestHeaders.Authorization?.Parameter;
-
-        // A failed rotation must not be worse than no rotation: fall back to whatever is stored so
-        // the pre-existing "re-read and resend once" recovery still happens.
-        var tokens    = new TokenStore(config);
-        var refreshed = rejected is null
-            ? (await tokens.GetValidTokensForServerAsync(profiles.Name, baseUrl)).Tokens
-            : await tokens.RecoverForServerAsync(profiles.Name, baseUrl, rejected);
-
-        if (refreshed is null) return response; // genuinely not logged in; keep the original 401
-
-        response.Dispose();
-        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", refreshed.AccessToken);
-
-        return await send(client);
     }
 
     static StringContent ToJsonContent(JsonObject body) => new(body.ToJsonString(), Encoding.UTF8, "application/json");
@@ -259,8 +229,14 @@ sealed class McpWorkItemsServer(ConfigRoot config, ProfileContext profiles) {
     /// dashless key the server expects, instead of silently missing the intended session.
     /// </summary>
     internal static string ResolveSessionId(JsonObject? args) {
-        if (args?["session_id"]?.GetValue<string>() is { Length: > 0 } explicitId)
-            return WorkContextIds.CanonicalSessionId(explicitId) ?? throw new ArgumentException(NoSessionIdMessage);
+        if (args?["session_id"] is { } node) {
+            // Shape-tested like RequireString: a number or object here must answer as a field error,
+            // not fall out of the dispatcher as a generic internal failure.
+            if (node is not JsonValue value || !value.TryGetValue<string>(out var explicitId))
+                throw new ArgumentException("'session_id' must be a string.");
+            if (explicitId.Length > 0)
+                return WorkContextIds.CanonicalSessionId(explicitId) ?? throw new ArgumentException(NoSessionIdMessage);
+        }
         if (ArgParsing.ResolveSessionIdFromEnv() is { Length: > 0 } fromEnv) return fromEnv;
 
         throw new ArgumentException(NoSessionIdMessage);
@@ -364,6 +340,15 @@ sealed class McpWorkItemsServer(ConfigRoot config, ProfileContext profiles) {
     /// all. An empty string is a supplied value and is forwarded; an explicit null or a non-string is
     /// a wrong shape and throws; an absent key is left absent so the server's own "required" error
     /// surfaces rather than a local guess.</summary>
+    /// <summary>The survivor travels under the server's name for it (<c>target_id</c>); the tool
+    /// names it <c>into_work_item_id</c> so the direction reads unambiguously beside
+    /// <c>work_item_id</c>.</summary>
+    internal static JsonObject BuildMergeBody(JsonObject? args) =>
+        new() { ["target_id"] = RequireString(args, "into_work_item_id") };
+
+    internal static JsonObject BuildDetachBody(JsonObject? args) =>
+        new() { ["session_id"] = ResolveSessionId(args) };
+
     static void CopySuppliedString(JsonObject? args, string key, JsonObject body) {
         if (args is null || !args.TryGetPropertyValue(key, out var node)) return;
 
@@ -530,6 +515,27 @@ sealed class McpWorkItemsServer(ConfigRoot config, ProfileContext profiles) {
           + "placeholders.",
             new("object", new() {
                 ["work_item_id"] = new("string", "The work item whose topology to read.")
+            }, ["work_item_id"])),
+
+        new("merge_work_item",
+            "Merge a work item INTO another so both read as the survivor: the merged item's sessions and links "
+          + "move to the target and it stops appearing on its own. Use it to collapse a duplicate — typically a "
+          + "title-only item you created into the issue- or PR-keyed item for the same work (keep the keyed item "
+          + "as the target). Repeating a landed merge is a no-op. The server refuses when a user marked either "
+          + "item standalone, rejected the pairing, or the items belong to different tracker hierarchies; then "
+          + "stop and tell the user rather than retrying — they can merge from the dashboard.",
+            new("object", new() {
+                ["work_item_id"]      = new("string", "The work item to merge away (the duplicate)."),
+                ["into_work_item_id"] = new("string", "The work item that survives (prefer the issue- or PR-keyed one).")
+            }, ["work_item_id", "into_work_item_id"])),
+
+        new("detach_work_item",
+            "Detach a session from a work item it was wrongly attached to. The removal is durable: automated "
+          + "correlation cannot re-attach the pair afterwards; only an explicit declare_work_item can. An "
+          + "attachment a user pinned in the dashboard cannot be removed by an agent.",
+            new("object", new() {
+                ["work_item_id"] = new("string", "The work item to detach the session from."),
+                ["session_id"]   = new("string", "Session id to detach. Defaults to the current kcap-hooked session (KCAP_SESSION_ID) when omitted.")
             }, ["work_item_id"]))
     ];
 }

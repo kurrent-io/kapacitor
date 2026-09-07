@@ -458,10 +458,14 @@ public class MainWindowSmokeTests {
 
                 var (actions, _) = NewActions(service);
                 MainWindowViewModel? vm = null;
-                var rail = new SessionRailViewModel(service, id => vm!.OpenSession(id),
-                    p => p.Contains("/wt/", StringComparison.Ordinal)
-                        ? p[..p.IndexOf("/wt/", StringComparison.Ordinal)]
-                        : p);
+                Func<string, string> resolveRepoRoot = p => p.Contains("/wt/", StringComparison.Ordinal)
+                    ? p[..p.IndexOf("/wt/", StringComparison.Ordinal)]
+                    : p;
+                var directory = new AgentDirectory(
+                    service, new FakeRemoteAgents(), new FakeServerLane(), new RepoIdentityResolver(_ => null),
+                    resolveRepoRoot, null, null);
+                var rail = new SessionRailViewModel(
+                    directory, id => vm!.OpenSession(id), _ => { }, resolveRepoRoot);
                 vm = new MainWindowViewModel(service, CancellationToken.None, TestActivity.New(),
                     workspaceFactory: id => NewWorkspace(service, actions, id), rail: rail);
                 var window = new MainWindow { DataContext = vm };

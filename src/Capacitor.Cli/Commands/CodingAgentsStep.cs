@@ -1073,7 +1073,7 @@ internal static class CodingAgentsStep {
     /// CLI picks them up with no manual TOML edit. Gated on Codex hooks installing — the
     /// same "full Codex integration" trigger as skills. No prompt: registration is
     /// non-destructive (only adds missing kcap servers) and mirrors how the Claude plugin
-    /// auto-registers its MCP servers. <c>kcap-flows</c> stays Claude-only.
+    /// auto-registers its MCP servers.
     /// </summary>
     static bool HandleCodexMcp(
             Paths          paths,

@@ -12,6 +12,7 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 /// </summary>
 sealed class CaptureServerConnection() : ServerConnection(
     new() { Name = "test", ServerUrl = "http://127.0.0.1:1" },
+    UnusedTokenStore.Create(),
     NullLoggerFactory.Instance,
     NullLogger<ServerConnection>.Instance
 ) {
@@ -40,6 +41,17 @@ sealed class CaptureServerConnection() : ServerConnection(
 
     /// <summary>Reasons passed to EndAgentSessionAsync, in call order.</summary>
     public List<string> EndSessionReasons { get; } = [];
+
+    int _registerDaemonCalls;
+
+    /// <summary>Full daemon re-registrations requested (the capability self-heal's
+    /// <c>ReRegisterAsync</c> lands here). No-op'd: there is no hub to register with.</summary>
+    public int RegisterDaemonCalls => Volatile.Read(ref _registerDaemonCalls);
+
+    internal override Task RegisterDaemonAsync() {
+        Interlocked.Increment(ref _registerDaemonCalls);
+        return Task.CompletedTask;
+    }
 
     public override async Task LaunchFailedAsync(string agentId, string reason) {
         LaunchFailedCalls.Add((agentId, reason));
