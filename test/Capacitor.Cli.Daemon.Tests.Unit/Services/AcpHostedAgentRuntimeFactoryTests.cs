@@ -2,6 +2,7 @@ using System.Runtime.InteropServices;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Acp;
 using Capacitor.Cli.Core.LocalIpc;
+using Capacitor.Cli.Core.Setup;
 using Capacitor.Cli.Daemon.Acp;
 using Capacitor.Cli.Daemon.Harness.Cursor;
 using Capacitor.Cli.Daemon.Services;
@@ -1718,7 +1719,8 @@ public class AcpHostedAgentRuntimeFactoryTests : IDisposable {
         var realBinary = Environment.ProcessPath!;
 
         var psi = AcpHostedAgentRuntimeFactory.BuildProcessStartInfo(
-            AcpVendorDescriptors.Copilot, new DaemonConfig { CopilotPath = realBinary, Home = Home },
+            AcpVendorDescriptors.Copilot,
+            new DaemonConfig { CopilotPath = realBinary, Home = Home, Binaries = Binaries },
             ctx, supported, BrokeredEnv());
         var argv = psi.ArgumentList.ToArray();
 
@@ -1754,7 +1756,10 @@ public class AcpHostedAgentRuntimeFactoryTests : IDisposable {
         var ex = Assert.Throws<InvalidOperationException>(() =>
             AcpHostedAgentRuntimeFactory.BuildProcessStartInfo(
                 AcpVendorDescriptors.Copilot,
-                new DaemonConfig { CopilotPath = "/definitely/not/an/executable/copilot" },
+                new DaemonConfig {
+                    CopilotPath = "/definitely/not/an/executable/copilot",
+                    Binaries    = Binaries,
+                },
                 ctx, supported, BrokeredEnv()));
 
         await Assert.That(ex.Message).Contains("borrowed_review_vendor_binary_unresolved");
@@ -1956,6 +1961,8 @@ public class AcpHostedAgentRuntimeFactoryTests : IDisposable {
     /// credential gate, and so they behave identically on a developer machine and on CI. The gate
     /// itself is asserted separately, by
     /// <see cref="BuildProcessStartInfo_Copilot_BorrowedSnapshot_WithoutABrokeredToken_FailsClosed"/>.</para></summary>
+    static BinaryProbe Binaries => BinaryProbe.Searching(null);
+
     static Func<string, string?> BrokeredEnv() =>
         name => name == BorrowedReviewAuthBroker.TargetVariable ? "test-token" : null;
 
@@ -1966,7 +1973,8 @@ public class AcpHostedAgentRuntimeFactoryTests : IDisposable {
     /// so any borrowed-argv test using <c>new DaemonConfig()</c> passes only on a machine that happens
     /// to have Copilot installed — green locally, red on CI, which is exactly what happened. The test
     /// host's own binary is guaranteed to exist and be executable everywhere.</para></summary>
-    DaemonConfig ResolvableConfig() => new() { CopilotPath = Environment.ProcessPath!, Home = Home };
+    DaemonConfig ResolvableConfig() =>
+        new() { CopilotPath = Environment.ProcessPath!, Home = Home, Binaries = Binaries };
 
     /// <summary>The borrowed-snapshot binary is the plainly configured one — the same path every
     /// other vendor and every other launch shape uses. A configured path that matches no validated

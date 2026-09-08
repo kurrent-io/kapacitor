@@ -2,7 +2,6 @@ using System.Diagnostics;
 using System.Text;
 using Capacitor.Cli.Core.Harness.Claude;
 using Capacitor.Cli.Core.Config;
-using Capacitor.Cli.Core.Setup;
 
 namespace Capacitor.Cli.Core.Harness.Codex;
 
@@ -24,6 +23,7 @@ static class CodexCliRunner {
             TimeSpan          timeout,
             Action<string>    log,
             Profile?          profile,
+            HarnessRegistry   harnesses,
             string?           model         = null,
             string            reasoning     = "low",
             CancellationToken ct            = default
@@ -46,7 +46,7 @@ static class CodexCliRunner {
         }
 
         try {
-            return await RunCoreAsync(prompt, timeout, log, profile, workingDir, lastMessageFile, model, reasoning, ct);
+            return await RunCoreAsync(prompt, timeout, log, profile, harnesses, workingDir, lastMessageFile, model, reasoning, ct);
         } finally {
             if (createdWorkingDir) {
                 try { Directory.Delete(workingDir, recursive: true); } catch {
@@ -65,6 +65,7 @@ static class CodexCliRunner {
             TimeSpan          timeout,
             Action<string>    log,
             Profile?          profile,
+            HarnessRegistry   harnesses,
             string            workingDir,
             string            lastMessageFile,
             string?           model,
@@ -73,7 +74,7 @@ static class CodexCliRunner {
         ) {
         // Resolve rather than pass "codex" verbatim: CreateProcess appends only .exe, so the
         // npm-installed codex.cmd shim on Windows would never be found.
-        var exePath = BinaryProbe.FromEnvironment().Resolve("codex");
+        var exePath = harnesses.ResolveExecutable(HarnessId.Codex);
 
         if (exePath is null) {
             log("codex not found on PATH");

@@ -90,7 +90,7 @@ public class SessionStartMemoryRedirectTests : IDisposable {
         using var capture = ConsoleOutput.StartCapture();
 
         var exit = await new GeminiHookCommand(
-                Config.Root, profiles, new HookClock(TimeProvider.System), Home,
+                Config.Root, profiles, new HookClock(TimeProvider.System), Home, TestHarnesses.Under(Home),
                 sp.GetRequiredService<ICapacitorHttpClient>())
             .Handle(new StringReader(payload));
 

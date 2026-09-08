@@ -21,7 +21,9 @@ namespace Capacitor.Cli.Commands.Harness;
 /// shared 2-second wall-clock budget, a per-session canonical-event
 /// spool, and a watermark-driven transcript-line backfill.
 /// </summary>
-public sealed class CursorHookCommand(ConfigRoot config, ProfileContext profiles, HookClock clock, UserHome home, ICapacitorHttpClient http) {
+public sealed class CursorHookCommand(
+        ConfigRoot config, ProfileContext profiles, HookClock clock, UserHome home,
+        HarnessRegistry harnesses, ICapacitorHttpClient http) {
     readonly WatcherManager _watchers = new(config, profiles, http);
     readonly CursorMarkers  _markers  = new(config);
 
@@ -81,7 +83,7 @@ public sealed class CursorHookCommand(ConfigRoot config, ProfileContext profiles
             http.ForHookAsync,
             () => {
                 var s = new HookSpool(config);
-                MigrateLegacyCursorSpool(s, CursorHarness.FromEnvironment(home).Paths.SpoolDir);
+                MigrateLegacyCursorSpool(s, harnesses.Of<CursorHarness>().Paths.SpoolDir);
                 s.ReapOlderThan(TimeSpan.FromDays(30));
                 return s;
             });
@@ -257,7 +259,7 @@ public sealed class CursorHookCommand(ConfigRoot config, ProfileContext profiles
             if (agentHostId is not null) node["agent_host_id"] = agentHostId;
 
             // Surface 3: attach this machine's harness inventory, session-start only.
-            if (eventName == "sessionStart") SessionStartInventory.Stamp(node.AsObject(), config, home);
+            if (eventName == "sessionStart") SessionStartInventory.Stamp(node.AsObject(), config, harnesses);
 
             if (eventName == "afterAgentThought") {
                 var sid = TryGetString(node, "session_id") ?? "";
@@ -520,8 +522,8 @@ public sealed class CursorHookCommand(ConfigRoot config, ProfileContext profiles
             // orchestration), so re-read it; sessionStart fires once per session and the read is
             // fail-open under the surrounding catch.
             var nudgeProfile   = profiles.Effective;
-            var workItemsNudge = WorkItemsNudgeEmitter.Resolve(HarnessId.Cursor, sessionId, nudgeProfile?.DisableWorkItemsNudge is true, home);
-            var harnessNudge   = HarnessNudgeEmitter.ResolveFragmentForHook(nudgeProfile?.DisableHarnessNudge is true, config, home);
+            var workItemsNudge = WorkItemsNudgeEmitter.Resolve(HarnessId.Cursor, sessionId, nudgeProfile?.DisableWorkItemsNudge is true, harnesses);
+            var harnessNudge   = HarnessNudgeEmitter.ResolveFragmentForHook(nudgeProfile?.DisableHarnessNudge is true, config, harnesses);
             return SessionStartMemoryOutputAdapters.Render(HarnessId.Cursor, fragment,
                 HarnessNudgeEmitter.Combine(workItemsNudge, harnessNudge));
         } catch {

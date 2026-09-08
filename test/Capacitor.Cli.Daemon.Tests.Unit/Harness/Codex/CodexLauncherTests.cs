@@ -16,7 +16,7 @@ public class CodexLauncherTests {
     // ~/.codex/config.toml, so the inherited-server seam defaults to empty. Tests that
     // exercise the isolation pass inject an explicit inherited list.
     CodexLauncher NewLauncher() =>
-        new(new DaemonConfig { CodexPath = "codex" }, Home, NullLogger<CodexLauncher>.Instance) {
+        new(new DaemonConfig { CodexPath = "codex" }, TestHarnesses.Under(Home), NullLogger<CodexLauncher>.Instance) {
             ReadInheritedMcpServers = static () => []
         };
 
@@ -218,7 +218,7 @@ public class CodexLauncherTests {
     [Test]
     public async Task Review_flow_disables_inherited_servers_and_whitelists_only_flow_result() {
         var config = new DaemonConfig { CodexPath = "codex", CapacitorPath = "/opt/kcap", ServerUrl = "https://t.example" };
-        var launcher = new CodexLauncher(config, Home, NullLogger<CodexLauncher>.Instance) {
+        var launcher = new CodexLauncher(config, TestHarnesses.Under(Home), NullLogger<CodexLauncher>.Instance) {
             // The user has a hand-registered kcap-flows (start_review_flow) plus heavy servers —
             // exactly the recursion-guard threat the dead `mcp_servers={}` clear failed to strip.
             ReadInheritedMcpServers = static () => [new("kcap-flows"), new("node_repl"), new("computer-use")]
@@ -273,7 +273,7 @@ public class CodexLauncherTests {
         // A user server literally named kcap-flow-result must NOT be disabled, or our own
         // injected submission server would be turned off.
         var config = new DaemonConfig { CodexPath = "codex", CapacitorPath = "/opt/kcap", ServerUrl = "https://t.example" };
-        var launcher = new CodexLauncher(config, Home, NullLogger<CodexLauncher>.Instance) {
+        var launcher = new CodexLauncher(config, TestHarnesses.Under(Home), NullLogger<CodexLauncher>.Instance) {
             ReadInheritedMcpServers = static () => [new("kcap-flow-result"), new("node_repl")]
         };
         var ctx = new LauncherContext(
@@ -312,7 +312,7 @@ public class CodexLauncherTests {
         // may already carry an allowlisted kcap server (e.g. kcap-sessions) as enabled=false —
         // `-c` deep-merges over that, so it must be forced back on, not merely left alone.
         var config = new DaemonConfig { CodexPath = "codex", CapacitorPath = "/opt/kcap", ServerUrl = "https://t.example" };
-        var launcher = new CodexLauncher(config, Home, NullLogger<CodexLauncher>.Instance) {
+        var launcher = new CodexLauncher(config, TestHarnesses.Under(Home), NullLogger<CodexLauncher>.Instance) {
             ReadInheritedMcpServers = static () => [new("kcap-sessions")]
         };
 
@@ -329,7 +329,7 @@ public class CodexLauncherTests {
         // and LEFT it enabled, bypassing the recursion guard. The TOML-quoted key inside the single
         // table-value override targets it exactly, so it IS disabled now.
         var config = new DaemonConfig { CodexPath = "codex", CapacitorPath = "/opt/kcap", ServerUrl = "https://t.example" };
-        var launcher = new CodexLauncher(config, Home, NullLogger<CodexLauncher>.Instance) {
+        var launcher = new CodexLauncher(config, TestHarnesses.Under(Home), NullLogger<CodexLauncher>.Instance) {
             ReadInheritedMcpServers = static () => [new("corp.flows"), new("node_repl")]
         };
         var ctx = new LauncherContext(
@@ -361,7 +361,7 @@ public class CodexLauncherTests {
         // No server URL → nothing is whitelisted (zero-server recursion-safe default), but the
         // inherited servers are STILL disabled so they don't leak into the reviewer.
         var config = new DaemonConfig { CodexPath = "codex", CapacitorPath = "/opt/kcap", ServerUrl = "" };
-        var launcher = new CodexLauncher(config, Home, NullLogger<CodexLauncher>.Instance) {
+        var launcher = new CodexLauncher(config, TestHarnesses.Under(Home), NullLogger<CodexLauncher>.Instance) {
             ReadInheritedMcpServers = static () => [new("kcap-flows"), new("node_repl")]
         };
         var ctx = new LauncherContext(
@@ -394,7 +394,7 @@ public class CodexLauncherTests {
         // dotted-name flow server. EVERY one must be disabled so the reviewer's effective MCP is
         // ONLY kcap-flow-result — no source (config, plugin, or dotted) leaks a flow-starting tool.
         var config = new DaemonConfig { CodexPath = "codex", CapacitorPath = "/opt/kcap", ServerUrl = "https://t.example" };
-        var launcher = new CodexLauncher(config, Home, NullLogger<CodexLauncher>.Instance) {
+        var launcher = new CodexLauncher(config, TestHarnesses.Under(Home), NullLogger<CodexLauncher>.Instance) {
             ReadInheritedMcpServers = static () => [
                 new("kcap-flows"),           // user config.toml, plain — the classic recursion vector
                 new("corp.flows"),           // user config.toml, DOTTED (High 2)
@@ -427,7 +427,7 @@ public class CodexLauncherTests {
         // [mcp_servers.linear] url = "…". The disable override for a url server must re-state its
         // own url as the transport; stdio/transport-less servers keep the sentinel shape.
         var config = new DaemonConfig { CodexPath = "codex", CapacitorPath = "/opt/kcap", ServerUrl = "https://t.example" };
-        var launcher = new CodexLauncher(config, Home, NullLogger<CodexLauncher>.Instance) {
+        var launcher = new CodexLauncher(config, TestHarnesses.Under(Home), NullLogger<CodexLauncher>.Instance) {
             ReadInheritedMcpServers = static () => [
                 new("linear", "https://mcp.linear.app/mcp"),  // config-defined streamable_http
                 new("node_repl")                              // stdio — keeps the sentinel shape
@@ -453,7 +453,7 @@ public class CodexLauncherTests {
         // hand-registered flow-starting server through. The enumeration seam throws, and BuildArgs
         // surfaces it as CodexReviewerMcpIsolationException for the orchestrator to reject the launch.
         var config = new DaemonConfig { CodexPath = "codex", CapacitorPath = "/opt/kcap", ServerUrl = "https://t.example" };
-        var launcher = new CodexLauncher(config, Home, NullLogger<CodexLauncher>.Instance) {
+        var launcher = new CodexLauncher(config, TestHarnesses.Under(Home), NullLogger<CodexLauncher>.Instance) {
             ReadInheritedMcpServers = static () =>
                 throw new CodexReviewerMcpIsolationException("mcp list failed")
         };
@@ -707,7 +707,7 @@ public class CodexLauncherTests {
     // === D-c: definition MCP allowlist materialization ===
 
     CodexLauncher NewFlowResultLauncher() =>
-        new(new DaemonConfig { CodexPath = "codex", CapacitorPath = "/opt/kcap", ServerUrl = "https://t.example" }, Home, NullLogger<CodexLauncher>.Instance) {
+        new(new DaemonConfig { CodexPath = "codex", CapacitorPath = "/opt/kcap", ServerUrl = "https://t.example" }, TestHarnesses.Under(Home), NullLogger<CodexLauncher>.Instance) {
             ReadInheritedMcpServers = static () => []
         };
 

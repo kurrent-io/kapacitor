@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Config;
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Core.Harness.Claude;
 using Capacitor.Cli.Core.Harness.Codex;
 using Capacitor.Cli.Core.Http;
@@ -9,7 +10,7 @@ using Capacitor.Cli.Core.Http;
 namespace Capacitor.Cli.Commands;
 
 sealed class WhatsDoneCommand(
-        ConfigRoot config, ProfileContext profiles, UserHome home, ICapacitorHttpClient http) {
+        ConfigRoot config, ProfileContext profiles, HarnessRegistry harnesses, ICapacitorHttpClient http) {
     public async Task<int> HandleGenerateWhatsDone(string baseUrl, string sessionId, string vendor = "claude") {
         // Redirect output to log file (same pattern as WatchCommand)
         var logDir = config.Path("logs");
@@ -82,8 +83,8 @@ sealed class WhatsDoneCommand(
         var prompt = EmbeddedResources.Load("prompt-whats-done.txt") + recapText;
 
         var result = vendor == "codex"
-            ? await CodexCliRunner.RunAsync(prompt, TimeSpan.FromSeconds(90), log, profiles.Resolution.Profile)
-            : await ClaudeCliRunner.RunAsync(prompt, TimeSpan.FromSeconds(90), log, profiles.Resolution.Profile, home,
+            ? await CodexCliRunner.RunAsync(prompt, TimeSpan.FromSeconds(90), log, profiles.Resolution.Profile, harnesses)
+            : await ClaudeCliRunner.RunAsync(prompt, TimeSpan.FromSeconds(90), log, profiles.Resolution.Profile, harnesses,
                 systemPrompt: TitleGeneration.HeadlessSummarizerSystemPrompt);
 
         if (result is null) {

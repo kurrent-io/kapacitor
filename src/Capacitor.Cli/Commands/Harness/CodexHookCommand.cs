@@ -36,7 +36,9 @@ namespace Capacitor.Cli.Commands.Harness;
 ///   PreToolUse        → swallowed
 ///   PostToolUse       → swallowed
 /// </remarks>
-sealed class CodexHookCommand(ConfigRoot config, ProfileContext profiles, HookClock clock, UserHome home, ICapacitorHttpClient http) {
+sealed class CodexHookCommand(
+        ConfigRoot config, ProfileContext profiles, HookClock clock, UserHome home,
+        HarnessRegistry harnesses, ICapacitorHttpClient http) {
     readonly WatcherManager  _watchers = new(config, profiles, http);
     readonly AgentHookPoster _poster   = new(config, profiles, http);
 
@@ -340,7 +342,7 @@ sealed class CodexHookCommand(ConfigRoot config, ProfileContext profiles, HookCl
             node["workspace_root"] = workspaceRoot;
         }
 
-        SessionStartInventory.Stamp(node.AsObject(), config, home);
+        SessionStartInventory.Stamp(node.AsObject(), config, harnesses);
         var enriched = await RepositoryDetection.EnrichWithRepositoryInfo(config, node.ToJsonString());
 
         // Repo exclusion runs here (not above the event switch) so that the
@@ -405,8 +407,8 @@ sealed class CodexHookCommand(ConfigRoot config, ProfileContext profiles, HookCl
         // The static work-items nudge, resolved (availability-gated + opt-out) independently
         // of the lease-driven memory/guidelines fragment and merged only at the output layer.
         var workItemsNudge = HarnessNudgeEmitter.Combine(
-            WorkItemsNudgeEmitter.Resolve(HarnessId.Codex, sessionId, activeProfile?.DisableWorkItemsNudge is true, home),
-            HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true, config, home));
+            WorkItemsNudgeEmitter.Resolve(HarnessId.Codex, sessionId, activeProfile?.DisableWorkItemsNudge is true, harnesses),
+            HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true, config, harnesses));
 
         await RunSessionStartHandshakeForTest(
             writeStdout: () => WriteSessionStartOutput(Console.Out, fragment, workItemsNudge),

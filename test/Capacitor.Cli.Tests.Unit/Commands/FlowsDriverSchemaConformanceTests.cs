@@ -3,9 +3,12 @@ using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Harness.Antigravity;
+using Capacitor.Cli.Core.Harness.Codex;
 using Capacitor.Cli.Core.Harness.Copilot;
+using Capacitor.Cli.Core.Harness.Cursor;
 using Capacitor.Cli.Core.Harness.Gemini;
 using Capacitor.Cli.Core.Harness.Kiro;
+using Capacitor.Cli.Core.Harness.OpenCode;
 using Capacitor.Cli.Core.Harness.Pi;
 using Capacitor.Cli.Core.Mcp;
 using Tomlyn;
@@ -202,7 +205,7 @@ public class FlowsDriverSchemaConformanceTests {
     static PluginEnvironment TestEnv(string home, string? pluginRoot = null) =>
         new(Home: new(home), Profiles: new ProfileConfig(), ResolvePluginPath: () => pluginRoot,
             Stdout: TextWriter.Null, Stderr: TextWriter.Null) {
-            Paths = TestHarnessPaths.NoOverrides(new(home)),
+            Harnesses = TestHarnesses.Under(new(home)),
             ResolveMcpBinaryPath = () => InjectedBinaryPath
         };
 
@@ -249,43 +252,43 @@ public class FlowsDriverSchemaConformanceTests {
     static readonly Arm[] Arms = [
         new("Cursor", "--cursor",
             env => {
-                Directory.CreateDirectory(Path.GetDirectoryName(env.Paths.Cursor.UserHooksJson)!);
-                File.WriteAllText(env.Paths.Cursor.UserHooksJson,
+                Directory.CreateDirectory(Path.GetDirectoryName(env.Harnesses.Of<CursorHarness>().Paths.UserHooksJson)!);
+                File.WriteAllText(env.Harnesses.Of<CursorHarness>().Paths.UserHooksJson,
                     """{"version":1,"hooks":{"sessionStart":[{"command":"kcap hook --cursor"}]}}""");
             },
-            env => env.Paths.Cursor.UserMcpJson, Json("Cursor", "mcpServers")),
+            env => env.Harnesses.Of<CursorHarness>().Paths.UserMcpJson, Json("Cursor", "mcpServers")),
 
         new("Copilot", "--copilot",
-            env => { PluginCommand.InstallCopilotHooks(env.Paths.Copilot.KcapHooksJson);
-                     CopilotHooksInstaller.DeleteMarker(env.Paths.Copilot.KcapHooksJson); },
-            env => env.Paths.Copilot.McpConfigJson, Json("Copilot", "mcpServers")),
+            env => { PluginCommand.InstallCopilotHooks(env.Harnesses.Of<CopilotHarness>().Paths.KcapHooksJson);
+                     CopilotHooksInstaller.DeleteMarker(env.Harnesses.Of<CopilotHarness>().Paths.KcapHooksJson); },
+            env => env.Harnesses.Of<CopilotHarness>().Paths.McpConfigJson, Json("Copilot", "mcpServers")),
 
         new("Gemini", "--gemini",
-            env => { PluginCommand.InstallGeminiHooks(env.Paths.Gemini.SettingsJson);
-                     GeminiHooksInstaller.DeleteMarker(env.Paths.Gemini.SettingsJson); },
-            env => env.Paths.Gemini.SettingsJson, Json("Gemini", "mcpServers")),
+            env => { PluginCommand.InstallGeminiHooks(env.Harnesses.Of<GeminiHarness>().Paths.SettingsJson);
+                     GeminiHooksInstaller.DeleteMarker(env.Harnesses.Of<GeminiHarness>().Paths.SettingsJson); },
+            env => env.Harnesses.Of<GeminiHarness>().Paths.SettingsJson, Json("Gemini", "mcpServers")),
 
         new("Kiro", "--kiro",
-            env => { Directory.CreateDirectory(Path.GetDirectoryName(env.Paths.Kiro.KcapAgentJson)!);
-                     File.WriteAllText(env.Paths.Kiro.KcapAgentJson, """{"name":"kcap","hooks":{}}""");
-                     KiroHooksInstaller.WriteMarker(env.Paths.Kiro.KcapAgentJson, "kiro_default"); },
-            env => env.Paths.Kiro.SettingsMcpJson, Json("Kiro", "mcpServers")),
+            env => { Directory.CreateDirectory(Path.GetDirectoryName(env.Harnesses.Of<KiroHarness>().Paths.KcapAgentJson)!);
+                     File.WriteAllText(env.Harnesses.Of<KiroHarness>().Paths.KcapAgentJson, """{"name":"kcap","hooks":{}}""");
+                     KiroHooksInstaller.WriteMarker(env.Harnesses.Of<KiroHarness>().Paths.KcapAgentJson, "kiro_default"); },
+            env => env.Harnesses.Of<KiroHarness>().Paths.SettingsMcpJson, Json("Kiro", "mcpServers")),
 
         new("Antigravity", "--antigravity",
-            env => { AntigravityHooksInstaller.Install(env.Paths.Antigravity.GlobalHooksJson);
-                     File.WriteAllText(Path.Combine(Path.GetDirectoryName(env.Paths.Antigravity.GlobalHooksJson)!,
+            env => { AntigravityHooksInstaller.Install(env.Harnesses.Of<AntigravityHarness>().Paths.GlobalHooksJson);
+                     File.WriteAllText(Path.Combine(Path.GetDirectoryName(env.Harnesses.Of<AntigravityHarness>().Paths.GlobalHooksJson)!,
                          AntigravityHooksInstaller.MarkerFileName), "0.0.0-stale"); },
-            env => env.Paths.Antigravity.McpConfigJson, Json("Antigravity", "mcpServers")),
+            env => env.Harnesses.Of<AntigravityHarness>().Paths.McpConfigJson, Json("Antigravity", "mcpServers")),
 
         new("OpenCode", "--opencode",
-            env => { Directory.CreateDirectory(Path.GetDirectoryName(env.Paths.OpenCode.KcapPlugin)!);
-                     File.WriteAllText(env.Paths.OpenCode.KcapPlugin, "// stale"); },
-            env => env.Paths.OpenCode.McpConfigJson, Json("OpenCode", "mcp", argvArray: true)),
+            env => { Directory.CreateDirectory(Path.GetDirectoryName(env.Harnesses.Of<OpenCodeHarness>().Paths.KcapPlugin)!);
+                     File.WriteAllText(env.Harnesses.Of<OpenCodeHarness>().Paths.KcapPlugin, "// stale"); },
+            env => env.Harnesses.Of<OpenCodeHarness>().Paths.McpConfigJson, Json("OpenCode", "mcp", argvArray: true)),
 
         // Codex installs unconditionally rather than through the `--if-installed` refresh branch, so
         // it takes the bare-install path and needs a planted plugin root. Flagged here rather than
         // hidden, because it is the one arm whose invocation differs.
-        new("Codex", "--codex", _ => { }, env => env.Paths.Codex.ConfigToml, FromToml,
+        new("Codex", "--codex", _ => { }, env => env.Harnesses.Of<CodexHarness>().Paths.ConfigToml, FromToml,
             BareInstall: true),
     ];
 

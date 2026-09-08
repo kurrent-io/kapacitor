@@ -480,7 +480,7 @@ public class PluginCommandCodexTests {
         Stdout:            stdout ?? TextWriter.Null,
         Stderr:            stderr ?? TextWriter.Null
     ) {
-        Paths = TestHarnessPaths.NoOverrides(new(fakeHome)),
+        Harnesses = TestHarnesses.Under(new(fakeHome)),
     };
 
     static void WriteSkill(string root, string name, string body) {
@@ -730,6 +730,6 @@ public class PluginCommandCodexInstallIntegrationTests {
         Stdout:            stdout ?? TextWriter.Null,
         Stderr:            stderr ?? TextWriter.Null
     ) {
-        Paths = TestHarnessPaths.NoOverrides(new(fakeHome)),
+        Harnesses = TestHarnesses.Under(new(fakeHome)),
     };
 }

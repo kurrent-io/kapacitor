@@ -6,6 +6,7 @@ using System.Text.RegularExpressions;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.Config;
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Core.Harness.Antigravity;
 using Capacitor.Cli.Core.Harness.Codex;
 using Capacitor.Cli.Core.Harness.Cursor;
@@ -27,8 +28,8 @@ using Capacitor.Cli.Core.Http;
 namespace Capacitor.Cli.Commands;
 
 partial class WatchCommand(
-        ConfigRoot config, ProfileContext profiles, UserHome home, ICapacitorHttpClient http,
-        ICredentialSource credentials) {
+        ConfigRoot config, ProfileContext profiles, HarnessRegistry harnesses,
+        ICapacitorHttpClient http, ICredentialSource credentials) {
     readonly CursorMarkers  _markers  = new(config);
     readonly WatcherManager _watchers = new(config, profiles, http);
 
@@ -3201,7 +3202,7 @@ partial class WatchCommand(
 
     async Task GenerateTitleAsync(HubConnection hubConnection, string sessionId, WatchState state, string vendor) {
         try {
-            var result = await TitleGeneration.GenerateAsync(state.FirstUserText!, state.FirstAssistantText, Log, profiles.Resolution.Profile, home, vendor);
+            var result = await TitleGeneration.GenerateAsync(state.FirstUserText!, state.FirstAssistantText, Log, profiles.Resolution.Profile, harnesses, vendor);
 
             if (result is null) {
                 Log($"Title generation attempt {state.TitleAttempts}/5 returned no usable result (CLI failure, refusal-like output, or empty title)");

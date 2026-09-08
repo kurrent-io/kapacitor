@@ -1,4 +1,5 @@
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Harness;
 
 namespace Capacitor.Cli.Tests.Unit.Commands;
@@ -26,7 +27,8 @@ public class SkillsTargetCatalogTests {
 
     [Test]
     public async Task Shared_trees_carry_no_vendor_and_vendored_trees_match_their_harness() {
-        var targets = SkillsCommand.Targets(TestHarnessPaths.NoOverrides(Home)).ToDictionary(t => t.Key);
+        var targets = SkillsCommand.Targets(TestHarnesses.Under(Home), new AgentsPaths(Home))
+            .ToDictionary(t => t.Key);
         await Assert.That(targets.Keys.Order().ToArray())
             .IsEquivalentTo(new[] { "agents", "claude", "gemini", "kiro" });
 

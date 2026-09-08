@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Core.Config;
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Core.Harness.Claude;
 
 namespace Capacitor.Cli.Core.Eval;
@@ -240,8 +241,8 @@ public static class EvalService {
         // The profile whose use_provider_api_key the headless judge spawns honour. Carried here
         // rather than resolved per invocation: one eval run must not straddle a profile switch.
         Profile?                       Profile,
-        // Same reasoning for the home the judges read their transcripts under.
-        UserHome                       Home
+        // Same reasoning for the harnesses the judges are spawned and read through.
+        HarnessRegistry                Harnesses
     );
 
     /// <summary>
@@ -262,7 +263,7 @@ public static class EvalService {
             string                          baseUrl,
             HttpClient                      httpClient,
             Profile?                        profile,
-            UserHome                        home,
+            HarnessRegistry                 harnesses,
             string                          sessionId,
             string                          model,
             bool                            chain,
@@ -292,7 +293,7 @@ public static class EvalService {
             var catalog = await EvalCatalogClient.FetchAsync(baseUrl, httpClient, observer, ct);
             if (catalog is null) return null;   // FetchAsync already emitted OnFailed
 
-            var ctx = await PrepareAsync(baseUrl, httpClient, profile, home, sessionId, questions, catalog, chain, thresholdBytes, observer, ct, model, evalRunId);
+            var ctx = await PrepareAsync(baseUrl, httpClient, profile, harnesses, sessionId, questions, catalog, chain, thresholdBytes, observer, ct, model, evalRunId);
             if (ctx is null) return null;
 
             // Iterate the RECONCILED questions (ctx.Questions) — the text path uses
@@ -324,7 +325,7 @@ public static class EvalService {
             string                         baseUrl,
             HttpClient                     httpClient,
             Profile?                       profile,
-            UserHome                       home,
+            HarnessRegistry                harnesses,
             string                         sessionId,
             IReadOnlyList<EvalQuestionDto> questions,
             EvalCatalogDto                 catalog,
@@ -451,7 +452,7 @@ public static class EvalService {
             TraceJson:                  traceJson,
             ContextResult:              context,
             Profile:                    profile,
-            Home:                       home,
+            Harnesses:                  harnesses,
             ToolsPromptTemplate:        toolsPromptTemplate,
             RetrospectivePrompt:        catalog.RetrospectivePrompt,
             RetrospectivePromptVersion: catalog.RetrospectivePromptVersion,
@@ -514,7 +515,7 @@ public static class EvalService {
                 ToolsPerQuestionTimeout,
                 msg => { diagnostics.Add(msg); observer.OnInfo($"  {msg}"); },
                 ctx.Profile,
-                ctx.Home,
+                ctx.Harnesses,
                 model:          JudgeModelFor(model),
                 maxTurns:       ToolsPerQuestionMaxTurns,
                 promptViaStdin: true,
@@ -535,7 +536,7 @@ public static class EvalService {
                 TimeSpan.FromMinutes(5),
                 msg => { diagnostics.Add(msg); observer.OnInfo($"  {msg}"); },
                 ctx.Profile,
-                ctx.Home,
+                ctx.Harnesses,
                 model:          JudgeModelFor(model),
                 maxTurns:       JudgeMaxTurns,
                 // Prompts embed the full compacted trace and can be hundreds
@@ -633,7 +634,7 @@ public static class EvalService {
         var retrospective = await RunRetrospectiveAsync(
             evalRunId:           ctx.EvalRunId,
             profile:             ctx.Profile,
-            home:                ctx.Home,
+            harnesses:           ctx.Harnesses,
             sessionId:           ctx.SessionId,
             model:               model,
             baseUrl:             baseUrl,
@@ -1244,7 +1245,7 @@ public static class EvalService {
     static async Task<EvalRetrospectiveV2?> RunRetrospectiveAsync(
             string                             evalRunId,
             Profile?                           profile,
-            UserHome                           home,
+            HarnessRegistry                    harnesses,
             string                             sessionId,
             string                             model,
             string                             baseUrl,
@@ -1286,7 +1287,7 @@ public static class EvalService {
                 RetrospectiveTimeout,
                 msg => observer.OnInfo($"  {msg}"),
                 profile,
-                home,
+                harnesses,
                 model:          JudgeModelFor(model),
                 maxTurns:       RetrospectiveMaxTurns,
                 // Prompt embeds verdicts + metadata; stdin keeps us below

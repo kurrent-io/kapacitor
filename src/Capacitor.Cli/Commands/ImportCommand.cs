@@ -17,7 +17,8 @@ using Spectre.Console;
 namespace Capacitor.Cli.Commands;
 
 class ImportCommand(
-        ConfigRoot config, ProfileContext profiles, UserHome home, ICapacitorHttpClient http) {
+        ConfigRoot config, ProfileContext profiles, UserHome home, HarnessRegistry harnesses,
+        ICapacitorHttpClient http) {
     /// <summary>
     /// Maximum parallel worker count for the Importing phase. Both the
     /// channel-based dispatcher in ImportChainsAsync and the TTY slot-row
@@ -762,10 +763,8 @@ class ImportCommand(
         var       display    = ImportDisplay.Create(quiet: discoverJson, nested: nested);
 
         // --- Sources ---
-        // Back-compat: a null caller (legacy or test) means "Claude only". Once
-        // Program.cs migrates in E3, every production caller passes sources
-        // explicitly.
-        sources ??= [new ClaudeImportSource(config, ClaudeHarness.FromEnvironment(home).Paths.Projects)];
+        // A caller that names none means Claude only.
+        sources ??= [new ClaudeImportSource(config, harnesses.Of<ClaudeHarness>().Paths.Projects)];
 
         // --- No-source exit policy ---
         var available = sources.Where(s => s.IsAvailable).ToList();
@@ -1379,7 +1378,7 @@ class ImportCommand(
                             await concurrencyLimit.WaitAsync();
 
                             try {
-                                var rc = await new WhatsDoneCommand(config, profiles, home, http)
+                                var rc = await new WhatsDoneCommand(config, profiles, harnesses, http)
                                     .GenerateForSessionAsync(baseUrl, sid, _ => { }, vnd.VendorId);
 
                                 if (rc == 0) Interlocked.Increment(ref summariesGenerated);
@@ -2800,7 +2799,7 @@ class ImportCommand(
             }
 
             var result = await TitleGeneration.GenerateAsync(
-                userText, assistantText, _ => { }, profiles.Resolution.Profile, home, vendor.VendorId);
+                userText, assistantText, _ => { }, profiles.Resolution.Profile, harnesses, vendor.VendorId);
 
             if (result is null) {
                 return TitleResult.Skipped;

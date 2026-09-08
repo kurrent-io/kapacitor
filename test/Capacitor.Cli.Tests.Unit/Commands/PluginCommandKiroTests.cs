@@ -14,9 +14,9 @@ public class PluginCommandKiroTests {
     // Seed an installed kcap agent at the current version so `--if-installed` treats it as current
     // and skips the (kiro-cli-dependent) clone, proceeding straight to MCP registration.
     static void SeedAgent(PluginEnvironment env) {
-        Directory.CreateDirectory(Path.GetDirectoryName(env.Paths.Kiro.KcapAgentJson)!);
-        File.WriteAllText(env.Paths.Kiro.KcapAgentJson, """{"name":"kcap","hooks":{}}""");
-        KiroHooksInstaller.WriteMarker(env.Paths.Kiro.KcapAgentJson, "kiro_default");
+        Directory.CreateDirectory(Path.GetDirectoryName(env.Harnesses.Of<KiroHarness>().Paths.KcapAgentJson)!);
+        File.WriteAllText(env.Harnesses.Of<KiroHarness>().Paths.KcapAgentJson, """{"name":"kcap","hooks":{}}""");
+        KiroHooksInstaller.WriteMarker(env.Harnesses.Of<KiroHarness>().Paths.KcapAgentJson, "kiro_default");
     }
 
     [Test]
@@ -26,15 +26,15 @@ public class PluginCommandKiroTests {
         SeedAgent(env);
 
         // A user server with autoApprove set — both the server and its autoApprove must survive.
-        Directory.CreateDirectory(Path.GetDirectoryName(env.Paths.Kiro.SettingsMcpJson)!);
-        await File.WriteAllTextAsync(env.Paths.Kiro.SettingsMcpJson, """
+        Directory.CreateDirectory(Path.GetDirectoryName(env.Harnesses.Of<KiroHarness>().Paths.SettingsMcpJson)!);
+        await File.WriteAllTextAsync(env.Harnesses.Of<KiroHarness>().Paths.SettingsMcpJson, """
             {"mcpServers":{"my-tool":{"command":"my-tool","args":["serve"],"autoApprove":["do_thing"]}}}
             """);
 
         var exit = await new PluginCommand(env).HandleAsync(["plugin", "install", "--kiro", "--if-installed"]);
         await Assert.That(exit).IsEqualTo(0);
 
-        var servers = JsonNode.Parse(await File.ReadAllTextAsync(env.Paths.Kiro.SettingsMcpJson))!.AsObject()["mcpServers"]!.AsObject();
+        var servers = JsonNode.Parse(await File.ReadAllTextAsync(env.Harnesses.Of<KiroHarness>().Paths.SettingsMcpJson))!.AsObject()["mcpServers"]!.AsObject();
         // Standard shape: command="kcap" + args, no `type`, no `trust` (autoApprove left unset).
         // Registered command is the resolved native binary (injected seam), not the wrapper-resolved "kcap".
         await Assert.That(servers["kcap-review"]!["command"]!.GetValue<string>()).IsEqualTo(TestBinaryPath);
@@ -60,7 +60,7 @@ public class PluginCommandKiroTests {
             ["plugin", "install", "--kiro", "--if-installed", "--skip-kiro-mcp"]);
         await Assert.That(exit).IsEqualTo(0);
 
-        await Assert.That(File.Exists(env.Paths.Kiro.SettingsMcpJson)).IsFalse();
+        await Assert.That(File.Exists(env.Harnesses.Of<KiroHarness>().Paths.SettingsMcpJson)).IsFalse();
     }
 
     [Test]
@@ -69,12 +69,12 @@ public class PluginCommandKiroTests {
         var env = TestEnv(home.Path);
         SeedAgent(env);
         // settings/ dir does not exist yet — Register must create it.
-        await Assert.That(Directory.Exists(Path.GetDirectoryName(env.Paths.Kiro.SettingsMcpJson)!)).IsFalse();
+        await Assert.That(Directory.Exists(Path.GetDirectoryName(env.Harnesses.Of<KiroHarness>().Paths.SettingsMcpJson)!)).IsFalse();
 
         var exit = await new PluginCommand(env).HandleAsync(["plugin", "install", "--kiro", "--if-installed"]);
         await Assert.That(exit).IsEqualTo(0);
 
-        await Assert.That(File.Exists(env.Paths.Kiro.SettingsMcpJson)).IsTrue();
+        await Assert.That(File.Exists(env.Harnesses.Of<KiroHarness>().Paths.SettingsMcpJson)).IsTrue();
     }
 
     [Test]
@@ -83,15 +83,15 @@ public class PluginCommandKiroTests {
         var env = TestEnv(home.Path);
 
         // Seed mcp.json as a prior install would (ownership marker present) + a user server.
-        JsonMcpConfigWriter.Register(env.Paths.Kiro.SettingsMcpJson, KcapMcpServers.All, McpConfigShape.Standard, cwd: null, new McpMarker("kiro", env.Home));
-        var seeded = JsonNode.Parse(await File.ReadAllTextAsync(env.Paths.Kiro.SettingsMcpJson))!.AsObject();
+        JsonMcpConfigWriter.Register(env.Harnesses.Of<KiroHarness>().Paths.SettingsMcpJson, KcapMcpServers.All, McpConfigShape.Standard, cwd: null, new McpMarker("kiro", env.Home));
+        var seeded = JsonNode.Parse(await File.ReadAllTextAsync(env.Harnesses.Of<KiroHarness>().Paths.SettingsMcpJson))!.AsObject();
         seeded["mcpServers"]!["my-tool"] = JsonNode.Parse("""{"command":"my-tool","args":["serve"]}""");
-        await File.WriteAllTextAsync(env.Paths.Kiro.SettingsMcpJson, seeded.ToJsonString());
+        await File.WriteAllTextAsync(env.Harnesses.Of<KiroHarness>().Paths.SettingsMcpJson, seeded.ToJsonString());
 
         var exit = await new PluginCommand(env).HandleAsync(["plugin", "remove", "--kiro"]);
         await Assert.That(exit).IsEqualTo(0);
 
-        var servers = JsonNode.Parse(await File.ReadAllTextAsync(env.Paths.Kiro.SettingsMcpJson))!.AsObject()["mcpServers"]!.AsObject();
+        var servers = JsonNode.Parse(await File.ReadAllTextAsync(env.Harnesses.Of<KiroHarness>().Paths.SettingsMcpJson))!.AsObject()["mcpServers"]!.AsObject();
         var keys    = servers.Select(kv => kv.Key).ToArray();
         await Assert.That(keys).DoesNotContain("kcap-review");
         await Assert.That(keys).DoesNotContain("kcap-memory");
@@ -106,21 +106,21 @@ public class PluginCommandKiroTests {
         // MCP-only prior install, PARTIAL (only kcap-review registered, e.g. from an older kcap),
         // and NO agent clone — as `--skip-kiro-hooks`, or a kiro-cli-less clone failure, leaves it.
         var partial = KcapMcpServers.All.Where(s => s.Name == "kcap-review").ToList();
-        JsonMcpConfigWriter.Register(env.Paths.Kiro.SettingsMcpJson, partial, McpConfigShape.Standard, cwd: null, new McpMarker("kiro", env.Home));
-        await Assert.That(File.Exists(env.Paths.Kiro.KcapAgentJson)).IsFalse();  // no agent installed
+        JsonMcpConfigWriter.Register(env.Harnesses.Of<KiroHarness>().Paths.SettingsMcpJson, partial, McpConfigShape.Standard, cwd: null, new McpMarker("kiro", env.Home));
+        await Assert.That(File.Exists(env.Harnesses.Of<KiroHarness>().Paths.KcapAgentJson)).IsFalse();  // no agent installed
 
         var exit = await new PluginCommand(env).HandleAsync(["plugin", "install", "--kiro", "--if-installed"]);
         await Assert.That(exit).IsEqualTo(0);
 
         // The refresh reached RegisterKiroMcpServersAsync (instead of bailing on the missing agent
         // marker) and added the three servers the partial install lacked...
-        var servers = JsonNode.Parse(await File.ReadAllTextAsync(env.Paths.Kiro.SettingsMcpJson))!.AsObject()["mcpServers"]!.AsObject();
+        var servers = JsonNode.Parse(await File.ReadAllTextAsync(env.Harnesses.Of<KiroHarness>().Paths.SettingsMcpJson))!.AsObject()["mcpServers"]!.AsObject();
         var keys    = servers.Select(kv => kv.Key).ToArray();
         await Assert.That(keys).Contains("kcap-sessions");
         await Assert.That(keys).Contains("kcap-flows");
         await Assert.That(keys).Contains("kcap-memory");
         // ...and the agent was NOT cloned — a refresh must never install hooks the user opted out of.
-        await Assert.That(File.Exists(env.Paths.Kiro.KcapAgentJson)).IsFalse();
+        await Assert.That(File.Exists(env.Harnesses.Of<KiroHarness>().Paths.KcapAgentJson)).IsFalse();
     }
 
     [Test]
@@ -132,8 +132,8 @@ public class PluginCommandKiroTests {
         var exit = await new PluginCommand(env).HandleAsync(["plugin", "install", "--kiro", "--if-installed"]);
         await Assert.That(exit).IsEqualTo(0);
 
-        await Assert.That(File.Exists(env.Paths.Kiro.SettingsMcpJson)).IsFalse();
-        await Assert.That(File.Exists(env.Paths.Kiro.KcapAgentJson)).IsFalse();
+        await Assert.That(File.Exists(env.Harnesses.Of<KiroHarness>().Paths.SettingsMcpJson)).IsFalse();
+        await Assert.That(File.Exists(env.Harnesses.Of<KiroHarness>().Paths.KcapAgentJson)).IsFalse();
     }
 
     // Deterministic native-binary path: registration writes the resolved binary as the command
@@ -148,7 +148,7 @@ public class PluginCommandKiroTests {
         Stdout:            TextWriter.Null,
         Stderr:            TextWriter.Null
     ) {
-        Paths = TestHarnessPaths.NoOverrides(new(fakeHome)),
+        Harnesses = TestHarnesses.Under(new(fakeHome)),
         ResolveMcpBinaryPath = () => TestBinaryPath
     };
 

@@ -239,6 +239,6 @@ public class PluginCommandSkillsTests {
         Stdout:            stdout ?? TextWriter.Null,
         Stderr:            stderr ?? TextWriter.Null
     ) {
-        Paths = TestHarnessPaths.NoOverrides(new(fakeHome)),
+        Harnesses = TestHarnesses.Under(new(fakeHome)),
     };
 }

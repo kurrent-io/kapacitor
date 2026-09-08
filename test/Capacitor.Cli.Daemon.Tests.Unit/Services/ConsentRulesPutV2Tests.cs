@@ -70,7 +70,7 @@ public class ConsentRulesPutV2Tests {
         var permissionBridge = new LocalPermissionBridge(connection, NullLogger<LocalPermissionBridge>.Instance);
 
         var orchestrator = new AgentOrchestrator(
-            config, Config.Root, Home, connection, worktreeManager, repoMatcher,
+            config, Config.Root, Home, TestHarnesses.Under(Home), connection, worktreeManager, repoMatcher,
             new NoopPtyProcessFactory(), new NoopHttpClientFactory(), new FixedCapacitorHttpClient(),
             tokens,
             permissionBridge, new Dictionary<string, IHostedAgentLauncher>(),

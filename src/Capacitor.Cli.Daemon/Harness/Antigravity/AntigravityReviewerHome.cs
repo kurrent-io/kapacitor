@@ -113,6 +113,8 @@ internal static class AntigravityReviewerHome {
               + "launch that could not be removed. Refusing rather than handing a reviewer another "
               + "review's conversation state.");
 
+        var paths = LayoutFor(home);
+
         // Everything from the first WRITE onward is all-or-nothing. The caller binds this home's
         // disposal to the runtime it creates AFTER Create returns, so a throw from in here leaves a
         // home with no disposal path armed at all — and the first thing written, mcp_config.json,
@@ -125,15 +127,15 @@ internal static class AntigravityReviewerHome {
         // behaviour of leaving the previous launch's undeletable content alone, and nothing
         // capability-bearing exists before this point.
         try {
-            WriteMcpConfig(home, injected);
+            WriteMcpConfig(home, paths, injected);
 
             // Injecting a server is only half of a usable reviewer — see WriteSettings.
-            if (grantInjectedMcpTools) WriteSettings(home, injected);
+            if (grantInjectedMcpTools) WriteSettings(home, paths, injected);
 
             // The kcap plugin dir is what lets agy's OWN capture hooks fire (job 1) — its absence is
             // the whole mechanism, so it is checked rather than trusted to follow from "we never wrote
             // it". A future change that seeds a fuller home must trip this, not silently double-capture.
-            if (Directory.Exists(AntigravityHarness.Over(GeminiHarness.FromEnvironment(new(home))).Paths.PluginDir))
+            if (Directory.Exists(paths.PluginDir))
                 throw new InvalidOperationException(
                     $"antigravity_reviewer_home_not_isolated: '{home}' carries a kcap plugin directory, "
                   + "which would let this reviewer's own capture hooks fire against its conversation.");
@@ -147,6 +149,14 @@ internal static class AntigravityReviewerHome {
         return home;
     }
 
+    /// <summary>This home's Antigravity layout, derived from the home directory alone. No vendor
+    /// override is applied: <c>GEMINI_CLI_HOME</c> REPLACES the Gemini root, so honouring it here
+    /// would resolve every file below outside the isolated home — the reviewer's result channel and
+    /// its grants into the operator's own tree, and the plugin-directory check against a directory
+    /// this home does not own.</summary>
+    static AntigravityPaths LayoutFor(string home) =>
+        AntigravityHarness.Over(GeminiHarness.Over(new GeminiPaths(new(home), null))).Paths;
+
     /// <summary>Writes <c>{home}/.gemini/config/mcp_config.json</c> — the plain, trust-less
     /// <c>mcpServers</c> shape (<c>McpConfigShape.Standard</c>) — holding only <paramref name="injected"/>.
     /// A fresh write into a fresh directory, so unlike <c>JsonMcpConfigWriter</c> (which merges into
@@ -155,8 +165,8 @@ internal static class AntigravityReviewerHome {
     /// Built via <c>(JsonNode?)</c> string casts, not <c>JsonValue.Create</c> / collection expressions
     /// — the latter lower to a generic <c>Add&lt;T&gt;</c> that trips NativeAOT (IL3050), the same
     /// rule <c>ClaudeLauncher.BuildReviewFlowMcpConfig</c> and <c>ReviewLaunchBuilder</c> follow.</summary>
-    static void WriteMcpConfig(string home, IReadOnlyList<AcpMcpServerSpec> injected) {
-        var pathFull = ResolveInsideHome(home, AntigravityHarness.Over(GeminiHarness.FromEnvironment(new(home))).Paths.McpConfigJson, "mcp_config.json");
+    static void WriteMcpConfig(string home, AntigravityPaths paths, IReadOnlyList<AcpMcpServerSpec> injected) {
+        var pathFull = ResolveInsideHome(home, paths.McpConfigJson, "mcp_config.json");
 
         Directory.CreateDirectory(Path.GetDirectoryName(pathFull)!);
 
@@ -197,8 +207,8 @@ internal static class AntigravityReviewerHome {
     /// file is this launch's content, so there is no operator config to merge with — which is also what
     /// makes the grant exactly this launch's and not the operator's own rules plus it.</para>
     /// </summary>
-    static void WriteSettings(string home, IReadOnlyList<AcpMcpServerSpec> injected) {
-        var pathFull = ResolveInsideHome(home, AntigravityHarness.Over(GeminiHarness.FromEnvironment(new(home))).Paths.CliSettingsJson, "settings.json");
+    static void WriteSettings(string home, AntigravityPaths paths, IReadOnlyList<AcpMcpServerSpec> injected) {
+        var pathFull = ResolveInsideHome(home, paths.CliSettingsJson, "settings.json");
 
         Directory.CreateDirectory(Path.GetDirectoryName(pathFull)!);
 
@@ -214,26 +224,20 @@ internal static class AntigravityReviewerHome {
 
     /// <summary>
     /// The full path of a file this class means to write INSIDE <paramref name="home"/>, or a throw.
-    ///
-    /// <para><c>AntigravityPaths</c> → <c>GeminiPaths.Root</c> honors THIS PROCESS's own
-    /// <c>GEMINI_CLI_HOME</c> when set, falling back to <paramref name="home"/> only when it is not — so
-    /// on a daemon that happens to run with <c>GEMINI_CLI_HOME</c> set, the resolved path would escape
-    /// <paramref name="home"/> entirely, writing the reviewer's result channel (or its permission
-    /// grants) outside the isolated home job 3 exists to guarantee, and potentially into the operator's
-    /// own Gemini tree. Not something to fix in <c>AntigravityPaths</c> (that fallback is correct for
-    /// its other, non-isolated callers) — this class's whole purpose is isolation, so it is verified
-    /// here rather than assumed, once for every file the home writes.</para>
+    /// Isolation is this class's whole purpose, so containment is verified for every file the home
+    /// writes rather than assumed from <see cref="LayoutFor"/> — a derivation that reintroduced a
+    /// vendor override would otherwise write the reviewer's result channel, or the grants that admit
+    /// it, into the operator's own Gemini tree.
     /// </summary>
-    static string ResolveInsideHome(string home, string path, string what) {
+    internal static string ResolveInsideHome(string home, string path, string what) {
         var homeFull = Path.TrimEndingDirectorySeparator(Path.GetFullPath(home));
         var pathFull = Path.GetFullPath(path);
 
         if (!pathFull.StartsWith(homeFull + Path.DirectorySeparatorChar, StringComparison.Ordinal))
             throw new InvalidOperationException(
                 $"antigravity_reviewer_home_escaped_root: {what} resolved to '{pathFull}', "
-              + $"outside the isolated home '{homeFull}' (likely GEMINI_CLI_HOME set in the daemon's "
-              + "own environment). Refusing to write a reviewer's result channel, or the grants that "
-              + "admit it, outside its isolated home.");
+              + $"outside the isolated home '{homeFull}'. Refusing to write a reviewer's result "
+              + "channel, or the grants that admit it, outside its isolated home.");
 
         return pathFull;
     }

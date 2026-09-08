@@ -148,7 +148,7 @@ public class ClaudeCliRunnerTests {
                 timeout:       TimeSpan.FromSeconds(1),
                 log:           _ => { },
                 profile:       null,
-                home:          Home,
+                harnesses:     TestHarnesses.Under(Home),
                 mcpConfigJson: """{"mcpServers":{}}""",
                 allowedTools:  allowedTools
             )
@@ -353,7 +353,7 @@ public class ClaudeCliRunnerTests {
                             """;
         var logs = new List<string>();
 
-        var result = ClaudeCliRunner.TryReadTranscriptFallback(json, logs.Add, Home);
+        var result = ClaudeCliRunner.TryReadTranscriptFallback(json, logs.Add, TestHarnesses.Under(Home));
 
         await Assert.That(result).IsNull();
         await Assert.That(logs).Contains(l => l.Contains("is_error", StringComparison.Ordinal));

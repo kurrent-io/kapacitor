@@ -27,9 +27,6 @@ namespace Capacitor.Cli.Tests.Unit.Harness.Cursor;
 /// docs/superpowers/specs/2026-07-30-ai1505-cursor-subagent-classification-design.md
 /// </para>
 /// </summary>
-// The hook resolves the harness nudge through HarnessPaths, so it reads every vendor override
-// variable a peer suite clears mid-test.
-[NotInParallel("VendorEnvOverrides")]
 public class CursorLiveSubagentIntegrationTests {
     [TempHome] public required TempHome Home { get; init; }
 
@@ -176,7 +173,7 @@ public class CursorLiveSubagentIntegrationTests {
         }
 
         public Task<int> HandleAsync(string sessionId, string eventName, string? transcriptPath, string extraFields = "") =>
-            new CursorHookCommand(Config, Resolutions.At("http://localhost", Config), new HookClock(TimeProvider.System), _home, new FixedCapacitorHttpClient()).HandleCore(
+            new CursorHookCommand(Config, Resolutions.At("http://localhost", Config), new HookClock(TimeProvider.System), _home, TestHarnesses.Under(_home), new FixedCapacitorHttpClient()).HandleCore(
                 Client,
                 stdin: new StringReader(
                     $$"""{"hook_event_name":"{{eventName}}","session_id":"{{sessionId}}","transcript_path":"{{transcriptPath?.Replace(@"\", @"\\")}}"{{extraFields}}}"""

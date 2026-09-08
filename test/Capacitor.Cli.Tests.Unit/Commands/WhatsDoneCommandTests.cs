@@ -24,7 +24,7 @@ public class WhatsDoneCommandTests {
         var       http    = new RecordingCapacitorHttpClient(handler);
 
         var exit = await new WhatsDoneCommand(
-                Config.Root, Resolutions.At("https://example.test", Config.Root), Home, http)
+                Config.Root, Resolutions.At("https://example.test", Config.Root), TestHarnesses.Under(Home), http)
             .GenerateForSessionAsync("https://example.test", "session-1", _ => { });
 
         await Assert.That(exit).IsEqualTo(1);

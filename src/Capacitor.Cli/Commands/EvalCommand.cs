@@ -1,6 +1,7 @@
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.Eval;
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Core.Http;
 
 namespace Capacitor.Cli.Commands;
@@ -11,7 +12,7 @@ namespace Capacitor.Cli.Commands;
 /// terminal report. The eval pipeline itself lives in the Eval library so
 /// the daemon (DEV-1440 milestone 2) can reuse it.
 /// </summary>
-class EvalCommand(ProfileContext profiles, UserHome home, ICapacitorHttpClient http) {
+class EvalCommand(ProfileContext profiles, HarnessRegistry harnesses, ICapacitorHttpClient http) {
     public async Task<int> HandleEval(
             string  sessionId,
             string  model,
@@ -45,7 +46,7 @@ class EvalCommand(ProfileContext profiles, UserHome home, ICapacitorHttpClient h
         }
 
         var result = await EvalService.RunAsync(
-            baseUrl, httpClient, profiles.Resolution.Profile, home, sessionId, model, chain, thresholdBytes,
+            baseUrl, httpClient, profiles.Resolution.Profile, harnesses, sessionId, model, chain, thresholdBytes,
             observer, questions: questions
         );
 

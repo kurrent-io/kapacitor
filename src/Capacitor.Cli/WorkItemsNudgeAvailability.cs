@@ -1,6 +1,5 @@
 using System.Text;
 using System.Text.Json.Nodes;
-using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Core.Harness.Antigravity;
 using Capacitor.Cli.Core.Harness.Claude;
@@ -35,21 +34,21 @@ static class WorkItemsNudgeAvailability {
     const string ServerName = "kcap-workitems";
 
     /// <param name="codexConfigPath">Overrides the Codex <c>config.toml</c> path (test seam); null uses the default.</param>
-    public static bool IsRegisteredFor(HarnessId harness, UserHome home, string? codexConfigPath = null) {
+    public static bool IsRegisteredFor(HarnessId harness, HarnessRegistry harnesses, string? codexConfigPath = null) {
         try {
             return harness switch {
                 // Claude carries kcap-workitems in the plugin's bundled .mcp.json, so it is available
                 // exactly when that plugin is effectively installed (enabled + its .mcp.json present).
-                HarnessId.Claude  => ClaudePluginInstaller.IsEffectivelyInstalled(ClaudeHarness.FromEnvironment(home).Paths.UserSettings),
-                HarnessId.Codex   => CodexHasWorkItems(codexConfigPath ?? CodexHarness.FromEnvironment(home).Paths.ConfigToml),
-                HarnessId.Cursor  => JsonBlockHasServer(CursorHarness.FromEnvironment(home).Paths.UserMcpJson, "mcpServers"),
-                HarnessId.Copilot => JsonBlockHasServer(CopilotHarness.FromEnvironment(home).Paths.McpConfigJson, "mcpServers"),
-                HarnessId.Gemini  => JsonBlockHasServer(GeminiHarness.FromEnvironment(home).Paths.SettingsJson, "mcpServers"),
-                HarnessId.Kiro    => JsonBlockHasServer(KiroHarness.FromEnvironment(home).Paths.SettingsMcpJson, "mcpServers"),
+                HarnessId.Claude  => ClaudePluginInstaller.IsEffectivelyInstalled(harnesses.Of<ClaudeHarness>().Paths.UserSettings),
+                HarnessId.Codex   => CodexHasWorkItems(codexConfigPath ?? harnesses.Of<CodexHarness>().Paths.ConfigToml),
+                HarnessId.Cursor  => JsonBlockHasServer(harnesses.Of<CursorHarness>().Paths.UserMcpJson, "mcpServers"),
+                HarnessId.Copilot => JsonBlockHasServer(harnesses.Of<CopilotHarness>().Paths.McpConfigJson, "mcpServers"),
+                HarnessId.Gemini  => JsonBlockHasServer(harnesses.Of<GeminiHarness>().Paths.SettingsJson, "mcpServers"),
+                HarnessId.Kiro    => JsonBlockHasServer(harnesses.Of<KiroHarness>().Paths.SettingsMcpJson, "mcpServers"),
                 // OpenCode's block key is `mcp`, not `mcpServers`.
-                HarnessId.OpenCode    => JsonBlockHasServer(OpenCodeHarness.FromEnvironment(home).Paths.McpConfigJson, "mcp"),
-                HarnessId.Antigravity => JsonBlockHasServer(AntigravityHarness.Over(GeminiHarness.FromEnvironment(home)).Paths.McpConfigJson, "mcpServers"),
-                HarnessId.Pi          => PiHasWorkItems(home),
+                HarnessId.OpenCode    => JsonBlockHasServer(harnesses.Of<OpenCodeHarness>().Paths.McpConfigJson, "mcp"),
+                HarnessId.Antigravity => JsonBlockHasServer(harnesses.Of<AntigravityHarness>().Paths.McpConfigJson, "mcpServers"),
+                HarnessId.Pi          => PiHasWorkItems(harnesses),
                 _ => false
             };
         } catch {
@@ -69,9 +68,9 @@ static class WorkItemsNudgeAvailability {
         }
     }
 
-    static bool PiHasWorkItems(UserHome home) {
+    static bool PiHasWorkItems(HarnessRegistry harnesses) {
         try {
-            var path = PiHarness.FromEnvironment(home).Paths.KcapMcpExtension;
+            var path = harnesses.Of<PiHarness>().Paths.KcapMcpExtension;
             if (!File.Exists(path)) return false;
             // Strip JS comments FIRST so a commented-out `KCAP_MCP_SERVERS = [...]` before the real
             // declaration can't be matched, then find the real `KCAP_MCP_SERVERS = [ … ]` array and

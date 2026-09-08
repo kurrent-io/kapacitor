@@ -33,12 +33,10 @@ static class HarnessNudgeEmitter {
             HarnessRegistry harnesses, HarnessOfferStore store, bool optedOut, DateTimeOffset now) =>
         FormatNotice(ClaimAndStamp(harnesses, store, optedOut, now));
 
-    /// <summary>Hook-site convenience: resolve the SessionStart fragment from the current process
-    /// environment and the default on-disk ledger/throttle. <paramref name="optedOut"/> is the
-    /// profile's <c>DisableHarnessNudge</c>.</summary>
-    public static string? ResolveFragmentForHook(bool optedOut, ConfigRoot config, UserHome home) =>
-        ResolveFragment(HarnessRegistry.FromEnvironment(home), new HarnessOfferStore(config),
-                        optedOut, DateTimeOffset.UtcNow);
+    /// <summary>Hook-site convenience: resolve the SessionStart fragment against the default on-disk
+    /// ledger/throttle. <paramref name="optedOut"/> is the profile's <c>DisableHarnessNudge</c>.</summary>
+    public static string? ResolveFragmentForHook(bool optedOut, ConfigRoot config, HarnessRegistry harnesses) =>
+        ResolveFragment(harnesses, new HarnessOfferStore(config), optedOut, DateTimeOffset.UtcNow);
 
     /// <summary>Joins an existing SessionStart nudge with the harness nudge (either may be null)
     /// into one additional-context blob, blank-line separated — so a delivery helper that carries a

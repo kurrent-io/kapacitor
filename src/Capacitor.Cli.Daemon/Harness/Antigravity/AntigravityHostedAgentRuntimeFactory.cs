@@ -104,9 +104,11 @@ internal sealed partial class AntigravityHostedAgentRuntimeFactory(
         turnSource ?? ((psi, _) => Task.FromResult<IAgyTurnProcess>(
             new AgyTurnProcess(psi, loggerFactory.CreateLogger<AgyTurnProcess>())));
 
-    readonly Func<string, bool> _binaryExists = binaryExists ?? CliResolver.Exists;
+    readonly Func<string, bool> _binaryExists =
+        binaryExists ?? (path => new CliResolver(config.Binaries).Exists(path));
 
-    readonly Func<string, string?> _resolveVersion = resolveVersion ?? VendorVersionResolver.Resolve;
+    readonly Func<string, string?> _resolveVersion =
+        resolveVersion ?? (path => new VendorVersionResolver(config.Binaries).Resolve(path));
 
     readonly bool _posixHost = posixHost ?? !OperatingSystem.IsWindows();
 
@@ -565,6 +567,11 @@ internal sealed partial class AntigravityHostedAgentRuntimeFactory(
         // The home is only where a nested kcap would DERIVE its root, so an operator with
         // KCAP_CONFIG_DIR exported had agy's own hooks reading the real profile by inheritance.
         psi.Environment[ConfigRoot.ConfigDirEnvVar] = ConfigRoot.UnderHome(home).Directory;
+
+        // GEMINI_CLI_HOME REPLACES the Gemini root outright (see AntigravityReviewerHome.LayoutFor),
+        // so an inherited one points agy's config, MCP servers and result channel at the operator's
+        // profile rather than this isolated HOME.
+        psi.Environment.Remove("GEMINI_CLI_HOME");
 
         if (!string.IsNullOrEmpty(ctx.ServerUrl)) psi.Environment["KCAP_URL"] = ctx.ServerUrl;
 

@@ -95,7 +95,7 @@ public class GeminiStderrShadowedOnPostFailureTests : IDisposable {
 
 
         var exit = await new GeminiHookCommand(
-                Config.Root, Resolutions.At(_server.Url!, Config.Root), new HookClock(TimeProvider.System), Home, new FixedCapacitorHttpClient())
+                Config.Root, Resolutions.At(_server.Url!, Config.Root), new HookClock(TimeProvider.System), Home, TestHarnesses.Under(Home), new FixedCapacitorHttpClient())
             .Handle(new StringReader(payload));
 
         return (exit, capture.GetCapturedOutput(), capture.GetCapturedError());

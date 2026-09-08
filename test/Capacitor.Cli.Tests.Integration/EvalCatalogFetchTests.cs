@@ -56,7 +56,7 @@ public class EvalCatalogFetchTests : IDisposable {
             .ToList();
 
         var ctx = await EvalService.PrepareAsync(
-            _server.Url!, http, profile: null, Home, "sess-1", selected, catalog, chain: false, thresholdBytes: null,
+            _server.Url!, http, profile: null, TestHarnesses.Under(Home), "sess-1", selected, catalog, chain: false, thresholdBytes: null,
             observer, CancellationToken.None, model: "sonnet", evalRunId: "run-1");
 
         await Assert.That(ctx).IsNotNull();

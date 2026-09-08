@@ -26,14 +26,15 @@ internal static class HarnessSetupNotice {
             or "update" or "uninstall" or "harness" or "status");
     }
 
-    public static async Task FlushAsync(string command, ConfigRoot config, ProfileContext profiles, UserHome home) {
+    public static async Task FlushAsync(
+            string command, ConfigRoot config, ProfileContext profiles, HarnessRegistry harnesses) {
         try {
             if (!ShouldNotify(command)) return;
             if (Console.IsErrorRedirected) return; // scripts/pipelines never see it
 
             var profile = profiles.Effective;
             var notice = HarnessNudgeEmitter.ResolveNotice(
-                HarnessRegistry.FromEnvironment(home), new HarnessOfferStore(config),
+                harnesses, new HarnessOfferStore(config),
                 profile?.DisableHarnessNudge is true, DateTimeOffset.UtcNow);
             if (notice is null) return;
 

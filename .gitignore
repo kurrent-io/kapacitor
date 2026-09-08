@@ -24,6 +24,7 @@ deploy/Pulumi.*.yaml
 TestResults/
 .capacitor/worktrees/
 .claude/
+.warp/
 # Probe harness bytecode
 __pycache__/
 *.pyc

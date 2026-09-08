@@ -63,7 +63,9 @@ namespace Capacitor.Cli.Commands.Harness;
 /// observation, not a guarantee. The mitigation does not depend on it: emitting a
 /// valid non-blocking object is correct under any of these selection rules.
 /// </remarks>
-sealed class GeminiHookCommand(ConfigRoot config, ProfileContext profiles, HookClock clock, UserHome home, ICapacitorHttpClient http) {
+sealed class GeminiHookCommand(
+        ConfigRoot config, ProfileContext profiles, HookClock clock, UserHome home,
+        HarnessRegistry harnesses, ICapacitorHttpClient http) {
     readonly WatcherManager  _watchers = new(config, profiles, http);
     readonly AgentHookPoster _poster   = new(config, profiles, http);
 
@@ -318,7 +320,7 @@ sealed class GeminiHookCommand(ConfigRoot config, ProfileContext profiles, HookC
             forwarded["default_visibility"] = visibility;
         }
 
-        SessionStartInventory.Stamp(forwarded, config, home);
+        SessionStartInventory.Stamp(forwarded, config, harnesses);
         var enriched = await RepositoryDetection.EnrichWithRepositoryInfo(config, forwarded.ToJsonString());
 
         if (activeProfile?.ExcludedRepos is { Length: > 0 } excludedRepos
@@ -351,14 +353,14 @@ sealed class GeminiHookCommand(ConfigRoot config, ProfileContext profiles, HookC
         // parses hook stdout unconditionally, with the exit code only setting its own `success` flag.
         var fragment = await SessionStartMemoryHookSupport.AwaitBounded(memoryTask, budget);
         var workItemsNudge = HarnessNudgeEmitter.Combine(
-            WorkItemsNudgeEmitter.Resolve(HarnessId.Gemini, sessionId, activeProfile?.DisableWorkItemsNudge is true, home),
-            HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true, config, home));
+            WorkItemsNudgeEmitter.Resolve(HarnessId.Gemini, sessionId, activeProfile?.DisableWorkItemsNudge is true, harnesses),
+            HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true, config, harnesses));
         result.Write(RenderSessionStartPayload(fragment, workItemsNudge));
 
         if (!AgentHookPoster.ShouldSpawnAfter(outcome, Url)) return outcome == HookPostOutcome.Failed ? 1 : 0;
 
-        // Task 6: await (was fire-and-forget) so a spawn failure is observed here rather
-        // than silently swallowed, and the process isn't torn down before the spawn completes.
+        // Awaited so a spawn failure is observed here rather than silently swallowed, and the
+        // process isn't torn down before the spawn completes.
         await EnsureWatcher(sessionId, node, cwd, source);
         return 0;
     }

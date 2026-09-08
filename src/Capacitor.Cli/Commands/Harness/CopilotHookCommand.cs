@@ -42,7 +42,9 @@ namespace Capacitor.Cli.Commands.Harness;
 /// sessionStart, which writes a single {"additionalContext":"…"} document when — and only when —
 /// a team-memory fragment is available to inject.
 /// </remarks>
-sealed class CopilotHookCommand(ConfigRoot config, ProfileContext profiles, HookClock clock, UserHome home, ICapacitorHttpClient http) {
+sealed class CopilotHookCommand(
+        ConfigRoot config, ProfileContext profiles, HookClock clock, UserHome home,
+        HarnessRegistry harnesses, ICapacitorHttpClient http) {
     readonly WatcherManager  _watchers = new(config, profiles, http);
     readonly AgentHookPoster _poster   = new(config, profiles, http);
 
@@ -256,7 +258,7 @@ sealed class CopilotHookCommand(ConfigRoot config, ProfileContext profiles, Hook
             forwarded["default_visibility"] = visibility;
         }
 
-        SessionStartInventory.Stamp(forwarded, config, home);
+        SessionStartInventory.Stamp(forwarded, config, harnesses);
         var enriched = await RepositoryDetection.EnrichWithRepositoryInfo(config, forwarded.ToJsonString());
 
         // Repo exclusion after enrichment (fast in-payload path) — mark the
@@ -319,8 +321,8 @@ sealed class CopilotHookCommand(ConfigRoot config, ProfileContext profiles, Hook
         // Copilot parses this hook's stdout as its (optional) single JSON result document. Silent when
         // there is neither a fragment nor a nudge, which keeps all pre-existing paths byte-identical.
         var workItemsNudge = HarnessNudgeEmitter.Combine(
-            WorkItemsNudgeEmitter.Resolve(HarnessId.Copilot, sessionId, activeProfile?.DisableWorkItemsNudge is true, home),
-            HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true, config, home));
+            WorkItemsNudgeEmitter.Resolve(HarnessId.Copilot, sessionId, activeProfile?.DisableWorkItemsNudge is true, harnesses),
+            HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true, config, harnesses));
         WriteSessionStartOutput(Console.Out, fragment, workItemsNudge);
 
         if (!AgentHookPoster.ShouldSpawnAfter(outcome, Url)) return 0;
@@ -471,7 +473,7 @@ sealed class CopilotHookCommand(ConfigRoot config, ProfileContext profiles, Hook
     /// not-yet-created file and picks it up on its next poll.
     /// </summary>
     string TranscriptPathFor(string dashedSessionId) {
-        var paths   = CopilotHarness.FromEnvironment(home).Paths;
+        var paths   = harnesses.Of<CopilotHarness>().Paths;
         var current = paths.EventsJsonl(paths.SessionStateDir, dashedSessionId);
 
         if (File.Exists(current)) return current;

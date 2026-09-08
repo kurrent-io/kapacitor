@@ -38,7 +38,7 @@ public class ClaudeHookInputWaitRelayTests {
     async Task<int> RunAsync(string eventName, HookClock? clock = null, string extraFields = "") {
         using var client = new HttpClient(new OkHandler());
         var payload = $$$"""{"hook_event_name":"{{{eventName}}}","session_id":"{{{Sid}}}","cwd":"/tmp","tool_name":"Bash","tool_input":{"command":"ls"}{{{extraFields}}}}""";
-        return await new ClaudeHookCommand(Config.Root, Resolutions.At("http://server.example", Config.Root), clock ?? new HookClock(TimeProvider.System), Home, new FixedCapacitorHttpClient())
+        return await new ClaudeHookCommand(Config.Root, Resolutions.At("http://server.example", Config.Root), clock ?? new HookClock(TimeProvider.System), Home, TestHarnesses.Under(Home), new FixedCapacitorHttpClient())
             .HandleWithDeps(new HookSpool(Config.Root), new StringReader(payload), () => Task.FromResult(new AuthAttempt(client, AuthStatus.Ok, null, null)), new StringWriter());
     }
 

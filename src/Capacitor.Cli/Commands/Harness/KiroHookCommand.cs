@@ -35,7 +35,9 @@ namespace Capacitor.Cli.Commands.Harness;
 /// The raw fragment is written with no JSON envelope and no diagnostics: whatever lands on stdout
 /// becomes conversation context verbatim.
 /// </remarks>
-sealed class KiroHookCommand(ConfigRoot config, ProfileContext profiles, HookClock clock, UserHome home, ICapacitorHttpClient http) {
+sealed class KiroHookCommand(
+        ConfigRoot config, ProfileContext profiles, HookClock clock, UserHome home,
+        HarnessRegistry harnesses, ICapacitorHttpClient http) {
     readonly WatcherManager  _watchers = new(config, profiles, http);
     readonly AgentHookPoster _poster   = new(config, profiles, http);
 
@@ -214,11 +216,11 @@ sealed class KiroHookCommand(ConfigRoot config, ProfileContext profiles, HookClo
         // Model lives in the sibling {id}.json (the JSONL turn lines carry none),
         // so the server gets it only from this hook. Best-effort: at agentSpawn the
         // file may not exist yet — the next agentSpawn (fires every prompt) backfills.
-        if (ReadKiroModel(KiroHarness.FromEnvironment(home).Paths, dashedSessionId) is { } model) {
+        if (ReadKiroModel(harnesses.Of<KiroHarness>().Paths, dashedSessionId) is { } model) {
             forwarded["model"] = model;
         }
 
-        SessionStartInventory.Stamp(forwarded, config, home);
+        SessionStartInventory.Stamp(forwarded, config, harnesses);
         var enriched = await RepositoryDetection.EnrichWithRepositoryInfo(config, forwarded.ToJsonString());
 
         if (activeProfile?.ExcludedRepos is { Length: > 0 } excludedRepos
@@ -270,8 +272,8 @@ sealed class KiroHookCommand(ConfigRoot config, ProfileContext profiles, HookClo
         // claim could commit its record with nothing emitted and silence the nudges for the
         // session. The emitters run at most once per firing: the harness nudge stamps a ledger.
         string? ResolveNudges() => HarnessNudgeEmitter.Combine(
-            WorkItemsNudgeEmitter.Resolve(HarnessId.Kiro, sessionId, activeProfile?.DisableWorkItemsNudge is true, home),
-            HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true, config, home));
+            WorkItemsNudgeEmitter.Resolve(HarnessId.Kiro, sessionId, activeProfile?.DisableWorkItemsNudge is true, harnesses),
+            HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true, config, harnesses));
         var nudgeDecided = nudgeClaim.IsCompleted;
         var workItemsNudge = nudgeDecided && await nudgeClaim ? ResolveNudges() : null;
         WriteAgentSpawnOutput(Console.Out, fragment, workItemsNudge);
@@ -318,7 +320,7 @@ sealed class KiroHookCommand(ConfigRoot config, ProfileContext profiles, HookClo
         // The watcher also owns session-end: GetCodingAgentPid() inside
         // SpawnWatcher passes the kiro-cli pid as --parent-pid, so the watcher
         // POSTs session-end/kiro when kiro-cli exits.
-        var transcriptPath = KiroHarness.FromEnvironment(home).Paths.SessionJsonl(dashedSessionId);
+        var transcriptPath = harnesses.Of<KiroHarness>().Paths.SessionJsonl(dashedSessionId);
 
         // Bounded for the same reason as the POST, and this is the LAST step between the committed
         // injection and the zero exit. Not cheap in the worst case: the stale-watcher path kills and

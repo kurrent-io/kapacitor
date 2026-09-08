@@ -37,7 +37,7 @@ public class PluginCommandCursorTests {
 
     // `plugin install/remove --cursor` also (un)registers the kcap MCP
     // servers in ~/.cursor/mcp.json. These use an explicit PluginEnvironment
-    // (not PluginEnvironment.FromProcess()) so env.Paths.Cursor.UserMcpJson resolves under
+    // (not PluginEnvironment.FromProcess()) so env.Harnesses.Of<CursorHarness>().Paths.UserMcpJson resolves under
     // a temp home instead of the real machine's ~/.cursor — mirrors
     // PluginCommandCodexInstallIntegrationTests.TestEnv. The `--if-installed`
     // refresh branch is used (pre-marker hooks.json seeded) rather than a bare
@@ -187,7 +187,7 @@ public class PluginCommandCursorTests {
         Stdout:            TextWriter.Null,
         Stderr:            TextWriter.Null
     ) {
-        Paths = TestHarnessPaths.NoOverrides(new(fakeHome)),
+        Harnesses = TestHarnesses.Under(new(fakeHome)),
         ResolveMcpBinaryPath = () => TestBinaryPath
     };
 

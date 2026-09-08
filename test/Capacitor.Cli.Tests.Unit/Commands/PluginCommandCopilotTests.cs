@@ -21,18 +21,18 @@ public class PluginCommandCopilotTests {
         var env = TestEnv(home.Path);
 
         // Installed-but-stale hooks so `--if-installed` refreshes (and registers MCP).
-        PluginCommand.InstallCopilotHooks(env.Paths.Copilot.KcapHooksJson);
-        CopilotHooksInstaller.DeleteMarker(env.Paths.Copilot.KcapHooksJson);
+        PluginCommand.InstallCopilotHooks(env.Harnesses.Of<CopilotHarness>().Paths.KcapHooksJson);
+        CopilotHooksInstaller.DeleteMarker(env.Harnesses.Of<CopilotHarness>().Paths.KcapHooksJson);
 
         // A user-authored MCP server that must survive registration.
-        await File.WriteAllTextAsync(env.Paths.Copilot.McpConfigJson, """
+        await File.WriteAllTextAsync(env.Harnesses.Of<CopilotHarness>().Paths.McpConfigJson, """
             {"mcpServers":{"my-tool":{"type":"stdio","command":"my-tool","args":["serve"]}}}
             """);
 
         var exit = await new PluginCommand(env).HandleAsync(["plugin", "install", "--copilot", "--if-installed"]);
         await Assert.That(exit).IsEqualTo(0);
 
-        var root    = JsonNode.Parse(await File.ReadAllTextAsync(env.Paths.Copilot.McpConfigJson))!.AsObject();
+        var root    = JsonNode.Parse(await File.ReadAllTextAsync(env.Harnesses.Of<CopilotHarness>().Paths.McpConfigJson))!.AsObject();
         var servers = root["mcpServers"]!.AsObject();
         // Registered command is the resolved native binary (injected seam), not the wrapper-resolved "kcap".
         await Assert.That(servers["kcap-review"]!["command"]!.GetValue<string>()).IsEqualTo(TestBinaryPath);
@@ -49,14 +49,14 @@ public class PluginCommandCopilotTests {
         using var home = new TempHome();
         var env = TestEnv(home.Path);
 
-        PluginCommand.InstallCopilotHooks(env.Paths.Copilot.KcapHooksJson);
-        CopilotHooksInstaller.DeleteMarker(env.Paths.Copilot.KcapHooksJson);
+        PluginCommand.InstallCopilotHooks(env.Harnesses.Of<CopilotHarness>().Paths.KcapHooksJson);
+        CopilotHooksInstaller.DeleteMarker(env.Harnesses.Of<CopilotHarness>().Paths.KcapHooksJson);
 
         var exit = await new PluginCommand(env).HandleAsync(
             ["plugin", "install", "--copilot", "--if-installed", "--skip-copilot-mcp"]);
         await Assert.That(exit).IsEqualTo(0);
 
-        await Assert.That(File.Exists(env.Paths.Copilot.McpConfigJson)).IsFalse();
+        await Assert.That(File.Exists(env.Harnesses.Of<CopilotHarness>().Paths.McpConfigJson)).IsFalse();
     }
 
     [Test]
@@ -68,7 +68,7 @@ public class PluginCommandCopilotTests {
         var exit = await new PluginCommand(env).HandleAsync(["plugin", "install", "--copilot", "--if-installed"]);
         await Assert.That(exit).IsEqualTo(0);
 
-        await Assert.That(File.Exists(env.Paths.Copilot.McpConfigJson)).IsFalse();
+        await Assert.That(File.Exists(env.Harnesses.Of<CopilotHarness>().Paths.McpConfigJson)).IsFalse();
     }
 
     [Test]
@@ -78,14 +78,14 @@ public class PluginCommandCopilotTests {
 
         // Hooks installed AND marker already current → the refresh must NOT rewrite hooks, but must
         // still (re)create the separate MCP + instructions files if they're missing (self-heal).
-        PluginCommand.InstallCopilotHooks(env.Paths.Copilot.KcapHooksJson); // writes hooks + current marker
+        PluginCommand.InstallCopilotHooks(env.Harnesses.Of<CopilotHarness>().Paths.KcapHooksJson); // writes hooks + current marker
 
         var exit = await new PluginCommand(env).HandleAsync(["plugin", "install", "--copilot", "--if-installed"]);
         await Assert.That(exit).IsEqualTo(0);
 
-        await Assert.That(File.Exists(env.Paths.Copilot.McpConfigJson)).IsTrue();
-        await Assert.That(File.Exists(env.Paths.Copilot.InstructionsMd)).IsTrue();
-        var servers = JsonNode.Parse(await File.ReadAllTextAsync(env.Paths.Copilot.McpConfigJson))!.AsObject()["mcpServers"]!.AsObject();
+        await Assert.That(File.Exists(env.Harnesses.Of<CopilotHarness>().Paths.McpConfigJson)).IsTrue();
+        await Assert.That(File.Exists(env.Harnesses.Of<CopilotHarness>().Paths.InstructionsMd)).IsTrue();
+        var servers = JsonNode.Parse(await File.ReadAllTextAsync(env.Harnesses.Of<CopilotHarness>().Paths.McpConfigJson))!.AsObject()["mcpServers"]!.AsObject();
         await Assert.That(servers.Select(kv => kv.Key)).Contains("kcap-review");
     }
 
@@ -98,15 +98,15 @@ public class PluginCommandCopilotTests {
         // FAIL: make the kcap.json path a directory so InstallCopilotHooks's write throws → returns
         // false. The refresh must warn on the hook failure but still heal the independent MCP +
         // instructions files rather than bailing.
-        var hooksDir = System.IO.Path.GetDirectoryName(env.Paths.Copilot.KcapHooksJson)!;
-        Directory.CreateDirectory(env.Paths.Copilot.KcapHooksJson);   // kcap.json is a directory → write fails
+        var hooksDir = System.IO.Path.GetDirectoryName(env.Harnesses.Of<CopilotHarness>().Paths.KcapHooksJson)!;
+        Directory.CreateDirectory(env.Harnesses.Of<CopilotHarness>().Paths.KcapHooksJson);   // kcap.json is a directory → write fails
         await File.WriteAllTextAsync(System.IO.Path.Combine(hooksDir, CopilotHooksInstaller.MarkerFileName), "0.0.0-stale");
 
         var exit = await new PluginCommand(env).HandleAsync(["plugin", "install", "--copilot", "--if-installed"]);
         await Assert.That(exit).IsEqualTo(0);                  // refresh swallows the hook-write failure
 
-        await Assert.That(File.Exists(env.Paths.Copilot.McpConfigJson)).IsTrue();   // MCP healed despite the hook failure
-        await Assert.That(File.Exists(env.Paths.Copilot.InstructionsMd)).IsTrue();  // instructions healed too
+        await Assert.That(File.Exists(env.Harnesses.Of<CopilotHarness>().Paths.McpConfigJson)).IsTrue();   // MCP healed despite the hook failure
+        await Assert.That(File.Exists(env.Harnesses.Of<CopilotHarness>().Paths.InstructionsMd)).IsTrue();  // instructions healed too
     }
 
     [Test]
@@ -116,15 +116,15 @@ public class PluginCommandCopilotTests {
 
         // Seed mcp-config.json as a prior install would (ownership marker present),
         // then splice in a user-authored server that must survive removal.
-        JsonMcpConfigWriter.Register(env.Paths.Copilot.McpConfigJson, KcapMcpServers.All, McpConfigShape.Copilot, cwd: null, new McpMarker("copilot", env.Home));
-        var seeded = JsonNode.Parse(await File.ReadAllTextAsync(env.Paths.Copilot.McpConfigJson))!.AsObject();
+        JsonMcpConfigWriter.Register(env.Harnesses.Of<CopilotHarness>().Paths.McpConfigJson, KcapMcpServers.All, McpConfigShape.Copilot, cwd: null, new McpMarker("copilot", env.Home));
+        var seeded = JsonNode.Parse(await File.ReadAllTextAsync(env.Harnesses.Of<CopilotHarness>().Paths.McpConfigJson))!.AsObject();
         seeded["mcpServers"]!["my-tool"] = JsonNode.Parse("""{"type":"stdio","command":"my-tool","args":["serve"]}""");
-        await File.WriteAllTextAsync(env.Paths.Copilot.McpConfigJson, seeded.ToJsonString());
+        await File.WriteAllTextAsync(env.Harnesses.Of<CopilotHarness>().Paths.McpConfigJson, seeded.ToJsonString());
 
         var exit = await new PluginCommand(env).HandleAsync(["plugin", "remove", "--copilot"]);
         await Assert.That(exit).IsEqualTo(0);
 
-        var root    = JsonNode.Parse(await File.ReadAllTextAsync(env.Paths.Copilot.McpConfigJson))!.AsObject();
+        var root    = JsonNode.Parse(await File.ReadAllTextAsync(env.Harnesses.Of<CopilotHarness>().Paths.McpConfigJson))!.AsObject();
         var servers = root["mcpServers"]!.AsObject();
         var keys    = servers.Select(kv => kv.Key).ToArray();
         await Assert.That(keys).DoesNotContain("kcap-review");
@@ -139,27 +139,27 @@ public class PluginCommandCopilotTests {
         using var home = new TempHome();
         var env = TestEnv(home.Path);
 
-        JsonMcpConfigWriter.Register(env.Paths.Copilot.McpConfigJson, KcapMcpServers.All, McpConfigShape.Copilot, cwd: null, new McpMarker("copilot", env.Home));
-        var installed = await File.ReadAllTextAsync(env.Paths.Copilot.McpConfigJson); // valid content to restore after the "fix"
-        await Assert.That(new McpMarker("copilot", env.Home).Owned(env.Paths.Copilot.McpConfigJson).ToArray()).IsNotEmpty();
+        JsonMcpConfigWriter.Register(env.Harnesses.Of<CopilotHarness>().Paths.McpConfigJson, KcapMcpServers.All, McpConfigShape.Copilot, cwd: null, new McpMarker("copilot", env.Home));
+        var installed = await File.ReadAllTextAsync(env.Harnesses.Of<CopilotHarness>().Paths.McpConfigJson); // valid content to restore after the "fix"
+        await Assert.That(new McpMarker("copilot", env.Home).Owned(env.Harnesses.Of<CopilotHarness>().Paths.McpConfigJson).ToArray()).IsNotEmpty();
 
         // The config is temporarily malformed/unreadable → Unregister fails-closed.
-        await File.WriteAllTextAsync(env.Paths.Copilot.McpConfigJson, "{ not valid json");
+        await File.WriteAllTextAsync(env.Harnesses.Of<CopilotHarness>().Paths.McpConfigJson, "{ not valid json");
 
         var failExit = await new PluginCommand(env).HandleAsync(["plugin", "remove", "--copilot"]);
         await Assert.That(failExit).IsEqualTo(1);                                                  // failed MCP unregister propagates
-        await Assert.That(new McpMarker("copilot", env.Home).Owned(env.Paths.Copilot.McpConfigJson).ToArray()).IsNotEmpty();  // marker RETAINED for retry
+        await Assert.That(new McpMarker("copilot", env.Home).Owned(env.Harnesses.Of<CopilotHarness>().Paths.McpConfigJson).ToArray()).IsNotEmpty();  // marker RETAINED for retry
 
         // User fixes the file (kcap entries intact); the retry now succeeds and cleans up.
-        await File.WriteAllTextAsync(env.Paths.Copilot.McpConfigJson, installed);
+        await File.WriteAllTextAsync(env.Harnesses.Of<CopilotHarness>().Paths.McpConfigJson, installed);
         var retryExit = await new PluginCommand(env).HandleAsync(["plugin", "remove", "--copilot"]);
         await Assert.That(retryExit).IsEqualTo(0);
 
-        var root    = JsonNode.Parse(await File.ReadAllTextAsync(env.Paths.Copilot.McpConfigJson))!.AsObject();
+        var root    = JsonNode.Parse(await File.ReadAllTextAsync(env.Harnesses.Of<CopilotHarness>().Paths.McpConfigJson))!.AsObject();
         var servers = root["mcpServers"] as JsonObject;
         var keys    = servers?.Select(kv => kv.Key).ToArray() ?? [];
         await Assert.That(keys).DoesNotContain("kcap-review");
-        await Assert.That(new McpMarker("copilot", env.Home).Owned(env.Paths.Copilot.McpConfigJson).ToArray()).IsEmpty();  // marker cleared after clean removal
+        await Assert.That(new McpMarker("copilot", env.Home).Owned(env.Harnesses.Of<CopilotHarness>().Paths.McpConfigJson).ToArray()).IsEmpty();  // marker cleared after clean removal
     }
 
     [Test]
@@ -167,17 +167,17 @@ public class PluginCommandCopilotTests {
         using var home = new TempHome();
         var env = TestEnv(home.Path);
 
-        PluginCommand.InstallCopilotHooks(env.Paths.Copilot.KcapHooksJson);
-        CopilotHooksInstaller.DeleteMarker(env.Paths.Copilot.KcapHooksJson);
+        PluginCommand.InstallCopilotHooks(env.Harnesses.Of<CopilotHarness>().Paths.KcapHooksJson);
+        CopilotHooksInstaller.DeleteMarker(env.Harnesses.Of<CopilotHarness>().Paths.KcapHooksJson);
 
         // A pre-existing user instructions file that must survive.
-        Directory.CreateDirectory(System.IO.Path.GetDirectoryName(env.Paths.Copilot.InstructionsMd)!);
-        await File.WriteAllTextAsync(env.Paths.Copilot.InstructionsMd, "# My rules\n\nAlways use tabs.\n");
+        Directory.CreateDirectory(System.IO.Path.GetDirectoryName(env.Harnesses.Of<CopilotHarness>().Paths.InstructionsMd)!);
+        await File.WriteAllTextAsync(env.Harnesses.Of<CopilotHarness>().Paths.InstructionsMd, "# My rules\n\nAlways use tabs.\n");
 
         var exit = await new PluginCommand(env).HandleAsync(["plugin", "install", "--copilot", "--if-installed"]);
         await Assert.That(exit).IsEqualTo(0);
 
-        var content = await File.ReadAllTextAsync(env.Paths.Copilot.InstructionsMd);
+        var content = await File.ReadAllTextAsync(env.Harnesses.Of<CopilotHarness>().Paths.InstructionsMd);
         await Assert.That(content).Contains("Always use tabs.");                       // user content preserved
         await Assert.That(content).Contains(AgentInstructionsWriter.BeginMarker);
         await Assert.That(content).Contains("Prefer kcap tools");
@@ -188,14 +188,14 @@ public class PluginCommandCopilotTests {
         using var home = new TempHome();
         var env = TestEnv(home.Path);
 
-        PluginCommand.InstallCopilotHooks(env.Paths.Copilot.KcapHooksJson);
-        CopilotHooksInstaller.DeleteMarker(env.Paths.Copilot.KcapHooksJson);
+        PluginCommand.InstallCopilotHooks(env.Harnesses.Of<CopilotHarness>().Paths.KcapHooksJson);
+        CopilotHooksInstaller.DeleteMarker(env.Harnesses.Of<CopilotHarness>().Paths.KcapHooksJson);
 
         var exit = await new PluginCommand(env).HandleAsync(
             ["plugin", "install", "--copilot", "--if-installed", "--skip-copilot-instructions"]);
         await Assert.That(exit).IsEqualTo(0);
 
-        await Assert.That(File.Exists(env.Paths.Copilot.InstructionsMd)).IsFalse();
+        await Assert.That(File.Exists(env.Harnesses.Of<CopilotHarness>().Paths.InstructionsMd)).IsFalse();
     }
 
     [Test]
@@ -203,14 +203,14 @@ public class PluginCommandCopilotTests {
         using var home = new TempHome();
         var env = TestEnv(home.Path);
 
-        Directory.CreateDirectory(System.IO.Path.GetDirectoryName(env.Paths.Copilot.InstructionsMd)!);
-        await File.WriteAllTextAsync(env.Paths.Copilot.InstructionsMd, "# My rules\n\nAlways use tabs.\n");
-        AgentInstructionsWriter.Write(env.Paths.Copilot.InstructionsMd, KcapAgentInstructions.Body);
+        Directory.CreateDirectory(System.IO.Path.GetDirectoryName(env.Harnesses.Of<CopilotHarness>().Paths.InstructionsMd)!);
+        await File.WriteAllTextAsync(env.Harnesses.Of<CopilotHarness>().Paths.InstructionsMd, "# My rules\n\nAlways use tabs.\n");
+        AgentInstructionsWriter.Write(env.Harnesses.Of<CopilotHarness>().Paths.InstructionsMd, KcapAgentInstructions.Body);
 
         var exit = await new PluginCommand(env).HandleAsync(["plugin", "remove", "--copilot"]);
         await Assert.That(exit).IsEqualTo(0);
 
-        var content = await File.ReadAllTextAsync(env.Paths.Copilot.InstructionsMd);
+        var content = await File.ReadAllTextAsync(env.Harnesses.Of<CopilotHarness>().Paths.InstructionsMd);
         await Assert.That(content).Contains("Always use tabs.");
         await Assert.That(content).DoesNotContain(AgentInstructionsWriter.BeginMarker);
         await Assert.That(content).DoesNotContain("Prefer kcap tools");
@@ -228,7 +228,7 @@ public class PluginCommandCopilotTests {
         Stdout:            TextWriter.Null,
         Stderr:            TextWriter.Null
     ) {
-        Paths = TestHarnessPaths.NoOverrides(new(fakeHome)),
+        Harnesses = TestHarnesses.Under(new(fakeHome)),
         ResolveMcpBinaryPath = () => TestBinaryPath
     };
 

@@ -8,7 +8,7 @@ public class ClaudeLauncherPermissionModeTests {
     [TempHome] public required TempHome Home { get; init; }
 
     ClaudeLauncher NewLauncher() =>
-        new(new DaemonConfig { ClaudePath = "claude", ServerUrl = "", CapacitorPath = "kcap" }, Home, NullLogger<ClaudeLauncher>.Instance);
+        new(new DaemonConfig { ClaudePath = "claude", ServerUrl = "", CapacitorPath = "kcap" }, TestHarnesses.Under(Home), NullLogger<ClaudeLauncher>.Instance);
 
     static LauncherContext NewCtx(bool isReviewFlow, string? permissionMode) =>
         new(

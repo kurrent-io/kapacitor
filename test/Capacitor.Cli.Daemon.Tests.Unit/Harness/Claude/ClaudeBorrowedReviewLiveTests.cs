@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.Versioning;
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Core.LocalIpc;
 using Capacitor.Cli.Daemon.Harness.Claude;
 using Capacitor.Cli.Daemon.Services;
@@ -36,7 +37,7 @@ public class ClaudeBorrowedReviewLiveTests {
                 ServerUrl = "http://kcap.test",
                 CapacitorPath = mcpPath
             },
-            Home,
+            HarnessRegistry.FromEnvironment(Home),
             NullLogger<ClaudeLauncher>.Instance);
         var ctx = new LauncherContext(
             AgentId: markerPath,

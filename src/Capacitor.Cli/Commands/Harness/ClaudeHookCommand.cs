@@ -20,7 +20,9 @@ namespace Capacitor.Cli.Commands.Harness;
 /// in the JSON payload — mirroring <see cref="CodexHookCommand"/> and
 /// <see cref="CursorHookCommand"/>.
 /// </summary>
-public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles, HookClock clock, UserHome home, ICapacitorHttpClient http) {
+public sealed class ClaudeHookCommand(
+        ConfigRoot config, ProfileContext profiles, HookClock clock, UserHome home,
+        HarnessRegistry harnesses, ICapacitorHttpClient http) {
     readonly WatcherManager _watchers = new(config, profiles, http);
 
     string Url => profiles.Resolution.ServerUrl!;
@@ -213,7 +215,7 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
                 node["ended_at"] = DateTimeOffset.UtcNow.ToString("O");
             // Surface 3: the degraded arm spools via this path and bypasses HandleCore's stamp, so a
             // replayed session-start must still carry the harness inventory (the hook-ingest carrier).
-            if (command == "session-start") SessionStartInventory.Stamp(node.AsObject(), config, home);
+            if (command == "session-start") SessionStartInventory.Stamp(node.AsObject(), config, harnesses);
             return node.ToJsonString();
         } catch { return body; }
     }
@@ -358,7 +360,7 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
 
                 // Surface 3: attach this machine's harness inventory, session-start only (the
                 // injections above apply to every event; the inventory is a session-start signal).
-                if (command == "session-start") SessionStartInventory.Stamp(node.AsObject(), config, home);
+                if (command == "session-start") SessionStartInventory.Stamp(node.AsObject(), config, harnesses);
 
                 body = node.ToJsonString();
             }
@@ -638,7 +640,7 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
                 var slug = node?["slug"]?.GetValue<string>();
 
                 if (slug is not null) {
-                    var planContent = ReadPlanFile(slug, ClaudeHarness.FromEnvironment(home).Paths);
+                    var planContent = ReadPlanFile(slug, harnesses.Of<ClaudeHarness>().Paths);
 
                     if (planContent is not null) {
                         node!["plan_content"] = planContent;
@@ -746,7 +748,7 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
                     var resolvedSlug = responseNode["slug"]?.GetValue<string>();
 
                     if (resolvedSlug is not null) {
-                        var planContent = ReadPlanFile(resolvedSlug, ClaudeHarness.FromEnvironment(home).Paths);
+                        var planContent = ReadPlanFile(resolvedSlug, harnesses.Of<ClaudeHarness>().Paths);
 
                         if (planContent is not null) {
                             await PostPlanContentAsync(client, Url, sessionId, planContent);
@@ -790,8 +792,8 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
                     // The static work-items nudge. Claude has always carried kcap-workitems, so
                     // the availability gate is always satisfied here; only the opt-out can suppress it.
                     var workItemsNudge = WorkItemsNudgeEmitter.Resolve(
-                        HarnessId.Claude, sessionId, activeProfile?.DisableWorkItemsNudge is true, home);
-                    var harnessNudge = HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true, config, home);
+                        HarnessId.Claude, sessionId, activeProfile?.DisableWorkItemsNudge is true, harnesses);
+                    var harnessNudge = HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true, config, harnesses);
 
                     envelope = SessionStartAdditionalContext.BuildEnvelope(
                         lessonsFragment, nudgeFragment, memoryFragment, coordinationFragment, workItemsNudge, harnessNudge);

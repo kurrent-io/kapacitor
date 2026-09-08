@@ -35,7 +35,9 @@ namespace Capacitor.Cli.Commands.Harness;
 /// dashed id lives on only in the transcript file path). Historical import canonicalizes the
 /// same way, so a conversation captured live and later re-imported dedupes to one stream.
 /// </summary>
-sealed class AntigravityHookCommand(ConfigRoot config, ProfileContext profiles, HookClock clock, UserHome home, ICapacitorHttpClient http) {
+sealed class AntigravityHookCommand(
+        ConfigRoot config, ProfileContext profiles, HookClock clock, UserHome home,
+        HarnessRegistry harnesses, ICapacitorHttpClient http) {
     readonly WatcherManager  _watchers = new(config, profiles, http);
     readonly AgentHookPoster _poster   = new(config, profiles, http);
 
@@ -167,7 +169,7 @@ sealed class AntigravityHookCommand(ConfigRoot config, ProfileContext profiles, 
         if (activeProfile?.DefaultVisibility is { } visibility)
             forwarded["default_visibility"] = visibility;
 
-        SessionStartInventory.Stamp(forwarded, config, home);
+        SessionStartInventory.Stamp(forwarded, config, harnesses);
         var enriched = await RepositoryDetection.EnrichWithRepositoryInfo(config, forwarded.ToJsonString());
 
         if (activeProfile?.ExcludedRepos is { Length: > 0 } excludedRepos
@@ -214,8 +216,8 @@ sealed class AntigravityHookCommand(ConfigRoot config, ProfileContext profiles, 
         // re-injects them as another persistent userMessage step.
         var workItemsNudge = IsFirstInvocation(payload)
             ? HarnessNudgeEmitter.Combine(
-                WorkItemsNudgeEmitter.Resolve(HarnessId.Antigravity, sessionId, activeProfile?.DisableWorkItemsNudge is true, home),
-                HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true, config, home))
+                WorkItemsNudgeEmitter.Resolve(HarnessId.Antigravity, sessionId, activeProfile?.DisableWorkItemsNudge is true, harnesses),
+                HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true, config, harnesses))
             : null;
         WritePreInvocationOutput(stdout, fragment, workItemsNudge);
         await stdout.FlushAsync();

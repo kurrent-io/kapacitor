@@ -1,4 +1,5 @@
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.Http;
@@ -23,7 +24,7 @@ public class SetupChosenServerTests {
         return new SetupCommand(
             Config.Root, startup, AuthFixtures.NewTokenStore(Config.Root), factory,
             new AuthProxyClient(new HttpClient()), new WorkOSClient(factory), new GitHubOAuthClient(factory),
-            new RecordingBrowser(), Home, new FixedCapacitorHttpClient(), new TenantProvisioningClient(new HttpClient()),
+            new RecordingBrowser(), Home, TestHarnesses.Under(Home), new AgentsPaths(Home), new FixedCapacitorHttpClient(), new TenantProvisioningClient(new HttpClient()),
             new AuthProviderDiscovery(factory));
     }
 

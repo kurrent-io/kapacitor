@@ -15,9 +15,6 @@ using Capacitor.Cli.Core.Http;
 
 namespace Capacitor.Cli.Tests.Unit.Commands.Harness;
 
-// The hook resolves the harness nudge through HarnessPaths, so it reads every vendor override
-// variable a peer suite clears mid-test.
-[NotInParallel("VendorEnvOverrides")]
 public class CursorHookCommandTests {
     [TempHome] public required TempHome Home { get; init; }
 
@@ -62,21 +59,19 @@ public class CursorHookCommandTests {
             .IsEqualTo("8c3276c2c8f743ce98898c2becf5240a");
     }
 
+    // Bare: every vendor hook command reads KCAP_AGENT_ID, so no cohort of key-holders can
+    // exclude the tests that observe it.
     [Test]
-    [NotInParallel("CapacitorAgentIdEnvVar")]
+    [NotInParallel]
     public async Task home_dir_and_agent_host_id_are_injected() {
-        Environment.SetEnvironmentVariable("KCAP_AGENT_ID", "host-42");
+        using var agentId = EnvScope.Exclusive("KCAP_AGENT_ID", "host-42");
+        using var fx      = new Fixture(Config.Root);
 
-        try {
-            using var fx = new Fixture(Config.Root);
-            await fx.HandleAsync("""{"hook_event_name":"sessionStart","session_id":"abc"}""");
-            var sent = fx.SentToHook("session-start/cursor");
-            var node = JsonNode.Parse(sent)!;
-            await Assert.That(node["home_dir"]?.GetValue<string>()).IsNotNull();
-            await Assert.That(node["agent_host_id"]?.GetValue<string>()).IsEqualTo("host-42");
-        } finally {
-            Environment.SetEnvironmentVariable("KCAP_AGENT_ID", null);
-        }
+        await fx.HandleAsync("""{"hook_event_name":"sessionStart","session_id":"abc"}""");
+        var sent = fx.SentToHook("session-start/cursor");
+        var node = JsonNode.Parse(sent)!;
+        await Assert.That(node["home_dir"]?.GetValue<string>()).IsNotNull();
+        await Assert.That(node["agent_host_id"]?.GetValue<string>()).IsEqualTo("host-42");
     }
 
     [Test]
@@ -135,7 +130,7 @@ public class CursorHookCommandTests {
         await rejecting.HandleAsync($$"""{"hook_event_name":"postToolUse","session_id":"{{Sid}}","tool_name":"Glob"}""");
         await Assert.That(rejecting.Spool.HasBacklog(Sid)).IsTrue();
 
-        await new CursorHookCommand(Config.Root, accepting.Profiles, new HookClock(accepting.Clock), Home, new FixedCapacitorHttpClient()).HandleCore(
+        await new CursorHookCommand(Config.Root, accepting.Profiles, new HookClock(accepting.Clock), Home, TestHarnesses.Under(Home), new FixedCapacitorHttpClient()).HandleCore(
             accepting.Client,
             stdin: new StringReader($$"""{"hook_event_name":"postToolUse","session_id":"{{Sid}}","tool_name":"Glob"}"""),
             spool: rejecting.Spool);
@@ -189,7 +184,7 @@ public class CursorHookCommandTests {
             });
             using var client = new HttpClient(handler);
 
-            var exit = await new CursorHookCommand(Config.Root, Resolutions.At(Fixture.StubUrl, Config.Root), new HookClock(TimeProvider.System), Home, new FixedCapacitorHttpClient()).HandleCore(
+            var exit = await new CursorHookCommand(Config.Root, Resolutions.At(Fixture.StubUrl, Config.Root), new HookClock(TimeProvider.System), Home, TestHarnesses.Under(Home), new FixedCapacitorHttpClient()).HandleCore(
                 client,
                 new StringReader($$"""{"hook_event_name":"postToolUse","session_id":"{{sid}}","tool_name":"Bash","transcript_path":"/tmp/{{sid}}.jsonl"}"""),
                 spool);
@@ -361,7 +356,7 @@ public class CursorHookCommandTests {
         var clock = new HookClock(spent);          // anchors on construction — advance AFTER it
         spent.Advance(CursorHookCommand.Ceiling - HookBudget.Safety);
 
-        var exit = await new CursorHookCommand(Config.Root, Resolutions.At(Fixture.StubUrl, Config.Root), clock, Home, new FixedCapacitorHttpClient())
+        var exit = await new CursorHookCommand(Config.Root, Resolutions.At(Fixture.StubUrl, Config.Root), clock, Home, TestHarnesses.Under(Home), new FixedCapacitorHttpClient())
             .HandleWithDeps(
                 new StringReader("""{"hook_event_name":"sessionStart","session_id":"abc"}"""),
                 _ => Task.FromResult(new AuthAttempt(fx.Client, AuthStatus.Ok)),
@@ -383,7 +378,7 @@ public class CursorHookCommandTests {
         var clock = new HookClock(spent);
         spent.Advance(CursorHookCommand.Ceiling);
 
-        var exit = await new CursorHookCommand(Config.Root, Resolutions.At(Fixture.StubUrl, Config.Root), clock, Home, new FixedCapacitorHttpClient()).HandleCore(
+        var exit = await new CursorHookCommand(Config.Root, Resolutions.At(Fixture.StubUrl, Config.Root), clock, Home, TestHarnesses.Under(Home), new FixedCapacitorHttpClient()).HandleCore(
             fx.Client,
             new StringReader("""{"hook_event_name":"sessionStart","session_id":"abc"}"""),
             fx.Spool
@@ -544,7 +539,7 @@ public class CursorHookCommandTests {
         // noticing. clientFactory/spoolFactory stand in for real auth/spool setup so the
         // test stays hermetic while still exercising the REAL entry point's cap+emit logic.
         var clock = new FakeTimeProvider();
-        var call  = new CursorHookCommand(Config.Root, Resolutions.At(Fixture.StubUrl, Config.Root), new HookClock(clock), Home, new FixedCapacitorHttpClient())
+        var call  = new CursorHookCommand(Config.Root, Resolutions.At(Fixture.StubUrl, Config.Root), new HookClock(clock), Home, TestHarnesses.Under(Home), new FixedCapacitorHttpClient())
             .HandleWithDeps(new NeverCompletingReader(),
                 _ => Task.FromResult(new AuthAttempt(fx.Client, AuthStatus.Ok)),
                 () => fx.Spool);
@@ -571,7 +566,7 @@ public class CursorHookCommandTests {
         using var fx = new Fixture(Config.Root);
         var reader = new CancelObservingReader();
 
-        var exit = await new CursorHookCommand(Config.Root, Resolutions.At(Fixture.StubUrl, Config.Root), new HookClock(TimeProvider.System), Home, new FixedCapacitorHttpClient()).HandleCore(fx.Client, reader, fx.Spool);
+        var exit = await new CursorHookCommand(Config.Root, Resolutions.At(Fixture.StubUrl, Config.Root), new HookClock(TimeProvider.System), Home, TestHarnesses.Under(Home), new FixedCapacitorHttpClient()).HandleCore(fx.Client, reader, fx.Spool);
 
         await Assert.That(exit).IsEqualTo(0);
         // The read never resolved (no hook_event_name was ever parsed), so there is
@@ -595,7 +590,7 @@ public class CursorHookCommandTests {
         fx.HoldOnPost = TimeSpan.FromMilliseconds(300);
 
         var sw = System.Diagnostics.Stopwatch.StartNew();
-        var exit = await new CursorHookCommand(Config.Root, Resolutions.At(Fixture.StubUrl, Config.Root), new HookClock(TimeProvider.System), Home, new FixedCapacitorHttpClient()).HandleWithDeps(
+        var exit = await new CursorHookCommand(Config.Root, Resolutions.At(Fixture.StubUrl, Config.Root), new HookClock(TimeProvider.System), Home, TestHarnesses.Under(Home), new FixedCapacitorHttpClient()).HandleWithDeps(
             new StringReader("""{"hook_event_name":"sessionStart","session_id":"abc"}"""),
             _ => Task.FromResult(new AuthAttempt(fx.Client, AuthStatus.Ok)),
             () => fx.Spool);
@@ -622,7 +617,7 @@ public class CursorHookCommandTests {
 
         var sw    = System.Diagnostics.Stopwatch.StartNew();
         var clock = new FakeTimeProvider();
-        var call  = new CursorHookCommand(Config.Root, Resolutions.At(Fixture.StubUrl, Config.Root), new HookClock(clock), Home, new FixedCapacitorHttpClient())
+        var call  = new CursorHookCommand(Config.Root, Resolutions.At(Fixture.StubUrl, Config.Root), new HookClock(clock), Home, TestHarnesses.Under(Home), new FixedCapacitorHttpClient())
             .HandleWithDeps(
                 new StringReader("""{"hook_event_name":"sessionStart","session_id":"abc"}"""),
                 _ => neverAuths.Task,
@@ -876,7 +871,7 @@ public class CursorHookCommandTests {
         // The real scope resolver runs: its git spawn is bounded by a Stopwatch, so its wall-clock
         // cost cannot eat a budget that only moves when this test says so.
         var elapsed = System.Diagnostics.Stopwatch.StartNew();
-        var call = new CursorHookCommand(Config.Root, Resolutions.At(Fixture.StubUrl, Config.Root), new HookClock(clock), Home, new FixedCapacitorHttpClient()).HandleCore(
+        var call = new CursorHookCommand(Config.Root, Resolutions.At(Fixture.StubUrl, Config.Root), new HookClock(clock), Home, TestHarnesses.Under(Home), new FixedCapacitorHttpClient()).HandleCore(
             hangingClient, new StringReader(payload), fx.Spool);
 
         // Wait (bounded, real-time) for the request to ENTER the handler, then fire the budget clock.
@@ -902,7 +897,7 @@ public class CursorHookCommandTests {
         clock.Advance(TimeSpan.FromSeconds(31));
         fx.MemoryIndexBody = "[]";
 
-        var exit2 = await new CursorHookCommand(Config.Root, Resolutions.At(Fixture.StubUrl, Config.Root), new HookClock(clock), Home, new FixedCapacitorHttpClient()).HandleCore(
+        var exit2 = await new CursorHookCommand(Config.Root, Resolutions.At(Fixture.StubUrl, Config.Root), new HookClock(clock), Home, TestHarnesses.Under(Home), new FixedCapacitorHttpClient()).HandleCore(
             fx.Client, new StringReader(payload), fx.Spool);
         await Assert.That(exit2).IsEqualTo(0);
         // The index GET fires again on fx.Client — proving the first, cancelled attempt's
@@ -1072,7 +1067,7 @@ public class CursorHookCommandTests {
         public FakeTimeProvider Clock { get; } = new();
 
         public Task<int> HandleAsync(string stdin) =>
-            new CursorHookCommand(Config, Profiles, new HookClock(Clock), _home, new FixedCapacitorHttpClient()).HandleCore(
+            new CursorHookCommand(Config, Profiles, new HookClock(Clock), _home, TestHarnesses.Under(_home), new FixedCapacitorHttpClient()).HandleCore(
                 Client,
                 stdin: new StringReader(stdin),
                 spool: Spool);

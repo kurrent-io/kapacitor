@@ -51,7 +51,10 @@ public class AgentDetectionFeedTests {
     public async Task Falls_back_to_the_process_PATH_when_the_probe_is_inconclusive() {
         var probe = new FakeLoginShellProbe { TerminalPathBehavior = _ => Task.FromResult<string?>(null) };
 
-        var actual    = await AgentsStepViewModel.BuildDetectionFeed(probe, Home)(CancellationToken.None);
+        var actual = await AgentsStepViewModel.BuildDetectionFeed(probe, Home)(CancellationToken.None);
+
+        // Pins the process-PATH fallback, so expected must come from the same resolution
+        // BuildDetectionFeed falls back to, not a hermetic registry.
         var harnesses = HarnessRegistry.FromEnvironment(Home);
         var expected  = harnesses.Where(h => harnesses.Detected(h.Id)).Select(h => h.Id);
 

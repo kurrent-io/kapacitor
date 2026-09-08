@@ -12,7 +12,7 @@ public class SessionStartPlatformStampTests {
         // The field feeds the server's live applicability gate; the vocabulary is closed
         // (macos/linux/windows) and every CI host is one of them.
         var body = new JsonObject();
-        SessionStartInventory.Stamp(body, Config.Root, Home);
+        SessionStartInventory.Stamp(body, Config.Root, TestHarnesses.Under(Home));
 
         var platform = (string?)body["platform"];
         await Assert.That(platform).IsEqualTo(HostPlatform.Normalized);

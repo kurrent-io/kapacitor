@@ -58,7 +58,7 @@ public class AgentOrchestratorLocalAttachTests {
     public async Task Claude_borrowed_cwd_prepare_writes_no_repo_files() {
         using var tmp = new TempDir();
 
-        var launcher = new ClaudeLauncher(LauncherCfg(), Home, NullLogger<ClaudeLauncher>.Instance);
+        var launcher = new ClaudeLauncher(LauncherCfg(), TestHarnesses.Under(Home), NullLogger<ClaudeLauncher>.Instance);
         launcher.Prepare(CtxFor(tmp.Path));
 
         await Assert.That(File.Exists(tmp.PathTo(".mcp.json"))).IsFalse();
@@ -68,14 +68,14 @@ public class AgentOrchestratorLocalAttachTests {
 
     [Test]
     public async Task Claude_passthrough_forwards_user_args_verbatim() {
-        var launcher = new ClaudeLauncher(LauncherCfg(), Home, NullLogger<ClaudeLauncher>.Instance);
+        var launcher = new ClaudeLauncher(LauncherCfg(), TestHarnesses.Under(Home), NullLogger<ClaudeLauncher>.Instance);
         var a = launcher.BuildPassthrough(CtxFor("/r"), ["--model", "opus", "fix it"]);
         await Assert.That(a.Args).IsEquivalentTo(new[] { "--model", "opus", "fix it" });
     }
 
     [Test]
     public async Task Codex_passthrough_injects_mandatory_flags_then_user_args() {
-        var launcher = new CodexLauncher(LauncherCfg(), Home, NullLogger<CodexLauncher>.Instance);
+        var launcher = new CodexLauncher(LauncherCfg(), TestHarnesses.Under(Home), NullLogger<CodexLauncher>.Instance);
         var a = launcher.BuildPassthrough(CtxFor("/r"), ["-m", "gpt"]);
         await Assert.That(a.Args).Contains("--cd");
         await Assert.That(a.Args).Contains("--no-alt-screen");
@@ -85,7 +85,7 @@ public class AgentOrchestratorLocalAttachTests {
 
     [Test]
     public async Task Codex_passthrough_rejects_user_duplicate_of_mandatory_flag() {
-        var launcher = new CodexLauncher(LauncherCfg(), Home, NullLogger<CodexLauncher>.Instance);
+        var launcher = new CodexLauncher(LauncherCfg(), TestHarnesses.Under(Home), NullLogger<CodexLauncher>.Instance);
         await Assert.That(() => launcher.BuildPassthrough(CtxFor("/r"), ["--cd", "/elsewhere"]))
             .Throws<ArgumentException>();
     }

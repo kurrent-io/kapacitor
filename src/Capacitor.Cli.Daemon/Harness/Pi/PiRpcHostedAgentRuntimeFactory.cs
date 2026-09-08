@@ -42,7 +42,8 @@ namespace Capacitor.Cli.Daemon.Harness.Pi;
 /// so the seam changes nothing about production behaviour, and the argv/env assertions run against
 /// the same builder a real launch uses.</param>
 /// <param name="binaryExists">Test seam ONLY, for <see cref="IsAvailable"/>. Production passes null,
-/// which resolves the real binary through <c>PATH</c> via <see cref="CliResolver.Exists"/>.</param>
+/// which resolves the real binary through the registry's search path via
+/// <see cref="CliResolver.Exists"/>.</param>
 /// <param name="readyDeadline">Test seam ONLY, threaded verbatim into every
 /// <see cref="PiRpcHostedAgentRuntime"/> this factory constructs. Production passes null, which
 /// falls through to <see cref="PiRpcHostedAgentRuntime.DefaultReadyDeadline"/> — so a test can bound
@@ -60,7 +61,8 @@ internal sealed partial class PiRpcHostedAgentRuntimeFactory(
         processSource ?? ((psi, _) => Task.FromResult<IPiRpcProcess>(
             new PiRpcProcess(psi, loggerFactory.CreateLogger<PiRpcProcess>())));
 
-    readonly Func<string, bool> _binaryExists = binaryExists ?? CliResolver.Exists;
+    readonly Func<string, bool> _binaryExists =
+        binaryExists ?? (path => new CliResolver(config.Binaries).Exists(path));
 
     public string Vendor => "pi";
 

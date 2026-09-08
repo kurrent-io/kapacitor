@@ -5,8 +5,13 @@ using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.FirstRun;
 using Capacitor.Cli.Core.Harness;
+using Capacitor.Cli.Core.Harness.Antigravity;
 using Capacitor.Cli.Core.Harness.Claude;
 using Capacitor.Cli.Core.Harness.Codex;
+using Capacitor.Cli.Core.Harness.Copilot;
+using Capacitor.Cli.Core.Harness.Cursor;
+using Capacitor.Cli.Core.Harness.Gemini;
+using Capacitor.Cli.Core.Harness.Kiro;
 using Capacitor.Cli.Core.Harness.OpenCode;
 using Capacitor.Cli.Core.Harness.Pi;
 using Capacitor.Cli.Core.Instructions;
@@ -232,7 +237,7 @@ sealed class SetupImportLane(
         ProfileContext profiles,
         UserHome home,
         ICapacitorHttpClient http,
-        HarnessPaths paths,
+        HarnessRegistry harnesses,
         Func<SetupImportLane.Pass, Task<ImportCommand.ImportRunOutcome?>>? runner = null) : IFirstRunImportLane {
     /// <summary>One invocation's arguments, so a test can assert what each level asked for without
     /// running an import.</summary>
@@ -248,9 +253,9 @@ sealed class SetupImportLane(
         ImportCommand.ImportDiscoveryResult? found = null;
 
         // Quiet, because the caller owns the terminal for the duration and the figures go to a screen.
-        var exit = await new ImportCommand(config, profiles, home, http).HandleImport(
+        var exit = await new ImportCommand(config, profiles, home, harnesses, http).HandleImport(
             filterCwd:    null,
-            sources:      SetupCommand.BuildImportSources(config, paths, vendors),
+            sources:      SetupCommand.BuildImportSources(config, harnesses, vendors),
             discoverOnly: true,
             discoverJson: true,
             windowsAsOf:  asOf,
@@ -301,9 +306,9 @@ sealed class SetupImportLane(
     async Task<ImportCommand.ImportRunOutcome?> Run(Pass pass) {
         ImportCommand.ImportRunOutcome? outcome = null;
 
-        await new ImportCommand(config, profiles, home, http).HandleImport(
+        await new ImportCommand(config, profiles, home, harnesses, http).HandleImport(
             filterCwd:          null,
-            sources:            SetupCommand.BuildImportSources(config, paths, pass.Vendors),
+            sources:            SetupCommand.BuildImportSources(config, harnesses, pass.Vendors),
             since:              pass.Since,
             scope:              new ImportScope.Repo([.. pass.Repos.Select(c => (c.Owner, c.Name))]),
             skipConfirmation:   true,
@@ -411,10 +416,8 @@ sealed class SetupMachineActions : IFirstRunMachineActions {
 public sealed class SetupCommand(
         ConfigRoot config, ProfileContext profiles, TokenStore store, IHttpClientFactory httpFactory,
         IAuthProxyClient proxy, WorkOSClient workos, GitHubOAuthClient github, IBrowserLauncher browser,
-        UserHome home, ICapacitorHttpClient http, TenantProvisioningClient provisioning,
-        AuthProviderDiscovery discovery) {
-    readonly HarnessPaths _paths = HarnessPaths.FromEnvironment(home);
-
+        UserHome home, HarnessRegistry harnesses, AgentsPaths agents, ICapacitorHttpClient http,
+        TenantProvisioningClient provisioning, AuthProviderDiscovery discovery) {
     public async Task<int> HandleAsync(string[] args) {
         var serverUrlArg     = GetArg(args, "--server-url");
 
@@ -619,10 +622,6 @@ public sealed class SetupCommand(
         await Console.Out.WriteLineAsync();
 
         var pluginPath = ResolvePluginPath();
-        // Composed once in Core so the probe set is testable without touching the real
-        // environment — see Capacitor.Cli.Core.Setup.AgentDetection for the per-vendor
-        // rationale (dual PATH + install-marker signals, Cursor's marker-only exception, etc).
-        var harnesses  = HarnessRegistry.FromEnvironment(home);
         var detected   = new CodingAgentsStep.DetectedAgents(
             Claude:      harnesses.Detected(HarnessId.Claude),
             Codex:       harnesses.Detected(HarnessId.Codex),
@@ -666,7 +665,7 @@ public sealed class SetupCommand(
         // guard at the top of HandleAsync returns 1 otherwise).
         var claudeSettingsPath = legacyProjectScope
             ? Path.Combine(gitRoot!, ".claude", "settings.local.json")
-            : _paths.Claude.UserSettings;
+            : harnesses.Of<ClaudeHarness>().Paths.UserSettings;
 
         var stepOptions = new CodingAgentsStep.Options(
             SkipClaude:  skipClaude,
@@ -713,14 +712,14 @@ public sealed class SetupCommand(
                 ? new[] { serverUrl }.Concat(profilesForDomains.Profiles.Values.Select(p => p.ServerUrl))
                 : [serverUrl]);
 
-        var copilot  = _paths.Copilot;
-        var pi       = _paths.Pi;
-        var kiro     = _paths.Kiro;
-        var codex    = _paths.Codex;
-        var opencode = _paths.OpenCode;
-        var cursor   = _paths.Cursor;
-        var gemini   = _paths.Gemini;
-        var agy      = _paths.Antigravity;
+        var copilot  = harnesses.Of<CopilotHarness>().Paths;
+        var pi       = harnesses.Of<PiHarness>().Paths;
+        var kiro     = harnesses.Of<KiroHarness>().Paths;
+        var codex    = harnesses.Of<CodexHarness>().Paths;
+        var opencode = harnesses.Of<OpenCodeHarness>().Paths;
+        var cursor   = harnesses.Of<CursorHarness>().Paths;
+        var gemini   = harnesses.Of<GeminiHarness>().Paths;
+        var agy      = harnesses.Of<AntigravityHarness>().Paths;
 
         var stepPaths = new CodingAgentsStep.Paths(
             ClaudeSettingsPath:   claudeSettingsPath,
@@ -730,7 +729,7 @@ public sealed class SetupCommand(
             CursorHooksPath:      cursor.UserHooksJson,
             CopilotHooksPath:     copilot.KcapHooksJson,
             GeminiSettingsPath:   gemini.SettingsJson,
-            AgentsSkillsDir:      _paths.Agents.UserSkillsDir,
+            AgentsSkillsDir:      agents.UserSkillsDir,
             LegacyCodexSkillsDir: codex.SkillsDir,
             KiroHooksPath:        kiro.KcapAgentJson,
             PiExtensionPath:      pi.KcapExtension,
@@ -1277,13 +1276,13 @@ public sealed class SetupCommand(
         await using var scoped = HttpForChosenServer(inv.Profiles.Resolution.ServerUrl ?? "", inv.Profiles);
 
         return await new ImportCommand(
-                config, inv.Profiles, home, scoped.GetRequiredService<ICapacitorHttpClient>())
+                config, inv.Profiles, home, harnesses, scoped.GetRequiredService<ICapacitorHttpClient>())
             .HandleImport(
             filterCwd:               null,
             filterSession:           null,
             minLines:                15,
             generateSummaries:       false,
-            sources:                 BuildImportSources(config, _paths),
+            sources:                 BuildImportSources(config, harnesses),
             explicitVendorSelection: false,
             since:                   null,
             scope:                   new ImportScope.Repo(inv.Repo.Owner, inv.Repo.Name),
@@ -1304,19 +1303,22 @@ public sealed class SetupCommand(
     /// nothing. Filtering the sources rather than the counts afterwards is what makes a reported figure
     /// already scoped to what the user kept.</param>
     internal static IReadOnlyList<IImportSource> BuildImportSources(
-            ConfigRoot config, HarnessPaths paths, IReadOnlyCollection<HarnessId>? vendors = null) {
+            ConfigRoot config, HarnessRegistry harnesses, IReadOnlyCollection<HarnessId>? vendors = null) {
+        var cursor   = harnesses.Of<CursorHarness>().Paths;
+        var opencode = harnesses.Of<OpenCodeHarness>().Paths;
+
         IReadOnlyList<IImportSource> all = [
-            new ClaudeImportSource(config, paths.Claude.Projects),
-            new CodexImportSource(config, paths.Codex.Sessions),
-            new CursorImportSource(config, paths.Cursor.ProjectsDir, paths.Cursor.WorkspaceStorageDir),
-            new CopilotImportSource(config, paths.Copilot),
-            new GeminiImportSource(paths.Gemini.TmpDir),
-            new KiroImportSource(config, paths.Kiro.SessionsDir),
-            new PiImportSource(config, paths.Pi.SessionsDir),
+            new ClaudeImportSource(config, harnesses.Of<ClaudeHarness>().Paths.Projects),
+            new CodexImportSource(config, harnesses.Of<CodexHarness>().Paths.Sessions),
+            new CursorImportSource(config, cursor.ProjectsDir, cursor.WorkspaceStorageDir),
+            new CopilotImportSource(config, harnesses.Of<CopilotHarness>().Paths),
+            new GeminiImportSource(harnesses.Of<GeminiHarness>().Paths.TmpDir),
+            new KiroImportSource(config, harnesses.Of<KiroHarness>().Paths.SessionsDir),
+            new PiImportSource(config, harnesses.Of<PiHarness>().Paths.SessionsDir),
             new OpenCodeImportSource(
-                    Path.Combine(paths.OpenCode.DataDir, "opencode.db"),
-                    paths.OpenCode.ImportLedgerJson),
-            new AntigravityImportSource(paths.Antigravity)
+                    Path.Combine(opencode.DataDir, "opencode.db"),
+                    opencode.ImportLedgerJson),
+            new AntigravityImportSource(harnesses.Of<AntigravityHarness>().Paths)
         ];
 
         if (vendors is null) return all;
@@ -1549,10 +1551,10 @@ public sealed class SetupCommand(
                 AnsiConsole.MarkupLine("  [dim]Checking this machine for harnesses…[/]");
 
                 var report = FirstRunMachineReport.EvaluateCurrent(
-                    config, HarnessRegistry.FromEnvironment(home),
+                    config, harnesses,
                     Environment.MachineName, await LoginShellFindsCliAsync());
 
-                importing = new SetupImportLane(config, ImportContext(profiles, serverUrl), home, flowHttp, _paths);
+                importing = new SetupImportLane(config, ImportContext(profiles, serverUrl), home, flowHttp, harnesses);
 
                 using var progress = new SpectreFirstRunFlowProgress();
 
