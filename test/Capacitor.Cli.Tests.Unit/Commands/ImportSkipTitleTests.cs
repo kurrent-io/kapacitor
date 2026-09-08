@@ -1,4 +1,5 @@
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.Core.Setup;
 using Capacitor.Cli.Harness.Claude;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
@@ -71,7 +72,7 @@ public class ImportSkipTitleTests : IDisposable {
             [.. Enumerable.Range(0, 20).Select(i =>
                 $$$"""{"type":"user","timestamp":"2026-03-15T10:00:00Z","cwd":"/tmp/skip-title-proj","message":{"content":"add a retry to the import loop {{{i}}}"}}""")]);
 
-        return new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), Home, new FixedCapacitorHttpClient())
+        return new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), Home, TestHarnesses.Under(Home, BinaryProbe.FromEnvironment()), new FixedCapacitorHttpClient())
             .HandleImport(
             filterCwd:        null,
             minLines:         1,

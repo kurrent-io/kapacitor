@@ -21,7 +21,7 @@ public class WatcherHubCredentialTests : IDisposable {
     public void Dispose() => _server.Stop();
 
     WatchCommand Watch(string? bearer) =>
-        new(Config.Root, Resolutions.At(_server.Url!, Config.Root), Home,
+        new(Config.Root, Resolutions.At(_server.Url!, Config.Root), TestHarnesses.Under(Home),
             new FixedCapacitorHttpClient(), new FixedCredentialSource(bearer));
 
     /// <summary>Refused, so the attempt ends at negotiate — which has already sent what we came for.</summary>

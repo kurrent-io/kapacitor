@@ -43,11 +43,11 @@ internal static class CursorBorrowedReviewValidation {
     /// mismatch, and also on any platform other than macOS/arm64, which is where the maintainer
     /// probe suite runs; neither outcome says anything about whether borrowed review is
     /// supported.</summary>
-    internal static CursorBorrowedReviewArtifact? TryMatchValidatedBuild(string configuredPath) {
+    internal static CursorBorrowedReviewArtifact? TryMatchValidatedBuild(CliResolver cli, string configuredPath) {
         if (!OperatingSystem.IsMacOS()) return null;
         if (RuntimeInformation.ProcessArchitecture != Architecture.Arm64) return null;
         try {
-            var resolved = CliResolver.ResolveExecutable(configuredPath);
+            var resolved = cli.ResolveExecutable(configuredPath);
             if (resolved is null) return null;
             var launcher = ResolveFinalLink(resolved);
             var versionDir = Directory.GetParent(launcher)?.FullName;

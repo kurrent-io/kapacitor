@@ -1,5 +1,6 @@
 using System.Runtime.Versioning;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Setup;
 using Capacitor.Cli.Daemon.Services;
 using Capacitor.Cli.Daemon.Tests.Unit.Pty;
 using Capacitor.Cli.Daemon.Tests.Unit.Services;
@@ -13,6 +14,9 @@ namespace Capacitor.Cli.Daemon.Tests.Unit;
 /// publishing one over a transient probe miss would withdraw the reviewer.
 /// </summary>
 public class DaemonRunnerCapabilityRefreshTests {
+    /// <summary>Every path here is rooted, which resolves without a search path.</summary>
+    static CliResolver Cli => new(BinaryProbe.Searching(null));
+
     static UnattendedVendorCapability Cap(string vendor, string? version, bool borrowed = false) =>
         new(vendor, version, $"{vendor}-unattended-v1", borrowed);
 
@@ -77,7 +81,8 @@ public class DaemonRunnerCapabilityRefreshTests {
             File.SetUnixFileMode(claude, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
 
         var baselines = DaemonRunner.FingerprintUnattendedVendors(
-            [Factory("claude", claude), Factory("codex", tmp.PathTo("missing-codex"))], ["claude", "codex"]);
+            Cli, [Factory("claude", claude), Factory("codex", tmp.PathTo("missing-codex"))],
+            ["claude", "codex"]);
 
         await Assert.That(baselines["claude"]!.Value.ResolvedPath).IsEqualTo(new FileInfo(claude).FullName);
         await Assert.That(baselines["codex"]).IsNull();

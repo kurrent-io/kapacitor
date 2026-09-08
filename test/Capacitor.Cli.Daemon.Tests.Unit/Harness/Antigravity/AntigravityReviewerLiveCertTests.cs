@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Capacitor.Cli.Core.Setup;
 using Capacitor.Cli.Daemon.Harness.Antigravity;
 using Capacitor.Cli.Daemon.Services;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -231,6 +232,7 @@ public class AntigravityReviewerLiveCertTests {
                 AntigravityReviewerTurnTimeoutSeconds   = TurnTimeoutSeconds,
                 Name                                  = "agy-live-cert",
                 DaemonEpoch                           = "cert-" + Guid.NewGuid().ToString("N")[..8],
+                Binaries                               = BinaryProbe.FromEnvironment(),
                 Store                                 = daemons.Store
             };
 
@@ -240,7 +242,7 @@ public class AntigravityReviewerLiveCertTests {
             // the installed agy, so the cert still judges the INSTALLED build rather than a seamed one.
             DaemonRunner.SeedReviewerAffirmation(
                 AntigravityHostedAgentRuntimeFactory.ReviewerStateDir(config),
-                DaemonRunner.AntigravityVendor, enabled: true, config.AntigravityPath);
+                DaemonRunner.AntigravityVendor, enabled: true, config.AntigravityPath, config);
 
             return new LiveHarness(tmp, daemons, worktree, config);
         }

@@ -2,6 +2,7 @@ using System.Text.Json.Nodes;
 using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core.Harness.Antigravity;
+using Capacitor.Cli.Core.Harness.Gemini;
 using Capacitor.Cli.Core.Instructions;
 using Capacitor.Cli.Core.Mcp;
 
@@ -15,9 +16,9 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 public class PluginCommandAntigravityTests {
     // Seed installed-but-stale hooks so `--if-installed` refreshes (and registers MCP + instructions).
     static void SeedStaleHooks(PluginEnvironment env) {
-        AntigravityHooksInstaller.Install(env.Paths.Antigravity.GlobalHooksJson);  // hooks + plugin.json + current marker
+        AntigravityHooksInstaller.Install(env.Harnesses.Of<AntigravityHarness>().Paths.GlobalHooksJson);  // hooks + plugin.json + current marker
         File.WriteAllText(
-            Path.Combine(Path.GetDirectoryName(env.Paths.Antigravity.GlobalHooksJson)!, AntigravityHooksInstaller.MarkerFileName),
+            Path.Combine(Path.GetDirectoryName(env.Harnesses.Of<AntigravityHarness>().Paths.GlobalHooksJson)!, AntigravityHooksInstaller.MarkerFileName),
             "0.0.0-stale");
     }
 
@@ -28,15 +29,15 @@ public class PluginCommandAntigravityTests {
         SeedStaleHooks(env);
 
         // A user-authored MCP server in Antigravity's mcp_config.json that must survive.
-        Directory.CreateDirectory(Path.GetDirectoryName(env.Paths.Antigravity.McpConfigJson)!);
-        await File.WriteAllTextAsync(env.Paths.Antigravity.McpConfigJson, """
+        Directory.CreateDirectory(Path.GetDirectoryName(env.Harnesses.Of<AntigravityHarness>().Paths.McpConfigJson)!);
+        await File.WriteAllTextAsync(env.Harnesses.Of<AntigravityHarness>().Paths.McpConfigJson, """
             {"mcpServers":{"my-tool":{"command":"my-tool","args":["serve"]}}}
             """);
 
         var exit = await new PluginCommand(env).HandleAsync(["plugin", "install", "--antigravity", "--if-installed"]);
         await Assert.That(exit).IsEqualTo(0);
 
-        var servers = JsonNode.Parse(await File.ReadAllTextAsync(env.Paths.Antigravity.McpConfigJson))!.AsObject()["mcpServers"]!.AsObject();
+        var servers = JsonNode.Parse(await File.ReadAllTextAsync(env.Harnesses.Of<AntigravityHarness>().Paths.McpConfigJson))!.AsObject()["mcpServers"]!.AsObject();
         // Registered command is the resolved native binary (injected seam), not the wrapper-resolved "kcap".
         await Assert.That(servers["kcap-review"]!["command"]!.GetValue<string>()).IsEqualTo(TestBinaryPath);
         await Assert.That(servers["kcap-review"]!["type"]).IsNull();   // Standard shape: no `type`
@@ -55,13 +56,13 @@ public class PluginCommandAntigravityTests {
         var env = TestEnv(home.Path);
         SeedStaleHooks(env);
 
-        Directory.CreateDirectory(Path.GetDirectoryName(env.Paths.Antigravity.InstructionsMd)!);
-        await File.WriteAllTextAsync(env.Paths.Antigravity.InstructionsMd, "# My rules\n\nAlways use tabs.\n");
+        Directory.CreateDirectory(Path.GetDirectoryName(env.Harnesses.Of<AntigravityHarness>().Paths.InstructionsMd)!);
+        await File.WriteAllTextAsync(env.Harnesses.Of<AntigravityHarness>().Paths.InstructionsMd, "# My rules\n\nAlways use tabs.\n");
 
         var exit = await new PluginCommand(env).HandleAsync(["plugin", "install", "--antigravity", "--if-installed"]);
         await Assert.That(exit).IsEqualTo(0);
 
-        var content = await File.ReadAllTextAsync(env.Paths.Antigravity.InstructionsMd);
+        var content = await File.ReadAllTextAsync(env.Harnesses.Of<AntigravityHarness>().Paths.InstructionsMd);
         await Assert.That(content).Contains("Always use tabs.");                    // user content preserved
         await Assert.That(content).Contains(AgentInstructionsWriter.BeginMarker);
         await Assert.That(content).Contains("Prefer kcap tools");
@@ -77,7 +78,7 @@ public class PluginCommandAntigravityTests {
             ["plugin", "install", "--antigravity", "--if-installed", "--skip-antigravity-mcp"]);
         await Assert.That(exit).IsEqualTo(0);
 
-        await Assert.That(File.Exists(env.Paths.Antigravity.McpConfigJson)).IsFalse();
+        await Assert.That(File.Exists(env.Harnesses.Of<AntigravityHarness>().Paths.McpConfigJson)).IsFalse();
     }
 
     [Test]
@@ -90,7 +91,7 @@ public class PluginCommandAntigravityTests {
             ["plugin", "install", "--antigravity", "--if-installed", "--skip-antigravity-instructions"]);
         await Assert.That(exit).IsEqualTo(0);
 
-        await Assert.That(File.Exists(env.Paths.Antigravity.InstructionsMd)).IsFalse();
+        await Assert.That(File.Exists(env.Harnesses.Of<AntigravityHarness>().Paths.InstructionsMd)).IsFalse();
     }
 
     [Test]
@@ -99,24 +100,24 @@ public class PluginCommandAntigravityTests {
         var env = TestEnv(home.Path);
 
         // Seed MCP (kcap-owned marker + a user server) and a GEMINI.md with kcap's block + user content.
-        JsonMcpConfigWriter.Register(env.Paths.Antigravity.McpConfigJson, KcapMcpServers.All, McpConfigShape.Standard, cwd: null, new McpMarker("antigravity", env.Home));
-        var seeded = JsonNode.Parse(await File.ReadAllTextAsync(env.Paths.Antigravity.McpConfigJson))!.AsObject();
+        JsonMcpConfigWriter.Register(env.Harnesses.Of<AntigravityHarness>().Paths.McpConfigJson, KcapMcpServers.All, McpConfigShape.Standard, cwd: null, new McpMarker("antigravity", env.Home));
+        var seeded = JsonNode.Parse(await File.ReadAllTextAsync(env.Harnesses.Of<AntigravityHarness>().Paths.McpConfigJson))!.AsObject();
         seeded["mcpServers"]!["my-tool"] = JsonNode.Parse("""{"command":"my-tool","args":["serve"]}""");
-        await File.WriteAllTextAsync(env.Paths.Antigravity.McpConfigJson, seeded.ToJsonString());
+        await File.WriteAllTextAsync(env.Harnesses.Of<AntigravityHarness>().Paths.McpConfigJson, seeded.ToJsonString());
 
-        Directory.CreateDirectory(Path.GetDirectoryName(env.Paths.Antigravity.InstructionsMd)!);
-        await File.WriteAllTextAsync(env.Paths.Antigravity.InstructionsMd, "# My rules\n\nAlways use tabs.\n");
-        AgentInstructionsWriter.Write(env.Paths.Antigravity.InstructionsMd, KcapAgentInstructions.Body);
+        Directory.CreateDirectory(Path.GetDirectoryName(env.Harnesses.Of<AntigravityHarness>().Paths.InstructionsMd)!);
+        await File.WriteAllTextAsync(env.Harnesses.Of<AntigravityHarness>().Paths.InstructionsMd, "# My rules\n\nAlways use tabs.\n");
+        AgentInstructionsWriter.Write(env.Harnesses.Of<AntigravityHarness>().Paths.InstructionsMd, KcapAgentInstructions.Body);
 
         var exit = await new PluginCommand(env).HandleAsync(["plugin", "remove", "--antigravity"]);
         await Assert.That(exit).IsEqualTo(0);
 
-        var servers = JsonNode.Parse(await File.ReadAllTextAsync(env.Paths.Antigravity.McpConfigJson))!.AsObject()["mcpServers"]!.AsObject();
+        var servers = JsonNode.Parse(await File.ReadAllTextAsync(env.Harnesses.Of<AntigravityHarness>().Paths.McpConfigJson))!.AsObject()["mcpServers"]!.AsObject();
         var keys    = servers.Select(kv => kv.Key).ToArray();
         await Assert.That(keys).DoesNotContain("kcap-review");
         await Assert.That(servers["my-tool"]).IsNotNull();  // user server preserved
 
-        var content = await File.ReadAllTextAsync(env.Paths.Antigravity.InstructionsMd);
+        var content = await File.ReadAllTextAsync(env.Harnesses.Of<AntigravityHarness>().Paths.InstructionsMd);
         await Assert.That(content).Contains("Always use tabs.");
         await Assert.That(content).DoesNotContain(AgentInstructionsWriter.BeginMarker);
     }
@@ -129,17 +130,17 @@ public class PluginCommandAntigravityTests {
         // Gemini CLI is installed (its hooks live in the shared ~/.gemini/settings.json) and the
         // shared GEMINI.md carries kcap's block. Removing Antigravity must NOT strip that block —
         // it belongs to the still-installed Gemini integration too.
-        Directory.CreateDirectory(Path.GetDirectoryName(env.Paths.Gemini.SettingsJson)!);
-        PluginCommand.InstallGeminiHooks(env.Paths.Gemini.SettingsJson);
+        Directory.CreateDirectory(Path.GetDirectoryName(env.Harnesses.Of<GeminiHarness>().Paths.SettingsJson)!);
+        PluginCommand.InstallGeminiHooks(env.Harnesses.Of<GeminiHarness>().Paths.SettingsJson);
 
-        Directory.CreateDirectory(Path.GetDirectoryName(env.Paths.Antigravity.InstructionsMd)!);
-        await File.WriteAllTextAsync(env.Paths.Antigravity.InstructionsMd, "# My rules\n\nAlways use tabs.\n");
-        AgentInstructionsWriter.Write(env.Paths.Antigravity.InstructionsMd, KcapAgentInstructions.Body);
+        Directory.CreateDirectory(Path.GetDirectoryName(env.Harnesses.Of<AntigravityHarness>().Paths.InstructionsMd)!);
+        await File.WriteAllTextAsync(env.Harnesses.Of<AntigravityHarness>().Paths.InstructionsMd, "# My rules\n\nAlways use tabs.\n");
+        AgentInstructionsWriter.Write(env.Harnesses.Of<AntigravityHarness>().Paths.InstructionsMd, KcapAgentInstructions.Body);
 
         var exit = await new PluginCommand(env).HandleAsync(["plugin", "remove", "--antigravity"]);
         await Assert.That(exit).IsEqualTo(0);
 
-        var content = await File.ReadAllTextAsync(env.Paths.Antigravity.InstructionsMd);
+        var content = await File.ReadAllTextAsync(env.Harnesses.Of<AntigravityHarness>().Paths.InstructionsMd);
         await Assert.That(content).Contains("Always use tabs.");                    // user content preserved
         await Assert.That(content).Contains(AgentInstructionsWriter.BeginMarker);   // kcap block LEFT for Gemini
     }
@@ -156,7 +157,7 @@ public class PluginCommandAntigravityTests {
         Stdout:            TextWriter.Null,
         Stderr:            TextWriter.Null
     ) {
-        Paths = TestHarnessPaths.NoOverrides(new(fakeHome)),
+        Harnesses = TestHarnesses.Under(new(fakeHome)),
         ResolveMcpBinaryPath = () => TestBinaryPath
     };
 }

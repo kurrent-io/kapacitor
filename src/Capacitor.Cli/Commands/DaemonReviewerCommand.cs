@@ -1,5 +1,6 @@
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Config;
+using Capacitor.Cli.Core.Setup;
 
 namespace Capacitor.Cli.Commands;
 
@@ -26,7 +27,8 @@ namespace Capacitor.Cli.Commands;
 /// is the remedy for — see the per-vendor exception on <see cref="ReviewerVersionStore"/>.</para>
 /// </summary>
 public static class DaemonReviewerCommand {
-    public static Task<int> HandleAsync(DaemonStore daemonStore, ProfileContext profiles, string[] args) {
+    public static Task<int> HandleAsync(
+            DaemonStore daemonStore, ProfileContext profiles, BinaryProbe binaries, string[] args) {
         if (args.Length == 0 || args[0] != "affirm")
             return Task.FromResult(Usage());
 
@@ -51,7 +53,7 @@ public static class DaemonReviewerCommand {
             ? configured
             : reviewer.DefaultBinary;
 
-        var installed = VendorVersionResolver.Resolve(binary);
+        var installed = new VendorVersionResolver(binaries).Resolve(binary);
 
         if (installed is null) {
             Console.Error.WriteLine(

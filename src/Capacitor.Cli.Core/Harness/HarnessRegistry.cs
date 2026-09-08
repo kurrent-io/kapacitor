@@ -54,7 +54,13 @@ public sealed class HarnessRegistry : IReadOnlyList<IHarness> {
 
     /// <summary>Every vendor as this machine's environment resolves it, searched over this process's
     /// own PATH.</summary>
-    public static HarnessRegistry FromEnvironment(UserHome home) {
+    public static HarnessRegistry FromEnvironment(UserHome home) =>
+        FromEnvironment(home, BinaryProbe.FromEnvironment());
+
+    /// <summary>Every vendor as this machine's environment resolves it, searched over
+    /// <paramref name="binaries"/> — the composition root's own DI singleton, so this registry and
+    /// every other consumer of that singleton search the same path.</summary>
+    public static HarnessRegistry FromEnvironment(UserHome home, BinaryProbe binaries) {
         var gemini = GeminiHarness.FromEnvironment(home);
 
         return new([
@@ -67,7 +73,7 @@ public sealed class HarnessRegistry : IReadOnlyList<IHarness> {
             PiHarness.FromEnvironment(home),
             OpenCodeHarness.FromEnvironment(home),
             AntigravityHarness.Over(gemini),
-        ], BinaryProbe.FromEnvironment());
+        ], binaries);
     }
 
     /// <summary>Over harnesses resolved elsewhere — a test's, or a subset.</summary>
@@ -107,6 +113,14 @@ public sealed class HarnessRegistry : IReadOnlyList<IHarness> {
 
     /// <summary>Whether either signal found this vendor.</summary>
     public bool Detected(HarnessId id) => Detect(id).Detected;
+
+    /// <summary>Full path to the first of <paramref name="id"/>'s declared
+    /// <see cref="HarnessSignals.Binaries"/> that resolves on this registry's search path — so a
+    /// caller resolving Antigravity does not have to know it answers to two names. Null when none
+    /// resolve, when the vendor declares no binaries (Cursor ships no CLI), or when this registry
+    /// does not carry <paramref name="id"/>, matching <see cref="Detect"/>.</summary>
+    public string? ResolveExecutable(HarnessId id) =>
+        ById(id)?.Signals.Binaries.Select(_binaries.Resolve).FirstOrDefault(path => path is not null);
 
     public int      Count           => _harnesses.Count;
     public IHarness this[int index] => _harnesses[index];

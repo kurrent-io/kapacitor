@@ -79,7 +79,7 @@ public sealed class PluginCommandStaleAgentTests {
         // A directory where the agent JSON belongs: the clone can't write it, the command exits
         // non-zero, and live capture was never installed — so naming a session that "isn't being
         // captured" would be true but useless, and blaming this install for it would be a lie.
-        Directory.CreateDirectory(env.Paths.Kiro.KcapAgentJson);
+        Directory.CreateDirectory(env.Harnesses.Of<KiroHarness>().Paths.KcapAgentJson);
 
         var exit = await new PluginCommand(env).HandleAsync(["plugin", "install", "--kiro"]);
 
@@ -91,10 +91,10 @@ public sealed class PluginCommandStaleAgentTests {
     // Seeding the file skips the clone (InstallKiroHooks only shells out when it's absent) and leaves
     // the rest of the install — hook injection, default flip, marker — running for real.
     static void SeedAgent(PluginEnvironment env, bool installed) {
-        Directory.CreateDirectory(Path.GetDirectoryName(env.Paths.Kiro.KcapAgentJson)!);
-        File.WriteAllText(env.Paths.Kiro.KcapAgentJson, """{"name":"kcap","hooks":{}}""");
+        Directory.CreateDirectory(Path.GetDirectoryName(env.Harnesses.Of<KiroHarness>().Paths.KcapAgentJson)!);
+        File.WriteAllText(env.Harnesses.Of<KiroHarness>().Paths.KcapAgentJson, """{"name":"kcap","hooks":{}}""");
 
-        if (installed) KiroHooksInstaller.WriteMarker(env.Paths.Kiro.KcapAgentJson, "kiro_default");
+        if (installed) KiroHooksInstaller.WriteMarker(env.Harnesses.Of<KiroHarness>().Paths.KcapAgentJson, "kiro_default");
     }
 
     /// <summary>The fresh install refuses unless `kcap` resolves — the agent it writes invokes it.</summary>
@@ -125,7 +125,7 @@ public sealed class PluginCommandStaleAgentTests {
         Stdout:            stdout,
         Stderr:            TextWriter.Null
     ) {
-        Paths = TestHarnessPaths.NoOverrides(new(home)),
+        Harnesses = TestHarnesses.Under(new(home)),
         ResolveMcpBinaryPath = () => "/usr/local/bin/kcap",
         // Never the real process table: what a CI box happens to be running must not decide a result.
         FindStaleAgents      = _ => found,

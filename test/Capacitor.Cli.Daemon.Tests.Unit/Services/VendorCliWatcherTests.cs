@@ -1,3 +1,4 @@
+using Capacitor.Cli.Core.Setup;
 using Capacitor.Cli.Daemon.Services;
 
 namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
@@ -8,6 +9,9 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 /// reviewer launch.
 /// </summary>
 public class VendorCliWatcherTests {
+    /// <summary>Every path here is rooted, which resolves without a search path.</summary>
+    static CliResolver Cli => new(BinaryProbe.Searching(null));
+
     static readonly CliBinaryStat Old = new("/versions/2.1.259/claude", 100, 1);
     static readonly CliBinaryStat New = new("/versions/2.1.263/claude", 100, 2);
 
@@ -148,7 +152,7 @@ public class VendorCliWatcherTests {
         var link = tmp.PathTo("bin/claude");
         File.CreateSymbolicLink(link, target);
 
-        var stat = VendorCliWatcher.StatCliBinary(link);
+        var stat = VendorCliWatcher.StatCliBinary(Cli, link);
 
         await Assert.That(stat).IsNotNull();
         await Assert.That(stat!.Value.ResolvedPath).IsEqualTo(new FileInfo(target).FullName);
@@ -159,6 +163,6 @@ public class VendorCliWatcherTests {
     public async Task A_missing_binary_has_no_fingerprint() {
         using var tmp = new TempDir();
 
-        await Assert.That(VendorCliWatcher.StatCliBinary(tmp.PathTo("nope"))).IsNull();
+        await Assert.That(VendorCliWatcher.StatCliBinary(Cli, tmp.PathTo("nope"))).IsNull();
     }
 }

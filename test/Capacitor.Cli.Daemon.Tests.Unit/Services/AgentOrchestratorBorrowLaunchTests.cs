@@ -43,7 +43,7 @@ public class AgentOrchestratorBorrowLaunchTests {
         var ptyFactory = new SpyPtyProcessFactory();
         var launcher = new ClaudeLauncher(
             new DaemonConfig { ClaudePath = "spy-claude", ServerUrl = "http://127.0.0.1:1" },
-            Home,
+            TestHarnesses.Under(Home),
             NullLogger<ClaudeLauncher>.Instance);
         await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, ptyFactory,
             new Dictionary<string, IHostedAgentLauncher> { ["claude"] = launcher });

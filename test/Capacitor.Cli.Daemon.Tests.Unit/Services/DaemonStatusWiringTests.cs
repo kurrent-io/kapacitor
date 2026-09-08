@@ -98,6 +98,7 @@ public class DaemonStatusWiringTests {
         services.AddSingleton(AuthFixtures.NewTokenStore(Config.Root));
         services.AddSingleton<DaemonStatusNotifier>();
         services.AddSingleton(Home.Home);
+        services.AddSingleton(TestHarnesses.Under(Home));
         services.AddSingleton<ServerConnection>();
         services.AddSingleton<WorktreeManager>();
         services.AddSingleton<RepoMatcher>();

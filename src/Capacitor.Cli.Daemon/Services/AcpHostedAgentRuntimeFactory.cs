@@ -117,7 +117,7 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
 
     public string CliPath => descriptor.ResolveBinaryPath(config);
 
-    public bool IsAvailable() => CliResolver.Exists(CliPath);
+    public bool IsAvailable() => new CliResolver(config.Binaries).Exists(CliPath);
 
     public async Task<HostedRuntimeStart> StartAsync(RuntimeStartContext ctx, CancellationToken ct) {
         LogLaunching(ctx.AgentId, Vendor, ctx.Worktree.Path);
@@ -894,7 +894,7 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
             // recursively, while sandbox-exec separately executed the real binary from PATH. Resolving
             // once and using the result for both the profile and the argv is what keeps "what is
             // granted" and "what runs" the same program.
-            var vendorBinary = CliResolver.ResolveExecutable(binaryPath)
+            var vendorBinary = new CliResolver(config.Binaries).ResolveExecutable(binaryPath)
                 ?? throw new InvalidOperationException(
                     $"borrowed_review_vendor_binary_unresolved: cannot resolve '{binaryPath}' to an "
                   + "executable, so the sandbox cannot be drawn around it.");
@@ -1081,7 +1081,8 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
             Func<string, string?>? resolveVersion) {
         if (!enabled) return new(false, null, null);
 
-        var installed = (resolveVersion ?? VendorVersionResolver.Resolve)(descriptor.ResolveBinaryPath(config));
+        var installed = (resolveVersion ?? new VendorVersionResolver(config.Binaries).Resolve)(
+            descriptor.ResolveBinaryPath(config));
 
         return new(true, installed, VersionStoreFor(config, descriptor.Vendor).Affirmed);
     }

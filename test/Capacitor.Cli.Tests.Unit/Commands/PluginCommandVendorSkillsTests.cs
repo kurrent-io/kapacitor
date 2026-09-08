@@ -1,6 +1,9 @@
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Harness.Antigravity;
+using Capacitor.Cli.Core.Harness.Codex;
+using Capacitor.Cli.Core.Harness.Kiro;
 
 namespace Capacitor.Cli.Tests.Unit.Commands;
 
@@ -31,7 +34,7 @@ public class PluginCommandVendorSkillsTests {
         await Assert.That(exit).IsEqualTo(0);
 
         foreach (var name in AgentsSkillsInstaller.SourceNames)
-            await Assert.That(AgentsSkillsInstaller.HasSkill(scope.Env.Paths.Agents.UserSkillsDir, name))
+            await Assert.That(AgentsSkillsInstaller.HasSkill(scope.Env.Agents.UserSkillsDir, name))
                         .IsTrue()
                         .Because($"`plugin install --{vendor.Flag}` should have written kcap-{name}");
     }
@@ -45,7 +48,7 @@ public class PluginCommandVendorSkillsTests {
             [.. vendor.InstallArgs(scope.Home), "--if-installed"]);
 
         await Assert.That(exit).IsEqualTo(0);
-        await Assert.That(Directory.Exists(scope.Env.Paths.Agents.UserSkillsDir))
+        await Assert.That(Directory.Exists(scope.Env.Agents.UserSkillsDir))
                     .IsFalse()
                     .Because("the npm postinstall runs this on every upgrade; it must not install "
                            + "skills for someone who never opted into anything");
@@ -59,13 +62,13 @@ public class PluginCommandVendorSkillsTests {
         // Install for real, then remove the skills the way a user would.
         await new PluginCommand(scope.Env).HandleAsync(vendor.InstallArgs(scope.Home));
         await new PluginCommand(scope.Env).HandleAsync(["plugin", "remove", "--skills"]);
-        await Assert.That(AgentsSkillsInstaller.IsInstalled(scope.Env.Paths.Agents.UserSkillsDir)).IsFalse();
+        await Assert.That(AgentsSkillsInstaller.IsInstalled(scope.Env.Agents.UserSkillsDir)).IsFalse();
 
         var exit = await new PluginCommand(scope.Env).HandleAsync(
             [.. vendor.InstallArgs(scope.Home), "--if-installed"]);
 
         await Assert.That(exit).IsEqualTo(0);
-        await Assert.That(AgentsSkillsInstaller.IsInstalled(scope.Env.Paths.Agents.UserSkillsDir))
+        await Assert.That(AgentsSkillsInstaller.IsInstalled(scope.Env.Agents.UserSkillsDir))
                     .IsFalse()
                     .Because("`remove --skills` drops the marker so an upgrade cannot undo it — a "
                            + "vendor refresh must respect that too, or the removal comes back on a "
@@ -79,8 +82,8 @@ public class PluginCommandVendorSkillsTests {
         await new PluginCommand(scope.Env).HandleAsync(["plugin", "install", "--kiro"]);
 
         // Kiro reads ~/.kiro/skills; writing the shared tree instead would be silently useless to it.
-        await Assert.That(AgentsSkillsInstaller.IsInstalled(scope.Env.Paths.Kiro.SkillsDir)).IsTrue();
-        await Assert.That(Directory.Exists(scope.Env.Paths.Agents.UserSkillsDir)).IsFalse();
+        await Assert.That(AgentsSkillsInstaller.IsInstalled(scope.Env.Harnesses.Of<KiroHarness>().Paths.SkillsDir)).IsTrue();
+        await Assert.That(Directory.Exists(scope.Env.Agents.UserSkillsDir)).IsFalse();
     }
 
     [Test]
@@ -89,8 +92,8 @@ public class PluginCommandVendorSkillsTests {
 
         await new PluginCommand(scope.Env).HandleAsync(["plugin", "install", "--antigravity"]);
 
-        await Assert.That(AgentsSkillsInstaller.IsInstalled(scope.Env.Paths.Antigravity.SkillsDir)).IsTrue();
-        await Assert.That(Directory.Exists(scope.Env.Paths.Agents.UserSkillsDir)).IsFalse();
+        await Assert.That(AgentsSkillsInstaller.IsInstalled(scope.Env.Harnesses.Of<AntigravityHarness>().Paths.SkillsDir)).IsTrue();
+        await Assert.That(Directory.Exists(scope.Env.Agents.UserSkillsDir)).IsFalse();
     }
 
     [Test]
@@ -102,7 +105,7 @@ public class PluginCommandVendorSkillsTests {
             [.. vendor.InstallArgs(scope.Home), $"--skip-{vendor.Flag}-skills"]);
 
         await Assert.That(exit).IsEqualTo(0);
-        await Assert.That(Directory.Exists(scope.Env.Paths.Agents.UserSkillsDir))
+        await Assert.That(Directory.Exists(scope.Env.Agents.UserSkillsDir))
                     .IsFalse()
                     .Because("every other artifact these installs write has a skip flag, so the shared "
                            + "tree needs one too — nothing else lets you take hooks without it");
@@ -113,10 +116,10 @@ public class PluginCommandVendorSkillsTests {
         using var scope = new VendorScope(Vendor.Cursor);
 
         await new PluginCommand(scope.Env).HandleAsync(Vendor.Cursor.InstallArgs(scope.Home));
-        await Assert.That(AgentsSkillsInstaller.IsCurrent(scope.Env.Paths.Agents.UserSkillsDir)).IsTrue();
+        await Assert.That(AgentsSkillsInstaller.IsCurrent(scope.Env.Agents.UserSkillsDir)).IsTrue();
 
         // A pre-migration machine still carrying the old Codex-only copy.
-        var legacy = Path.Combine(scope.Env.Paths.Codex.SkillsDir, "kcap-recap");
+        var legacy = Path.Combine(scope.Env.Harnesses.Of<CodexHarness>().Paths.SkillsDir, "kcap-recap");
         Directory.CreateDirectory(legacy);
 
         await new PluginCommand(scope.Env).HandleAsync(Vendor.Cursor.InstallArgs(scope.Home));
@@ -192,7 +195,7 @@ public class PluginCommandVendorSkillsTests {
                 Stdout:            TextWriter.Null,
                 Stderr:            TextWriter.Null
             ) {
-                Paths = TestHarnessPaths.NoOverrides(new(_home.Path)),
+                Harnesses = TestHarnesses.Under(new(_home.Path)),
                 ResolveMcpBinaryPath = () => Path.Combine(_binDir.Path, "kcap")
             };
         }

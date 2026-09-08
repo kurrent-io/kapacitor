@@ -1,6 +1,7 @@
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Commands;
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Core.Harness.Codex;
 using Capacitor.Cli.Core.LocalIpc;
 using Capacitor.Cli.Daemon.Services;
@@ -10,10 +11,10 @@ namespace Capacitor.Cli.Daemon.Harness.Codex;
 
 internal sealed partial class CodexLauncher(
         DaemonConfig           config,
-        UserHome               home,
+        HarnessRegistry        harnesses,
         ILogger<CodexLauncher> logger
     ) : IHostedAgentLauncher {
-    readonly CodexPaths _paths = CodexHarness.FromEnvironment(home).Paths;
+    readonly CodexPaths _paths = harnesses.Of<CodexHarness>().Paths;
 
     public string Vendor  => "codex";
     public string CliPath => config.CodexPath;
@@ -48,7 +49,7 @@ internal sealed partial class CodexLauncher(
 
     // Version gate BEFORE the PATH probe, so an unsupported host never advertises the vendor at
     // all — the launch dialog hides Codex rather than offering a launch that cannot work.
-    public bool IsAvailable() => WindowsVersionSupported && CliResolver.Exists(CliPath);
+    public bool IsAvailable() => WindowsVersionSupported && new CliResolver(config.Binaries).Exists(CliPath);
 
     /// <summary>
     /// Enumerates the effective MCP servers a review-flow reviewer would otherwise inherit —

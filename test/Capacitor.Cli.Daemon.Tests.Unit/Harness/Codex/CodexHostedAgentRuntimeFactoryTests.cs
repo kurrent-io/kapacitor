@@ -60,7 +60,7 @@ public class CodexHostedAgentRuntimeFactoryTests {
 
     CodexLauncher NewLauncher() =>
         new(new DaemonConfig { CodexPath = "codex", CapacitorPath = "/opt/kcap", ServerUrl = "https://t.example" },
-            Home, NullLogger<CodexLauncher>.Instance) {
+            TestHarnesses.Under(Home), NullLogger<CodexLauncher>.Instance) {
             ReadInheritedMcpServers = static () => [],
         };
 

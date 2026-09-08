@@ -1,3 +1,4 @@
+using Capacitor.Cli.Core.Setup;
 using Capacitor.Cli.Daemon.Services;
 
 namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
@@ -6,13 +7,14 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 /// Covers the daemon-startup vendor probe. The resolver is the
 /// only place the daemon decides whether to advertise <c>claude</c> /
 /// <c>codex</c> over <c>DaemonConnect</c>, so the launch dialog's vendor
-/// filter is only ever as accurate as this lookup.
+/// filter is only ever as accurate as this lookup — over the search path the
+/// injected probe carries, never the process's own.
 /// </summary>
 public class CliResolverTests {
     [Test]
     public async Task ReturnsFalse_ForEmptyInput() {
-        await Assert.That(CliResolver.Exists("")).IsFalse();
-        await Assert.That(CliResolver.Exists("   ")).IsFalse();
+        await Assert.That(Searching(null).Exists("")).IsFalse();
+        await Assert.That(Searching(null).Exists("   ")).IsFalse();
     }
 
     [Test]
@@ -23,7 +25,7 @@ public class CliResolverTests {
         var tempFile = tmp.CreateFile(Launchable("cli-resolver-test"), "#!/bin/sh\necho hi\n");
         MakeExecutable(tempFile);
 
-        await Assert.That(CliResolver.Exists(tempFile)).IsTrue();
+        await Assert.That(Searching(null).Exists(tempFile)).IsTrue();
     }
 
     /// <summary>
@@ -40,36 +42,31 @@ public class CliResolverTests {
         var tempFile = tmp.CreateFile("cli-resolver-noexec", "#!/bin/sh\necho hi\n");
         File.SetUnixFileMode(tempFile, UnixFileMode.UserRead | UnixFileMode.GroupRead | UnixFileMode.OtherRead);
 
-        await Assert.That(CliResolver.Exists(tempFile)).IsFalse();
+        await Assert.That(Searching(null).Exists(tempFile)).IsFalse();
     }
 
     [Test]
     public async Task ReturnsFalse_WhenAbsolutePathMissing() {
         using var missingDir = TempDir.WithPathTo("cli-resolver-missing", out var missing);
 
-        await Assert.That(CliResolver.Exists(missing)).IsFalse();
+        await Assert.That(Searching(null).Exists(missing)).IsFalse();
     }
 
-    [Test, NotInParallel]
-    public async Task ReturnsTrue_WhenBareCommandResolvesOnPath() {
-        // Drop a fake "kcap-pathprobe-{guid}" binary into a temp dir,
-        // mark it executable on POSIX, and prepend that dir to PATH.
+    [Test]
+    public async Task ReturnsTrue_WhenBareCommandResolvesOnTheSearchPath() {
         using var tmp = new TempDir();
         var name       = $"kcap-pathprobe-{Guid.NewGuid():N}";
         var binaryPath = tmp.CreateFile(Launchable(name), "");
         MakeExecutable(binaryPath);
 
-        var       savedPath = Environment.GetEnvironmentVariable("PATH");
-        using var pathEnv   = EnvScope.Exclusive("PATH", $"{tmp.Path}{Path.PathSeparator}{savedPath}");
-
-        await Assert.That(CliResolver.Exists(name)).IsTrue();
+        await Assert.That(Searching(tmp.Path).Exists(name)).IsTrue();
     }
 
     /// <summary>
     /// The Unix exec-bit check (mirrors <c>AgentDetection.IsExecutable</c>)
     /// applies to PATH-resolved candidates too, not just absolute paths.
     /// </summary>
-    [Test, NotInParallel]
+    [Test]
     public async Task ReturnsFalse_WhenBareCommandOnPathIsNotExecutable() {
         if (OperatingSystem.IsWindows()) return;
 
@@ -78,18 +75,18 @@ public class CliResolverTests {
         var binaryPath = tmp.CreateFile(name, "");
         File.SetUnixFileMode(binaryPath, UnixFileMode.UserRead | UnixFileMode.GroupRead | UnixFileMode.OtherRead);
 
-        var       savedPath = Environment.GetEnvironmentVariable("PATH");
-        using var pathEnv   = EnvScope.Exclusive("PATH", $"{tmp.Path}{Path.PathSeparator}{savedPath}");
-
-        await Assert.That(CliResolver.Exists(name)).IsFalse();
+        await Assert.That(Searching(tmp.Path).Exists(name)).IsFalse();
     }
 
     [Test]
     public async Task ReturnsFalse_WhenBareCommandNotOnPath() {
         var unlikely = $"kcap-not-installed-{Guid.NewGuid():N}";
 
-        await Assert.That(CliResolver.Exists(unlikely)).IsFalse();
+        await Assert.That(Searching(null).Exists(unlikely)).IsFalse();
     }
+
+    /// <summary>A resolver over exactly <paramref name="searchPath"/>.</summary>
+    static CliResolver Searching(string? searchPath) => new(BinaryProbe.Searching(searchPath));
 
     /// <summary>The name this host will launch <paramref name="stem"/> through: Windows spawns
     /// through an extension PATHEXT names, Unix through the execute bit.</summary>

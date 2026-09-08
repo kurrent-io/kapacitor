@@ -16,7 +16,7 @@ public class ImportChainsTests : IDisposable {
 
     // These tests exercise chaining and repo resolution, not profile selection.
     ImportCommand Import() =>
-        new(Config.Root, Resolutions.None(Config.Root), Home, new FixedCapacitorHttpClient());
+        new(Config.Root, Resolutions.None(Config.Root), Home, TestHarnesses.Under(Home), new FixedCapacitorHttpClient());
     readonly WireMockServer _server  = WireMockServer.Start();
     // TUnit creates a new class instance per test, so _tempDir is always unique.
     readonly TempDir _tmp     = new();

@@ -49,7 +49,7 @@ public class ImportVisibilityTests : IDisposable {
 
     // These tests exercise chaining and repo resolution, not profile selection.
     ImportCommand Import() =>
-        new(Config.Root, Resolutions.None(Config.Root), Home, new FixedCapacitorHttpClient());
+        new(Config.Root, Resolutions.None(Config.Root), Home, TestHarnesses.Under(Home), new FixedCapacitorHttpClient());
     readonly WireMockServer _server = WireMockServer.Start();
     readonly TempDir        _tmp    = new();
     readonly string         _tempDir;
@@ -199,7 +199,7 @@ public class ImportVisibilityTests : IDisposable {
         var projectsDir = Path.Combine(_tempDir, "claude-projects-pos");
         WriteClaudeSession(projectsDir, "vis-chain-handle-pos");
 
-        var exitCode = await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), Home, new FixedCapacitorHttpClient()).HandleImport(
+        var exitCode = await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), Home, TestHarnesses.Under(Home), new FixedCapacitorHttpClient()).HandleImport(
             filterCwd: null,
             minLines: 1,
             sources: [new ClaudeImportSource(Config.Root, projectsDir)],
@@ -233,7 +233,7 @@ public class ImportVisibilityTests : IDisposable {
         var projectsDir = Path.Combine(_tempDir, "claude-projects-neg");
         WriteClaudeSession(projectsDir, "vis-chain-handle-neg");
 
-        var exitCode = await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), Home, new FixedCapacitorHttpClient()).HandleImport(
+        var exitCode = await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), Home, TestHarnesses.Under(Home), new FixedCapacitorHttpClient()).HandleImport(
             filterCwd: null,
             minLines: 1,
             sources: [new ClaudeImportSource(Config.Root, projectsDir)],
@@ -269,7 +269,7 @@ public class ImportVisibilityTests : IDisposable {
         var projectsDir = Path.Combine(_tempDir, "claude-projects-resume");
         WriteClaudeSession(projectsDir, "vis-chain-resume-fail");
 
-        var exitCode = await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), Home, new FixedCapacitorHttpClient()).HandleImport(
+        var exitCode = await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), Home, TestHarnesses.Under(Home), new FixedCapacitorHttpClient()).HandleImport(
             filterCwd: null,
             minLines: 1,
             sources: [new ClaudeImportSource(Config.Root, projectsDir)],
@@ -305,7 +305,7 @@ public class ImportVisibilityTests : IDisposable {
         var projectsDir = Path.Combine(_tempDir, "claude-projects-short-private");
         WriteClaudeSession(projectsDir, "vis-private-too-short", lines: 3);
 
-        await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), Home, new FixedCapacitorHttpClient()).HandleImport(
+        await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), Home, TestHarnesses.Under(Home), new FixedCapacitorHttpClient()).HandleImport(
             filterCwd: null,
             minLines: 500,
             sources: [new ClaudeImportSource(Config.Root, projectsDir)],
@@ -331,7 +331,7 @@ public class ImportVisibilityTests : IDisposable {
         var projectsDir = Path.Combine(_tempDir, "claude-projects-window");
         WriteClaudeSession(projectsDir, "vis-window");
 
-        await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), Home, new FixedCapacitorHttpClient()).HandleImport(
+        await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), Home, TestHarnesses.Under(Home), new FixedCapacitorHttpClient()).HandleImport(
             filterCwd: null,
             minLines: 1,
             sources: [new ClaudeImportSource(Config.Root, projectsDir)],
@@ -368,7 +368,7 @@ public class ImportVisibilityTests : IDisposable {
         var projectsDir = Path.Combine(_tempDir, "claude-projects-newonly");
         WriteClaudeSession(projectsDir, "vis-new-only");
 
-        await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), Home, new FixedCapacitorHttpClient()).HandleImport(
+        await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), Home, TestHarnesses.Under(Home), new FixedCapacitorHttpClient()).HandleImport(
             filterCwd: null,
             minLines: 1,
             sources: [new ClaudeImportSource(Config.Root, projectsDir)],
@@ -400,7 +400,7 @@ public class ImportVisibilityTests : IDisposable {
         var projectsDir = Path.Combine(_tempDir, "claude-projects-shared");
         WriteClaudeSession(projectsDir, "vis-chain-shared");
 
-        var exitCode = await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), Home, new FixedCapacitorHttpClient()).HandleImport(
+        var exitCode = await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), Home, TestHarnesses.Under(Home), new FixedCapacitorHttpClient()).HandleImport(
             filterCwd: null,
             minLines: 1,
             sources: [new ClaudeImportSource(Config.Root, projectsDir)],
@@ -432,7 +432,7 @@ public class ImportVisibilityTests : IDisposable {
         var projectsDir = Path.Combine(_tempDir, "claude-projects-plain");
         WriteClaudeSession(projectsDir, "vis-chain-plain");
 
-        await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), Home, new FixedCapacitorHttpClient()).HandleImport(
+        await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), Home, TestHarnesses.Under(Home), new FixedCapacitorHttpClient()).HandleImport(
             filterCwd: null,
             minLines: 1,
             sources: [new ClaudeImportSource(Config.Root, projectsDir)],
@@ -457,7 +457,7 @@ public class ImportVisibilityTests : IDisposable {
         var projectsDir = Path.Combine(_tempDir, "claude-projects-already");
         WriteClaudeSession(projectsDir, "vis-already-shared");
 
-        var exitCode = await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), Home, new FixedCapacitorHttpClient()).HandleImport(
+        var exitCode = await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), Home, TestHarnesses.Under(Home), new FixedCapacitorHttpClient()).HandleImport(
             filterCwd: null,
             minLines: 1,
             sources: [new ClaudeImportSource(Config.Root, projectsDir)],
@@ -491,7 +491,7 @@ public class ImportVisibilityTests : IDisposable {
         var projectsDir = Path.Combine(_tempDir, "claude-projects-short");
         WriteClaudeSession(projectsDir, "vis-too-short", lines: 3);
 
-        await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), Home, new FixedCapacitorHttpClient()).HandleImport(
+        await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), Home, TestHarnesses.Under(Home), new FixedCapacitorHttpClient()).HandleImport(
             filterCwd: null,
             minLines: 500,
             sources: [new ClaudeImportSource(Config.Root, projectsDir)],
@@ -518,7 +518,7 @@ public class ImportVisibilityTests : IDisposable {
 
         ImportCommand.ImportRunOutcome? outcome = null;
 
-        var exitCode = await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), Home, new FixedCapacitorHttpClient()).HandleImport(
+        var exitCode = await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), Home, TestHarnesses.Under(Home), new FixedCapacitorHttpClient()).HandleImport(
             filterCwd: null,
             minLines: 1,
             sources: [new ClaudeImportSource(Config.Root, projectsDir)],
@@ -548,7 +548,7 @@ public class ImportVisibilityTests : IDisposable {
 
         ImportCommand.ImportRunOutcome? outcome = null;
 
-        var exitCode = await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), Home, new FixedCapacitorHttpClient()).HandleImport(
+        var exitCode = await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), Home, TestHarnesses.Under(Home), new FixedCapacitorHttpClient()).HandleImport(
             filterCwd: null,
             minLines: 1,
             sources: [new ClaudeImportSource(Config.Root, projectsDir)],
@@ -578,7 +578,7 @@ public class ImportVisibilityTests : IDisposable {
 
         ImportCommand.ImportRunOutcome? outcome = null;
 
-        await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), Home, new FixedCapacitorHttpClient()).HandleImport(
+        await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), Home, TestHarnesses.Under(Home), new FixedCapacitorHttpClient()).HandleImport(
             filterCwd: null,
             minLines: 1,
             sources: [new ClaudeImportSource(Config.Root, projectsDir)],
@@ -620,7 +620,7 @@ public class ImportVisibilityTests : IDisposable {
 
         ImportCommand.ImportRunOutcome? outcome = null;
 
-        var exitCode = await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), Home, new FixedCapacitorHttpClient()).HandleImport(
+        var exitCode = await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), Home, TestHarnesses.Under(Home), new FixedCapacitorHttpClient()).HandleImport(
             filterCwd: null,
             minLines: 1,
             sources: [new ClaudeImportSource(Config.Root, projectsDir)],
@@ -657,7 +657,7 @@ public class ImportVisibilityTests : IDisposable {
 
         using var errors = ConsoleOutput.StartErrorCapture();
 
-        await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), Home, new FixedCapacitorHttpClient()).HandleImport(
+        await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), Home, TestHarnesses.Under(Home), new FixedCapacitorHttpClient()).HandleImport(
             filterCwd: null,
             minLines: 1,
             sources: [new ClaudeImportSource(Config.Root, projectsDir)],
@@ -1137,7 +1137,7 @@ public class ImportVisibilityTests : IDisposable {
 
         var source = new CursorImportSource(Config.Root, projectsDir, Path.Combine(_tempDir, "cursor-workspace-storage-rt"));
 
-        var exitCode = await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), Home, new FixedCapacitorHttpClient()).HandleImport(
+        var exitCode = await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), Home, TestHarnesses.Under(Home), new FixedCapacitorHttpClient()).HandleImport(
             filterCwd: null,
             minLines: 0,
             sources: [source],
@@ -1433,7 +1433,7 @@ public class ImportVisibilityTests : IDisposable {
         // happened to look like an interactive TTY, this call could block forever on
         // Console.ReadLine(). It must not, regardless of ambient TTY state.
         var import = new ImportCommand(Config.Root,
-            Resolutions.Of(new Profile { ExcludedPaths = [excludedDir] }, "autoskip-test", _server.Url!), Home, new FixedCapacitorHttpClient());
+            Resolutions.Of(new Profile { ExcludedPaths = [excludedDir] }, "autoskip-test", _server.Url!), Home, TestHarnesses.Under(Home), new FixedCapacitorHttpClient());
 
         var task = import.HandleImport(
             filterCwd: null,

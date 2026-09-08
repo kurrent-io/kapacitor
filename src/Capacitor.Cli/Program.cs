@@ -639,7 +639,7 @@ switch (command) {
         // Build sources
         var explicitVendorSelection = vsel.Vendors.Count > 0;
         var sources = SetupCommand.BuildImportSources(
-            config, HarnessPaths.FromEnvironment(home), explicitVendorSelection ? vsel.Vendors : null);
+            config, sp.GetRequiredService<HarnessRegistry>(), explicitVendorSelection ? vsel.Vendors : null);
 
         // --- Scope resolution ---
         var profileConfig = profiles.Snapshot;
@@ -862,7 +862,7 @@ return 1;
 
 } finally {
     await UpdateNotice.FlushAsync(command, args, profiles, config, Run<NpmRegistryClient>);
-    await HarnessSetupNotice.FlushAsync(command, config, profiles, home);
+    await HarnessSetupNotice.FlushAsync(command, config, profiles, sp.GetRequiredService<HarnessRegistry>());
 }
 
 static string? GetArg(string[] arguments, string flag) {

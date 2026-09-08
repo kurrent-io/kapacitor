@@ -1,3 +1,4 @@
+using Capacitor.Cli.Core.Setup;
 using Capacitor.Cli.Daemon.Acp;
 using Capacitor.Cli.Daemon.Harness.OpenCode;
 using Capacitor.Cli.Daemon.Services;
@@ -136,7 +137,10 @@ public class OpenCodeHostedLaunchTests {
     public async Task Availability_TracksTheConfiguredBinary() {
         var factory = new AcpHostedAgentRuntimeFactory(
             descriptor: AcpVendorDescriptors.OpenCode,
-            config: new DaemonConfig { OpenCodePath = "kcap-opencode-that-does-not-exist" },
+            config: new DaemonConfig {
+                OpenCodePath = "kcap-opencode-that-does-not-exist",
+                Binaries     = BinaryProbe.FromEnvironment(),
+            },
             loggerFactory: Microsoft.Extensions.Logging.Abstractions.NullLoggerFactory.Instance,
             connection: new StubServerConnection(),
             // Never spawns: this reads a capability property only.

@@ -42,18 +42,23 @@ public sealed record PluginEnvironment(
     } = StaleAgentProbe.Find;
 
     /// <summary>
-    /// Every vendor's layout. Supplied rather than resolved here: this type is the process-state
-    /// seam, so reading nine override variables to build itself would put back the ambient read it
-    /// exists to remove. Held as one instance, so two members of one vendor cannot name different
-    /// roots however the environment moves afterwards.
+    /// Every vendor, and through each its own layout. Supplied rather than resolved here: this type
+    /// is the process-state seam, so reading nine override variables to build itself would put back
+    /// the ambient read it exists to remove. Held as one instance, so two members of one vendor
+    /// cannot name different roots however the environment moves afterwards.
     /// </summary>
-    public required HarnessPaths Paths { get; init; }
+    public required HarnessRegistry Harnesses { get; init; }
 
-    public static PluginEnvironment FromProcess(ProfileConfig profiles, UserHome home) => new(
+    /// <summary>The cross-vendor <c>~/.agents</c> tree. Derived from <see cref="Home"/> rather than
+    /// supplied: it honours no override, so a second value could only disagree with this one.</summary>
+    public AgentsPaths Agents { get; } = new(Home);
+
+    public static PluginEnvironment FromProcess(
+            ProfileConfig profiles, UserHome home, HarnessRegistry harnesses) => new(
         Home:              home,
         Profiles:          profiles,
         ResolvePluginPath: () => SetupCommand.ResolvePluginPath(),
         Stdout:            Console.Out,
         Stderr:            Console.Error
-    ) { Paths = HarnessPaths.FromEnvironment(home) };
+    ) { Harnesses = harnesses };
 }

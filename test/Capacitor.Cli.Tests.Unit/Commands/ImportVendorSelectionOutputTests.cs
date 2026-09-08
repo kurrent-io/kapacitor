@@ -38,7 +38,7 @@ public class ImportVendorSelectionOutputTests : IDisposable {
     }
 
     Task<int> Run(params IImportSource[] sources) =>
-        new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), Home, new FixedCapacitorHttpClient())
+        new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), Home, TestHarnesses.Under(Home), new FixedCapacitorHttpClient())
             .HandleImport(
             filterCwd:               null,
             sources:                 sources,

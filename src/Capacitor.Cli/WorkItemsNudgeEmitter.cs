@@ -1,4 +1,3 @@
-using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Harness;
 
 namespace Capacitor.Cli;
@@ -31,9 +30,9 @@ static class WorkItemsNudgeEmitter {
     /// seam and is null in production.
     /// </summary>
     public static string? Resolve(HarnessId harness, string? sessionId, bool optedOut,
-                                  UserHome home, string? codexConfigPath = null) {
+                                  HarnessRegistry harnesses, string? codexConfigPath = null) {
         if (optedOut) return null;
-        if (!WorkItemsNudgeAvailability.IsRegisteredFor(harness, home, codexConfigPath)) return null;
+        if (!WorkItemsNudgeAvailability.IsRegisteredFor(harness, harnesses, codexConfigPath)) return null;
         return Build(sessionId);
     }
 

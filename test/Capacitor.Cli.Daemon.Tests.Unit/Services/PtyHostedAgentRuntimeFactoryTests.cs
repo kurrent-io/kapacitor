@@ -102,7 +102,7 @@ public class PtyHostedAgentRuntimeFactoryTests {
     [Test]
     public async Task Interactive_claude_launch_spawns_exactly_one_selected_mode_pair() {
         var config   = new DaemonConfig { ClaudePath = "claude", ServerUrl = "", CapacitorPath = "kcap" };
-        var launcher = new ClaudeLauncher(config, Home, NullLogger<ClaudeLauncher>.Instance);
+        var launcher = new ClaudeLauncher(config, TestHarnesses.Under(Home), NullLogger<ClaudeLauncher>.Instance);
         var pty      = new SpyPtyProcessFactory();
         var factory  = new PtyHostedAgentRuntimeFactory(launcher, pty, NullLogger<PtyHostedAgentRuntimeFactory>.Instance);
 

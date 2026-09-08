@@ -6,17 +6,11 @@ namespace Capacitor.Cli.Core;
 /// <summary>
 /// A vendor binary's own reported version, or <see langword="null"/> when it cannot be determined —
 /// which every caller treats as unknown, and therefore denies.
-///
-/// <para><b>Moved here from the Gemini reviewer's resolver rather than copied for Kiro.</b> Two traps
-/// its history records, and a second copy would reintroduce: reading a stream to completion BEFORE
-/// the bounded wait deadlocks on a vendor that never closes stdout (and an undrained stderr wedges
-/// the child once its buffer fills), and requiring the whole trimmed output to equal a version makes
-/// the gate fail closed the day a vendor adds an "update available" banner.</para>
 /// </summary>
-public static class VendorVersionResolver {
-    public static string? Resolve(string binaryPath) {
+public sealed class VendorVersionResolver(BinaryProbe binaries) {
+    public string? Resolve(string binaryPath) {
         try {
-            var resolved = BinaryProbe.FromEnvironment().Resolve(binaryPath);
+            var resolved = binaries.Resolve(binaryPath);
             if (resolved is null) return null;
 
             using var proc = Process.Start(new ProcessStartInfo(resolved, ["--version"]) {
@@ -25,12 +19,10 @@ public static class VendorVersionResolver {
             });
             if (proc is null) return null;
 
-            // Both streams are drained CONCURRENTLY with the wait, and the wait is what bounds this.
-            //
-            // Review caught a deadlock: the previous shape called ReadToEnd() before WaitForExit(10s), so a
-            // vendor that never closed stdout blocked before the timeout could apply — and stderr was
-            // redirected but never drained, so filling its buffer wedged the child too. A bounded wait is
-            // only bounded if nothing ahead of it can block indefinitely.
+            // Both streams are drained CONCURRENTLY with the wait: a vendor that never closes stdout
+            // would block a read-then-wait shape before the timeout could apply, and a redirected but
+            // undrained stderr wedges the child once its buffer fills. A bounded wait is only bounded
+            // if nothing ahead of it can block indefinitely.
             var stdout = proc.StandardOutput.ReadToEndAsync();
             var stderr = proc.StandardError.ReadToEndAsync();
 
@@ -44,12 +36,9 @@ public static class VendorVersionResolver {
             // grandchild holding a pipe cannot keep us here.
             if (!Task.WhenAll(stdout, stderr).Wait(TimeSpan.FromSeconds(5))) return null;
 
-            // Extract a version TOKEN from either stream rather than requiring the whole trimmed output to be
-            // one. Measured: gemini 0.53.0 prints the version to stdout AND stderr — but requiring exact
-            // equality is brittle either way, since the vendor already emits banner lines (skill-conflict
-            // warnings) on other paths, and a build that added an "update available" notice would make the
-            // gate fail closed and silently disable the reviewer. Review's point, and it applies even though
-            // today's format happens to work.
+            // A version TOKEN from either stream, rather than requiring the whole trimmed output to be
+            // one: vendors already emit banner lines on other paths, and a build that added an "update
+            // available" notice would make the gate fail closed and silently disable the reviewer.
             return proc.ExitCode == 0
                 ? ExtractVersionToken(stdout.Result) ?? ExtractVersionToken(stderr.Result)
                 : null;

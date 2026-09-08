@@ -1,6 +1,7 @@
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.Eval;
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Core.Http;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -23,14 +24,14 @@ internal sealed class EvalRunner {
     readonly ILogger<EvalRunner>  _logger;
     readonly string               _baseUrl;
     readonly CancellationToken    _shutdownToken;
-    readonly UserHome             _home;
+    readonly HarnessRegistry      _harnesses;
     readonly ProfileContext       _profiles;
     readonly ICapacitorHttpClient _http;
 
     public EvalRunner(
             ServerConnection         connection,
             EvalContextCache         cache,
-            UserHome                 home,
+            HarnessRegistry          harnesses,
             DaemonConfig             config,
             ICapacitorHttpClient     http,
             IHostApplicationLifetime lifetime,
@@ -38,7 +39,7 @@ internal sealed class EvalRunner {
         ) {
         _connection    = connection;
         _cache         = cache;
-        _home          = home;
+        _harnesses     = harnesses;
         _profiles      = config.Profiles;
         _http          = http;
         _logger        = logger;
@@ -70,7 +71,7 @@ internal sealed class EvalRunner {
                 _baseUrl,
                 httpClient,
                 _profiles.Resolution.Profile,
-                _home,
+                _harnesses,
                 cmd.SessionId,
                 cmd.Questions,
                 catalog,

@@ -639,6 +639,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             DaemonConfig                                      config,
             ConfigRoot                                        configRoot,
             UserHome                                          home,
+            HarnessRegistry                                   harnesses,
             ServerConnection                                  server,
             WorktreeManager                                   worktreeManager,
             RepoMatcher                                       repoMatcher,
@@ -674,7 +675,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         _configRoot        = configRoot;
         _home              = home;
         _tokens            = tokens;
-        _harnesses         = HarnessRegistry.FromEnvironment(home);
+        _harnesses         = harnesses;
         _server            = server;
         _worktreeManager   = worktreeManager;
         _repoMatcher       = repoMatcher;
@@ -4881,7 +4882,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     async Task<string?> GenerateTitleForAsync(TitleAgentView agent, CancellationToken ct) {
         var result = await TitleGeneration.GenerateAsync(
             agent.Prompt!, null, msg => _logger.LogDebug("Title generation ({AgentId}): {Message}", agent.Id, msg),
-            _config.Profiles.Resolution.Profile, _home,
+            _config.Profiles.Resolution.Profile, _harnesses,
             vendor: agent.Vendor == "codex" ? "codex" : "claude", ct: ct);
 
         return result?.Result;

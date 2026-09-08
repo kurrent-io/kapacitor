@@ -3,12 +3,17 @@ using System.Net.Sockets;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.Harness;
+using Capacitor.Cli.Core.Harness.Claude;
+using Capacitor.Cli.Core.Harness.Codex;
 using Capacitor.Cli.Core.LocalIpc;
+using Capacitor.Cli.Core.Setup;
 using Capacitor.Cli.Services;
 
 namespace Capacitor.Cli.Commands;
 
-public sealed class DaemonCommands(DaemonStore store, ConfigRoot config, ProfileContext profiles, UserHome home) {
+public sealed class DaemonCommands(
+        DaemonStore store, ConfigRoot config, ProfileContext profiles, UserHome home,
+        HarnessRegistry harnesses, BinaryProbe binaries) {
     string LogPath { get; } = config.Path("daemon.log");
 
     public async Task<int> HandleAsync(string[] args) {
@@ -31,7 +36,7 @@ public sealed class DaemonCommands(DaemonStore store, ConfigRoot config, Profile
             "service" => await DaemonServiceCommands.DispatchAsync(store, config, profiles, home, remaining),
             "shim"    => await DaemonShimCommands.DispatchAsync(remaining),
             "consent" => await DaemonConsentCommand.HandleAsync(store, profiles, remaining),
-            "reviewer" => await DaemonReviewerCommand.HandleAsync(store, profiles, remaining),
+            "reviewer" => await DaemonReviewerCommand.HandleAsync(store, profiles, binaries, remaining),
             _         => PrintUsage()
         };
     }
@@ -651,16 +656,16 @@ public sealed class DaemonCommands(DaemonStore store, ConfigRoot config, Profile
     async Task<int> DoctorAsync(string[] args) {
         var clean = args.Contains("--clean");
 
-        var paths = HarnessPaths.FromEnvironment(home);
+        var claude = harnesses.Of<ClaudeHarness>().Paths;
 
         // MCP-registrations audit runs BEFORE the daemon-file early return below — a machine
         // with no daemon state still has registrations worth checking (duplicate Claude-scope
         // entries cost one extra server process per session; a stale absolute binary path
         // breaks the servers outright after an npm re-layout).
         await McpDoctorSection.RunAsync(Console.Out, clean,
-            paths.Claude.UserConfigJson, paths.Claude.UserSettings,
-            McpDoctorSection.DefaultJsonRegistrations(paths),
-            paths.Codex.ConfigToml,
+            claude.UserConfigJson, claude.UserSettings,
+            McpDoctorSection.DefaultJsonRegistrations(harnesses),
+            harnesses.Of<CodexHarness>().Paths.ConfigToml,
             Environment.ProcessPath);
         await Console.Out.WriteLineAsync();
 

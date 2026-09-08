@@ -225,6 +225,23 @@ public class AntigravityReviewerLaunchTests {
             .IsEqualTo(Path.Combine(HomePath, ".config", "kcap"));
     }
 
+    /// <summary>An operator with <c>GEMINI_CLI_HOME</c> exported must not have it reach the turn
+    /// child: the child derives its whole Gemini root (config, MCP servers, result channel) from the
+    /// isolated <c>HOME</c> above, and an inherited override would point it at the operator's real
+    /// profile instead — see <see cref="AntigravityReviewerHome"/>'s layout derivation.</summary>
+    [Test]
+    [NotInParallel]
+    public async Task The_turn_child_does_not_inherit_a_gemini_cli_home_override() {
+        const string inherited = "/tmp/kcap-gemini-cli-home-probe";
+        using var _ = EnvScope.Exclusive("GEMINI_CLI_HOME", inherited);
+
+        var psi = BuildPsi(EnabledConfig());
+
+        // Absence is assertable only because the scope above established the value: the child's block
+        // is seeded from this process, so a variable nothing set proves nothing about the scrub.
+        await Assert.That(psi.Environment.ContainsKey("GEMINI_CLI_HOME")).IsFalse();
+    }
+
     /// <summary>Google auth is INHERITED from the daemon's own environment (<c>UseShellExecute</c> is
     /// false, so the child gets the daemon's block plus our overrides). Re-stamping it here would mean
     /// a rotated ADC path resolved at daemon start rather than at spawn.</summary>

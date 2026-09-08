@@ -1,8 +1,13 @@
+using Capacitor.Cli.Core.Setup;
 using Capacitor.Cli.Daemon.Harness.Cursor;
+using Capacitor.Cli.Daemon.Services;
 
 namespace Capacitor.Cli.Daemon.Tests.Unit.Harness.Cursor;
 
 public class CursorBorrowedReviewValidationTests {
+    /// <summary>Every path here is rooted, which resolves without a search path.</summary>
+    static CliResolver Cli => new(BinaryProbe.Searching(null));
+
     [Test]
     public async Task BundleDigest_IgnoresTransientRunningDirectory() {
         using var tmp = new TempDir();
@@ -24,6 +29,6 @@ public class CursorBorrowedReviewValidationTests {
     public async Task TryMatchValidatedBuild_NonMatchingPath_ReturnsNullWithoutThrowing() {
         using var pathDir = TempDir.WithPathTo("kcap-not-cursor", out var path);
 
-        await Assert.That(CursorBorrowedReviewValidation.TryMatchValidatedBuild(path)).IsNull();
+        await Assert.That(CursorBorrowedReviewValidation.TryMatchValidatedBuild(Cli, path)).IsNull();
     }
 }

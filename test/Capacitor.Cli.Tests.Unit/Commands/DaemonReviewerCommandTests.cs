@@ -1,4 +1,5 @@
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.Core.Setup;
 
 namespace Capacitor.Cli.Tests.Unit.Commands;
 
@@ -55,7 +56,9 @@ public class DaemonReviewerCommandTests {
     [NotInParallel]
     public async Task AnUnknownVendorIsRefusedAndOffersTheAffirmableOnes() {
         using var capture = ConsoleOutput.StartErrorCapture();
-        var exitCode = await DaemonReviewerCommand.HandleAsync(Daemons.Store, Resolutions.None(Config.Root), ["affirm", "--vendor", "antigravitee"]);
+        var exitCode = await DaemonReviewerCommand.HandleAsync(
+            Daemons.Store, Resolutions.None(Config.Root), BinaryProbe.Searching(null),
+            ["affirm", "--vendor", "antigravitee"]);
 
         await Assert.That(exitCode).IsEqualTo(1);
         await Assert.That(capture.GetCapturedError()).Contains("Unknown reviewer vendor");

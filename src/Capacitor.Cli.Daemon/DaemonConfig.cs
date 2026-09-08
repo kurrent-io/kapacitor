@@ -1,5 +1,6 @@
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Config;
+using Capacitor.Cli.Core.Setup;
 using Capacitor.Cli.Daemon.Harness.Claude;
 
 namespace Capacitor.Cli.Daemon;
@@ -155,6 +156,15 @@ public class DaemonConfig {
     /// reads it, so a descendant can't be handed a different one than the entry point chose.</summary>
     public UserHome Home {
         get => field ?? throw new InvalidOperationException($"DaemonConfig.Home was never set; pass a {nameof(UserHome)} in from the entry point.");
+        set;
+    }
+
+    /// <summary>The same PATH probe the DI-registered <c>HarnessRegistry</c> was built over — carried here
+    /// separately because a configured vendor path (<see cref="ClaudePath"/> and its siblings) is
+    /// not a harness question, so its resolvers (<c>CliResolver</c>, <c>VendorVersionResolver</c>)
+    /// take this rather than the registry.</summary>
+    public BinaryProbe Binaries {
+        get => field ?? throw new InvalidOperationException($"DaemonConfig.Binaries was never set; pass a {nameof(BinaryProbe)} in from the entry point.");
         set;
     }
 

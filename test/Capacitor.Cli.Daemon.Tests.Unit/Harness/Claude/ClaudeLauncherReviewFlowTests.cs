@@ -13,7 +13,7 @@ public class ClaudeLauncherReviewFlowTests {
     [TempHome] public required TempHome Home { get; init; }
 
     ClaudeLauncher NewLauncher(string? serverUrl = null, string capacitorPath = "kcap") =>
-        new(new DaemonConfig { ClaudePath = "claude", ServerUrl = serverUrl ?? "", CapacitorPath = capacitorPath }, Home, NullLogger<ClaudeLauncher>.Instance);
+        new(new DaemonConfig { ClaudePath = "claude", ServerUrl = serverUrl ?? "", CapacitorPath = capacitorPath }, TestHarnesses.Under(Home), NullLogger<ClaudeLauncher>.Instance);
 
     static LauncherContext NewCtx(bool isReviewFlow, string? prompt = "review this", string model = "sonnet") =>
         new(

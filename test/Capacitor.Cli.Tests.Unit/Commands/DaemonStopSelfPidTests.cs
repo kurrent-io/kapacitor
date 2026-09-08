@@ -1,5 +1,6 @@
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Setup;
 
 namespace Capacitor.Cli.Tests.Unit.Commands;
 
@@ -58,7 +59,10 @@ public class DaemonStopSelfPidTests {
         // matters less than the fact that it RETURNS: an unhandled exception here takes down
         // whichever unrelated test happens to be running — which is exactly how it showed up in
         // CI, as a random UninstallCommandTests failure.
-        var exit = await new DaemonCommands(Daemons.Store, Config.Root, Resolutions.None(Config.Root), Home).HandleAsync(["daemon", "stop", "--name", "self", "--yes"]);
+        var exit = await new DaemonCommands(
+                Daemons.Store, Config.Root, Resolutions.None(Config.Root), Home,
+                TestHarnesses.All(), BinaryProbe.Searching(null))
+            .HandleAsync(["daemon", "stop", "--name", "self", "--yes"]);
 
         await Assert.That(exit).IsEqualTo(1);
     }

@@ -53,6 +53,16 @@ public static partial class DaemonRunner {
         // And the same for the home directory, which the two above fall back to.
         var userHome = UserHome.FromEnvironment();
 
+        // One probe for the daemon's lifetime, shared by the registry below and by every configured
+        // vendor path's resolver (CliResolver, VendorVersionResolver) — "where is a harness's own
+        // binary" and "resolve this configured path" search the same PATH by construction, never two
+        // independently-read ones.
+        var binaries = Core.Setup.BinaryProbe.FromEnvironment();
+
+        // One registry for the daemon's lifetime: it caches no detection answer, so a vendor
+        // installed while the daemon runs is still seen.
+        var harnesses = Core.Harness.HarnessRegistry.FromEnvironment(userHome, binaries);
+
         // OriginalArgs is captured for self-respawn (detached restart-after-update) and to detect
         // the successor's --await-lock handoff flag. Paths is set here, in the initializer, so the
         // config is never observably path-less.
@@ -60,6 +70,7 @@ public static partial class DaemonRunner {
             Store        = paths,
             ConfigRoot   = configRoot,
             Home         = userHome,
+            Binaries     = binaries,
             WorktreeRoot = Path.Combine(userHome.Path, ".capacitor", "worktrees"),
             OriginalArgs = args,
         };
@@ -350,6 +361,8 @@ public static partial class DaemonRunner {
         builder.Services.AddSingleton(config.Profiles);
         builder.Services.AddSingleton(userHome);
         builder.Services.AddSingleton(config);
+        builder.Services.AddSingleton(harnesses);
+        builder.Services.AddSingleton(binaries);
         builder.Services.AddSingleton(daemonLock);
         builder.Services.AddDaemonHttp(configRoot, config);
         builder.Services.AddSingleton<ServerConnection>();
@@ -609,7 +622,8 @@ public static partial class DaemonRunner {
         config.UnattendedVendors = AdvertisedUnattendedVendors(unattendedStatuses);
         // Fingerprinted BEFORE the probe: a vendor that updates between the two then reads as a
         // change to the watcher, instead of as the baseline the stale advertisement already matches.
-        config.UnattendedVendorBaselines = FingerprintUnattendedVendors(runtimeFactories, config.UnattendedVendors);
+        config.UnattendedVendorBaselines =
+            FingerprintUnattendedVendors(new(config.Binaries), runtimeFactories, config.UnattendedVendors);
         config.UnattendedVendorCapabilities =
             ComputeUnattendedVendorCapabilities(runtimeFactories, config, config.UnattendedVendors);
 
@@ -1242,17 +1256,17 @@ public static partial class DaemonRunner {
     internal static void SeedReviewerFloors(string stateDir, DaemonConfig config) {
         SeedReviewerAffirmation(
             stateDir, AcpVendorDescriptors.Kiro.Vendor,
-            config.KiroUnattendedReviewerEnabled, config.KiroPath);
+            config.KiroUnattendedReviewerEnabled, config.KiroPath, config);
 
         SeedReviewerAffirmation(
             stateDir, AcpVendorDescriptors.Gemini.Vendor,
-            config.GeminiUnattendedReviewerEnabled, config.GeminiPath);
+            config.GeminiUnattendedReviewerEnabled, config.GeminiPath, config);
 
         SeedReviewerAffirmation(
             stateDir, AcpVendorDescriptors.OpenCode.Vendor,
-            config.OpenCodeUnattendedReviewerEnabled, config.OpenCodePath);
+            config.OpenCodeUnattendedReviewerEnabled, config.OpenCodePath, config);
 
-        SeedVersionFloor(stateDir, AntigravityVendor, config.AntigravityPath);
+        SeedVersionFloor(stateDir, AntigravityVendor, config.AntigravityPath, config.Binaries);
     }
 
     /// <summary>
@@ -1271,10 +1285,12 @@ public static partial class DaemonRunner {
     /// <c>kcap daemon reviewer affirm</c> can clear. A floor is meant to exclude a build found to be
     /// bad, not to be an opt-in gate wearing a different hat.</param>
     internal static void SeedReviewerAffirmation(
-            string stateDir, string vendor, bool enabled, string binaryPath) {
+            string stateDir, string vendor, bool enabled, string binaryPath, DaemonConfig config) {
         if (!enabled) return;
 
-        SeedVersionFloor(stateDir, vendor, binaryPath);
+        // config.Binaries is read only past the guard above: a daemon with every reviewer disabled
+        // must not need it set.
+        SeedVersionFloor(stateDir, vendor, binaryPath, config.Binaries);
     }
 
     /// <summary>
@@ -1286,10 +1302,11 @@ public static partial class DaemonRunner {
     /// reads as an oversight, and "tidying" it back to the flag would silently reinstate the very gate
     /// the caller exists to avoid. With no boolean to flip, the asymmetry has to be read.</para>
     /// </summary>
-    internal static void SeedVersionFloor(string stateDir, string vendor, string binaryPath) {
+    internal static void SeedVersionFloor(
+            string stateDir, string vendor, string binaryPath, Core.Setup.BinaryProbe binaries) {
         try {
             if (!ReviewerVersionStore.RecordExists(stateDir, vendor)
-             && VendorVersionResolver.Resolve(binaryPath) is { Length: > 0 } installed) {
+             && new VendorVersionResolver(binaries).Resolve(binaryPath) is { Length: > 0 } installed) {
                 new ReviewerVersionStore(stateDir, vendor).Affirm(installed);
 
                 // Printed because a floor is affirmed ONCE and never re-probed, so a wrong number is
@@ -1297,18 +1314,8 @@ public static partial class DaemonRunner {
                 // reviewer, too low under-gates. Resolve validates SHAPE (a dotted-numeric token), which
                 // rules out banners, `unknown` and localised errors, but NOT a version-shaped token that
                 // is not the installed build: an update nag ("0.11.14 -> 0.12.0"), a runtime line
-                // ("Node.js v22.1.0") or a date stamp ("2026.08.08") all qualify and can precede the
-                // real version. This line is what makes such a floor diagnosable at all.
-                //
-                // All four vendors' `--version` output was measured on 2026-08-08 and every one yields
-                // the right token under first-qualifying-token extraction:
-                //     kiro-cli 2.16.0   ("kiro-cli" has no dot, so the version wins)
-                //     gemini   0.54.0   (bare)
-                //     opencode 1.18.9   (bare)
-                //     agy      1.1.11   (bare)
-                // That is an observation of four builds on one host, not a guarantee: any of them may
-                // add a nag line or a runtime banner in a later release, which is precisely the drift
-                // this log line exists to make visible.
+                // ("Node.js v22.1.0") or a date stamp all qualify and can precede the real version.
+                // This line is what makes such a floor diagnosable at all.
                 Console.Error.WriteLine(
                     $"{vendor} reviewer version floor seeded at {installed} (from '{binaryPath} --version'). "
                   + $"Correct it with `kcap daemon reviewer affirm --vendor {vendor}` if that is not the "
@@ -1437,12 +1444,12 @@ public static partial class DaemonRunner {
     /// <summary>Fingerprints each advertised vendor's binary through the factory that launches it —
     /// the same path the version probe runs. A vendor with no locatable binary maps to null.</summary>
     internal static IReadOnlyDictionary<string, CliBinaryStat?> FingerprintUnattendedVendors(
-            IEnumerable<IHostedAgentRuntimeFactory> factories, IEnumerable<string> vendors) {
+            CliResolver cli, IEnumerable<IHostedAgentRuntimeFactory> factories, IEnumerable<string> vendors) {
         var byVendor = factories.ToDictionary(f => f.Vendor, StringComparer.Ordinal);
         return vendors.ToDictionary(
             vendor => vendor,
             vendor => byVendor.TryGetValue(vendor, out var factory) && !string.IsNullOrEmpty(factory.CliPath)
-                ? VendorCliWatcher.StatCliBinary(factory.CliPath)
+                ? VendorCliWatcher.StatCliBinary(cli, factory.CliPath)
                 : null,
             StringComparer.Ordinal);
     }

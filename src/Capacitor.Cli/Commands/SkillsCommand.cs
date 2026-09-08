@@ -1,6 +1,9 @@
 using System.Text.Json;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Harness;
+using Capacitor.Cli.Core.Harness.Antigravity;
+using Capacitor.Cli.Core.Harness.Claude;
+using Capacitor.Cli.Core.Harness.Kiro;
 using Capacitor.Cli.Core.Http;
 using Capacitor.Cli.Core.Skills;
 
@@ -13,7 +16,8 @@ namespace Capacitor.Cli.Commands;
 /// path kcap owns, and pruning walks the manifest — never a skills root — so user-authored skills
 /// are untouchable. Nothing is ever written into a repo.
 /// </summary>
-class SkillsCommand(ConfigRoot config, UserHome home, IRepositoriesApi repositories) {
+class SkillsCommand(
+        ConfigRoot config, HarnessRegistry harnesses, AgentsPaths agents, IRepositoriesApi repositories) {
     // The background refresh keys off each manifest's synced_at, so a burst of session starts
     // costs one network round-trip per interval per target, not one per session.
     static readonly TimeSpan AutoSyncInterval = TimeSpan.FromHours(6);
@@ -22,11 +26,11 @@ class SkillsCommand(ConfigRoot config, UserHome home, IRepositoriesApi repositor
     /// installer serves. A null vendor is a SHARED tree (several harnesses read it): its snapshot
     /// is fetched vendor-less, so unknown-excludes keeps vendor-restricted docs out of it — those
     /// reach their harness through a vendored tree instead.</summary>
-    internal static IReadOnlyList<SkillsTarget> Targets(HarnessPaths paths) => [
-        new("claude", paths.Claude.UserSkillsDir, "claude"),
-        new("agents", paths.Agents.UserSkillsDir, null),
-        new("kiro",   paths.Kiro.SkillsDir, "kiro"),
-        new("gemini", paths.Antigravity.SkillsDir, null),   // shared: Gemini CLI + Antigravity
+    internal static IReadOnlyList<SkillsTarget> Targets(HarnessRegistry harnesses, AgentsPaths agents) => [
+        new("claude", harnesses.Of<ClaudeHarness>().Paths.UserSkillsDir, "claude"),
+        new("agents", agents.UserSkillsDir, null),
+        new("kiro",   harnesses.Of<KiroHarness>().Paths.SkillsDir, "kiro"),
+        new("gemini", harnesses.Of<AntigravityHarness>().Paths.SkillsDir, null),   // shared: Gemini CLI + Antigravity
     ];
 
     public async Task<int> HandleSync(bool dryRun, bool auto = false) {
@@ -43,16 +47,14 @@ class SkillsCommand(ConfigRoot config, UserHome home, IRepositoriesApi repositor
         }
         var hash = RepoHashHelper.ComputeRepoHash(repo.Owner, repo.RepoName);
 
-        // Real harness detection, not destination-parent existence: ~/.agents is created by
-        // kcap's own installer, so a fresh machine with (say) Codex installed would otherwise
-        // never adopt the shared tree.
-        var paths     = HarnessPaths.FromEnvironment(home);
-        var harnesses = HarnessRegistry.FromEnvironment(home);
         var exitCode = 0;
-        foreach (var target in Targets(paths)) {
+        foreach (var target in Targets(harnesses, agents)) {
             var manifestName = Path.Combine("skills", hash, target.Key, "manifest.json");
-            // Adopt a target only while a consuming harness is present; a target we already own
-            // keeps reconciling (revocation must reach it) even after the harness is removed.
+            // Adopt a target only while a consuming harness is present — real detection, not
+            // destination-parent existence: ~/.agents is created by kcap's own installer, so a
+            // fresh machine with (say) Codex installed would otherwise never adopt the shared tree.
+            // A target we already own keeps reconciling (revocation must reach it) even after the
+            // harness is removed.
             if (!File.Exists(config.Path(manifestName)) && !ConsumerPresent(harnesses, target.Key))
                 continue;
             exitCode = Math.Max(exitCode,

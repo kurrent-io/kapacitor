@@ -247,27 +247,72 @@ public class AntigravityReviewerHomeTests {
     }
 
     /// <summary>
-    /// Both files this home writes resolve through <c>AntigravityPaths</c> → <c>GeminiPaths.Root</c>,
-    /// which honours the DAEMON PROCESS's own <c>GEMINI_CLI_HOME</c> ahead of the home it was handed —
-    /// so on a daemon that happens to run with it set, an unguarded write would land the reviewer's
-    /// result channel and its permission grants in the operator's own Gemini tree instead of the
-    /// isolated home. The guard is shared, and settings.json is the file it was extended to cover.
+    /// <c>GEMINI_CLI_HOME</c> REPLACES the Gemini root wherever it is honoured, so a daemon running
+    /// with it set would write the reviewer's result channel and its permission grants into the
+    /// operator's own tree — and probe the plugin directory that keeps capture single-lane in a
+    /// directory this home does not own. The layout is derived from the isolated home alone, so
+    /// both files land inside it and the operator's tree is untouched.
     /// </summary>
     [Test]
     [NotInParallel]
-    public async Task A_daemon_wide_gemini_cli_home_cannot_redirect_the_homes_writes() {
+    public async Task A_daemon_wide_gemini_cli_home_does_not_move_the_homes_writes() {
         if (OperatingSystem.IsWindows()) return;
-        using var root     = new TempDir();
+        using var root      = new TempDir();
         using var elsewhere = new TempDir();
 
         using var env = EnvScope.Exclusive("GEMINI_CLI_HOME", elsewhere.Path);
 
-        var ex = Assert.Throws<InvalidOperationException>(() => AntigravityReviewerHome.Create(
-            root.Path, "epoch1", "agent1", [ResultChannel], grantInjectedMcpTools: true));
+        var home = AntigravityReviewerHome.Create(
+            root.Path, "epoch1", "agent1", [ResultChannel], grantInjectedMcpTools: true);
+
+        await Assert.That(File.Exists(Path.Combine(home, ".gemini", "config", "mcp_config.json"))).IsTrue();
+        await Assert.That(File.Exists(Path.Combine(home, ".gemini", "antigravity-cli", "settings.json")))
+            .IsTrue();
+
+        await Assert.That(Directory.Exists(elsewhere.PathTo(".gemini"))).IsFalse();
+    }
+
+    // ── ResolveInsideHome: the containment guard itself ────────────────────────────────────────────
+    //
+    // Everything above drives the guard only through Create's real writes. These call it directly —
+    // it is the one thing standing between a reintroduced vendor override and a reviewer's result
+    // channel landing in the operator's own tree, so it earns direct coverage of its own.
+
+    [Test]
+    public async Task Resolve_inside_home_returns_the_full_normalized_path() {
+        using var tmp = new TempDir();
+        var home = tmp.Path;
+        var path = Path.Combine(home, "sub", "..", "sub", "file.txt");
+
+        var resolved = AntigravityReviewerHome.ResolveInsideHome(home, path, "file.txt");
+
+        await Assert.That(resolved).IsEqualTo(Path.Combine(home, "sub", "file.txt"));
+    }
+
+    [Test]
+    public async Task Resolve_inside_home_throws_when_the_path_resolves_outside_the_home() {
+        using var tmp = new TempDir();
+        var home = tmp.CreateDir("home");
+        var outside = Path.Combine(home, "..", "outside", "file.txt");
+
+        var ex = Assert.Throws<InvalidOperationException>(
+            () => AntigravityReviewerHome.ResolveInsideHome(home, outside, "file.txt"));
 
         await Assert.That(ex!.Message).StartsWith("antigravity_reviewer_home_escaped_root");
+    }
 
-        // Refused, not merely reported: nothing was written into the operator's tree.
-        await Assert.That(Directory.Exists(elsewhere.PathTo(".gemini"))).IsFalse();
+    /// <summary>The guard appends a directory separator before comparing, so a sibling whose name
+    /// merely starts with the home's name (<c>h-evil</c> vs. home <c>h</c>) is refused rather than
+    /// treated as contained — a bare prefix check would let it through.</summary>
+    [Test]
+    public async Task Resolve_inside_home_refuses_a_sibling_that_only_shares_the_homes_prefix() {
+        using var tmp = new TempDir();
+        var home = tmp.PathTo("h");
+        var sibling = tmp.PathTo("h-evil", "x");
+
+        var ex = Assert.Throws<InvalidOperationException>(
+            () => AntigravityReviewerHome.ResolveInsideHome(home, sibling, "x"));
+
+        await Assert.That(ex!.Message).StartsWith("antigravity_reviewer_home_escaped_root");
     }
 }

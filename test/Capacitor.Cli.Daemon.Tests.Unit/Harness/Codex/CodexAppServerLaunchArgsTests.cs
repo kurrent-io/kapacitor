@@ -14,7 +14,7 @@ public class CodexAppServerLaunchArgsTests {
 
     CodexLauncher NewLauncher() =>
         new(new DaemonConfig { CodexPath = "codex", CapacitorPath = "/opt/kcap", ServerUrl = "https://t.example" },
-            Home, NullLogger<CodexLauncher>.Instance) {
+            TestHarnesses.Under(Home), NullLogger<CodexLauncher>.Instance) {
             ReadInheritedMcpServers = static () => [new("kcap-flows"), new("node_repl")]
         };
 

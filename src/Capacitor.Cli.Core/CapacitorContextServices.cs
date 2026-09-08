@@ -20,6 +20,8 @@ public static class CapacitorContextServices {
         services.AddSingleton(daemons);
         services.AddSingleton(profiles);
 
+        services.AddSingleton<AgentsPaths>();
+
         return services;
     }
 }

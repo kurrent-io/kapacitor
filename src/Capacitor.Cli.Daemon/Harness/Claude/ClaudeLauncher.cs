@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Core.Harness.Claude;
 using Capacitor.Cli.Core.LocalIpc;
 using Capacitor.Cli.Core.Mcp;
@@ -11,7 +12,7 @@ namespace Capacitor.Cli.Daemon.Harness.Claude;
 
 internal sealed partial class ClaudeLauncher(
         DaemonConfig            config,
-        UserHome                home,
+        HarnessRegistry         harnesses,
         ILogger<ClaudeLauncher> logger
     ) : IHostedAgentLauncher {
 
@@ -30,9 +31,9 @@ internal sealed partial class ClaudeLauncher(
     /// equivalence key). Stateless singleton.</summary>
     public IReviewerModelResolver? ReviewerModelResolver => ClaudeReviewerModelResolver.Instance;
 
-    public bool IsAvailable() => CliResolver.Exists(CliPath);
+    public bool IsAvailable() => new CliResolver(config.Binaries).Exists(CliPath);
 
-    readonly ClaudePaths _paths = ClaudeHarness.FromEnvironment(home).Paths;
+    readonly ClaudePaths _paths = harnesses.Of<ClaudeHarness>().Paths;
 
     static readonly Lock                  TrustWriteLock   = new();
     static readonly JsonSerializerOptions IndentedJsonOpts = new() { WriteIndented = true };
