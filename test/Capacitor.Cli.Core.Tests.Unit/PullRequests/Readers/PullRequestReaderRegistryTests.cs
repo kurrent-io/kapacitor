@@ -78,14 +78,17 @@ public class PullRequestReaderRegistryTests {
         var server = new StubProvider("server", ready: true, hosts: ["github.com"]);
         var registry = new PullRequestReaderRegistry(new StubLinks(), [provider, server]);
         await registry.DiscoverAsync(false, default);
-        await registry.OverviewAsync("session", Subject(), default);
+        await registry.OverviewAsync("a", Subject(), default);
+        await registry.OverviewAsync("b", Subject(), default);
         provider.Ready = true;
         await registry.DiscoverAsync(true, default);
-        var restart = await registry.OverviewAsync("session", Subject(), default);
-        await Assert.That(restart.Kind).IsEqualTo(PullRequestReadKind.Restart);
-        await Assert.That(restart.Reason).IsEqualTo("integration_changed");
-        await Assert.That((await registry.OverviewAsync("session", Subject(), default)).Kind).IsEqualTo(PullRequestReadKind.Ready);
-        await Assert.That(provider.Overviews).IsEqualTo(1);
+        foreach (var sessionId in new[] { "a", "b" }) {
+            var restart = await registry.OverviewAsync(sessionId, Subject(), default);
+            await Assert.That(restart.Kind).IsEqualTo(PullRequestReadKind.Restart);
+            await Assert.That(restart.Reason).IsEqualTo("integration_changed");
+            await Assert.That((await registry.OverviewAsync(sessionId, Subject(), default)).Kind).IsEqualTo(PullRequestReadKind.Ready);
+        }
+        await Assert.That(provider.Overviews).IsEqualTo(2);
     }
 
     [Test]
