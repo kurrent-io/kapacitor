@@ -5,7 +5,7 @@ using Avalonia.Threading;
 using Avalonia.VisualTree;
 using Capacitor.App.ViewModels.Onboarding;
 using Capacitor.App.Views.Onboarding;
-using ReactiveUI;
+using ReactiveUI.Reactive;
 using TUnit.Assertions.Enums;
 
 namespace Capacitor.App.Tests.Unit;

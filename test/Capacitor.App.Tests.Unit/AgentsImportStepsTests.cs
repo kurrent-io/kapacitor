@@ -273,7 +273,7 @@ public class ImportStepViewModelTests {
         public ImportVendorRow Row(string label) => Vm.Vendors.First(r => r.Label == label);
     }
 
-    static bool CanExecute<TParam, TResult>(ReactiveUI.ReactiveCommand<TParam, TResult> command) {
+    static bool CanExecute<TParam, TResult>(ReactiveUI.Reactive.ReactiveCommand<TParam, TResult> command) {
         var value = false;
         using var subscription = command.CanExecute.Subscribe(v => value = v); // replayed on subscribe
         return value;

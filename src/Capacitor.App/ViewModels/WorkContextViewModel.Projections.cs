@@ -2,7 +2,7 @@ using System.Reactive;
 using Avalonia.Collections;
 using Capacitor.Cli.Core.LocalIpc;
 using Capacitor.Cli.Core.WorkItems;
-using ReactiveUI;
+using ReactiveUI.Reactive;
 
 namespace Capacitor.App.ViewModels;
 

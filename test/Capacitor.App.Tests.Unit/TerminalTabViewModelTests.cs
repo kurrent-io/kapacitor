@@ -40,6 +40,10 @@ public class TerminalTabViewModelTests {
         var vm = Build(daemon, factory, time, agentId, surfaceFactory);
 
         daemon.Agents.AddOrUpdate(Agent(agentId, vendor, hasTerminal));
+        // The Avalonia scheduler always posts, even when the caller is already on the UI thread,
+        // so the resolve does not start until the dispatcher runs. Callers under an immediate
+        // scheduler are unaffected; this is what the thread-identity tests need.
+        Dispatcher.UIThread.RunJobs();
         await (vm.PendingResolveWorkForTesting ?? Task.CompletedTask);
 
         return (daemon, factory, time, vm, factory.Created.Single());

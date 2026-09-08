@@ -17,7 +17,7 @@
         <PackageReference Include="Avalonia" />
         <PackageReference Include="Avalonia.Desktop" />
         <PackageReference Include="Avalonia.Themes.Fluent" />
-        <PackageReference Include="ReactiveUI.Avalonia" />
+        <PackageReference Include="ReactiveUI.Avalonia.Reactive" />
         <PackageReference Include="DynamicData" />
         <PackageReference Include="Markdig" />
         <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" />

@@ -5,7 +5,7 @@ using Capacitor.App.ViewModels;
 using Capacitor.Cli.Core.LocalIpc;
 using Capacitor.Remote.Models;
 using DynamicData;
-using ReactiveUI;
+using ReactiveUI.Reactive;
 
 namespace Capacitor.App.Tests.Unit;
 
