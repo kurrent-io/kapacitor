@@ -54,6 +54,7 @@ public sealed class GitHubCliRunner(IProcessRunner runner, ILoginShellProbe? she
         && !branch.Contains("//", StringComparison.Ordinal)
         && branch.All(c => !char.IsWhiteSpace(c) && !char.IsControl(c) && c is not ('~' or '^' or ':' or '?' or '*' or '[' or '\\'));
     public static bool ValidNodeId(string? id) => id is { Length: > 0 and <= 256 } && id.All(c => char.IsAsciiLetterOrDigit(c) || c is '_' or '=' or '-');
+    public static bool ValidCursor(string? cursor) => cursor is { Length: > 0 and <= 512 } && cursor.All(c => c is >= '!' and <= '~');
 
     public void Dispose() => _slots.Dispose();
 }

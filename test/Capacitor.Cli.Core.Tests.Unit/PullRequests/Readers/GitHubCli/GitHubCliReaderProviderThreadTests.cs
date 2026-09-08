@@ -93,6 +93,36 @@ public class GitHubCliReaderProviderThreadTests {
     }
 
     [Test]
+    public async Task A_base64_end_cursor_with_plus_and_slash_continues_the_chain() {
+        using var h = new GhHarness(Tmp); h.SignedIn("github.com");
+        h.Process.WhenAll(["api", "graphql", "after=Y3Vyc29yOnYyOpK0MjAyNi0wOS0wOFQwNzo1MTozOVrOoCTm+A/="], GhHarness.Fixture("review-threads-2.json"));
+        h.Process.WhenAll(["api", "graphql", "-F", "number=12"], GhHarness.Fixture("review-threads-plus.json"));
+        await h.Provider.ProbeAsync(false, default);
+        var first = (await h.Provider.PageAsync<PullRequestThreadDto>("session", Subject, "threads", null, null, null, default)).Data!;
+        await Assert.That(first.HasMore).IsTrue();
+        await Assert.That(PullRequestWire.ValidHandle(first.NextCursor)).IsTrue();
+        var second = (await h.Provider.PageAsync<PullRequestThreadDto>("session", Subject, "threads", first.NextCursor, null, null, default)).Data!;
+        await Assert.That(second.Items.Single().Id).IsEqualTo("PRRT_3");
+    }
+
+    [Test]
+    public async Task An_exhausted_fetch_budget_declares_a_limited_page_instead_of_an_empty_page_with_more() {
+        var allResolvedWithHasNext = GhHarness.Fixture("review-threads.json").Replace("\"isResolved\":false", "\"isResolved\":true");
+        using var h = new GhHarness(Tmp); h.SignedIn("github.com");
+        h.Process.WhenAll(["api", "graphql", "after=" + Cursor1], allResolvedWithHasNext);
+        h.Process.WhenAll(["api", "graphql", "-F", "number=12"], allResolvedWithHasNext);
+        await h.Provider.ProbeAsync(false, default);
+        var page = (await h.Provider.PageAsync<PullRequestThreadDto>("session", Subject, "threads", null, null, null, default)).Data!;
+        await Assert.That(h.Process.Calls.Count(call => call.Args[0] == "api")).IsEqualTo(10);
+        await Assert.That(page.Items).IsEmpty();
+        await Assert.That(page.HasMore).IsFalse();
+        await Assert.That(page.NextCursor).IsNull();
+        await Assert.That(page.Coverage).IsEqualTo("limited");
+        await Assert.That(page.CoverageReason).IsEqualTo("tool_limit");
+        await Assert.That(page.ExcludedByFilter.Value).IsEqualTo(20);
+    }
+
+    [Test]
     public async Task Thread_replies_query_the_thread_node_and_carry_reply_targets() {
         using var h = await Ready(Tmp);
         var read = await h.Provider.PageAsync<PullRequestCommentDto>("session", Subject, "thread_comments", null, null, "PRRT_2", default);

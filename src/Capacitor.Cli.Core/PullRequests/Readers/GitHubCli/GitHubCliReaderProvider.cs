@@ -155,8 +155,11 @@ public sealed class GitHubCliReaderProvider(GitHubCliRunner cli, TimeProvider? t
         }
         if (cursor is null) { entry = entry with { HeadSha = head }; cursor = _cursors.Mint(entry); }
         var more = hasNext && endCursor is not null;
+        var exhausted = items.Count == 0 && more;
+        if (exhausted) more = false;
         var data = new PullRequestPageDto<PullRequestThreadDto> {
-            SnapshotId = entry.SnapshotId, SnapshotStartedAt = entry.StartedAt, SnapshotCompletedAt = Now, Coverage = "complete", HeadSha = head,
+            SnapshotId = entry.SnapshotId, SnapshotStartedAt = entry.StartedAt, SnapshotCompletedAt = Now, Coverage = exhausted ? "limited" : "complete",
+            CoverageReason = exhausted ? "tool_limit" : null, HeadSha = head,
             Total = resolved == "all" ? new() { Kind = "exact", Value = total } : new() { Kind = "unknown" }, ExcludedByFilter = new() { Kind = "exact", Value = excluded },
             Items = [.. items.Take(50)], PageCursor = cursor, HasMore = more, NextCursor = more ? _cursors.Mint(entry with { After = endCursor, HeadSha = head }) : null,
         };

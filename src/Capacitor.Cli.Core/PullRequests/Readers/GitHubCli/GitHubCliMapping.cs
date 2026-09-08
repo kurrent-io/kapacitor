@@ -220,7 +220,7 @@ public static class GitHubCliMapping {
     static int? Number(JsonElement element, string name) => element.Prop(name) is { } value && value.IsNumber && value.TryGetInt32(out var number) ? number : null;
     static bool HasNext(JsonElement connection) => connection.Prop("pageInfo") is { } info && info.IsObject && info.Bool("hasNextPage") == true;
     static string? EndCursor(JsonElement connection) => connection.Prop("pageInfo") is { } info && info.IsObject && Text(info, "endCursor") is { } cursor
-        && GitHubCliRunner.ValidNodeId(cursor) ? cursor : null;
+        && GitHubCliRunner.ValidCursor(cursor) ? cursor : null;
 
     public static PullRequestRead<T> Failure<T>(GitHubCliResult result, PullRequestSubjectDto subject, DateTime now) where T : class {
         switch (result.Outcome) {

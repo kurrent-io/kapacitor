@@ -128,4 +128,8 @@ public class GitHubCliRunnerTests {
     [Test]
     [Arguments("PRRT_kwDOR9HOJ86gJOag", true)] [Arguments("Y3Vyc29yOnYyOpK0MjAyNi0wOS0wOFQwNzo1MTozOVrOoCTmpA==", true)] [Arguments("", false)] [Arguments("a b", false)]
     public async Task Node_id_validation(string id, bool valid) => await Assert.That(GitHubCliRunner.ValidNodeId(id)).IsEqualTo(valid);
+
+    [Test]
+    [Arguments("Y3Vyc29yOnYyOpK0+A/=", true)] [Arguments("has space", false)] [Arguments("", false)]
+    public async Task Cursor_validation(string cursor, bool valid) => await Assert.That(GitHubCliRunner.ValidCursor(cursor)).IsEqualTo(valid);
 }
