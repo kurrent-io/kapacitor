@@ -52,6 +52,7 @@ existing notice slot carries a note about the local prerequisite:
 | `gh` not found | Install GitHub CLI to read pull requests here. | **Install GitHub CLI** opens `https://cli.github.com` through `LinkPolicy`; **Recheck** re-probes. |
 | `gh` found, no signed-in host | GitHub CLI is not signed in. Run `gh auth login` to read pull requests here. | **Recheck** |
 | `gh` signed in, but not to the selected PR's host | GitHub CLI is not signed in for `<host>`. Run `gh auth login --hostname <host>` to read it here. | **Recheck** |
+| gh too old for auth status --json | Update GitHub CLI to read pull requests here. | **Install GitHub CLI** (opens the install URL); **Recheck** |
 
 The note shows regardless of whether a PR is linked, so the prerequisite is
 learned before the first PR arrives. It is suppressed when another ready provider
@@ -81,8 +82,9 @@ the first ordered link, with an explicit user selection preserved across polls.
 
 The primary-repository hint the view model receives grows from a repository hash
 to provider kind, host, owner, name and hash. The work-context session summary
-already carries owner and name for its `is_primary` repository; the host comes
-from its remote when the summary carries one, else the provider's default host.
+already carries owner and name for its `is_primary` repository but no host, so
+a session repository is assumed to be on `github.com`; a later change may infer
+the host from a linked PR sharing the repository hash.
 
 ## Provider registry and routing
 
@@ -159,9 +161,11 @@ server source depends on the app's authenticated client lease.
 - **OverviewAsync** and **PageAsync** are the detail reads, with the same
   signatures and read kinds the view model already consumes.
 - **PrLink(url, subject)** validates an outbound PR link for a subject it serves.
-  The server provider keeps the `github.com` pin; the GitHub CLI provider accepts
-  the signed-in hosts. The view model's own `github.com` gate and its direct use
-  of the static link validator move behind the registry, which is what lets a
+  The server provider keeps the `github.com` pin; the GitHub CLI provider
+  validates the link against the subject's own host, whether or not that host is
+  signed in, because the registry picks the validator by provider kind rather
+  than readiness. The view model's own `github.com` gate and its direct use of
+  the static link validator move behind the registry, which is what lets a
   provider with a different URL shape join later.
 
 ### Registry
@@ -196,10 +200,12 @@ cached with discovery.
 
 Invocation goes through `IProcessRunner` with an argument array, never a shell.
 The environment overlay sets `GH_PROMPT_DISABLED=1`, `GH_NO_UPDATE_NOTIFIER=1`,
-`NO_COLOR=1` and `GH_PAGER=cat`. The app never sets `GH_TOKEN`, `GH_HOST` or
-`GH_CONFIG_DIR`, never reads `gh`'s keyring or configuration files, and never
-stores a GitHub credential. Each call has a 20-second deadline and a 4 MiB stdout
-cap, matching the server client's response cap; exceeding either is a transport
+`NO_COLOR=1`, `GH_PAGER=cat` and `CLICOLOR=0`. The app never sets `GH_TOKEN`,
+`GH_HOST` or `GH_CONFIG_DIR`, never reads `gh`'s keyring or configuration files,
+and never stores a GitHub credential. Each call has a 20-second deadline.
+`gh pr view` runs with a 16 MiB stdout cap because it bundles up to 100 reviews
+and 100 comments in one payload; every other call keeps the 4 MiB cap that
+matches the server client's response cap. Exceeding either is a transport
 failure, not data.
 
 Every identifier is validated before anything spawns, and a failure never spawns:
@@ -235,9 +241,12 @@ projections and the retention budget stay as they are.
 - **Probe** reports `Ready` when the runner finds `gh` and at least one signed-in
   host, `ToolMissing` or `SignedOut` otherwise, with GitHub CLI as the tool name,
   `https://cli.github.com` as the install URL and `gh auth login` as the sign-in
-  command. Present and absent are determined outcomes and carry no retry time.
+  command. Present and absent are determined outcomes and carry no retry time. A
+  `gh` whose `auth status` does not support `--json` probes as `Failed` with
+  reason `unsupported_version`.
 - **Serves** is provider `github` and a signed-in host. **ParseLink** accepts
-  `https://<signed-in host>/<owner>/<repo>/pull/<number>`.
+  `https://<host>/<owner>/<repo>/pull/<number>` where the host is `github.com`
+  or a signed-in host.
 - **Discover** runs `gh pr list` for the branch on the repository.
 - **Overview** is one `gh pr view` requesting title, url, state, isDraft,
   headRefName, baseRefName, headRefOid, body, updatedAt, reviewDecision, author,
@@ -250,11 +259,11 @@ projections and the retention budget stay as they are.
   head-sha precedence rule over the rollup is unchanged. Reviewers are the union
   of `reviewRequests` and `latestReviews`. Reviews and conversation come from
   `reviews` and `comments`. `gh pr view` returns at most 100 of each; a list of
-  exactly 100 reports `coverage` limited and a lower-bound total, so the reader
-  shows More on GitHub rather than claiming completeness. Threads come from the
-  GraphQL `reviewThreads` connection in pages of 50, with each thread's root
-  comment, path, side, lines, resolution, outdated flag and diff hunk; thread
-  replies come from the thread's `comments` connection.
+  exactly 100 — checks included — reports `coverage` limited and a lower-bound
+  total, so the reader shows More on GitHub rather than claiming completeness.
+  Threads come from the GraphQL `reviewThreads` connection in pages of 50, with
+  each thread's root comment, path, side, lines, resolution, outdated flag and
+  diff hunk; thread replies come from the thread's `comments` connection.
 - **Snapshots and cursors.** Every section fetch mints a 32-byte random hex
   snapshot id. A paged section keeps its snapshot id and head sha for the whole
   cursor chain; a `next_cursor` is a minted opaque handle mapped in memory to the
@@ -270,13 +279,14 @@ projections and the retention budget stay as they are.
   signed-in identity, so the lease is constant and the view model's existing
   renewal, masking and grace machinery keeps working without change.
 - **Failures** map to the existing read kinds. A missing PR or repository is
-  `Unavailable` with reason `not_found`. An authentication or permission error
-  from `gh` is `Unavailable` with reason `gh_host_signed_out` or `denied`,
-  never the `SignedOut` kind, which the card would render as the Capacitor
-  sign-in. A rate-limit message is `Unavailable` with reason `rate_limited` and
-  a `retry_at` sixty seconds ahead, which the view model treats as grace. A
-  spawn failure, timeout or capped output is `TransportFailure`. Output that is
-  not the expected JSON shape is `InvalidProtocol`.
+  `Unavailable` with reason `not_found`; an authentication error is
+  `Unavailable` with reason `tool_signed_out`; a rate-limit message is
+  `Unavailable` with reason `rate_limited` and a `retry_at` sixty seconds ahead,
+  which the view model treats as grace; another HTTP 403 is `Unavailable` with
+  reason `tool_denied`; any other failed exit is `Unavailable` with reason
+  `tool_failed`. A spawn that could not start is also `Unavailable` with reason
+  `tool_failed`. A timeout is `TransportFailure`. Capped or malformed output is
+  `InvalidProtocol`.
 
 ### Server provider
 
