@@ -33,7 +33,7 @@ public class GitHubCliRunnerTests {
         string nothing = Tmp.CreateDir("nothing");
         var missing = new GitHubCliRunner(new FakeGhProcessRunner(), new FakeLoginShellProbe(null), _ => nothing);
         await Assert.That(await missing.LocateAsync(false, default)).IsNull();
-        var result = await missing.RunAsync(["auth", "status"], default);
+        var result = await missing.RunAsync(["auth", "status"]);
         await Assert.That(result.Outcome).IsEqualTo(GitHubCliOutcome.NotStarted);
     }
 
@@ -43,7 +43,7 @@ public class GitHubCliRunnerTests {
         var process = new FakeGhProcessRunner();
         process.When(["auth", "status"], """{"hosts":{}}""");
         var runner = new GitHubCliRunner(process, null, name => name == "PATH" ? Path.GetDirectoryName(gh) : null);
-        var result = await runner.RunAsync(["auth", "status", "--json", "hosts"], default);
+        var result = await runner.RunAsync(["auth", "status", "--json", "hosts"]);
         await Assert.That(result.Outcome).IsEqualTo(GitHubCliOutcome.Ok);
         await Assert.That(result.Stdout).IsEqualTo("""{"hosts":{}}""");
         var call = process.Calls.Single();
@@ -67,13 +67,24 @@ public class GitHubCliRunnerTests {
         process.When(["bad"], "", exitCode: 1, stderr: "GraphQL: Could not resolve to a PullRequest");
         process.When(["big"], new string('x', GitHubCliRunner.OutputLimit + 1));
         var runner = new GitHubCliRunner(process, null, name => name == "PATH" ? Path.GetDirectoryName(gh) : null);
-        await Assert.That((await runner.RunAsync(["slow"], default)).Outcome).IsEqualTo(GitHubCliOutcome.TimedOut);
-        var failed = await runner.RunAsync(["bad"], default);
+        await Assert.That((await runner.RunAsync(["slow"])).Outcome).IsEqualTo(GitHubCliOutcome.TimedOut);
+        var failed = await runner.RunAsync(["bad"]);
         await Assert.That(failed.Outcome).IsEqualTo(GitHubCliOutcome.Failed);
         await Assert.That(failed.Stderr).Contains("Could not resolve");
-        var big = await runner.RunAsync(["big"], default);
+        var big = await runner.RunAsync(["big"]);
         await Assert.That(big.Outcome).IsEqualTo(GitHubCliOutcome.Oversized);
         await Assert.That(big.Stdout).IsEmpty();
+    }
+
+    [Test]
+    public async Task A_per_call_output_limit_overrides_the_default() {
+        var gh = InstallGh("bin");
+        var process = new FakeGhProcessRunner();
+        var payload = new string('x', 5 * 1024 * 1024);
+        process.When(["view"], payload);
+        var runner = new GitHubCliRunner(process, null, name => name == "PATH" ? Path.GetDirectoryName(gh) : null);
+        await Assert.That((await runner.RunAsync(["view"])).Outcome).IsEqualTo(GitHubCliOutcome.Oversized);
+        await Assert.That((await runner.RunAsync(["view"], GitHubCliRunner.ViewOutputLimit)).Outcome).IsEqualTo(GitHubCliOutcome.Ok);
     }
 
     [Test]
@@ -82,10 +93,10 @@ public class GitHubCliRunnerTests {
         var process = new FakeGhProcessRunner { StartFailure = new InvalidOperationException("Failed to start") };
         var shell = new FakeLoginShellProbe(Path.GetDirectoryName(gh));
         var runner = new GitHubCliRunner(process, shell, name => name == "PATH" ? Path.GetDirectoryName(gh) : null);
-        await Assert.That((await runner.RunAsync(["auth", "status"], default)).Outcome).IsEqualTo(GitHubCliOutcome.NotStarted);
+        await Assert.That((await runner.RunAsync(["auth", "status"])).Outcome).IsEqualTo(GitHubCliOutcome.NotStarted);
         process.StartFailure = null;
         process.When(["auth", "status"], "{}");
-        await Assert.That((await runner.RunAsync(["auth", "status"], default)).Outcome).IsEqualTo(GitHubCliOutcome.Ok);
+        await Assert.That((await runner.RunAsync(["auth", "status"])).Outcome).IsEqualTo(GitHubCliOutcome.Ok);
         await Assert.That(shell.Probes).IsEqualTo(OperatingSystem.IsWindows() ? 0 : 2);
     }
 
@@ -96,7 +107,7 @@ public class GitHubCliRunnerTests {
         var a = new TaskCompletionSource<ProcessResult>(); var b = new TaskCompletionSource<ProcessResult>();
         process.WhenPending(["a"], a); process.WhenPending(["b"], b); process.When(["c"], "");
         var runner = new GitHubCliRunner(process, null, name => name == "PATH" ? Path.GetDirectoryName(gh) : null);
-        var first = runner.RunAsync(["a"], default); var second = runner.RunAsync(["b"], default); var third = runner.RunAsync(["c"], default);
+        var first = runner.RunAsync(["a"]); var second = runner.RunAsync(["b"]); var third = runner.RunAsync(["c"]);
         await Task.Delay(50);
         await Assert.That(process.Calls.Count).IsEqualTo(2);
         a.SetResult(new(0, "", "", false));

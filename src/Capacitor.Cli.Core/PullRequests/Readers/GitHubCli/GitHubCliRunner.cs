@@ -9,6 +9,7 @@ namespace Capacitor.Cli.Core.PullRequests.Readers.GitHubCli;
 /// </summary>
 public sealed class GitHubCliRunner(IProcessRunner runner, ILoginShellProbe? shell, Func<string, string?> getEnv) : IDisposable {
     public const int OutputLimit = 4 * 1024 * 1024;
+    public const int ViewOutputLimit = 16 * 1024 * 1024;
     public static readonly TimeSpan Deadline = TimeSpan.FromSeconds(20);
     static readonly IReadOnlyDictionary<string, string> Overlay = new Dictionary<string, string>(StringComparer.Ordinal) {
         ["GH_PROMPT_DISABLED"] = "1", ["GH_NO_UPDATE_NOTIFIER"] = "1", ["NO_COLOR"] = "1", ["GH_PAGER"] = "cat", ["CLICOLOR"] = "0",
@@ -26,7 +27,7 @@ public sealed class GitHubCliRunner(IProcessRunner runner, ILoginShellProbe? she
         return found;
     }
 
-    public async Task<GitHubCliResult> RunAsync(string[] args, CancellationToken ct) {
+    public async Task<GitHubCliResult> RunAsync(string[] args, int outputLimit = OutputLimit, CancellationToken ct = default) {
         var path = _path ?? await LocateAsync(false, ct).ConfigureAwait(false);
         if (path is null) return new(GitHubCliOutcome.NotStarted, -1, "", "gh is not installed");
         await _slots.WaitAsync(ct).ConfigureAwait(false);
@@ -39,7 +40,7 @@ public sealed class GitHubCliRunner(IProcessRunner runner, ILoginShellProbe? she
                 return new(GitHubCliOutcome.NotStarted, -1, "", exception.Message);
             }
             if (result.TimedOut) return new(GitHubCliOutcome.TimedOut, result.ExitCode, "", result.Stderr);
-            if (result.Stdout.Length > OutputLimit) return new(GitHubCliOutcome.Oversized, result.ExitCode, "", "");
+            if (result.Stdout.Length > outputLimit) return new(GitHubCliOutcome.Oversized, result.ExitCode, "", "");
             return new(result.ExitCode == 0 ? GitHubCliOutcome.Ok : GitHubCliOutcome.Failed, result.ExitCode, result.Stdout, result.Stderr);
         } finally { _slots.Release(); }
     }

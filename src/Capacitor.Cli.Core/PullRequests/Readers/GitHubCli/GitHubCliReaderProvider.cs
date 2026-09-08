@@ -26,7 +26,7 @@ public sealed class GitHubCliReaderProvider(GitHubCliRunner cli, TimeProvider? t
         try {
             if (_status is { } cached && !refresh && _time.GetElapsedTime(_probedAt) < _ttl) return cached;
             if (await cli.LocateAsync(refresh, ct).ConfigureAwait(false) is null) return Save(new(PullRequestReaderStatusKind.ToolMissing), []);
-            var result = await cli.RunAsync(["auth", "status", "--json", "hosts"], ct).ConfigureAwait(false);
+            var result = await cli.RunAsync(["auth", "status", "--json", "hosts"], ct: ct).ConfigureAwait(false);
             if (result.Outcome == GitHubCliOutcome.NotStarted) return Save(new(PullRequestReaderStatusKind.ToolMissing), []);
             if (result.Outcome is GitHubCliOutcome.TimedOut or GitHubCliOutcome.Oversized)
                 return Save(new(PullRequestReaderStatusKind.Failed, result.Outcome == GitHubCliOutcome.TimedOut ? "timeout" : "oversized"), []);
@@ -74,7 +74,7 @@ public sealed class GitHubCliReaderProvider(GitHubCliRunner cli, TimeProvider? t
         if (!Serves(repository.Provider, repository.Host) || !GitHubCliRunner.ValidOwner(repository.Owner)
             || !GitHubCliRunner.ValidRepo(repository.RepoName) || !GitHubCliRunner.ValidBranch(branch)) return [];
         var result = await cli.RunAsync(["pr", "list", "--repo", Repo(repository.Host, repository.Owner, repository.RepoName), "--head", branch,
-            "--state", "all", "--limit", "20", "--json", "number,title,url,headRefName,state,isDraft"], ct).ConfigureAwait(false);
+            "--state", "all", "--limit", "20", "--json", "number,title,url,headRefName,state,isDraft"], ct: ct).ConfigureAwait(false);
         return result.Outcome == GitHubCliOutcome.Ok ? GitHubCliMapping.Links(result.Stdout, repository) : [];
     }
 
@@ -140,7 +140,7 @@ public sealed class GitHubCliReaderProvider(GitHubCliRunner cli, TimeProvider? t
             string[] args = ["api", "graphql", "--hostname", subject.Host, "-f", "query=" + GitHubCliMapping.ThreadsQuery, "-f", "owner=" + subject.Owner,
                 "-f", "repo=" + subject.RepoName, "-F", "number=" + subject.Number.ToString(CultureInfo.InvariantCulture)];
             if (after is not null) args = [.. args, "-f", "after=" + after];
-            var result = await cli.RunAsync(args, ct).ConfigureAwait(false);
+            var result = await cli.RunAsync(args, ct: ct).ConfigureAwait(false);
             if (result.Outcome != GitHubCliOutcome.Ok) return GitHubCliMapping.Failure<PullRequestPageDto<PullRequestThreadDto>>(result, subject, Now);
             var page = GitHubCliMapping.Threads(result.Stdout);
             if (page is null) return Invalid<PullRequestPageDto<PullRequestThreadDto>>(subject);
@@ -175,7 +175,7 @@ public sealed class GitHubCliReaderProvider(GitHubCliRunner cli, TimeProvider? t
         if (entry is null || entry.Key != key) return new(PullRequestReadKind.Restart, Subject: subject, Reason: "snapshot_expired");
         string[] args = ["api", "graphql", "--hostname", subject.Host, "-f", "query=" + GitHubCliMapping.ThreadCommentsQuery, "-f", "id=" + threadId];
         if (entry.After is not null) args = [.. args, "-f", "after=" + entry.After];
-        var result = await cli.RunAsync(args, ct).ConfigureAwait(false);
+        var result = await cli.RunAsync(args, ct: ct).ConfigureAwait(false);
         if (result.Outcome != GitHubCliOutcome.Ok) return GitHubCliMapping.Failure<PullRequestPageDto<PullRequestCommentDto>>(result, subject, Now);
         var page = GitHubCliMapping.ThreadComments(result.Stdout);
         if (page is null) return Invalid<PullRequestPageDto<PullRequestCommentDto>>(subject);
@@ -210,7 +210,7 @@ public sealed class GitHubCliReaderProvider(GitHubCliRunner cli, TimeProvider? t
     async Task<(GitHubCliView?, GitHubCliResult)> FetchAsync(PullRequestSubjectDto subject, string key) {
         try {
             var result = await cli.RunAsync(["pr", "view", subject.Number.ToString(CultureInfo.InvariantCulture), "--repo", Repo(subject.Host, subject.Owner, subject.RepoName),
-                "--json", GitHubCliMapping.ViewFields], CancellationToken.None).ConfigureAwait(false);
+                "--json", GitHubCliMapping.ViewFields], GitHubCliRunner.ViewOutputLimit, CancellationToken.None).ConfigureAwait(false);
             var view = result.Outcome == GitHubCliOutcome.Ok ? GitHubCliMapping.View(result.Stdout, subject, Now) : null;
             if (view is not null) lock (_views) {
                 _recent[key] = (_time.GetTimestamp(), view);
