@@ -52,7 +52,9 @@ public static class GitHubCliMapping {
         if (document is null || !document.RootElement.IsObject) return null;
         var root = document.RootElement;
         var headSha = Text(root, "headRefOid");
-        var checks = Checks(root.Prop("statusCheckRollup"), headSha);
+        var rollup = root.Prop("statusCheckRollup");
+        var checksCapped = rollup is { } rollupArray && rollupArray.IsArray && rollupArray.GetArrayLength() >= ToolListLimit;
+        var checks = Checks(rollup, headSha);
         var reviewers = Reviewers(root.Prop("reviewRequests"), root.Prop("latestReviews"));
         var reviews = Reviews(root.Prop("reviews"), out var reviewsCapped);
         var comments = Comments(root.Prop("comments"), out var commentsCapped);
@@ -75,7 +77,7 @@ public static class GitHubCliMapping {
                 OutstandingTeams = Exact(requests.Count(request => Text(request, "__typename") == "Team")) },
             Conversation = new() { Availability = availability, Count = Count(comments.Length, commentsCapped) },
         };
-        return new(overview, headSha, fetchedAt, checks, reviewers, reviews, reviewsCapped, comments, commentsCapped);
+        return new(overview, headSha, fetchedAt, checks, checksCapped, reviewers, reviews, reviewsCapped, comments, commentsCapped);
     }
 
     static PullRequestCountDto Exact(int value) => new() { Kind = "exact", Value = value };

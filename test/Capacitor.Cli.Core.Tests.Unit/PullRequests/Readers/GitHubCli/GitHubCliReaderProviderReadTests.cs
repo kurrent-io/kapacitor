@@ -112,6 +112,18 @@ public class GitHubCliReaderProviderReadTests {
     }
 
     [Test]
+    public async Task A_rollup_at_the_tool_limit_reports_a_limited_checks_page() {
+        using var fixture = JsonDocument.Parse(GhHarness.Fixture("pr-view.json"));
+        var checks = Enumerable.Range(0, 100).Select(i => $$"""{"__typename":"CheckRun","completedAt":"2026-09-08T11:19:44Z","conclusion":"SUCCESS","detailsUrl":"https://github.com/example/repo/actions/runs/1/job/{{i}}","name":"check-{{i}}","startedAt":"2026-09-08T11:05:47Z","status":"COMPLETED","workflowName":"CI"}""");
+        var json = GhHarness.Fixture("pr-view.json").Replace(fixture.RootElement.GetProperty("statusCheckRollup").GetRawText(), "[" + string.Join(',', checks) + "]");
+        using var h = await Ready(Tmp, json);
+        var page = (await h.Provider.PageAsync<PullRequestCheckDto>("session", Subject, "checks", null, null, null, default)).Data!;
+        await Assert.That(page.Coverage).IsEqualTo("limited");
+        await Assert.That(page.CoverageReason).IsEqualTo("tool_limit");
+        await Assert.That(page.Total.Kind).IsEqualTo("lower_bound");
+    }
+
+    [Test]
     public async Task Oversized_bodies_are_cut_with_the_flag_set() {
         var json = GhHarness.Fixture("pr-view.json").Replace("\"body\":\"Adds the thing.\\n\\nCloses #1\"", "\"body\":\"" + new string('x', 262_145) + "\"");
         using var h = await Ready(Tmp, json);
