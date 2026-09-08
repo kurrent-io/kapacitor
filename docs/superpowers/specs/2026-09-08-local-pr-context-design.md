@@ -50,8 +50,8 @@ existing notice slot carries a note about the local prerequisite:
 | State | Note | Actions |
 | --- | --- | --- |
 | `gh` not found | Install GitHub CLI to read pull requests here. | **Install GitHub CLI** opens `https://cli.github.com` through `LinkPolicy`; **Recheck** re-probes. |
-| `gh` found, no signed-in host | Sign in to GitHub CLI to read pull requests here: run `gh auth login`. | **Recheck** |
-| `gh` signed in, but not to the selected PR's host | Sign in to GitHub CLI for `<host>`: run `gh auth login --hostname <host>`. | **Recheck** |
+| `gh` found, no signed-in host | GitHub CLI is not signed in. Run `gh auth login` to read pull requests here. | **Recheck** |
+| `gh` signed in, but not to the selected PR's host | GitHub CLI is not signed in for `<host>`. Run `gh auth login --hostname <host>` to read it here. | **Recheck** |
 
 The note shows regardless of whether a PR is linked, so the prerequisite is
 learned before the first PR arrives. It is suppressed when another ready provider
