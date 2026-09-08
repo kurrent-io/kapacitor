@@ -5,15 +5,11 @@ using Microsoft.Extensions.Logging;
 namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 
 /// <summary>
-/// The vendor-neutral stop path's own diagnostics. <c>StopAgentCoreAsync</c> stops EVERY hosted
-/// vendor, so its graceful-exit-timeout warning must name the vendor that actually failed to exit —
-/// it used to say "claude" unconditionally, which mislabelled a Cursor (or Codex, or Copilot)
-/// reviewer in the one log line an operator reads to work out which reviewer wedged.
-///
-/// Uses <see cref="AgentOrchestratorHarness"/> for its orchestrator builder,
-/// server-connection capture, and no-op runtime double.
+/// Graceful-exit timeout diagnostics identify the vendor that failed to exit.
 /// </summary>
 public class AgentOrchestratorStopDiagnosticsTests {
+    [TempDir] public required TempDir Worktree { get; init; }
+
     sealed class CapturingOrchestratorLogger : ILogger<AgentOrchestrator> {
         public List<string> Messages { get; } = [];
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
@@ -38,9 +34,9 @@ public class AgentOrchestratorStopDiagnosticsTests {
         // from WaitForExitAsync immediately — i.e. exactly the "graceful window elapsed without the
         // CLI exiting" state, with no real 15s wait.
         orch.RegisterAgentForTest(new AgentInstance(
-            $"agent-{vendor}", null, "", null, "/tmp", vendor,
+            $"agent-{vendor}", null, "", null, Worktree.Path, vendor,
             new FakeHostedAgentRuntime(vendor, emitsTerminalOutput: false),
-            new WorktreeInfo("/tmp", "", "/tmp", IsStandalone: true), new CancellationTokenSource()));
+            new WorktreeInfo(Worktree.Path, "", Worktree.Path, IsStandalone: true), new CancellationTokenSource()));
 
         await orch.HandleStopAgent($"agent-{vendor}");
 
@@ -53,16 +49,15 @@ public class AgentOrchestratorStopDiagnosticsTests {
 
     [Test]
     public async Task Graceful_exit_timeout_warning_still_names_claude_for_a_claude_agent() {
-        // Guard against "fixing" the hardcoded name by removing the vendor from the message.
         var log = new CapturingOrchestratorLogger();
         await using var orch = AgentOrchestratorHarness.BuildOrchestrator(
             new CaptureServerConnection(), new SpyPtyProcessFactory(),
             new Dictionary<string, IHostedAgentLauncher>(), logger: log);
 
         orch.RegisterAgentForTest(new AgentInstance(
-            "agent-claude", null, "", null, "/tmp", "claude",
+            "agent-claude", null, "", null, Worktree.Path, "claude",
             new FakeHostedAgentRuntime("claude", emitsTerminalOutput: false),
-            new WorktreeInfo("/tmp", "", "/tmp", IsStandalone: true), new CancellationTokenSource()));
+            new WorktreeInfo(Worktree.Path, "", Worktree.Path, IsStandalone: true), new CancellationTokenSource()));
 
         await orch.HandleStopAgent("agent-claude");
 
