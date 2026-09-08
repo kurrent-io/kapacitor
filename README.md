@@ -38,7 +38,7 @@
 - **A Capacitor server URL** from your admin (e.g. `https://my-tenant.kcap.ai`), or sign in and let `kcap setup` discover/create your tenant.
 - **Node.js + npm** to install the CLI globally (`npm install -g @kurrent/kcap`). The binary itself is a self-contained NativeAOT executable with no runtime dependency.
 - **At least one supported coding agent** so there's something to record — Claude Code or Codex CLI on `PATH` at minimum (Cursor, Copilot, Gemini, Kiro, Pi, OpenCode, and Antigravity are detected too).
-- **GitHub CLI (`gh`), optional** — the desktop app reads a linked pull request (description, checks, reviews, inline threads, conversation) through your own `gh` sign-in when it is installed and signed in, including GitHub Enterprise hosts. Without it the card says what to install; a tenant with the server-side GitHub App enabled reads without it.
+- **GitHub CLI (`gh`), optional** — the desktop app reads a linked pull request (description, checks, reviews, inline threads, conversation) through your own `gh` sign-in when a `gh` recent enough for `gh auth status --json` is installed and signed in, including GitHub Enterprise hosts. Without it the card says what to install; a tenant with the server-side GitHub App enabled reads without it.
 - **A supported platform:**
 
   | Platform | Architecture |

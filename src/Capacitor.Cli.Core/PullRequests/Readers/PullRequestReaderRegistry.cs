@@ -77,13 +77,16 @@ public sealed class PullRequestReaderRegistry(IPullRequestSource sessionLinks, I
         for (var i = 0; i < providers.Count; i++) {
             var reader = providers[i];
             if (reader.ProviderKind != provider || reader.Tool is not { } tool) continue;
-            var text = statuses[i].Kind switch {
+            var status = statuses[i];
+            var text = status.Kind switch {
                 PullRequestReaderStatusKind.ToolMissing => $"Install {tool.Name} to read pull requests here.",
                 PullRequestReaderStatusKind.SignedOut => $"{tool.Name} is not signed in. Run {tool.SignInCommand(null)} to read pull requests here.",
                 PullRequestReaderStatusKind.Ready => $"{tool.Name} is not signed in for {host}. Run {tool.SignInCommand(host)} to read it here.",
+                PullRequestReaderStatusKind.Failed when status.Reason == "unsupported_version" => $"Update {tool.Name} to read pull requests here.",
                 _ => null
             };
-            if (text is not null) return new(text, statuses[i].Kind == PullRequestReaderStatusKind.ToolMissing ? tool.InstallUrl : null, tool.Name);
+            var showInstall = status.Kind == PullRequestReaderStatusKind.ToolMissing || status.Reason == "unsupported_version";
+            if (text is not null) return new(text, showInstall ? tool.InstallUrl : null, tool.Name);
         }
         return null;
     }

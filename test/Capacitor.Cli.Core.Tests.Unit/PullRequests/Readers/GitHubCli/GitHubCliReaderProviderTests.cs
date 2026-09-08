@@ -47,6 +47,16 @@ public class GitHubCliReaderProviderTests {
     }
 
     [Test]
+    public async Task An_older_gh_without_auth_status_json_probes_as_unsupported() {
+        var h = new GhHarness(Tmp);
+        h.Process.When(["auth", "status"], "", exitCode: 1, stderr: "unknown flag: --json");
+        var status = await h.Provider.ProbeAsync(false, default);
+        await Assert.That(status.Kind).IsEqualTo(PullRequestReaderStatusKind.Failed);
+        await Assert.That(status.Reason).IsEqualTo("unsupported_version");
+        await Assert.That(h.Provider.Serves("github", "github.com")).IsFalse();
+    }
+
+    [Test]
     public async Task A_probe_that_cannot_run_backs_off_instead_of_caching_absence() {
         var h = new GhHarness(Tmp);
         h.Process.When(["auth", "status"], "", timedOut: true);

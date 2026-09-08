@@ -30,6 +30,8 @@ public sealed class GitHubCliReaderProvider(GitHubCliRunner cli, TimeProvider? t
             if (result.Outcome == GitHubCliOutcome.NotStarted) return Save(new(PullRequestReaderStatusKind.ToolMissing), []);
             if (result.Outcome is GitHubCliOutcome.TimedOut or GitHubCliOutcome.Oversized)
                 return Save(new(PullRequestReaderStatusKind.Failed, result.Outcome == GitHubCliOutcome.TimedOut ? "timeout" : "oversized"), []);
+            if (result.Outcome == GitHubCliOutcome.Failed && result.Stderr.Contains("unknown flag", StringComparison.OrdinalIgnoreCase))
+                return Save(new(PullRequestReaderStatusKind.Failed, "unsupported_version"), []);
             var hosts = GitHubCliMapping.SignedInHosts(result.Stdout);
             if (hosts is null) return Save(result.Outcome == GitHubCliOutcome.Failed ? new(PullRequestReaderStatusKind.SignedOut) : new(PullRequestReaderStatusKind.Failed, "malformed"), []);
             return Save(hosts.Count == 0 ? new(PullRequestReaderStatusKind.SignedOut) : new(PullRequestReaderStatusKind.Ready), hosts);

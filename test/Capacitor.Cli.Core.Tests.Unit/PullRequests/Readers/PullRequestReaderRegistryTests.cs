@@ -108,6 +108,16 @@ public class PullRequestReaderRegistryTests {
         await Assert.That(registry.NoteFor("gitlab", "gitlab.com")).IsNull();
     }
 
+    [Test]
+    public async Task An_unsupported_gh_version_note_tells_the_user_to_update_it() {
+        var gh = new StubProvider("gh", ready: false, hosts: [], status: PullRequestReaderStatusKind.Failed) { Reason = "unsupported_version" };
+        var registry = new PullRequestReaderRegistry(new StubLinks(), [gh]);
+        await registry.DiscoverAsync(false, default);
+        var note = registry.NoteFor("github", "github.com")!;
+        await Assert.That(note.Text).IsEqualTo("Update GitHub CLI to read pull requests here.");
+        await Assert.That(note.InstallUrl).IsEqualTo("https://cli.github.com");
+    }
+
     internal sealed class StubLinks : IPullRequestSource {
         public PullRequestCapability Capability = new(PullRequestCapabilityKind.Supported, 1);
         public PullRequestLinkDto[] Links = [];
@@ -127,6 +137,7 @@ public class PullRequestReaderRegistryTests {
         public bool Ready = ready;
         public string[] Hosts = hosts;
         public PullRequestReaderStatusKind Status = status;
+        public string? Reason;
         public int Overviews, DiscoverCalls;
         public PullRequestLinkDto[] Discovered = [];
         public string Name => name;
@@ -135,7 +146,7 @@ public class PullRequestReaderRegistryTests {
             ? new("GitHub CLI", "https://cli.github.com", host => host is null ? "gh auth login" : "gh auth login --hostname " + host)
             : new("GitLab CLI", "https://gitlab.com/gitlab-org/cli", host => host is null ? "glab auth login" : "glab auth login --hostname " + host);
         public Task<PullRequestReaderStatus> ProbeAsync(bool refresh, CancellationToken ct)
-            => Task.FromResult(new PullRequestReaderStatus(Ready ? PullRequestReaderStatusKind.Ready : Status));
+            => Task.FromResult(new PullRequestReaderStatus(Ready ? PullRequestReaderStatusKind.Ready : Status, Ready ? null : Reason));
         public bool Serves(string provider, string host) => Ready && provider == kind && Hosts.Contains(host);
         public PullRequestSubjectDto? ParseLink(string? url) {
             if (url is null || !Uri.TryCreate(url, UriKind.Absolute, out var uri) || !Hosts.Contains(uri.Host)) return null;
