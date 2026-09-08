@@ -26,12 +26,12 @@
     <PackageVersion Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.5" />
     <PackageVersion Include="NSubstitute" Version="6.2.0" />
     <PackageVersion Include="ReactiveUI.Avalonia.Reactive" Version="12.1.2" />
-    <PackageVersion Include="Spectre.Console" Version="0.55.2" />
-    <PackageVersion Include="SvcSystems.UI.Terminal" Version="1.1.2" />
+    <PackageVersion Include="Spectre.Console" Version="0.57.2" />
+    <PackageVersion Include="SvcSystems.UI.Terminal" Version="1.1.4" />
     <PackageVersion Include="Tomlyn" Version="2.10.1" />
     <PackageVersion Include="TUnit" Version="1.66.27" />
     <PackageVersion Include="TUnit.Core" Version="1.66.27" />
     <PackageVersion Include="WireMock.Net" Version="2.15.0" />
-    <PackageVersion Include="XTerm.NET" Version="1.1.0" />
+    <PackageVersion Include="XTerm.NET" Version="1.2.0" />
   </ItemGroup>
 </Project>
