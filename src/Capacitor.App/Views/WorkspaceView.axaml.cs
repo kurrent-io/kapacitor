@@ -5,7 +5,7 @@ using Avalonia.Data.Converters;
 using Avalonia.Threading;
 using Capacitor.App.Services;
 using Capacitor.App.ViewModels;
-using ReactiveUI;
+using ReactiveUI.Reactive;
 
 namespace Capacitor.App.Views;
 

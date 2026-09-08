@@ -5,7 +5,7 @@ using System.Reactive.Linq;
 using Avalonia.Media;
 using Capacitor.App.Services;
 using Capacitor.Cli.Core.LocalIpc;
-using ReactiveUI;
+using ReactiveUI.Reactive;
 
 namespace Capacitor.App.ViewModels;
 

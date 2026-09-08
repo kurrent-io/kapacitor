@@ -4,7 +4,7 @@ using Avalonia.Threading;
 using Capacitor.App.Services;
 using Capacitor.App.ViewModels;
 using Microsoft.Extensions.Time.Testing;
-using ReactiveUI;
+using ReactiveUI.Reactive;
 using TUnit.Assertions.Enums;
 using static Capacitor.App.Tests.Unit.ConsentEntries;
 

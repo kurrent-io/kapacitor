@@ -42,43 +42,44 @@ public class MainWindowSmokeTests {
     [Test]
     [NotInParallel("AvaloniaSession")]
     public async Task MainWindow_renders_the_connection_word_and_tenant_not_the_identity_block() {
-        await AvaloniaSession.WithImmediateRxScheduler(async () => {
-            var rendered = await AvaloniaSession.DispatchAsync(() => {
-                var service = new FakeDaemonClientService();
-                service.SnapshotsSubject.OnNext(Snap(
-                    daemon: "daemon-a", version: "1.2.3", serverUrl: "http://localhost:9999",
-                    connection: "connected", active: 1, max: 5));
-                service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, null));
+        // Rendered text, so no immediate scheduler: an OAPH delivered immediately notifies
+        // before its value is readable, and a binding that reads on the notification keeps the
+        // stale one. The dispatcher scheduler sets the value first, as it does in the app.
+        var rendered = await AvaloniaSession.DispatchAsync(() => {
+            var service = new FakeDaemonClientService();
+            service.SnapshotsSubject.OnNext(Snap(
+                daemon: "daemon-a", version: "1.2.3", serverUrl: "http://localhost:9999",
+                connection: "connected", active: 1, max: 5));
+            service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, null));
 
-                var (actions, _) = NewActions(service);
-                var vm = new MainWindowViewModel(service, CancellationToken.None, TestActivity.New(),
-                    tenantName: "kurrent");
-                var window = new MainWindow { DataContext = vm };
-                window.Show();
-                // Control.Loaded is POSTED at DispatcherPriority.Loaded (Avalonia defers it, it
-                // never fires synchronously from Show()) — pump the dispatcher so it actually
-                // runs before reading bound text. This is what drives ReactiveWindow<T>'s
-                // built-in Loaded->ViewModel.Activator.Activate() wiring.
-                Dispatcher.UIThread.RunJobs();
+            var (actions, _) = NewActions(service);
+            var vm = new MainWindowViewModel(service, CancellationToken.None, TestActivity.New(),
+                tenantName: "kurrent");
+            var window = new MainWindow { DataContext = vm };
+            window.Show();
+            // Control.Loaded is POSTED at DispatcherPriority.Loaded (Avalonia defers it, it
+            // never fires synchronously from Show()) — pump the dispatcher so it actually
+            // runs before reading bound text. This is what drives ReactiveWindow<T>'s
+            // built-in Loaded->ViewModel.Activator.Activate() wiring.
+            Dispatcher.UIThread.RunJobs();
 
-                var texts = string.Join('\n', window.GetVisualDescendants()
-                    .OfType<TextBlock>()
-                    .Select(t => t.Text ?? ""));
+            var texts = string.Join('\n', window.GetVisualDescendants()
+                .OfType<TextBlock>()
+                .Select(t => t.Text ?? ""));
 
-                window.Close();
-                Dispatcher.UIThread.RunJobs(); // flush the deferred Unloaded post so the VM's WhenActivated-scoped subscriptions actually get disposed before the next test runs
+            window.Close();
+            Dispatcher.UIThread.RunJobs(); // flush the deferred Unloaded post so the VM's WhenActivated-scoped subscriptions actually get disposed before the next test runs
 
-                return texts;
-            });
-
-            // The rail footer is the one daemon indicator: word + tenant on screen, the identity
-            // block (name/version/URL) demoted to its hover tooltip — rendered text must NOT
-            // carry it.
-            await Assert.That(rendered).Contains("Connected");
-            await Assert.That(rendered).Contains("kurrent");
-            await Assert.That(rendered).DoesNotContain("daemon-a");
-            await Assert.That(rendered).DoesNotContain("http://localhost:9999");
+            return texts;
         });
+
+        // The rail footer is the one daemon indicator: word + tenant on screen, the identity
+        // block (name/version/URL) demoted to its hover tooltip — rendered text must NOT
+        // carry it.
+        await Assert.That(rendered).Contains("Connected");
+        await Assert.That(rendered).Contains("kurrent");
+        await Assert.That(rendered).DoesNotContain("daemon-a");
+        await Assert.That(rendered).DoesNotContain("http://localhost:9999");
     }
 
     /// Regression coverage for a Critical bug found in review: canStart/canRetry were built

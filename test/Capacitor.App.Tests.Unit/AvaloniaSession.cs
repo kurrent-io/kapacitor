@@ -1,7 +1,10 @@
 using Avalonia;
 using Avalonia.Headless;
-using ReactiveUI;
-using ReactiveUI.Avalonia;
+using Avalonia.Threading;
+using ReactiveUI.Primitives.Reactive.Concurrency;
+using ReactiveUI.Reactive;
+using ReactiveUI.Reactive.Builder;
+using ReactiveUI.Avalonia.Reactive;
 using System.Reactive.Concurrency;
 
 namespace Capacitor.App.Tests.Unit;
@@ -18,31 +21,36 @@ internal static class AvaloniaSession {
     }
 
     static readonly Lazy<HeadlessUnitTestSession> Session =
-        new(() => {
-            var session = HeadlessUnitTestSession.StartNew(typeof(TestAppBuilder));
-            // Defensive, decompiler-verified: ReactiveUI.Avalonia's UseReactiveUI() only applies
-            // WithAvalonia()'s AvaloniaScheduler wiring by calling ReactiveUIBuilder.BuildApp()
-            // when Avalonia.AppBuilder.HasBeenBuilt is still false at that point in the pipeline
-            // — and in this headless test process that flag can already be true (MTP/Avalonia
-            // test infra builds its own AppBuilder earlier), silently skipping the wiring. When
-            // that happens RxSchedulers.MainThreadScheduler is left at ReactiveUI's own default
-            // (System.Reactive.Concurrency.DefaultScheduler — a background/thread-pool
-            // scheduler), NOT the real Avalonia dispatcher, and every ObserveOn(RxSchedulers.
-            // MainThreadScheduler) call in the app would silently deliver off the UI thread —
-            // reproduced directly: constructing a MainWindowViewModel/MainWindow and publishing
-            // a Status transition crashed with Avalonia's VerifyAccess() thread-affinity check,
-            // from a System.Reactive DefaultScheduler.LongRunning worker thread. Set it
-            // explicitly here so the baseline scheduler outside WithImmediateRxScheduler is
-            // ALWAYS the real one, regardless of what UseReactiveUI's internal gating decided.
-            RxSchedulers.MainThreadScheduler = AvaloniaScheduler.Instance;
-            return session;
-        });
+        new(static () => HeadlessUnitTestSession.StartNew(typeof(TestAppBuilder)),
+            LazyThreadSafetyMode.ExecutionAndPublication);
+
+    /// ReactiveUI's builder state is process-global and effectively one-shot: whatever ran first
+    /// keeps its registrations, so every later test inherits an Avalonia scheduler bound to a
+    /// dispatcher nothing pumps — no ObserveOn(RxSchedulers.MainThreadScheduler) ever delivers and
+    /// the failure reads as a dead pipeline rather than a scheduler. Rebuilding on the UI thread
+    /// per dispatch is what ReactiveUI.Avalonia's own headless harness does; assigning
+    /// MainThreadScheduler by hand instead loses to the builder.
+    static void RebuildReactiveUI() {
+        ReactiveUIBuilder.ResetBuilderStateForTests();
+        RxAppBuilder.CreateReactiveUIBuilder().WithAvalonia().WithCoreServices().BuildApp();
+        // WithAvalonia registers AvaloniaScheduler.Instance, a static whose Dispatcher is captured
+        // at type init — under a headless session that is not Dispatcher.UIThread, and rebuilding
+        // cannot change it. Left alone, every ObserveOn(RxSchedulers.MainThreadScheduler) posts to
+        // a dispatcher nothing pumps: no value is delivered and it reads as a dead pipeline.
+        RxSchedulers.MainThreadScheduler = _immediatePinned
+            ? ImmediateScheduler.Instance
+            : new AvaloniaScheduler(Dispatcher.UIThread);
+    }
+
+    /// A rebuild happens on every dispatch, so WithImmediateRxScheduler's swap has to survive one
+    /// whichever way the two are nested.
+    static bool _immediatePinned;
 
     public static Task<T> DispatchAsync<T>(Func<T> body) =>
-        Session.Value.Dispatch(body, CancellationToken.None);
+        Session.Value.Dispatch(() => { RebuildReactiveUI(); return body(); }, CancellationToken.None);
 
     public static Task DispatchAsync(Action body) =>
-        Session.Value.Dispatch(() => { body(); return true; }, CancellationToken.None);
+        Session.Value.Dispatch(() => { RebuildReactiveUI(); body(); return true; }, CancellationToken.None);
 
     /// Async-body variant: HeadlessUnitTestSession.Dispatch's Func&lt;Task&lt;T&gt;&gt; overload
     /// runs `body` on the UI thread and, if it doesn't complete synchronously, pumps a
@@ -51,7 +59,7 @@ internal static class AvaloniaSession {
     /// its continuation back onto this same pumped loop instead of deadlocking, unlike a raw
     /// `.GetAwaiter().GetResult()` block on the UI thread.
     public static Task<T> DispatchAsync<T>(Func<Task<T>> body) =>
-        Session.Value.Dispatch(body, CancellationToken.None);
+        Session.Value.Dispatch(() => { RebuildReactiveUI(); return body(); }, CancellationToken.None);
 
     /// Pins RxSchedulers.MainThreadScheduler to an immediate System.Reactive IScheduler for
     /// the body and RESTORES the prior scheduler in finally (it is process-global). This is
@@ -60,18 +68,18 @@ internal static class AvaloniaSession {
     /// moved the ambient scheduler off the classic static `RxApp` type onto `RxSchedulers`;
     /// `RxApp` scheduler properties no longer exist in this ReactiveUI line.)
     public static async Task WithImmediateRxScheduler(Func<Task> body) {
-        // Force the (lazy, process-wide) session to actually start BEFORE snapshotting "prior" —
-        // the Session factory above is what pins RxSchedulers.MainThreadScheduler to the real
-        // AvaloniaScheduler. If this were the FIRST scheduler-touching call in the whole test
-        // run, capturing "prior" before that pin would snapshot whatever System.Reactive's
-        // unconfigured default is instead, and the `finally` below would then "restore" the
-        // global to that wrong value forever — corrupting every later test that assumes the
-        // real dispatcher scheduler is live outside this method.
+        // Start the process-wide session before snapshotting "prior": outside a dispatch nothing
+        // has configured MainThreadScheduler yet, and the finally below would restore that
+        // unconfigured default over the real one for every later test.
         _ = Session.Value;
 
         IScheduler prior = RxSchedulers.MainThreadScheduler;
+        _immediatePinned = true;
         RxSchedulers.MainThreadScheduler = ImmediateScheduler.Instance;
-        try { await body(); } finally { RxSchedulers.MainThreadScheduler = prior; }
+        try { await body(); } finally {
+            _immediatePinned = false;
+            RxSchedulers.MainThreadScheduler = prior;
+        }
     }
 
     /// The standard wrapper for tests that need BOTH pieces at once: WithImmediateRxScheduler

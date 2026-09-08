@@ -22,6 +22,9 @@ public class ChatComposerTests {
         var chat = new ChatTabViewModel("a1", daemon, terminal, TranscriptChat.For("claude"), opener, time, new FakePermissionService());
         daemon.SnapshotsSubject.OnNext(FakeDaemonClientService.Snap(supportedVendors: ["claude", "codex"]));
         daemon.Agents.AddOrUpdate(Agent("a1", "claude", hasTerminal: true, repoPath: "/repo", model: "claude-opus-5") with { Status = "Running" });
+        // The Avalonia scheduler always posts, even when the caller is already on the UI thread,
+        // so the resolve does not start until the dispatcher runs.
+        Dispatcher.UIThread.RunJobs();
         await (terminal.PendingResolveWorkForTesting ?? Task.CompletedTask);
         var client = factory.Created.Single();
         await client.TriggerAttached([]);

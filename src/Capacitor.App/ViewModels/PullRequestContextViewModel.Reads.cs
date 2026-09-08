@@ -1,5 +1,5 @@
 using Capacitor.Cli.Core.PullRequests;
-using ReactiveUI;
+using ReactiveUI.Reactive;
 
 namespace Capacitor.App.ViewModels;
 

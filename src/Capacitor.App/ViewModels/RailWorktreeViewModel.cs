@@ -7,7 +7,7 @@ using System.Reactive.Linq;
 using Capacitor.App.Services;
 using DynamicData;
 using DynamicData.Binding;
-using ReactiveUI;
+using ReactiveUI.Reactive;
 
 namespace Capacitor.App.ViewModels;
 
