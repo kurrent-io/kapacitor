@@ -620,17 +620,19 @@ static class SessionImporter {
         var       first   = batch.FirstLineNumber;
         var       last    = batch.LastLineNumber;
         string?   loss;
+        Exception? cause  = null;
 
         try {
             using var resp = await httpClient.PostWithRetryAsync($"{baseUrl}/hooks/transcript", content);
 
             loss = resp.IsSuccessStatusCode ? null : $"HTTP {(int)resp.StatusCode}";
-        } catch (HttpRequestException ex) when (!failOnError) {
-            loss = ex.Message;
+        } catch (HttpRequestException ex) {
+            loss  = ex.Message;
+            cause = ex;
         }
 
         if (loss is not null) {
-            if (failOnError) throw new HttpRequestException($"transcript batch lines {first}-{last} rejected: {loss}");
+            if (failOnError) throw new HttpRequestException($"transcript batch lines {first}-{last} failed: {loss}", cause);
 
             progress?.Report(new BatchDropped(sessionId, agentId, first, last, loss));
         }
