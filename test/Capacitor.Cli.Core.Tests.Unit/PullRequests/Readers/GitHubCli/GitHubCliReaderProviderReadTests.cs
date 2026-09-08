@@ -143,6 +143,16 @@ public class GitHubCliReaderProviderReadTests {
     }
 
     [Test]
+    public async Task A_synchronously_completed_fetch_does_not_pin_the_subject_after_the_reuse_window() {
+        using var h = await Ready(Tmp);
+        await h.Provider.OverviewAsync("session", Subject, default);
+        h.Time.Advance(TimeSpan.FromSeconds(11));
+        h.Process.When(["pr", "view"], GhHarness.Fixture("pr-view.json"));
+        await h.Provider.OverviewAsync("session", Subject, default);
+        await Assert.That(h.Process.Calls.Count(call => call.Args[0] == "pr")).IsEqualTo(2);
+    }
+
+    [Test]
     public async Task A_cancelled_caller_returns_promptly_while_the_shared_spawn_finishes_for_its_peers() {
         using var h = new GhHarness(Tmp); h.SignedIn("github.com");
         var pending = new TaskCompletionSource<ProcessResult>();

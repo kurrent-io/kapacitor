@@ -127,7 +127,12 @@ public sealed class GitHubCliReaderProvider(GitHubCliRunner cli, TimeProvider? t
         lock (_views) {
             if (_recent.TryGetValue(key, out var recent) && _time.GetElapsedTime(recent.At) < TimeSpan.FromSeconds(10))
                 return Task.FromResult<(GitHubCliView?, GitHubCliResult)>((recent.View, new(GitHubCliOutcome.Ok, 0, "", "")));
-            if (!_inflight.TryGetValue(key, out task!)) { task = FetchAsync(subject, key); _inflight[key] = task; }
+            if (!_inflight.TryGetValue(key, out task!)) {
+                task = FetchAsync(subject, key);
+                // A synchronously-completed fetch has already run its own removal (see FetchAsync's finally)
+                // before this line: inserting it now would stick forever, since nothing runs the finally twice.
+                if (!task.IsCompleted) _inflight[key] = task;
+            }
         }
         return task.WaitAsync(ct);
     }
