@@ -6,6 +6,26 @@ diff. `CLAUDE.md` holds the invariants; `docs/superpowers/specs/` holds the full
 Not release notes. Each entry is written as of the change that produced it and is not revised as the
 code moves on; where an entry disagrees with the code, the code wins.
 
+## Read pull requests through the local GitHub CLI
+
+The desktop reads a linked pull request through the user's own `gh` when it is
+installed and signed in, and falls back to the server route otherwise. Reading
+sits behind a registry of reader providers, each declaring the provider kind and
+hosts it serves; a read routes to the first ready provider for that PR's host,
+local CLI providers before the server. Session links stay a server concern.
+
+The user's own sign-in is the authorization, so there is no linked-user gate and
+the access window is a constant 30 seconds that keeps the existing masking and
+renewal logic unchanged. `gh` is spawned with an argument array, a fixed
+environment overlay, a 20-second deadline and a 4 MiB output cap, and every
+identifier is validated before a spawn. Snapshot ids and cursors are minted
+locally; whole sections page in fifties over a frozen array, threads page over
+the GraphQL connection and restart on a head change.
+
+The PR card carries a provider-generic note naming what to install or sign in
+to. A GitLab provider is one new type plus one registration line. See the
+[design](superpowers/specs/2026-09-08-local-pr-context-design.md).
+
 ## Read a linked pull request inside the workspace
 
 The work-context pane now has a compact PR card and a wide native reader beside
