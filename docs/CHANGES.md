@@ -6,6 +6,20 @@ diff. `CLAUDE.md` holds the invariants; `docs/superpowers/specs/` holds the full
 Not release notes. Each entry is written as of the change that produced it and is not revised as the
 code moves on; where an entry disagrees with the code, the code wins.
 
+## An import batch closes on bytes as well as lines
+
+**#814** closes a transcript batch at 4 MiB of line content as well as at 100 lines, and reports
+what an import leaves behind. A Codex rollout's `compacted` line re-carries every earlier user
+message, so a hundred of them could exceed the 30 MB body Kestrel binds by default; the server
+answered 413 and the importer, which read the status only for a strict caller, counted the batch as
+sent. The budget is measured on raw UTF-8 bytes and sits a third of the limit under the worst JSON
+escaping expansion, so it holds whatever a line contains. A single line over the budget cannot be
+split and is skipped rather than posted in a batch that would be refused. Both the skip and a
+refused batch travel on the import progress channel as warnings carrying their session id: a routed
+source shares one sink across the run, and a stderr line written under the live progress region is
+erased by its next frame. The lines of a dropped batch still count as sent; the figure is what was
+posted, and the warning above it is the record of what was not kept.
+
 ## Read a linked pull request inside the workspace
 
 The work-context pane now has a compact PR card and a wide native reader beside

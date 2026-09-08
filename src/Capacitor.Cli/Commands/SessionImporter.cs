@@ -78,9 +78,7 @@ static class SessionImporter {
 
         // Read the main transcript line by line, batching and flushing as needed,
         // with agent lifecycle events inserted at the right positions.
-        var       batchLines       = new List<string>();
-        var       batchLineNumbers = new List<int>();
-        const int batchSize        = 100;
+        var batch = new TranscriptBatchBuffer();
 
         await using var stream = new FileStream(transcriptPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
         using var       reader = new StreamReader(stream);
@@ -93,14 +91,7 @@ static class SessionImporter {
             foreach (var (agentId, firstLine) in agentFirstLine) {
                 if (firstLine == lineIndex && !sentAgents.Contains(agentId) && agentMap.TryGetValue(agentId, out var agentPath)) {
                     // Flush the current batch before inserting agent lifecycle
-                    if (batchLines.Count > 0) {
-                        await PostTranscriptBatch(httpClient, baseUrl, sessionId, agentId: null, batchLines, batchLineNumbers, vendor);
-                        var flushed = batchLines.Count;
-                        totalSent += flushed;
-                        progress?.Report(new BatchFlushed(AgentId: null, flushed));
-                        batchLines.Clear();
-                        batchLineNumbers.Clear();
-                    }
+                    if (!batch.IsEmpty) await FlushAsync();
 
                     // Send agent lifecycle: start → transcript → stop
                     agentTypes.TryGetValue(agentId, out var agentType);
@@ -111,29 +102,24 @@ static class SessionImporter {
             }
 
             if (!string.IsNullOrWhiteSpace(line)) {
-                batchLines.Add(line);
-                batchLineNumbers.Add(lineIndex);
+                var bytes = TranscriptBatchBuffer.SizeOf(line);
+
+                if (bytes > TranscriptBatchBuffer.MaxBytes) {
+                    progress?.Report(new LineSkipped(sessionId, AgentId: null, lineIndex, bytes));
+                } else {
+                    if (!batch.Fits(bytes)) await FlushAsync();
+
+                    batch.Add(line, lineIndex, bytes);
+
+                    if (batch.IsFull) await FlushAsync();
+                }
             }
 
             lineIndex++;
-
-            if (batchLines.Count >= batchSize) {
-                await PostTranscriptBatch(httpClient, baseUrl, sessionId, agentId: null, batchLines, batchLineNumbers, vendor);
-                var flushed = batchLines.Count;
-                totalSent += flushed;
-                progress?.Report(new BatchFlushed(AgentId: null, flushed));
-                batchLines.Clear();
-                batchLineNumbers.Clear();
-            }
         }
 
         // Flush remaining main transcript lines
-        if (batchLines.Count > 0) {
-            await PostTranscriptBatch(httpClient, baseUrl, sessionId, agentId: null, batchLines, batchLineNumbers, vendor);
-            var flushed = batchLines.Count;
-            totalSent += flushed;
-            progress?.Report(new BatchFlushed(AgentId: null, flushed));
-        }
+        if (!batch.IsEmpty) await FlushAsync();
 
         // Send any agents that had transcript files but NO progress marker in the
         // main session (e.g., compact agents like acompact-*) as a fallback at the end.
@@ -188,6 +174,9 @@ static class SessionImporter {
         }
 
         return new ImportResult(sessionId, agentIds, totalSent);
+
+        async Task FlushAsync() =>
+            totalSent += await FlushBatchAsync(httpClient, baseUrl, sessionId, agentId: null, batch, vendor, failOnError: false, progress);
     }
 
     /// <summary>POSTs one subagent lifecycle hook; false on any failure so the caller can
@@ -512,28 +501,24 @@ static class SessionImporter {
     }
 
     /// <summary>
-    /// Send transcript lines in batches of 100 for a given file (main or agent).
+    /// Send a file's transcript lines (main or agent) in batches; <see cref="TranscriptBatchBuffer"/>
+    /// says when one closes. A line over the byte budget cannot be split, so it is reported as a
+    /// <see cref="LineSkipped"/> and left out rather than posted in a batch the server would refuse.
     /// </summary>
     /// <param name="vendor">
     /// Stamped on the outgoing <see cref="TranscriptBatch"/> so the server picks the matching
     /// normalizer.
     /// </param>
+    /// <param name="failOnError">
+    /// A refused or undeliverable batch throws instead of being reported as a <see cref="BatchDropped"/>
+    /// and passed over.
+    /// </param>
     /// <param name="abortDelivery">
-    /// checked immediately BEFORE
-    /// every batch POST (including the very first) AND immediately AFTER it. When it returns true,
-    /// delivery aborts by throwing <see cref="TranscriptDeliveryAbortedException"/> — a pre-POST trip
-    /// skips the pending batch entirely; a post-POST trip has already sent that batch but stops
-    /// before any further one. No remaining batches (or, for the Cursor caller, the child
-    /// lifecycle/transcript POSTs that follow this call) are ever sent past a trip either way.
-    /// Cursor's live rewrite guard can quarantine a session AFTER this method's caller last checked
-    /// (its own check only runs once, before the first byte of this multi-batch send), and without a
-    /// check re-run inside the loop every remaining 100-line batch would still be posted. The
-    /// post-POST check specifically closes the window a pre-POST-only check leaves open when a
-    /// marker appears WHILE a batch is in flight and there is no NEXT batch to gate — e.g. a
-    /// transcript of &lt;=100 lines (a single, final batch) — where the method would otherwise return
-    /// normally with the caller none the wiser. The predicate should be cheap (a marker-file check,
-    /// not a re-run of any correlator) — the caller is expected to close over an already-resolved
-    /// identity rather than recompute it per batch.
+    /// Checked immediately before and after every batch POST, the first and the last included; a trip
+    /// throws <see cref="TranscriptDeliveryAbortedException"/> so nothing further is posted. Cursor's
+    /// live rewrite guard can quarantine a session while a batch is in flight, and the post-POST check
+    /// is what catches a marker written during the only batch of a short transcript. Keep it cheap: a
+    /// marker check over an already-resolved identity, not a correlator run per batch.
     /// </param>
     internal static async Task<int> SendTranscriptBatches(
             HttpClient                 httpClient,
@@ -550,10 +535,8 @@ static class SessionImporter {
         ) {
         if (!File.Exists(filePath)) return 0;
 
-        var       totalSent        = 0;
-        var       batchLines       = new List<string>();
-        var       batchLineNumbers = new List<int>();
-        const int batchSize        = 100;
+        var totalSent = 0;
+        var batch     = new TranscriptBatchBuffer();
 
         await using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
         using var       reader = new StreamReader(stream);
@@ -568,95 +551,95 @@ static class SessionImporter {
             }
 
             if (!string.IsNullOrWhiteSpace(line)) {
-                batchLines.Add(line);
-                batchLineNumbers.Add(checked(lineIndex + lineNumberOffset));
+                var bytes      = TranscriptBatchBuffer.SizeOf(line);
+                var lineNumber = checked(lineIndex + lineNumberOffset);
+
+                if (bytes > TranscriptBatchBuffer.MaxBytes) {
+                    progress?.Report(new LineSkipped(sessionId, agentId, lineNumber, bytes));
+                } else {
+                    if (!batch.Fits(bytes)) await FlushAsync();
+
+                    batch.Add(line, lineNumber, bytes);
+
+                    if (batch.IsFull) await FlushAsync();
+                }
             }
 
             lineIndex++;
-
-            if (batchLines.Count >= batchSize) {
-                if (abortDelivery?.Invoke() == true) throw new TranscriptDeliveryAbortedException();
-
-                await PostTranscriptBatch(httpClient, baseUrl, sessionId, agentId, batchLines, batchLineNumbers, vendor, failOnError);
-                var flushed = batchLines.Count;
-                totalSent += flushed;
-                progress?.Report(new BatchFlushed(agentId, flushed));
-                batchLines.Clear();
-                batchLineNumbers.Clear();
-
-                // re-check IMMEDIATELY after the POST too, not
-                // only before the NEXT one. Before this, a marker written while THIS batch's POST was
-                // in flight was only ever caught by the pre-POST check ahead of a batch that might
-                // never come (see below) — for a transcript with no further lines to send (this was
-                // the LAST batch, e.g. exactly 100/200/... lines), there IS no next predicate
-                // invocation at all, and the method returned normally with the caller none the wiser.
-                if (abortDelivery?.Invoke() == true) throw new TranscriptDeliveryAbortedException();
-            }
         }
 
-        if (batchLines.Count > 0) {
-            if (abortDelivery?.Invoke() == true) throw new TranscriptDeliveryAbortedException();
-
-            await PostTranscriptBatch(httpClient, baseUrl, sessionId, agentId, batchLines, batchLineNumbers, vendor, failOnError);
-            var flushed = batchLines.Count;
-            totalSent += flushed;
-            progress?.Report(new BatchFlushed(agentId, flushed));
-
-            // same post-POST re-check for the trailing/only
-            // batch (a transcript of <=100 lines never enters the loop branch above at all, so
-            // WITHOUT this check here specifically, a marker written while this — the ONLY — POST was
-            // in flight was never observed anywhere: SendTranscriptBatches returned normally and the
-            // caller (CursorImportSource) proceeded straight into child lifecycle / normal completion.
-            if (abortDelivery?.Invoke() == true) throw new TranscriptDeliveryAbortedException();
-        }
+        if (!batch.IsEmpty) await FlushAsync();
 
         return totalSent;
+
+        async Task FlushAsync() {
+            if (abortDelivery?.Invoke() == true) throw new TranscriptDeliveryAbortedException();
+
+            totalSent += await FlushBatchAsync(httpClient, baseUrl, sessionId, agentId, batch, vendor, failOnError, progress);
+
+            if (abortDelivery?.Invoke() == true) throw new TranscriptDeliveryAbortedException();
+        }
     }
 
     /// <summary>
-    /// thrown by <see cref="SendTranscriptBatches"/> when its
-    /// <c>abortDelivery</c> predicate trips mid-delivery (between batches). Distinct from a generic
-    /// send failure so a caller that wants to react specially (Cursor's best-effort session-end —
-    /// see <see cref="CursorImportSource.ImportSessionAsync"/>) can catch it before a broader
-    /// catch-all.
+    /// Thrown by <see cref="SendTranscriptBatches"/> when its <c>abortDelivery</c> predicate trips.
+    /// Distinct from a generic send failure so Cursor's best-effort session-end (see
+    /// <see cref="CursorImportSource.ImportSessionAsync"/>) can catch it ahead of a broader catch-all.
     /// </summary>
     internal sealed class TranscriptDeliveryAbortedException : Exception;
 
-    static async Task PostTranscriptBatch(
-            HttpClient   httpClient,
-            string       baseUrl,
-            string       sessionId,
-            string?      agentId,
-            List<string> lines,
-            List<int>    lineNumbers,
-            HarnessId    vendor,
-            bool         failOnError = false
+    /// <summary>
+    /// POSTs the buffered lines, empties the buffer and returns how many lines it held. A strict caller
+    /// gets a refusal or transport failure as an exception naming the line range; a lenient one gets it
+    /// reported as a <see cref="BatchDropped"/> and keeps going, with the lines still counted as posted.
+    /// </summary>
+    static async Task<int> FlushBatchAsync(
+            HttpClient                 httpClient,
+            string                     baseUrl,
+            string                     sessionId,
+            string?                    agentId,
+            TranscriptBatchBuffer      batch,
+            HarnessId                  vendor,
+            bool                       failOnError,
+            IProgress<ImportProgress>? progress
         ) {
-        var batch = new TranscriptBatch {
+        var payload = new TranscriptBatch {
             SessionId   = sessionId,
             AgentId     = agentId,
-            Lines       = [.. lines],
-            LineNumbers = [.. lineNumbers],
+            Lines       = [.. batch.Lines],
+            LineNumbers = [.. batch.LineNumbers],
             // Claude stays absent on the wire: an older server reads a missing vendor as Claude,
             // and the tag is what selects any other normalizer.
             Vendor = vendor is HarnessId.Claude ? null : vendor.VendorId,
-            // Fail-closed callers (failOnError) also want server-side normalization failures to
-            // surface as non-2xx (server only does so when Strict), not just transport/HTTP errors.
+            // The server reports a normalization failure as non-2xx only for a strict batch.
             Strict = failOnError
         };
 
-        var       json    = JsonSerializer.Serialize(batch, CapacitorJsonContext.Default.TranscriptBatch);
+        var       json    = JsonSerializer.Serialize(payload, CapacitorJsonContext.Default.TranscriptBatch);
         using var content = new StringContent(json, Encoding.UTF8, "application/json");
+        var       first   = batch.FirstLineNumber;
+        var       last    = batch.LastLineNumber;
+        string?   loss;
 
         try {
             using var resp = await httpClient.PostWithRetryAsync($"{baseUrl}/hooks/transcript", content);
-            if (failOnError && !resp.IsSuccessStatusCode)
-                throw new HttpRequestException($"transcript batch rejected: HTTP {(int)resp.StatusCode}");
-        } catch (HttpRequestException) {
-            // Strict callers (OpenCode import) abort the import; default callers
-            // (Claude/Codex/Cursor/Copilot/Gemini/Kiro/Pi) log but continue — unchanged.
-            if (failOnError) throw;
+
+            loss = resp.IsSuccessStatusCode ? null : $"HTTP {(int)resp.StatusCode}";
+        } catch (HttpRequestException ex) when (!failOnError) {
+            loss = ex.Message;
         }
+
+        if (loss is not null) {
+            if (failOnError) throw new HttpRequestException($"transcript batch lines {first}-{last} rejected: {loss}");
+
+            progress?.Report(new BatchDropped(sessionId, agentId, first, last, loss));
+        }
+
+        var flushed = batch.Count;
+        progress?.Report(new BatchFlushed(agentId, flushed));
+        batch.Clear();
+
+        return flushed;
     }
 
     /// <summary>
@@ -683,9 +666,9 @@ static class SessionImporter {
     }
 
     /// <summary>
-    /// Count the non-blank lines from <paramref name="startLine"/> (inclusive) to
-    /// EOF — i.e. the number of lines <see cref="SendTranscriptBatches"/> /
-    /// <see cref="ImportSessionAsync"/> will actually POST for the main transcript.
+    /// Count the lines from <paramref name="startLine"/> (inclusive) to EOF that
+    /// <see cref="SendTranscriptBatches"/> / <see cref="ImportSessionAsync"/> will actually
+    /// POST for the main transcript: non-blank and within the batch byte budget.
     /// This is the denominator for the per-session import progress bar: the sum of
     /// every <see cref="BatchFlushed"/> with a null <c>AgentId</c> equals this count.
     /// Best-effort — returns 0 on a missing file or any I/O error, which callers
@@ -702,7 +685,9 @@ static class SessionImporter {
             var lineIndex = 0;
 
             while (reader.ReadLine() is { } line) {
-                if (lineIndex >= startLine && !string.IsNullOrWhiteSpace(line)) count++;
+                if (lineIndex >= startLine
+                 && !string.IsNullOrWhiteSpace(line)
+                 && TranscriptBatchBuffer.SizeOf(line) <= TranscriptBatchBuffer.MaxBytes) count++;
 
                 lineIndex++;
             }
