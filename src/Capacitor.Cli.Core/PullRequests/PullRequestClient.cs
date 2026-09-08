@@ -31,11 +31,11 @@ public sealed class PullRequestClient(HttpClient http, string serverUrl, TimePro
                 if (!response.IsSuccessStatusCode) return Save(new(PullRequestCapabilityKind.Unavailable, Reason: "discovery_unavailable"));
                 using var document = await ReadDocumentAsync(response, linked.Token).ConfigureAwait(false);
                 var root = document.RootElement;
-                if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("provider", out var provider)
-                    || provider.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(provider.GetString())) return Save(new(PullRequestCapabilityKind.InvalidProtocol));
+                if (!root.IsObject || !root.TryGetProperty("provider", out var provider)
+                    || !provider.IsString || string.IsNullOrWhiteSpace(provider.GetString())) return Save(new(PullRequestCapabilityKind.InvalidProtocol));
                 if (!root.TryGetProperty("pull_request_reads_versions", out var versions)) return Save(new(PullRequestCapabilityKind.Legacy));
-                if (versions.ValueKind != JsonValueKind.Array || versions.GetArrayLength() > 100
-                    || versions.EnumerateArray().Any(version => version.ValueKind != JsonValueKind.Number || !version.TryGetInt32(out var value) || value <= 0))
+                if (!versions.IsArray || versions.GetArrayLength() > 100
+                    || versions.EnumerateArray().Any(version => !version.IsNumber || !version.TryGetInt32(out var value) || value <= 0))
                     return Save(new(PullRequestCapabilityKind.InvalidProtocol));
                 return Save(versions.EnumerateArray().Any(version => version.GetInt32() == 1) ? new(PullRequestCapabilityKind.Supported, 1) : new(PullRequestCapabilityKind.Unsupported));
             } catch (OperationCanceledException) when (!ct.IsCancellationRequested) { return Save(new(PullRequestCapabilityKind.Unavailable, Reason: "timeout")); }
@@ -71,7 +71,7 @@ public sealed class PullRequestClient(HttpClient http, string serverUrl, TimePro
             if (response.StatusCode == HttpStatusCode.NotFound) return new(PullRequestReadKind.SubjectUnavailable, AccessFailure: "invalid");
             if (!response.IsSuccessStatusCode) return new(PullRequestReadKind.Unavailable, AccessFailure: (int)response.StatusCode >= 500 ? "transient" : "invalid");
             using var document = await ReadDocumentAsync(response, linked.Token).ConfigureAwait(false);
-            if (document.RootElement.TryGetProperty("pull_requests", out var links) && links.ValueKind != JsonValueKind.Array)
+            if (!document.RootElement.IsObject || document.RootElement.Prop("pull_requests") is { } links && !links.IsArray)
                 return Invalid<PullRequestLinkListDto>();
             var summary = document.Deserialize(CapacitorJsonContext.Default.SessionSummaryDto);
             if (summary is null || summary.SessionId != sessionId || summary.PullRequests is null

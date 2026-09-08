@@ -29,19 +29,19 @@ public static class PullRequestWire {
         && uri.Scheme is "https" or "http" && uri.UserInfo.Length == 0 ? uri.AbsoluteUri : null;
 
     internal static bool ValidJson(JsonElement root) {
-        if (root.ValueKind == JsonValueKind.Array) return root.EnumerateArray().All(ValidJson);
-        if (root.ValueKind != JsonValueKind.Object) return true;
+        if (root.IsArray) return root.EnumerateArray().All(ValidJson);
+        if (!root.IsObject) return true;
         foreach (var field in root.EnumerateObject()) {
             if (field.Name is "fetched_at" or "retry_at" or "snapshot_started_at" or "snapshot_completed_at" or "created_at" or "updated_at"
                 or "submitted_at" or "started_at" or "completed_at" or "published_at") {
-                if (field.Value.ValueKind != JsonValueKind.Null && (field.Value.ValueKind != JsonValueKind.String || field.Value.GetString()?.EndsWith('Z') != true
+                if (!field.Value.IsNull && (!field.Value.IsString || field.Value.GetString()?.EndsWith('Z') != true
                     || !field.Value.TryGetDateTimeOffset(out var date) || date.Offset != TimeSpan.Zero)) return false;
             }
             if (field.Name == "kind" && root.TryGetProperty("value", out var number)) {
-                if (number.ValueKind != JsonValueKind.Null && (number.ValueKind != JsonValueKind.Number || !number.TryGetInt32(out var count) || count < 0)) return false;
-                if (field.Value.ValueKind == JsonValueKind.String && field.Value.GetString() == "unknown" && number.ValueKind != JsonValueKind.Null) return false;
+                if (!number.IsNull && (!number.IsNumber || !number.TryGetInt32(out var count) || count < 0)) return false;
+                if (field.Value.IsString && field.Value.GetString() == "unknown" && !number.IsNull) return false;
             }
-            if (field.Name == "counts" && field.Value.ValueKind == JsonValueKind.Object && !field.Value.EnumerateObject().All(x => ValidJson(x.Value))) return false;
+            if (field.Name == "counts" && field.Value.IsObject && !field.Value.EnumerateObject().All(x => ValidJson(x.Value))) return false;
             if (field.Name is "data" or "items" or "checks" or "reviews" or "conversation" or "availability" or "root_comment"
                 or "published" or "approved" or "changes_requested" or "outstanding_users" or "outstanding_teams" or "count" or "total" or "excluded_by_filter"
                 && !ValidJson(field.Value)) return false;

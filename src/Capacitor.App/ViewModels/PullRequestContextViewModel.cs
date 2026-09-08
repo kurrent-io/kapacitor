@@ -32,6 +32,7 @@ public sealed partial class PullRequestContextViewModel : ReactiveObject {
     string? _branch;
     PullRequestChoice? _selected;
     bool _explicitSelection;
+    bool _updatingChoices;
     PullRequestOverviewDto? _overview;
     PullRequestRead<PullRequestOverviewDto>? _overviewRead;
     long _accessStarted;
@@ -60,7 +61,7 @@ public sealed partial class PullRequestContextViewModel : ReactiveObject {
     public IAvaloniaReadOnlyList<PullRequestChoice> Choices => _choices;
     public PullRequestChoice? Selected {
         get => _selected;
-        set => Select(value, explicitSelection: true);
+        set { if (!_updatingChoices) Select(value, explicitSelection: true); }
     }
     public string Notice => _notice;
     public bool IsReading => _refreshing || _overviewPending || _pageRequests.Count > 0;
@@ -115,7 +116,11 @@ public sealed partial class PullRequestContextViewModel : ReactiveObject {
         OpenRowCommand = ReactiveCommand.Create<PullRequestRow>(row => {
             if (CanDisplayReader) LinkPolicy.Open(_opener, row.IsCheck ? PullRequestWire.CheckLink(row.Url) : _selected is null ? null : PullRequestWire.PrLink(row.Url, _selected.Subject));
         });
-        OpenGitHubCommand = ReactiveCommand.Create(() => LinkPolicy.Open(_opener, PullRequestWire.SafeLink(_selected?.Link.Url)));
+        OpenGitHubCommand = ReactiveCommand.Create(() => {
+            if (_selected is { IsAvailable: true } choice)
+                LinkPolicy.Open(_opener, PullRequestWire.IsGitHub(choice.Subject)
+                    ? PullRequestWire.PrLink(choice.Link.Url, choice.Subject) : PullRequestWire.SafeLink(choice.Link.Url));
+        });
         OpenBodyLinkCommand = ReactiveCommand.Create<string>(url => { if (CanDisplayReader) LinkPolicy.Open(_opener, PullRequestWire.BodyLink(url)); });
         SignInCommand = ReactiveCommand.Create(() => signIn?.Invoke());
         LinkGitHubCommand = ReactiveCommand.Create(() => linkGitHub?.Invoke());

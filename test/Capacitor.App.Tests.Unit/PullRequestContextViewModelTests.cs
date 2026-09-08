@@ -169,14 +169,63 @@ public class PullRequestContextViewModelTests {
         await h.Dispose();
     });
 
+    [Test]
+    public Task An_unlinked_explicit_selection_stays_unavailable_until_it_returns_or_the_user_selects_another_PR() => RunOnUiAsync(async () => {
+        var h = new Harness(); h.Push(); await h.Show(); h.Vm.SetReaderVisible(true);
+        h.Vm.Selected = h.Vm.Choices[1];
+        await WaitUntilAsync(() => h.Vm.CanReveal, what: "explicit PR admitted");
+        var removed = h.Source.Links[1];
+        h.Source.Links = [h.Source.Links[0]];
+        var overviews = h.Source.Overviews;
+        for (var refresh = 0; refresh < 2; refresh++) {
+            h.Time.Advance(TimeSpan.FromSeconds(16)); await h.Vm.RefreshCommand.Execute();
+            await WaitUntilAsync(() => !h.Vm.IsReading, what: "missing selection applied");
+            await Assert.That(h.Vm.Selected!.Subject.Number).IsEqualTo(2);
+            await Assert.That(h.Vm.Selected.IsAvailable).IsFalse();
+            await Assert.That(h.Vm.Description).IsNull();
+            await Assert.That(h.Vm.CanReveal).IsFalse();
+            await Assert.That(h.Source.Overviews).IsEqualTo(overviews);
+        }
+        await h.Vm.OpenGitHubCommand.Execute();
+        await Assert.That(h.Opener.Opened).IsEmpty();
+        h.Source.Links = [h.Source.Links[0], removed];
+        h.Time.Advance(TimeSpan.FromSeconds(16)); await h.Vm.RefreshCommand.Execute();
+        await WaitUntilAsync(() => h.Vm.CanReveal, what: "relinked selection admitted");
+        await Assert.That(h.Vm.Selected!.Subject.Number).IsEqualTo(2);
+        await Assert.That(h.Vm.Selected.IsAvailable).IsTrue();
+        h.Source.Links = [h.Source.Links[0]];
+        h.Time.Advance(TimeSpan.FromSeconds(16)); await h.Vm.RefreshCommand.Execute();
+        await WaitUntilAsync(() => !h.Vm.IsReading, what: "selection removed again");
+        h.Vm.Selected = h.Vm.Choices.Single(choice => choice.Subject.Number == 1);
+        await WaitUntilAsync(() => h.Vm.CanReveal, what: "replacement explicitly selected");
+        await Assert.That(h.Vm.Selected!.Subject.Number).IsEqualTo(1);
+        await h.Dispose();
+    });
+
+    [Test]
+    [Arguments("https://example.com/example/repo/pull/1", false)]
+    [Arguments("https://github.com/example/repo/pull/99", false)]
+    [Arguments("https://github.com/example/other/pull/1", false)]
+    [Arguments("https://github.com/example/repo/pull/1", true)]
+    public Task The_main_GitHub_action_opens_only_the_selected_PR(string url, bool accepted) => RunOnUiAsync(async () => {
+        var h = new Harness();
+        h.Source.Links[0] = h.Source.Links[0] with { Url = url };
+        h.Push(); await h.Show();
+        await h.Vm.OpenGitHubCommand.Execute();
+        await Assert.That(h.Opener.Opened.Count).IsEqualTo(accepted ? 1 : 0);
+        if (accepted) await Assert.That(h.Opener.Opened[0]).IsEqualTo(url);
+        await h.Dispose();
+    });
+
     sealed class Harness {
         internal BehaviorSubject<AgentStatusDto?> Presence { get; } = new(null);
         internal FakeTimeProvider Time { get; } = new();
         internal FakePullRequestSource Source { get; }
+        internal RecordingOpener Opener { get; } = new();
         internal PullRequestContextViewModel Vm { get; }
         internal Harness(Func<string?>? primary = null) {
             Source = new(Time);
-            Vm = new(Presence, Source, Time, new RecordingOpener(), () => { }, primaryRepo: primary);
+            Vm = new(Presence, Source, Time, Opener, () => { }, primaryRepo: primary);
         }
         internal void Push() => Presence.OnNext(Agent("agent", "claude", hasTerminal: false, sessionId: "session", branch: "feature"));
         internal async Task Show() { Vm.SetForeground(true); await WaitUntilAsync(() => Vm.CanReveal, what: "PR overview admitted"); }

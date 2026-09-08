@@ -128,6 +128,18 @@ public class PullRequestClientTests {
         await Assert.That((await client.LegacyLinksAsync("session", default)).Kind).IsEqualTo(PullRequestReadKind.InvalidProtocol);
     }
 
+    [Test]
+    [Arguments("null")]
+    [Arguments("[]")]
+    [Arguments("true")]
+    [Arguments("42")]
+    public async Task Non_object_legacy_summaries_are_rejected_without_throwing(string body) {
+        using var handler = new Handler { Discovery = """{"provider":"workos"}""", Body = body };
+        using var http = new HttpClient(handler);
+        using var client = new PullRequestClient(http, "https://tenant.test");
+        await Assert.That((await client.LegacyLinksAsync("session", default)).Kind).IsEqualTo(PullRequestReadKind.InvalidProtocol);
+    }
+
     static string FixturePath => Path.Combine(AppContext.BaseDirectory, "fixtures", "pull-request-reads-v1.json");
     sealed class Handler : HttpMessageHandler {
         internal string Discovery = """{"provider":"workos","pull_request_reads_versions":[1]}""";
