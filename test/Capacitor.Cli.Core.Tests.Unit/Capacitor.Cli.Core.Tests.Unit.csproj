@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
     <ItemGroup>
         <None Include="../fixtures/pull-request-reads-v1.json" Link="fixtures/pull-request-reads-v1.json" CopyToOutputDirectory="PreserveNewest" />
+        <None Include="../fixtures/gh/*.json" Link="fixtures/gh/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     </ItemGroup>
     <PropertyGroup>
         <TargetFramework>net10.0</TargetFramework>
