@@ -520,13 +520,14 @@ public class AgentOrchestratorLocalAttachTests {
     [Arguments("antigravity")]
     [Arguments("cursor")]
     public async Task Attach_to_a_runtime_with_no_terminal_is_refused_by_name(string vendor) {
+        using var worktree = new TempDir();
         var server = new CaptureServerConnection();
         await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
 
         var runtime = new NoRawInputRuntime(vendor);
         var agent = new AgentInstance(
-            "hosted-1", null, "", null, "/r", vendor,
-            runtime, new WorktreeInfo("/r", "", "/r", IsStandalone: true), new CancellationTokenSource()
+            "hosted-1", null, "", null, worktree.Path, vendor,
+            runtime, new WorktreeInfo(worktree.Path, "", worktree.Path, IsStandalone: true), new CancellationTokenSource()
         );
         orch.RegisterAgentForTest(agent);
 
@@ -557,6 +558,7 @@ public class AgentOrchestratorLocalAttachTests {
 
     [Test]
     public async Task Attach_to_a_terminal_runtime_that_rejects_raw_input_gets_an_error_frame_instead_of_crashing() {
+        using var worktree = new TempDir();
         var server = new CaptureServerConnection();
         await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
 
@@ -565,8 +567,8 @@ public class AgentOrchestratorLocalAttachTests {
         // disagree.
         var runtime = new NoRawInputRuntime("claude", emitsTerminalOutput: true);
         var agent = new AgentInstance(
-            "pty-1", null, "", null, "/r", "claude",
-            runtime, new WorktreeInfo("/r", "", "/r", IsStandalone: true), new CancellationTokenSource()
+            "pty-1", null, "", null, worktree.Path, "claude",
+            runtime, new WorktreeInfo(worktree.Path, "", worktree.Path, IsStandalone: true), new CancellationTokenSource()
         );
         orch.RegisterAgentForTest(agent);
 

@@ -9,3 +9,6 @@ src/Capacitor.Cli.Core/Resources/*.txt text eol=lf
 # `diff` attribute forces text: giving it a value (diff=csharp) selects a driver
 # instead and the file goes binary again.
 *.cs diff
+
+# The shared wire fixture is hashed as literal bytes on every platform.
+test/fixtures/pull-request-reads-v1.json text eol=lf

@@ -363,7 +363,8 @@ public partial class App : Application {
         var serverLane = new ServerConnectionService(profiles, _foreignHttp.GetRequiredService<TokenStore>());
         serverLane.Start();
         var workContext = new ServerWorkContextSource(_config, profiles);
-        var serverClients = new ServerClients(serverLane, workContext);
+        var pullRequests = new ServerPullRequestSource(_config, profiles);
+        var serverClients = new ServerClients(serverLane, workContext, pullRequests);
         _serverLane = serverLane;
 
         var machineId = new MachineId(_config).ReadPersisted();
@@ -400,7 +401,10 @@ public partial class App : Application {
         Action requestSignIn = () => OpenSignInDialog(profiles, notifier);
         WorkspaceViewModel BuildWorkspace(string agentId) => new(
             agentId, service, actions, attachFactory, () => new XtermTerminalSurface(80, 24, PtyDumpPath), TimeProvider.System, opener, permissions,
-            workContext, requestSignIn: requestSignIn, signInCompleted: serverClients.SignInCompleted);
+            workContext, requestSignIn: requestSignIn, signInCompleted: serverClients.SignInCompleted, pullRequests: pullRequests,
+            linkGitHub: () => {
+                if (profiles?.Resolution.ServerUrl is { Length: > 0 } url) LinkPolicy.Open(opener, url.TrimEnd('/') + "/auth/github-link/start");
+            });
 
         _coordinator = new MainWindowCoordinator(
             () => BuildAndShowMainWindow(

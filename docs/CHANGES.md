@@ -6,6 +6,26 @@ diff. `CLAUDE.md` holds the invariants; `docs/superpowers/specs/` holds the full
 Not release notes. Each entry is written as of the change that produced it and is not revised as the
 code moves on; where an entry disagrees with the code, the code wins.
 
+## Read a linked pull request inside the workspace
+
+The work-context pane now has a compact PR card and a wide native reader beside
+Chat and Terminal. Description, checks, requested reviewers, published reviews,
+inline threads and conversation are readable without leaving a session. Chat
+drafts, terminal size and the existing hosts survive tab switches; PR context is
+also available on ended sessions and sessions without a terminal.
+
+The tenant server owns GitHub reads and current user/repository admission. The
+desktop negotiates a versioned contract, subtracts network time from short access
+leases and masks protected content when the workspace loses foreground. A transient
+failure can retain the already visible view temporarily; a denial clears it.
+Frozen pages keep stable ordering, expose incomplete coverage and bound retained
+content. Markdown uses native controls with explicit safe links and no remote images.
+
+The compatible server is required for native reading. Older servers retain safe
+external PR links after an independently authorized summary read. See the
+[design](superpowers/specs/2026-09-07-desktop-pr-context-design.md) and
+[credential design](superpowers/specs/2026-09-07-github-app-pr-credentials-design.md).
+
 ## Desktop shell: remote daemons
 
 The rail now merges the local daemon's agents with the server's registry of every daemon the

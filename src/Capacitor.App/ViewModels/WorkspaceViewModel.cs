@@ -5,36 +5,17 @@ using System.Reactive.Linq;
 using Capacitor.App.Services;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.LocalIpc;
+using Capacitor.Cli.Core.PullRequests;
 using DynamicData;
 using ReactiveUI;
 
 namespace Capacitor.App.ViewModels;
 
-public enum WorkspaceTab { Chat, Terminal }
+public enum WorkspaceTab { Chat, Terminal, PullRequest }
 
-/// The session workspace: header (title/repo/vendor chip) + Chat and Terminal tabs, for one agent
-/// id. Constructed once per workspace, like TerminalTabViewModel/HomeViewModel -- ctor-scoped, not
-/// WhenActivated -- since the header projections and the Terminal tab must be live from
-/// construction, not deferred to a window's activation.
-///
-/// Every header projection below derives from ONE Scan-based aggregate over a single Filter'd view
-/// of daemon.Agents.Connect() (filtered to this agent id, ObserveOn the UI scheduler BEFORE
-/// anything touches bound state -- the same rule every other daemon.Agents/Snapshots consumer in
-/// this app follows), multicast via Replay(1)/RefCount so the several OAPHs below share ONE
-/// subscription to the daemon's cache rather than each opening (and independently re-deriving
-/// state from) their own. Replay(1) specifically -- not Publish -- because the 8 downstream
-/// subscribers below all attach within the SAME synchronous constructor call: a plain Publish
-/// would only deliver an already-fired synchronous replay (e.g. the agent already being in the
-/// cache when this VM is built) to whichever subscriber happened to attach first, leaving the rest
-/// with no initial value until the NEXT change -- which may never come. Scan's own output already
-/// IS the complete current state (dto + sticky-ended), so replaying just the latest one to a late
-/// subscriber is exactly correct, unlike replaying a raw changeset to a fresh DynamicData query
-/// aggregator would be.
-///
-/// A removed or terminal-status agent freezes its LAST known dto rather than blanking the header
-/// back to placeholders -- SessionEnded flips (sticky, mirroring TerminalTabViewModel's own
-/// Exited/Failed stickiness) but Title/RepoLabelText/etc keep identifying the session
-/// that just ended instead of reverting to "—".
+/// Owns the persistent Chat, Terminal and PR surfaces for one agent. Presence is
+/// replayed as accumulated state so each subscriber receives an already-cached agent.
+/// Ended or removed agents retain their last known session context.
 public sealed class WorkspaceViewModel : ReactiveObject {
     const string UnresolvedKind = "unresolved";
 
@@ -71,6 +52,8 @@ public sealed class WorkspaceViewModel : ReactiveObject {
     /// The right pane. Fed by the same presence stream as the header, so the daemon cache has one
     /// subscription per workspace, not two.
     public WorkContextViewModel WorkContext { get; }
+    public PullRequestContextViewModel? PullRequests { get; }
+    public bool ShowsPullRequestTab => PullRequests is not null;
 
     WorkspaceTab _activeTab = WorkspaceTab.Chat;
     public WorkspaceTab ActiveTab {
@@ -79,13 +62,19 @@ public sealed class WorkspaceViewModel : ReactiveObject {
             this.RaiseAndSetIfChanged(ref _activeTab, value);
             this.RaisePropertyChanged(nameof(IsChatActive));
             this.RaisePropertyChanged(nameof(IsTerminalActive));
+            this.RaisePropertyChanged(nameof(IsPullRequestActive));
+            this.RaisePropertyChanged(nameof(ShowsTerminalBanners));
+            PullRequests?.SetReaderVisible(value == WorkspaceTab.PullRequest);
         }
     }
     public bool IsChatActive => ActiveTab == WorkspaceTab.Chat;
     public bool IsTerminalActive => ActiveTab == WorkspaceTab.Terminal;
+    public bool IsPullRequestActive => ActiveTab == WorkspaceTab.PullRequest;
+    public bool ShowsTerminalBanners => !IsPullRequestActive && (IsTerminalActive || !ShowsTerminalTab);
 
     public ReactiveCommand<Unit, Unit> ShowChatCommand { get; }
     public ReactiveCommand<Unit, Unit> ShowTerminalCommand { get; }
+    public ReactiveCommand<Unit, Unit> ShowPullRequestCommand { get; }
 
     public ReactiveCommand<Unit, Unit> OpenInWebCommand { get; }
     public ReactiveCommand<Unit, Unit> StopCommand { get; }
@@ -101,7 +90,7 @@ public sealed class WorkspaceViewModel : ReactiveObject {
             string agentId, IDaemonClientService daemon, AgentActionService actions,
             TerminalAttachClientFactory factory, Func<ITerminalSurface> surfaceFactory, TimeProvider time,
             IUrlOpener opener, IPermissionService permissions, IWorkContextSource workContext,
-            Action? requestSignIn = null, IObservable<Unit>? signInCompleted = null) {
+            Action? requestSignIn = null, IObservable<Unit>? signInCompleted = null, IPullRequestSource? pullRequests = null, Action? linkGitHub = null) {
         AgentId = agentId;
         Terminal = new TerminalTabViewModel(agentId, daemon, factory, surfaceFactory, time);
 
@@ -113,6 +102,12 @@ public sealed class WorkspaceViewModel : ReactiveObject {
             .RefCount();
 
         WorkContext = new WorkContextViewModel(presence.Select(p => p.Dto), workContext, time, opener, requestSignIn, signInCompleted);
+        PullRequests = pullRequests is null ? null : new PullRequestContextViewModel(presence.Select(p => p.Dto), pullRequests, time, opener,
+            () => ActiveTab = WorkspaceTab.PullRequest, requestSignIn, linkGitHub, signInCompleted, () => WorkContext.PrimaryRepositoryHash);
+        WorkContext.PullRequests = PullRequests;
+        daemon.Status.Select(status => status.State).DistinctUntilChanged().Skip(1)
+            .Where(state => state == AttachState.Connected).ObserveOn(RxSchedulers.MainThreadScheduler)
+            .Subscribe(_ => PullRequests?.Reconnected()).DisposeWith(_disposables);
 
         presence.Select(p => p.Dto).Subscribe(dto => _latestDto = dto).DisposeWith(_disposables);
 
@@ -125,6 +120,7 @@ public sealed class WorkspaceViewModel : ReactiveObject {
         _showsTerminalTab = presence.Select(p => p.Dto is not null && HostedHarnessCatalog.ShowsTerminal(p.Dto.HasTerminal, p.Dto.Vendor))
             .ToProperty(this, x => x.ShowsTerminalTab, initialValue: false)
             .DisposeWith(_disposables);
+        presence.Subscribe(_ => this.RaisePropertyChanged(nameof(ShowsTerminalBanners))).DisposeWith(_disposables);
         // Blank whenever ShowsTerminalTab is true (or the dto isn't resolved yet): the note
         // replaces the Terminal tab button in the tab strip, so it must never render alongside it.
         _noTerminalNote = presence
@@ -144,8 +140,10 @@ public sealed class WorkspaceViewModel : ReactiveObject {
 
         ShowChatCommand = ReactiveCommand.Create(() => { ActiveTab = WorkspaceTab.Chat; });
         ShowTerminalCommand = ReactiveCommand.Create(() => { ActiveTab = WorkspaceTab.Terminal; });
+        ShowPullRequestCommand = ReactiveCommand.Create(() => { if (PullRequests is not null) ActiveTab = WorkspaceTab.PullRequest; });
         _disposables.Add(ShowChatCommand);
         _disposables.Add(ShowTerminalCommand);
+        _disposables.Add(ShowPullRequestCommand);
 
         OpenInWebCommand = ReactiveCommand.Create(() => actions.OpenInWeb(agentId));
         _disposables.Add(OpenInWebCommand);
@@ -193,6 +191,7 @@ public sealed class WorkspaceViewModel : ReactiveObject {
     /// work-context pane, and Terminal last -- the caller that closes a workspace tab calls this once.
     public async Task TeardownAsync() {
         _disposables.Dispose();
+        if (PullRequests is { } pullRequests) await pullRequests.TeardownAsync();
         if (Chat is { } chat) await chat.TeardownAsync();
         await WorkContext.TeardownAsync();
         await Terminal.TeardownAsync();

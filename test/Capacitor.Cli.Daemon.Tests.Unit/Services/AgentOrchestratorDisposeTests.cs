@@ -4,16 +4,8 @@ using Capacitor.Cli.Daemon.Tests.Unit.Pty;
 namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 
 /// <summary>
-/// <see cref="AgentOrchestrator.DisposeAsync"/> must be idempotent and non-throwing: the DI
-/// container tracks the singleton AND <c>DaemonRunner</c> disposes it explicitly, so it runs
-/// twice by construction on every shutdown — the same structural double-teardown that crashed
-/// <see cref="ServerConnection"/> (an ObjectDisposedException escaping into DI teardown aborts
-/// a NativeAOT process). The orchestrator's <c>_shutdownCts</c> was also never disposed; adding
-/// that Dispose without a run-once guard would recreate the crash exactly, so these contracts
-/// pin body-ran-once AND cts-ends-cancelled-and-disposed durably.
-///
-/// Uses <see cref="AgentOrchestratorHarness"/> for its orchestrator builder and
-/// server-connection capture.
+/// The DI container and daemon runner both dispose the orchestrator, so teardown must be
+/// idempotent and continue cleaning up children even when cancellation callbacks throw.
 /// </summary>
 public class AgentOrchestratorDisposeTests {
     [Test]
@@ -44,27 +36,27 @@ public class AgentOrchestratorDisposeTests {
 
     [Test]
     public async Task A_faulting_cancellation_callback_does_not_skip_child_teardown() {
+        using var tmp = new TempDir();
+        var worktree = tmp.CreateDir("worktree");
+        var sibling = tmp.CreateFile("unrelated.txt", "keep");
         var orch = AgentOrchestratorHarness.BuildOrchestrator(
             new CaptureServerConnection(), new SpyPtyProcessFactory(),
             new Dictionary<string, IHostedAgentLauncher>());
 
         var runtime = new FakeHostedAgentRuntime("claude", emitsTerminalOutput: false);
         orch.RegisterAgentForTest(new AgentInstance(
-            "agent-cb", null, "", null, "/tmp", "claude", runtime,
-            new WorktreeInfo("/tmp", "", "/tmp", IsStandalone: true), new CancellationTokenSource()));
+            "agent-cb", null, "", null, worktree, "claude", runtime,
+            new WorktreeInfo(worktree, "", worktree, IsStandalone: true), new CancellationTokenSource()));
 
-        // A registered cancellation callback that throws faults CancelAsync's returned task
-        // (AggregateException per the CTS contract) even though the cancel itself succeeded.
-        // Uncontained, that fault would jump straight to the dispose finally — skipping the
-        // processor drain and ALL child termination/cleanup — and the run-once guard means the
-        // DI pass can never retry, stranding live child processes.
+        // A faulted cancellation must still drain the processor and clean up children;
+        // the run-once guard prevents a later disposal from retrying skipped work.
         orch.ShutdownCtsForTests.Token.Register(() => throw new InvalidOperationException("callback boom"));
 
         await orch.DisposeAsync(); // must not throw
 
-        // Containment proof: teardown continued past the faulted cancel — the child was
-        // terminated, and the finally still cancelled+disposed the CTS.
         await Assert.That(runtime.HasExited).IsTrue();
+        await Assert.That(File.Exists(sibling)).IsTrue();
+        await Assert.That(Directory.Exists(worktree)).IsFalse();
         await Assert.That(orch.ShutdownCtsForTests.IsCancellationRequested).IsTrue();
         await Assert.That(() => _ = orch.ShutdownCtsForTests.Token).Throws<ObjectDisposedException>();
     }

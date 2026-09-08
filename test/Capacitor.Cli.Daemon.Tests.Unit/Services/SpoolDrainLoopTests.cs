@@ -51,6 +51,9 @@ public class SpoolDrainLoopTests {
         public Task<AuthAttempt> ForWaitAsync(CancellationToken ct = default) =>
             Task.FromResult(new AuthAttempt(new HttpClient(), status, null, null));
 
+        public Task<AuthAttempt> ForProtectedReadAsync(CancellationToken ct = default) =>
+            Task.FromResult(new AuthAttempt(new HttpClient(), status, null, null));
+
         public Task<HttpClient> ForBackgroundAsync(CancellationToken ct = default) => Task.FromResult(new HttpClient());
 
         public Task<HttpClient> ForMemoryAsync(CancellationToken ct = default) => Task.FromResult(new HttpClient());

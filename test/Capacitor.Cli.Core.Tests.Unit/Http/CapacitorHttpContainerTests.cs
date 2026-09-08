@@ -420,6 +420,25 @@ public class CapacitorHttpContainerTests : IDisposable {
         await Assert.That(await response.Content.ReadAsStringAsync()).IsEqualTo("arrived");
     }
 
+    [Test]
+    public async Task Protected_reads_refuse_redirects_after_authentication() {
+        await AuthenticateAsync("tok_protected");
+        _server.Given(Request.Create().WithPath("/protected").UsingGet())
+            .RespondWith(Response.Create().WithStatusCode(302).WithHeader("Location", $"{Url}/substitute"));
+        _server.Given(Request.Create().WithPath("/substitute").UsingGet())
+            .RespondWith(Response.Create().WithStatusCode(200));
+
+        using var sp = Container();
+        var attempt = await sp.GetRequiredService<ICapacitorHttpClient>().ForProtectedReadAsync();
+        using var client = attempt.Client;
+        using var response = await client.GetAsync($"{Url}/protected");
+
+        await Assert.That(attempt.Status).IsEqualTo(AuthStatus.Ok);
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Redirect);
+        await Assert.That(RequestTo("/protected").RequestMessage.Headers!["Authorization"].Single()).IsEqualTo("Bearer tok_protected");
+        await Assert.That(_server.LogEntries.Any(e => e.RequestMessage.Path == "/substitute")).IsFalse();
+    }
+
     // ── The loopback lane ──────────────────────────────────────────────────────────────────────
 
     /// <summary>
@@ -631,7 +650,9 @@ public class CapacitorHttpContainerTests : IDisposable {
     /// on the first 401 would discard a leg that was still answerable.
     /// </summary>
     [Test]
-    public async Task The_waiting_lane_reports_its_status_and_still_recovers_a_401() {
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Waiting_and_protected_reads_report_status_and_recover_a_401(bool protectedRead) {
         await AuthenticateAsync("tok_1");
 
         _server.Given(Request.Create().WithPath("/auth/refresh").UsingPost())
@@ -648,7 +669,8 @@ public class CapacitorHttpContainerTests : IDisposable {
 
         using var sp = Container();
 
-        var (client, status, _, _) = await sp.GetRequiredService<ICapacitorHttpClient>().ForWaitAsync();
+        var http = sp.GetRequiredService<ICapacitorHttpClient>();
+        var (client, status, _, _) = protectedRead ? await http.ForProtectedReadAsync() : await http.ForWaitAsync();
 
         using var waiting  = client;
         using var response = await waiting.GetAsync($"{Url}/api/flow");
