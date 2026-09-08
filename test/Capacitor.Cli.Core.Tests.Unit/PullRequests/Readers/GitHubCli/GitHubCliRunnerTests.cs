@@ -8,9 +8,7 @@ public class GitHubCliRunnerTests {
     static string Executable => OperatingSystem.IsWindows() ? "gh.exe" : "gh";
 
     string InstallGh(string directory) {
-        string dir = Tmp.CreateDir(directory);
-        var path = Path.Combine(dir, Executable);
-        File.WriteAllText(path, "");
+        var path = Tmp.CreateFile([directory, Executable]);
         if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         return path;
     }
