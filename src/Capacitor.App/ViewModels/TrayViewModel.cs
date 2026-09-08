@@ -5,7 +5,8 @@ using System.Reactive.Linq;
 using Capacitor.App.Services;
 using Capacitor.App.Services.Update;
 using Capacitor.Cli.Core.LocalIpc;
-using ReactiveUI;
+using DynamicData;
+using ReactiveUI.Reactive;
 
 namespace Capacitor.App.ViewModels;
 
@@ -74,11 +75,16 @@ public sealed class TrayViewModel : ReactiveObject, IDisposable {
     /// spec §5: ShimOfferCoordinator.Offerable — true while the "Install command-line tool…"
     /// item should show. Null (most existing tests) means the item never shows.
     /// </param>
+    /// <param name="remote">
+    /// The server lane's live-agent summary (an IAgentDirectory, via SummaryFrom below). Null
+    /// (every pre-existing test) keeps ProjectAggregate's verdict identical to Project's.
+    /// </param>
     public TrayViewModel(
             IDaemonClientService service, IPauseController pause, AgentActionService actions, IConsentService consent,
             Action? openMainWindow = null, Action? quit = null, Action? openReviewPrompts = null,
             IObservable<string?>? lifecycleAttention = null, IObservable<bool>? shimOfferable = null,
             Func<Task>? installShim = null, IPermissionService? permissions = null,
+            IObservable<RemoteTraySummary>? remote = null,
             IObservable<UpdateMenuItem>? updateMenu = null, Func<Task>? updateAction = null) {
         _pause = pause;
 
@@ -109,9 +115,10 @@ public sealed class TrayViewModel : ReactiveObject, IDisposable {
         var attention = lifecycleAttention ?? Observable.Return((string?)null);
         var shim = shimOfferable ?? Observable.Return(false);
         var pendingSummary = permissions?.Summary ?? Observable.Return(default(PendingSummary));
-        var projected = service.Status.CombineLatest(snapshots, pause.State, actions.StopsInFlight, consent.PendingCount, attention, pendingSummary,
-            (status, snap, pauseState, inFlight, pending, lifecycleMsg, summary) =>
-                Build(service.DaemonName, status, snap, pauseState, inFlight, pending, lifecycleMsg, summary));
+        var remoteSummary = remote ?? Observable.Return(default(RemoteTraySummary));
+        var projected = service.Status.CombineLatest(snapshots, pause.State, actions.StopsInFlight, consent.PendingCount, attention, pendingSummary, remoteSummary,
+            (status, snap, pauseState, inFlight, pending, lifecycleMsg, summary, remoteFeed) =>
+                Build(service.DaemonName, status, snap, pauseState, inFlight, pending, lifecycleMsg, summary, remoteFeed));
 
         // A second, narrower CombineLatest rather than folding `shim` into the six-source one
         // above: it keeps Build's signature untouched (Build already reads awkwardly with six
@@ -126,14 +133,14 @@ public sealed class TrayViewModel : ReactiveObject, IDisposable {
         var withUpdate = withShim.CombineLatest(update, (model, item) => model with { UpdateItemLabel = item.Visible ? item.Label : null });
 
         // Status, snapshots (seeded above), pause.State, consent.PendingCount, attention,
-        // pendingSummary, shim, and update are all replay-1-shaped (seed on subscribe), so
-        // CombineLatest emits synchronously on subscribe — captured here as the OAPH's initial
-        // value so MenuModel is never default(TrayMenuModel) (null) before
+        // pendingSummary, remoteSummary, shim, and update are all replay-1-shaped (seed on
+        // subscribe), so CombineLatest emits synchronously on subscribe — captured here as the
+        // OAPH's initial value so MenuModel is never default(TrayMenuModel) (null) before
         // RxSchedulers.MainThreadScheduler delivers the ObserveOn'd copy below. The
         // synchronous-emission assumption rests on IPauseController.State's,
-        // IConsentService.PendingCount's, and IPermissionService.Summary's documented
-        // replay-on-subscribe contracts, which a future implementation could violate — defended
-        // below rather than left to surface as an unexplained NRE on first MenuModel access.
+        // IConsentService.PendingCount's, IPermissionService.Summary's, and SummaryFrom's
+        // documented replay-on-subscribe contracts, which a future implementation could violate —
+        // defended below rather than left to surface as an unexplained NRE on first MenuModel access.
         TrayMenuModel? seed = null;
         using (withUpdate.Subscribe(v => seed = v)) { }
 
@@ -165,8 +172,9 @@ public sealed class TrayViewModel : ReactiveObject, IDisposable {
 
     static TrayMenuModel Build(
             string daemonName, AttachStatus status, DaemonStatusDto? snap, PauseState pauseState,
-            IReadOnlySet<string> stopsInFlight, int pendingConsent, string? lifecycleAttention, PendingSummary pendingSummary) {
-        var (state, count) = Project(status, snap);
+            IReadOnlySet<string> stopsInFlight, int pendingConsent, string? lifecycleAttention, PendingSummary pendingSummary,
+            RemoteTraySummary remote) {
+        var (state, count) = ProjectAggregate(status, snap, remote);
         var baseState = state; // the connection/agent-count verdict, before either upgrade below
 
         // Pending consent, a pending permission request, or a pending question asserts Attention
@@ -226,6 +234,37 @@ public sealed class TrayViewModel : ReactiveObject, IDisposable {
         return (TrayState.Attention, 0); // row 9 — unrecognized connection value
     }
 
+    /// Layers the server lane's live count onto Project's local verdict: a local Stopped or Idle
+    /// row is only the whole story when the remote lane has nothing running, so either upgrades
+    /// to Running with the combined count once it does. Never touches a local Attention or
+    /// Connecting verdict — a remote-only problem is not surfaced as Attention here.
+    internal static (TrayState State, int Count) ProjectAggregate(
+            AttachStatus status, DaemonStatusDto? snap, RemoteTraySummary remote) {
+        var (state, count) = Project(status, snap);
+        var total = count + remote.RemoteLiveAgents;
+
+        if (state == TrayState.Stopped && remote.LaneConnected && remote.RemoteLiveAgents > 0)
+            return (TrayState.Running, total);
+        if (state is TrayState.Idle && remote.RemoteLiveAgents > 0)
+            return (TrayState.Running, total);
+        if (state is TrayState.Running)
+            return (TrayState.Running, total);
+        return (state, count);
+    }
+
+    /// RemoteStale wraps a replay-1 lane status, so it alone would emit synchronously — but
+    /// Rows.Connect() emits nothing on subscribe while the cache is still empty (no edit has ever
+    /// run to replay), so an all-local-agents startup would leave this combined stream silent.
+    /// StartWith(0) supplies the missing seed, matching the ctor's synchronous-seed requirement.
+    internal static IObservable<RemoteTraySummary> SummaryFrom(IAgentDirectory directory) {
+        var remoteLiveCount = directory.Rows.Connect()
+            .Filter(r => r.Origin == AgentOrigin.Remote && r.Status is "Starting" or "Running")
+            .QueryWhenChanged(q => q.Count)
+            .StartWith(0);
+        var laneConnected = directory.RemoteStale.Select(stale => !stale);
+        return remoteLiveCount.CombineLatest(laneConnected, (count, connected) => new RemoteTraySummary(count, connected));
+    }
+
     static string HeaderText(
             string daemonName, AttachStatus status, DaemonStatusDto? snap, TrayState state, int count,
             bool pendingAttention, int pendingConsent, string? lifecycleAttentionText, PendingSummary pendingSummary) {
@@ -234,13 +273,19 @@ public sealed class TrayViewModel : ReactiveObject, IDisposable {
 
         if (lifecycleAttentionText is not null) return $"{daemonName}: {lifecycleAttentionText}";
 
+        // Running while the local daemon itself is Unreachable means the count is entirely the
+        // remote lane's (ProjectAggregate only reaches Running from Stopped via a live remote
+        // lane) — "not running" stays true of THIS machine, so the header says so instead of
+        // claiming a local connection that isn't there.
         var body = pendingAttention
             ? PendingBody(pendingSummary, pendingConsent)
             : state switch {
                 TrayState.Stopped    => "not running",
                 TrayState.Connecting => "connecting…",
                 TrayState.Idle       => "connected — no agents",
-                TrayState.Running    => $"connected — {count} agent(s) running",
+                TrayState.Running    => status.State == AttachState.Unreachable
+                    ? $"not running — {count} agent(s) on other machines"
+                    : $"connected — {count} agent(s) running",
                 TrayState.Attention  => AttentionBody(status, snap),
                 _                    => "needs attention",
             };

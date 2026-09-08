@@ -32,6 +32,12 @@ public static class SessionStatusDots {
     /// beside the dot vocabulary so the two can never disagree.
     public static bool NeedsAttention(AgentStatusDto dto) => dto.Status == "Failed" || WaitsOnUser(dto);
 
+    /// The merged-row twins of the two rules above, for rail rows from either lane.
+    public static bool WaitsOnUser(AgentRow row) =>
+        row.AwaitingInput == true && !AgentActionService.IsProtectedKind(row.Kind);
+
+    public static bool NeedsAttention(AgentRow row) => row.Status == "Failed" || WaitsOnUser(row);
+
     /// Display text for the status: the daemon's own word, except for the one state its
     /// vocabulary does not spell, a live agent whose turn is over.
     public static string Label(AgentStatusDto dto) => WaitsOnUser(dto) ? "Waiting for input" : dto.Status;

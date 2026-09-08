@@ -1,7 +1,7 @@
 using Avalonia;
 using Avalonia.Controls;
 using Capacitor.App.ViewModels;
-using ReactiveUI;
+using ReactiveUI.Reactive;
 
 namespace Capacitor.App.Views;
 

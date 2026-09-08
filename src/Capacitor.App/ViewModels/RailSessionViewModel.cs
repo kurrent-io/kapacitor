@@ -3,14 +3,15 @@ using System.Reactive.Disposables;
 using System.Reactive.Disposables.Fluent;
 using System.Reactive.Linq;
 using Avalonia.Media;
+using Capacitor.App.Services;
 using Capacitor.Cli.Core.LocalIpc;
-using ReactiveUI;
+using ReactiveUI.Reactive;
 
 namespace Capacitor.App.ViewModels;
 
-/// One session row of the rail. Recreated per dto revision (DynamicData Transform), so every
-/// static field is computed once from the ctor dto; IsSelected and NeedsYou stay live because
-/// selection and pending-set membership each change without a dto revision. Age is a
+/// One session row of the rail. Recreated per row revision (DynamicData Transform), so every
+/// static field is computed once from the ctor row; IsSelected and NeedsYou stay live because
+/// selection and pending-set membership each change without a row revision. Age is a
 /// point-in-time snapshot (SessionCardViewModel precedent).
 public sealed class RailSessionViewModel : ReactiveObject, IDisposable {
     public string Id { get; }
@@ -18,6 +19,9 @@ public sealed class RailSessionViewModel : ReactiveObject, IDisposable {
     public string Sub { get; }
     public IBrush StatusDot { get; }
     public string Tooltip { get; }
+    /// The daemon name badge for a remote row; null for a local one.
+    public string? MachineBadge { get; }
+    public bool IsRemote { get; }
     public ReactiveCommand<Unit, Unit> OpenCommand { get; }
 
     internal DateTime CreatedAt { get; }
@@ -31,32 +35,36 @@ public sealed class RailSessionViewModel : ReactiveObject, IDisposable {
     readonly CompositeDisposable _disposables = new();
 
     public RailSessionViewModel(
-            AgentStatusDto dto, IObservable<string?> selectedAgentId,
-            IObservable<IReadOnlySet<string>> agentsWithPending, Action<string> open) {
-        Id = dto.Id;
-        CreatedAt = dto.CreatedAt;
-        var kindLine = dto.Kind == "agent" ? dto.Vendor : $"{dto.Vendor} · {dto.Kind}";
-        var vendorLine = dto.WorkLocation == WorkLocationText.Borrowed ? $"{kindLine} · borrowed" : kindLine;
-        var age = UptimeFormat.Format(DateTime.UtcNow - DateTime.SpecifyKind(dto.CreatedAt, DateTimeKind.Utc));
+            AgentRow row, IObservable<string?> selectedAgentId,
+            IObservable<IReadOnlySet<string>> agentsWithPending,
+            Action<string> openLocal, Action<string> openRemoteInWeb) {
+        Id = row.Id;
+        CreatedAt = row.CreatedAt;
+        var kindLine = row.Kind == "agent" ? row.Vendor : $"{row.Vendor} · {row.Kind}";
+        var vendorLine = row.WorkLocation == WorkLocationText.Borrowed ? $"{kindLine} · borrowed" : kindLine;
+        var age = UptimeFormat.Format(DateTime.UtcNow - DateTime.SpecifyKind(row.CreatedAt, DateTimeKind.Utc));
 
-        Primary = dto.Title ?? vendorLine;
-        Sub = dto.Title is null
-            ? Join(dto.Model, age)
-            : Join(vendorLine, dto.Model, age);
-        StatusDot = SessionStatusDots.For(dto.Status);
-        Tooltip = Join(dto.Id, dto.Status, SessionStatusDots.WaitsOnUser(dto) ? "waiting for input" : null,
-            dto.RequesterDisplay, dto.BorrowedFrom is null ? null : $"borrowed {dto.BorrowedFrom}");
+        Primary = row.Title ?? vendorLine;
+        Sub = row.Title is null
+            ? Join(row.Model, age)
+            : Join(vendorLine, row.Model, age);
+        StatusDot = SessionStatusDots.For(row.Status);
+        Tooltip = Join(row.Id, row.Status, SessionStatusDots.WaitsOnUser(row) ? "waiting for input" : null,
+            row.RequesterDisplay, row.BorrowedFrom is null ? null : $"borrowed {row.BorrowedFrom}");
+        MachineBadge = row.MachineBadge;
+        IsRemote = row.Origin == AgentOrigin.Remote;
 
-        _isSelected = selectedAgentId.Select(sel => sel == dto.Id)
+        _isSelected = selectedAgentId.Select(sel => sel == row.Id)
             .ToProperty(this, x => x.IsSelected, initialValue: false)
             .DisposeWith(_disposables);
 
-        var byStatus = SessionStatusDots.NeedsAttention(dto);
-        _needsYou = agentsWithPending.Select(set => byStatus || set.Contains(dto.Id))
+        var byStatus = SessionStatusDots.NeedsAttention(row);
+        _needsYou = agentsWithPending.Select(set => byStatus || set.Contains(row.Id))
             .ToProperty(this, x => x.NeedsYou, initialValue: byStatus)
             .DisposeWith(_disposables);
 
-        OpenCommand = ReactiveCommand.Create(() => open(dto.Id));
+        // Remote rows are read-only in-app; opening deep-links to the web.
+        OpenCommand = ReactiveCommand.Create(() => (IsRemote ? openRemoteInWeb : openLocal)(row.Id));
         _disposables.Add(OpenCommand);
     }
 

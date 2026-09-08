@@ -8,6 +8,7 @@ using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Core.Harness.Claude;
 using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.FirstRun;
+using Capacitor.Cli.Core.Http;
 using Capacitor.Cli.Core.RepoEvidence;
 using Capacitor.Cli.Harness.Claude;
 using Capacitor.Cli.Harness.Cursor;
@@ -15,7 +16,8 @@ using Spectre.Console;
 
 namespace Capacitor.Cli.Commands;
 
-class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
+class ImportCommand(
+        ConfigRoot config, ProfileContext profiles, UserHome home, ICapacitorHttpClient http) {
     /// <summary>
     /// Maximum parallel worker count for the Importing phase. Both the
     /// channel-based dispatcher in ImportChainsAsync and the TTY slot-row
@@ -755,8 +757,8 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
         // Discovery is a local scan and never touches this client, so building the authenticated one
         // would probe the server and warn an unauthenticated user about a command that needs neither.
         using var httpClient = discoverOnly
-            ? new HttpClient()
-            : await HttpClientExtensions.CreateAuthenticatedClientAsync(config, profiles, baseUrl);
+            ? http.Anonymous()
+            : await http.ForCommandAsync();
         var       display    = ImportDisplay.Create(quiet: discoverJson, nested: nested);
 
         // --- Sources ---
@@ -1306,6 +1308,11 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
         var       summaryFailures    = new ConcurrentBag<(string SessionId, string Reason)>();
         var       importedSessionIds = new ConcurrentBag<string>();
 
+        void WarnSession(string sessionId, string message) => display.Line(
+            $"! {sessionId}: {message}",
+            $"[yellow]![/] [cyan]{Markup.Escape(sessionId)}[/] {Markup.Escape(message)}"
+        );
+
         var events = new ChainWorkerEvents {
             OnSessionStarted  = (_, _) => { },    // non-TTY: session start is silent; TTY overrides below
             OnSubagentStarted = (_, _, _) => { }, // non-TTY: subagent start is silent; TTY overrides below
@@ -1318,6 +1325,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
                 $"Skipping {sid} [{reason}]",
                 FormatSkippedReasonMarkup(sid, reason)
             ),
+            OnSessionWarning = (_, sid, message) => WarnSession(sid, message),
             OnSessionEnded = (_, c, outcome, lines) => {
                 importedSessionIds.Add(c.SessionId);
 
@@ -1377,7 +1385,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
                             await concurrencyLimit.WaitAsync();
 
                             try {
-                                var rc = await new WhatsDoneCommand(config, profiles, home)
+                                var rc = await new WhatsDoneCommand(config, profiles, home, http)
                                     .GenerateForSessionAsync(baseUrl, sid, _ => { }, vnd.VendorId);
 
                                 if (rc == 0) Interlocked.Increment(ref summariesGenerated);
@@ -1671,7 +1679,10 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
                 HttpClient: httpClient,
                 BaseUrl: baseUrl,
                 ForcePrivate: forcePrivate,
-                DefaultVisibility: defaultVisibility
+                DefaultVisibility: defaultVisibility,
+                Progress: new CallbackProgress(ev => {
+                    if (ev is ImportWarning w) WarnSession(w.SessionId, w.Message);
+                })
             );
 
             async Task<ImportSessionResult> ImportOne(SessionClassification c) {
@@ -2841,6 +2852,9 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
         /// <summary>Fired when a session import fails on a worker slot.</summary>
         public required Action<int, string, string> OnSessionErrored { get; init; } // slot, sessionId, reason
 
+        /// <summary>Fired for an <see cref="ImportWarning"/>: content the import left behind without failing.</summary>
+        public required Action<int, string, string> OnSessionWarning { get; init; } // slot, sessionId, message
+
         /// <summary>
         /// Fired after a session import completes (loaded or resumed). The slot is
         /// available for the next session as soon as this returns.
@@ -2999,6 +3013,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles, UserHome home) {
                     case BatchFlushed { AgentId: null } bf: events.OnSessionProgress(slot, bf.LinesAdded, sendableTotal); break;
                     case SubagentStarted ss:               events.OnSubagentStarted(slot, session.SessionId, ss.AgentId); break;
                     case SubagentFinished sf:              events.OnSubagentFinished(slot, session.SessionId, sf.AgentId, sf.LinesSent); break;
+                    case ImportWarning w:                  events.OnSessionWarning(slot, w.SessionId, w.Message); break;
                 }
             }
         );

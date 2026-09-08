@@ -16,7 +16,7 @@ public class ImportChainsTests : IDisposable {
 
     // These tests exercise chaining and repo resolution, not profile selection.
     ImportCommand Import() =>
-        new(Config.Root, Resolutions.None(Config.Root), Home);
+        new(Config.Root, Resolutions.None(Config.Root), Home, new FixedCapacitorHttpClient());
     readonly WireMockServer _server  = WireMockServer.Start();
     // TUnit creates a new class instance per test, so _tempDir is always unique.
     readonly TempDir _tmp     = new();
@@ -95,6 +95,7 @@ public class ImportChainsTests : IDisposable {
             OnSubagentFinished    = (_, _, _, _) => { },
             OnSessionProgress     = (_, _, _) => { },
             OnSessionErrored      = (_, _, _) => { },
+            OnSessionWarning      = (_, _, _) => { },
             OnSessionEnded        = (_, c, _, _) => completedLines.Add($"Loading {c.SessionId}..."),
             OnTitleTaskReady      = _ => { },
             OnBackgroundWorkReady = _ => { },
@@ -132,6 +133,7 @@ public class ImportChainsTests : IDisposable {
             OnSubagentFinished    = (_, _, _, _) => { },
             OnSessionProgress     = (_, lines, total) => { progressLines.Add(lines); progressTotals.Add(total); },
             OnSessionErrored      = (_, _, _) => { },
+            OnSessionWarning      = (_, _, _) => { },
             OnSessionEnded        = (_, _, _, _) => { },
             OnTitleTaskReady      = _ => { },
             OnBackgroundWorkReady = _ => { },
@@ -168,6 +170,7 @@ public class ImportChainsTests : IDisposable {
             OnSubagentFinished    = (_, _, _, _) => { },
             OnSessionProgress     = (_, _, total) => progressTotals.Add(total),
             OnSessionErrored      = (_, _, _) => { },
+            OnSessionWarning      = (_, _, _) => { },
             OnSessionEnded        = (_, _, _, _) => { },
             OnTitleTaskReady      = _ => { },
             OnBackgroundWorkReady = _ => { },
@@ -198,6 +201,7 @@ public class ImportChainsTests : IDisposable {
             OnSubagentFinished    = (_, _, _, _) => { },
             OnSessionProgress     = (_, _, _) => { },
             OnSessionErrored      = (_, _, _) => { },
+            OnSessionWarning      = (_, _, _) => { },
             OnSessionEnded        = (_, c, _, _) => order.Enqueue($"Loading {c.SessionId}..."),
             OnTitleTaskReady      = _ => { },
             OnBackgroundWorkReady = _ => { },
@@ -229,6 +233,7 @@ public class ImportChainsTests : IDisposable {
             OnSubagentFinished    = (_, _, _, _) => { },
             OnSessionProgress     = (_, _, _) => { },
             OnSessionErrored      = (_, _, _) => { },
+            OnSessionWarning      = (_, _, _) => { },
             OnSessionEnded        = (_, _, _, _) => { },
             OnTitleTaskReady      = _ => { },
             OnBackgroundWorkReady = _ => { },
@@ -280,6 +285,7 @@ public class ImportChainsTests : IDisposable {
             OnSubagentFinished    = (_, _, _, _) => { },
             OnSessionProgress     = (_, _, _) => { },
             OnSessionErrored      = (_, _, _) => { },
+            OnSessionWarning      = (_, _, _) => { },
             OnSessionEnded        = (_, _, _, _) => { },
             OnTitleTaskReady      = _ => { },
             OnBackgroundWorkReady = _ => { },
@@ -350,6 +356,7 @@ public class ImportChainsTests : IDisposable {
             OnSubagentFinished    = (_, _, _, _) => { },
             OnSessionProgress     = (_, _, _) => { },
             OnSessionErrored      = (_, _, _) => { },
+            OnSessionWarning      = (_, _, _) => { },
             OnSessionEnded        = (_, _, _, _) => { },
             OnTitleTaskReady      = _ => { },
             OnBackgroundWorkReady = _ => { },

@@ -2,7 +2,7 @@ using System.Globalization;
 using System.Reactive;
 using System.Reactive.Linq;
 using Capacitor.App.Services;
-using ReactiveUI;
+using ReactiveUI.Reactive;
 
 namespace Capacitor.App.ViewModels;
 

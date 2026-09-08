@@ -2,12 +2,13 @@ using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.Harness;
+using Capacitor.Cli.Core.Http;
 
 namespace Capacitor.Cli.Commands;
 
 public sealed class StatusCommand(
-        DaemonStore store, ProfileContext profiles, ConfigRoot config, HarnessRegistry harnesses,
-        bool? appBundled = null) {
+        DaemonStore store, ProfileContext profiles, ConfigRoot config, TokenStore tokenStore, HarnessRegistry harnesses,
+        ICapacitorHttpClient http, NpmRegistryClient npm, bool? appBundled = null) {
 
     readonly bool _appBundled = appBundled ?? InstallProvenance.IsAppBundled();
 
@@ -26,10 +27,11 @@ public sealed class StatusCommand(
             Console.Write($"{baseUrl} ");
 
             try {
-                // ReSharper disable once ShortLivedHttpClient
-                using var http = new HttpClient();
-                http.Timeout = TimeSpan.FromSeconds(5);
-                var resp = await http.GetAsync($"{baseUrl}/auth/config");
+                // Reachability, not authorization: a bearer would turn an unauthenticated-but-running
+                // server into a failure line, and this probe reports the connection.
+                using var client = http.Anonymous();
+                client.Timeout = TimeSpan.FromSeconds(5);
+                var resp = await client.GetAsync($"{baseUrl}/auth/config");
                 await Console.Out.WriteLineAsync(resp.IsSuccessStatusCode ? "✓ reachable" : $"✗ HTTP {(int)resp.StatusCode}");
             } catch {
                 await Console.Out.WriteLineAsync("✗ unreachable");
@@ -50,7 +52,7 @@ public sealed class StatusCommand(
             Console.WriteLine($"  Auth:    {machineLine}");
         } else {
             Console.Write("  Auth:    ");
-            var tokens = await new TokenStore(config).GetValidTokensForProfileAsync(profiles.Name);
+            var tokens = await tokenStore.GetValidTokensForProfileAsync(profiles.Name);
 
             if (tokens is not null) {
                 var remaining = tokens.ExpiresAt - DateTimeOffset.UtcNow;
@@ -60,7 +62,7 @@ public sealed class StatusCommand(
                     : $"expires in {remaining.TotalMinutes:F0}m";
                 await Console.Out.WriteLineAsync($"{tokens.GitHubUsername} ✓ token valid ({expiryText})");
             } else {
-                var rawTokens = await new TokenStore(config).LoadForProfileAsync(profiles.Name);
+                var rawTokens = await tokenStore.LoadForProfileAsync(profiles.Name);
 
                 await Console.Out.WriteLineAsync(
                     rawTokens is not null
@@ -130,7 +132,7 @@ public sealed class StatusCommand(
         }
 
         var channel  = UpdateCommand.ResolveChannel(args, profile?.UpdateChannel);
-        var result   = await UpdateNotice.GetSharedCheckAsync(channel, config);
+        var result   = await UpdateNotice.GetSharedCheckAsync(channel, config, npm);
 
         // Cap the recommendation at the connected server's version (min(npm latest, server)).
         var advisory = UpdateAdvisoryResolver.Resolve(result, channel, profiles.Resolution.ServerUrl, config);

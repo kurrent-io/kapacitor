@@ -357,9 +357,11 @@ public static partial class DaemonRunner {
 
         builder.Services.AddSingleton(paths);
         builder.Services.AddSingleton(configRoot);
+        builder.Services.AddSingleton(config.Profiles);
         builder.Services.AddSingleton(userHome);
         builder.Services.AddSingleton(config);
         builder.Services.AddSingleton(daemonLock);
+        builder.Services.AddDaemonHttp(configRoot, config);
         builder.Services.AddSingleton<ServerConnection>();
 
         // The owner consent gate — policy store + append-only decision log share the
@@ -566,6 +568,9 @@ public static partial class DaemonRunner {
         builder.Services.AddSingleton<RestartCoordinator>();
         builder.Services.AddHostedService(sp => sp.GetRequiredService<RestartCoordinator>());
 
+        builder.Services.AddSingleton<VendorCliWatcher>();
+        builder.Services.AddHostedService(sp => sp.GetRequiredService<VendorCliWatcher>());
+
         // Local control socket: lets `kcap agent start`/`attach`/`ls`/`stop` drive daemon-hosted
         // agents from the user's own terminal (AI local-attach Phase 1).
         builder.Services.AddSingleton<LocalControlServer>();
@@ -612,6 +617,9 @@ public static partial class DaemonRunner {
         var unattendedStatuses = ClassifyUnattendedVendors(runtimeFactories);
 
         config.UnattendedVendors = AdvertisedUnattendedVendors(unattendedStatuses);
+        // Fingerprinted BEFORE the probe: a vendor that updates between the two then reads as a
+        // change to the watcher, instead of as the baseline the stale advertisement already matches.
+        config.UnattendedVendorBaselines = FingerprintUnattendedVendors(runtimeFactories, config.UnattendedVendors);
         config.UnattendedVendorCapabilities =
             ComputeUnattendedVendorCapabilities(runtimeFactories, config, config.UnattendedVendors);
 
@@ -1436,6 +1444,32 @@ public static partial class DaemonRunner {
         return capabilities;
     }
 
+    /// <summary>Fingerprints each advertised vendor's binary through the factory that launches it —
+    /// the same path the version probe runs. A vendor with no locatable binary maps to null.</summary>
+    internal static IReadOnlyDictionary<string, CliBinaryStat?> FingerprintUnattendedVendors(
+            IEnumerable<IHostedAgentRuntimeFactory> factories, IEnumerable<string> vendors) {
+        var byVendor = factories.ToDictionary(f => f.Vendor, StringComparer.Ordinal);
+        return vendors.ToDictionary(
+            vendor => vendor,
+            vendor => byVendor.TryGetValue(vendor, out var factory) && !string.IsNullOrEmpty(factory.CliPath)
+                ? VendorCliWatcher.StatCliBinary(factory.CliPath)
+                : null,
+            StringComparer.Ordinal);
+    }
+
+    /// <summary>Carries a version already advertised over a re-probe that returned none. The server
+    /// reads a null version as the vendor being gone, so a transient probe miss must not withdraw
+    /// a reviewer that was advertised a moment ago. Every other field comes from the re-probe.</summary>
+    internal static IReadOnlyList<UnattendedVendorCapability> RetainAdvertisedVersions(
+            IReadOnlyList<UnattendedVendorCapability>? current, IReadOnlyList<UnattendedVendorCapability> fresh) {
+        if (current is null) return fresh;
+        return fresh.Select(capability => {
+            if (!string.IsNullOrEmpty(capability.CliVersion)) return capability;
+            var advertised = current.FirstOrDefault(c => string.Equals(c.Vendor, capability.Vendor, StringComparison.Ordinal));
+            return string.IsNullOrEmpty(advertised?.CliVersion) ? capability : capability with { CliVersion = advertised.CliVersion };
+        }).ToArray();
+    }
+
     /// <summary>Rendered in place of a <c>CliVersion</c> the probe could not determine (spawn
     /// failure, timeout, empty output, unparseable output). It is a reporting placeholder ONLY — an
     /// unidentifiable build is still a trusted build and its capabilities are unaffected.</summary>
@@ -1445,8 +1479,8 @@ public static partial class DaemonRunner {
     /// One Information line per unattended vendor recording the CLI version probed at daemon
     /// startup, so an operator reading the daemon's own log can tell which build was installed when
     /// this daemon came up. Deliberately reports the version and NOTHING else: it does not compare
-    /// the installed build against any validated-build record (that would be exactly the automated
-    /// version-drift detection this design rejects), and no equivalent line is emitted per launch.
+    /// the installed build against any validated-build record, and no equivalent line is emitted
+    /// per launch. A change on disk is logged once, when it is re-advertised.
     /// Pure over the computed capabilities — same reasoning as
     /// <see cref="ShouldWarnCursorUnavailable"/> — so it is testable without booting the DI host.
     /// See docs/superpowers/specs/2026-07-27-ai1528-trust-by-default-borrowed-review-design.md.
@@ -1561,7 +1595,7 @@ public static partial class DaemonRunner {
     [LoggerMessage(Level = LogLevel.Information, Message = "kcap daemon '{Name}' starting, connecting to {ServerUrl}")]
     static partial void LogDaemonStarting(ILogger logger, string name, string serverUrl);
 
-    [LoggerMessage(Level = LogLevel.Information, Message = "Unattended vendor '{Vendor}': CLI version {CliVersion}, as observed by probing the configured binary at daemon startup. That is a startup observation, not the build a later reviewer runs — if the vendor updates while this daemon keeps running, launches pick up the new build and this line stays stale until the daemon restarts.")]
+    [LoggerMessage(Level = LogLevel.Information, Message = "Unattended vendor '{Vendor}': CLI version {CliVersion}, as observed by probing the configured binary at daemon startup. A later change to that binary on disk is re-probed and re-advertised while the daemon runs.")]
     static partial void LogUnattendedVendorIdentity(ILogger logger, string vendor, string cliVersion);
 
     // Information, not Warning: an installed vendor withheld for a reason the operator chose — an

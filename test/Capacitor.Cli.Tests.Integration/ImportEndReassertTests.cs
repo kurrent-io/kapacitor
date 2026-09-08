@@ -24,7 +24,7 @@ public class ImportEndReassertTests : IDisposable {
 
     // These tests exercise chaining and repo resolution, not profile selection.
     ImportCommand Import() =>
-        new(Config.Root, Resolutions.None(Config.Root), Home);
+        new(Config.Root, Resolutions.None(Config.Root), Home, new FixedCapacitorHttpClient());
     readonly WireMockServer _server = WireMockServer.Start();
     readonly TempDir        _tmp    = new();
     readonly string         _tempDir;
@@ -59,6 +59,7 @@ public class ImportEndReassertTests : IDisposable {
         OnSubagentFinished    = (_, _, _, _) => { },
         OnSessionProgress     = (_, _, _) => { },
         OnSessionErrored      = (_, _, _) => { },
+        OnSessionWarning      = (_, _, _) => { },
         OnSessionEnded        = (_, _, _, _) => { },
         OnTitleTaskReady      = _ => { },
         OnBackgroundWorkReady = _ => { },

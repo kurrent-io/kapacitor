@@ -3,7 +3,7 @@ using System.Reactive;
 using Capacitor.App.Services;
 using Capacitor.App.Services.Onboarding;
 using Capacitor.Cli.Core.Auth;
-using ReactiveUI;
+using ReactiveUI.Reactive;
 
 namespace Capacitor.App.ViewModels.Onboarding;
 

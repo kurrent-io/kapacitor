@@ -41,7 +41,7 @@ record TranscriptBatch {
     public bool Strict { get; init; }
 }
 
-record ErrorEntry(
+public record ErrorEntry(
         string         SessionId,
         string?        SessionSlug,
         string?        AgentId,
@@ -51,7 +51,7 @@ record ErrorEntry(
         DateTimeOffset Timestamp
     );
 
-record RecapEntry(
+public record RecapEntry(
         string         Type,
         string?        SessionId,
         string?        AgentId,
@@ -288,7 +288,7 @@ record WhatsDonePayload {
     public long CacheWriteTokens { get; init; }
 }
 
-record RepoRecapEntry(
+public record RepoRecapEntry(
         string          SessionId,
         string?         Slug,
         string?         Title,
@@ -1319,33 +1319,6 @@ public static class AcpEventKind {
     /// existing additive folds (session totals, per-model attribution, cost) count them unchanged. An
     /// older server treats it as an unrecognised Kind (dropped, cursor still advances).</summary>
     public const string TokenUsage         = "token_usage";
-}
-
-/// <summary>
-/// The vendor-neutral vocabulary for <see cref="AcpEventEnvelope.ToolKind"/> — the ACP
-/// <c>ToolKind</c> tokens, which ACP vendors already put on the wire and the other vendors' lanes map
-/// their raw tool names onto. Closed set: a consumer may switch on these ten and need no per-vendor
-/// name table.
-/// </summary>
-public static class AcpToolKind {
-    public const string Read       = "read";
-    public const string Edit       = "edit";
-    public const string Delete     = "delete";
-    public const string Move       = "move";
-    public const string Search     = "search";
-    public const string Execute    = "execute";
-    public const string Think      = "think";
-    public const string Fetch      = "fetch";
-    public const string SwitchMode = "switch_mode";
-    public const string Other      = "other";
-
-    /// <summary>Maps an agent-supplied kind onto the closed set: a recognised token passes through,
-    /// anything else present becomes <see cref="Other"/>, and an absent one stays null. Null is what
-    /// tells a consumer no lane classified this call — never that the call was none-of-the-above.</summary>
-    public static string? Normalize(string? kind) =>
-        string.IsNullOrWhiteSpace(kind)                                                                        ? null
-        : kind is Read or Edit or Delete or Move or Search or Execute or Think or Fetch or SwitchMode or Other ? kind
-        : Other;
 }
 
 /// <summary>

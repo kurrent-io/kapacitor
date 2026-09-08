@@ -1,7 +1,7 @@
 using System.Reactive;
 using System.Reactive.Linq;
 using Capacitor.App.Services.Onboarding;
-using ReactiveUI;
+using ReactiveUI.Reactive;
 
 namespace Capacitor.App.ViewModels.Onboarding;
 

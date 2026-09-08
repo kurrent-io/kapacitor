@@ -1,8 +1,8 @@
 using System.Reactive.Disposables;
 using System.Reactive.Disposables.Fluent;
 using Capacitor.App.ViewModels.Onboarding;
-using ReactiveUI;
-using ReactiveUI.Avalonia;
+using ReactiveUI.Reactive;
+using ReactiveUI.Avalonia.Reactive;
 
 namespace Capacitor.App.Views.Onboarding;
 

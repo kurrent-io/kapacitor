@@ -163,4 +163,140 @@ public class SessionImporterProgressTests : IDisposable {
         await Assert.That(subagentBatches.Count).IsGreaterThan(0);
         await Assert.That(subagentBatches.All(b => b.AgentId == agentId)).IsTrue();
     }
+
+    /// <summary>A transcript line whose content field carries <paramref name="contentChars"/> ASCII characters.</summary>
+    static string LineOf(int contentChars) =>
+        $$$"""{"type":"user","timestamp":"2026-03-15T10:00:00Z","message":{"content":"{{{new string('x', contentChars)}}}"}}""";
+
+    [Test]
+    public async Task SendTranscriptBatches_closes_a_batch_on_the_byte_budget_before_the_line_count() {
+        _server.Given(Request.Create().WithPath("/hooks/transcript").UsingPost())
+            .RespondWith(Response.Create().WithStatusCode(200));
+
+        // Three 1.5 MiB lines: the third would take the batch past 4 MiB, so it opens a second one.
+        using var tmp = TempDir.WithPathTo("transcript.tmp", out var path);
+        await File.WriteAllLinesAsync(path, Enumerable.Range(0, 3).Select(_ => LineOf(1_572_864)));
+
+        var events   = new List<ImportProgress>();
+        var progress = new SyncProgress<ImportProgress>(events.Add);
+
+        using var client = new HttpClient();
+        var totalSent = await SessionImporter.SendTranscriptBatches(
+            client, _server.Url!, sessionId: "s1", filePath: path,
+            agentId: null, startLine: 0, progress: progress
+        );
+
+        await Assert.That(totalSent).IsEqualTo(3);
+
+        var flushes = events.OfType<BatchFlushed>().ToList();
+        await Assert.That(flushes.Count).IsEqualTo(2);
+        await Assert.That(flushes[0].LinesAdded).IsEqualTo(2);
+        await Assert.That(flushes[1].LinesAdded).IsEqualTo(1);
+        await Assert.That(_server.LogEntries.Count).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task SendTranscriptBatches_skips_a_line_over_the_budget_and_reports_it() {
+        _server.Given(Request.Create().WithPath("/hooks/transcript").UsingPost())
+            .RespondWith(Response.Create().WithStatusCode(200));
+
+        // The middle line's content alone fills the budget; with its envelope it is over.
+        using var tmp = TempDir.WithPathTo("transcript.tmp", out var path);
+        await File.WriteAllLinesAsync(path, [LineOf(10), LineOf(TranscriptBatchBuffer.MaxBytes), LineOf(10)]);
+
+        var events   = new List<ImportProgress>();
+        var progress = new SyncProgress<ImportProgress>(events.Add);
+
+        using var client = new HttpClient();
+        var totalSent = await SessionImporter.SendTranscriptBatches(
+            client, _server.Url!, sessionId: "s1", filePath: path,
+            agentId: null, startLine: 0, progress: progress
+        );
+
+        await Assert.That(totalSent).IsEqualTo(2);
+
+        var skipped = events.OfType<LineSkipped>().Single();
+        await Assert.That(skipped.SessionId).IsEqualTo("s1");
+        await Assert.That(skipped.AgentId).IsNull();
+        await Assert.That(skipped.LineNumber).IsEqualTo(1);
+        await Assert.That(skipped.Bytes).IsGreaterThan(TranscriptBatchBuffer.MaxBytes);
+        await Assert.That(skipped.Message).Contains("line 1 skipped");
+
+        var body = _server.LogEntries.Single().RequestMessage.Body;
+        await Assert.That(body).Contains("\"line_numbers\":[0,2]");
+
+        // The progress denominator counts what will actually be posted.
+        await Assert.That(SessionImporter.CountSendableLines(path)).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task SendTranscriptBatches_reports_a_batch_the_server_refuses_and_keeps_going() {
+        _server.Given(Request.Create().WithPath("/hooks/transcript").UsingPost())
+            .RespondWith(Response.Create().WithStatusCode(413));
+
+        using var tmp = TempDir.WithPathTo("transcript.tmp", out var path);
+        await File.WriteAllLinesAsync(path, Enumerable.Range(0, 150).Select(_ => LineOf(10)));
+
+        var events   = new List<ImportProgress>();
+        var progress = new SyncProgress<ImportProgress>(events.Add);
+
+        using var client = new HttpClient();
+        await SessionImporter.SendTranscriptBatches(
+            client, _server.Url!, sessionId: "s1", filePath: path,
+            agentId: "agent-1", startLine: 0, progress: progress
+        );
+
+        var dropped = events.OfType<BatchDropped>().ToList();
+        await Assert.That(dropped.Count).IsEqualTo(2);
+        await Assert.That(dropped[0]).IsEqualTo(new BatchDropped("s1", "agent-1", 0, 99, "HTTP 413"));
+        await Assert.That(dropped[1]).IsEqualTo(new BatchDropped("s1", "agent-1", 100, 149, "HTTP 413"));
+        await Assert.That(dropped[0].Message).IsEqualTo("subagent agent-1 lines 0-99 dropped: HTTP 413");
+    }
+
+    [Test]
+    public async Task SendTranscriptBatches_names_the_refused_lines_for_a_strict_caller() {
+        _server.Given(Request.Create().WithPath("/hooks/transcript").UsingPost())
+            .RespondWith(Response.Create().WithStatusCode(413));
+
+        using var tmp = TempDir.WithPathTo("transcript.tmp", out var path);
+        await File.WriteAllLinesAsync(path, Enumerable.Range(0, 5).Select(_ => LineOf(10)));
+
+        using var client = new HttpClient();
+        var ex = await Assert.ThrowsAsync<HttpRequestException>(async () => {
+            await SessionImporter.SendTranscriptBatches(
+                client, _server.Url!, sessionId: "s1", filePath: path,
+                agentId: null, startLine: 0, failOnError: true
+            );
+        });
+
+        await Assert.That(ex.Message).Contains("lines 0-4");
+        await Assert.That(ex.Message).Contains("HTTP 413");
+    }
+
+    [Test]
+    public async Task ImportSessionAsync_closes_a_main_transcript_batch_on_the_byte_budget() {
+        _server.Given(Request.Create().WithPath("/hooks/transcript").UsingPost())
+            .RespondWith(Response.Create().WithStatusCode(200));
+
+        using var tmp = TempDir.WithPathTo("session.jsonl", out var path);
+        await File.WriteAllLinesAsync(path, Enumerable.Range(0, 3).Select(_ => LineOf(1_572_864)));
+
+        var events   = new List<ImportProgress>();
+        var progress = new SyncProgress<ImportProgress>(events.Add);
+
+        using var client = new HttpClient();
+        var result = await SessionImporter.ImportSessionAsync(
+            client, _server.Url!, path, sessionId: "s1",
+            new SessionMetadata { Cwd = "/x" }, encodedCwd: null,
+            progress: progress
+        );
+
+        await Assert.That(result.LinesSent).IsEqualTo(3);
+
+        var flushes = events.OfType<BatchFlushed>().ToList();
+        await Assert.That(flushes.Count).IsEqualTo(2);
+        await Assert.That(flushes[0].LinesAdded).IsEqualTo(2);
+        await Assert.That(flushes[1].LinesAdded).IsEqualTo(1);
+        await Assert.That(flushes.All(f => f.AgentId == null)).IsTrue();
+    }
 }

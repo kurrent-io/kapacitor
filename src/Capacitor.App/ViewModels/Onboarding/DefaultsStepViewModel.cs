@@ -1,6 +1,6 @@
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Config;
-using ReactiveUI;
+using ReactiveUI.Reactive;
 
 namespace Capacitor.App.ViewModels.Onboarding;
 

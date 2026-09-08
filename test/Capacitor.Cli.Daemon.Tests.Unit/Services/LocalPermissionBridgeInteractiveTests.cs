@@ -71,10 +71,11 @@ public class LocalPermissionBridgeInteractiveTests {
         await Assert.That(pending.SessionId).IsEqualTo(Session);
         await Assert.That(pending.AgentId).IsEqualTo("agent-1");
 
+        // Cancellation can only be asserted once the server await is in flight.
+        var ct = await awaitCts.Task.WaitAsync(TimeSpan.FromSeconds(30));
         await Assert.That(h.Broker.TrySettle(pending.RequestId, Allow, "allow", "app")).IsTrue();
         await Assert.That(await Harness.BehaviorOf(await response)).IsEqualTo("allow");
 
-        var ct = await awaitCts.Task.WaitAsync(TimeSpan.FromSeconds(30));
         await WaitUntil(() => ct.IsCancellationRequested, "the server await is cancelled");
         await WaitUntil(() => h.Server.Responds.Count == 1, "RespondToPermission is invoked");
         await Assert.That(h.Server.Responds[0].RequestId).IsEqualTo("srv-1");

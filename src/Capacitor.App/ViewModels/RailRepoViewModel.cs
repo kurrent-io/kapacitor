@@ -2,18 +2,20 @@ using System.Collections.ObjectModel;
 using System.Reactive.Disposables;
 using System.Reactive.Disposables.Fluent;
 using System.Reactive.Linq;
-using Capacitor.Cli.Core.LocalIpc;
+using Capacitor.App.Services;
 using DynamicData;
 using DynamicData.Binding;
-using ReactiveUI;
+using ReactiveUI.Reactive;
 
 namespace Capacitor.App.ViewModels;
 
-/// One repository level of the rail. IsNoRepository is the "" sentinel group — its single
-/// nested worktree group renders headerless (spec §3). No ObserveOn: the outer pipeline
-/// already marshaled (RailWorktreeViewModel's identical note).
+/// One repository level of the rail. IsNoRepository is the "No repository" sentinel group — its
+/// single nested worktree group renders headerless. No ObserveOn: the outer pipeline already
+/// marshaled (RailWorktreeViewModel's identical note).
 public sealed class RailRepoViewModel : ReactiveObject, IDisposable {
     public string RootPath { get; }
+    /// RootPath in a form worth showing a user — a tooltip, never a comparer or collapse key.
+    public string RootDisplay { get; }
     public string Label { get; }
     public bool IsNoRepository { get; }
 
@@ -35,14 +37,14 @@ public sealed class RailRepoViewModel : ReactiveObject, IDisposable {
     readonly CompositeDisposable _disposables = new();
 
     public RailRepoViewModel(
-            IGroup<AgentStatusDto, string, string> group, RailCollapseState collapse,
+            IGroup<AgentRow, string, string> group, RailCollapseState collapse,
             IObservable<string?> selectedAgentId, IObservable<IReadOnlySet<string>> agentsWithPending,
-            Action<string> open) {
+            Func<string, string> resolveRepoRoot, Action<string> openLocal, Action<string> openRemoteInWeb) {
         RootPath = group.Key;
-        IsNoRepository = group.Key.Length == 0;
-        // RepoLabel.Leaf, not the raw leaf: group.Key is a resolved main root, where the two agree —
-        // and the "—" null arm can't trigger (the sentinel "" is the IsNoRepository branch).
-        Label = IsNoRepository ? "No repository" : RepoLabel.Leaf(group.Key);
+        // Rows in one group share RepoGroupLabel by construction — any member names it.
+        Label = group.Cache.Items[0].RepoGroupLabel;
+        IsNoRepository = Label == "No repository";
+        RootDisplay = DisplayFor(RootPath, Label);
 
         _countText = group.Cache.CountChanged
             .Select(c => c == 1 ? "1 session" : $"{c} sessions")
@@ -53,12 +55,31 @@ public sealed class RailRepoViewModel : ReactiveObject, IDisposable {
         group.Cache.Connect()
             .Group(SessionRailViewModel.WorktreeKeyFor)
             .Transform(wt => new RailWorktreeViewModel(
-                wt.Key, RootPath, showHeader: !IsNoRepository, wt.Cache, collapse, selectedAgentId,
-                agentsWithPending, open))
+                wt.Key, resolveRepoRoot, showHeader: !IsNoRepository, wt.Cache, collapse, selectedAgentId,
+                agentsWithPending, openLocal, openRemoteInWeb))
             .DisposeMany()
             .SortAndBind(_worktreesSource, WorktreeComparer)
             .Subscribe()
             .DisposeWith(_disposables);
+    }
+
+    // RootPath's own prefixes ("repo:", "path:", "daemon:{owner}/{daemon}:{path}") are a group
+    // identity, not display text (RepoIdentity's own rule) — this is the one place that reads
+    // them anyway, to turn the key into something worth a tooltip.
+    static string DisplayFor(string rootPath, string label) {
+        if (rootPath.StartsWith("repo:", StringComparison.Ordinal))
+            return rootPath["repo:".Length..];
+        if (rootPath.StartsWith("path:", StringComparison.Ordinal))
+            return rootPath["path:".Length..];
+        if (rootPath.StartsWith("daemon:", StringComparison.Ordinal)) {
+            var rest = rootPath["daemon:".Length..]; // "{owner}/{daemon}:{path}"
+            var pathAt = rest.IndexOf(':');
+            var ownerDaemon = pathAt < 0 ? rest : rest[..pathAt];
+            var path = pathAt < 0 ? "" : rest[(pathAt + 1)..];
+            var daemon = ownerDaemon[(ownerDaemon.LastIndexOf('/') + 1)..];
+            return path.Length == 0 ? label : $"{path} on {daemon}";
+        }
+        return rootPath;
     }
 
     public void Dispose() => _disposables.Dispose();

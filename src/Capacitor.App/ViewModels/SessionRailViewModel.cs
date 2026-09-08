@@ -8,19 +8,17 @@ using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.LocalIpc;
 using DynamicData;
 using DynamicData.Binding;
-using ReactiveUI;
+using ReactiveUI.Reactive;
 
 namespace Capacitor.App.ViewModels;
 
-/// The session rail's root: repository → worktree → session over daemon.Agents (spec §3).
+/// The session rail's root: repository → worktree → session over directory.Rows.
 /// Ctor-scoped and disposable like HomeViewModel — the tree must be live from construction.
 /// ONE ObserveOn at the top of the pipeline: nested group caches are mutated by this outer
 /// pipeline, so every inner Connect() below already fires on the UI thread.
 public sealed class SessionRailViewModel : ReactiveObject, IDisposable {
-    readonly IDaemonClientService _daemon;
+    readonly IAgentDirectory _directory;
     readonly RailCollapseState _collapse = new();
-    readonly Dictionary<string, string> _rootByPath = new(StringComparer.Ordinal);
-    readonly Func<string, string> _resolveRepoRoot;
     readonly CompositeDisposable _disposables = new();
 
     // SelectedAgentId is fed to the nested VMs via this subject, not this.WhenAnyValue: that
@@ -61,11 +59,12 @@ public sealed class SessionRailViewModel : ReactiveObject, IDisposable {
     /// agentsWithPending defaults to an always-empty set so callers that don't wire the
     /// permission service still compile and render.
     public SessionRailViewModel(
-            IDaemonClientService daemon, Action<string> openSession,
+            IAgentDirectory directory,
+            Action<string> openLocalSession, Action<string> openRemoteInWeb,
             Func<string, string>? resolveRepoRoot = null,
             IObservable<IReadOnlySet<string>>? agentsWithPending = null) {
-        _daemon = daemon;
-        _resolveRepoRoot = resolveRepoRoot ?? GitRepository.ResolveMainRepoRoot;
+        _directory = directory;
+        var resolveRoot = resolveRepoRoot ?? GitRepository.ResolveMainRepoRoot;
         // Not disposed with the rest: same as RailCollapseState's Changes subject, a bare
         // signaling Subject the class never tears down, so a post-Dispose set never throws.
         IObservable<string?> selected = _selectedAgentIdChanges;
@@ -75,22 +74,23 @@ public sealed class SessionRailViewModel : ReactiveObject, IDisposable {
         var pending = (agentsWithPending ?? Observable.Return((IReadOnlySet<string>)new HashSet<string>()))
             .ObserveOn(RxSchedulers.MainThreadScheduler);
 
-        _isEmpty = daemon.Agents.CountChanged
+        _isEmpty = directory.Rows.CountChanged
             .Select(c => c == 0)
             .ObserveOn(RxSchedulers.MainThreadScheduler)
-            .ToProperty(this, x => x.IsEmpty, initialValue: daemon.Agents.Count == 0)
+            .ToProperty(this, x => x.IsEmpty, initialValue: directory.Rows.Count == 0)
             .DisposeWith(_disposables);
-        _hostedText = daemon.Agents.CountChanged
+        _hostedText = directory.Rows.CountChanged
             .Select(c => $"{c} hosted")
             .ObserveOn(RxSchedulers.MainThreadScheduler)
-            .ToProperty(this, x => x.HostedText, initialValue: $"{daemon.Agents.Count} hosted")
+            .ToProperty(this, x => x.HostedText, initialValue: $"{directory.Rows.Count} hosted")
             .DisposeWith(_disposables);
 
         Repos = new ReadOnlyObservableCollection<RailRepoViewModel>(_reposSource);
-        daemon.Agents.Connect()
+        directory.Rows.Connect()
             .ObserveOn(RxSchedulers.MainThreadScheduler)
-            .Group(RepoRootFor)
-            .Transform(g => new RailRepoViewModel(g, _collapse, selected, pending, openSession))
+            .Group(r => r.RepoGroupKey)
+            .Transform(g => new RailRepoViewModel(
+                g, _collapse, selected, pending, resolveRoot, openLocalSession, openRemoteInWeb))
             .DisposeMany()
             .SortAndBind(_reposSource, RepoComparer)
             .Subscribe()
@@ -100,25 +100,16 @@ public sealed class SessionRailViewModel : ReactiveObject, IDisposable {
     /// The launch auto-open's counterpart: a session opened into an explicitly collapsed
     /// worktree must never highlight an invisible row.
     public void NotifySessionOpened(string agentId) {
-        var dto = _daemon.Agents.Lookup(agentId);
-        if (!dto.HasValue || WorktreeKeyFor(dto.Value) is not { Length: > 0 } path) return;
+        var row = _directory.Rows.Lookup($"local:{agentId}");
+        if (!row.HasValue) row = _directory.Rows.Lookup($"remote:{agentId}");
+        if (!row.HasValue || row.Value.CheckoutKey is not { Length: > 0 } path) return;
         _collapse.Set(path, collapsed: false);
     }
 
     internal static string WorktreeKeyFor(AgentStatusDto dto) =>
         PlatformPaths.Normalize(CheckoutLabel.CheckoutPathFor(dto) ?? dto.RepoPath ?? "");
 
-    // Memoized: ResolveMainRepoRoot reads .git files — cheap once, not per-changeset cheap; a
-    // path's resolution never changes within a daemon's lifetime. A current daemon already sends
-    // the repository, so this only ever rewrites an older daemon's checkout path. The stored
-    // root is separator-normalized so `/repo` and `/repo/` never become two rail groups.
-    string RepoRootFor(AgentStatusDto dto) {
-        if (dto.RepoPath is not { Length: > 0 } path) return "";
-        if (_rootByPath.TryGetValue(path, out var root)) return root;
-        root = PlatformPaths.Normalize(_resolveRepoRoot(path));
-        _rootByPath[path] = root;
-        return root;
-    }
+    internal static string WorktreeKeyFor(AgentRow row) => row.CheckoutKey;
 
     public void Dispose() => _disposables.Dispose();
 }

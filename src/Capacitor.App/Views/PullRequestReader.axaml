@@ -1,0 +1,80 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="clr-namespace:Capacitor.App.ViewModels"
+             xmlns:views="clr-namespace:Capacitor.App.Views"
+             x:Class="Capacitor.App.Views.PullRequestReader"
+             x:DataType="vm:PullRequestContextViewModel"
+             Background="{StaticResource KcapCanvasBrush}">
+    <Grid RowDefinitions="Auto,Auto,*">
+        <StackPanel Margin="22,18,22,12" Spacing="8">
+            <Grid ColumnDefinitions="*,Auto,Auto">
+                <TextBlock Text="{Binding Title}" FontSize="19" FontWeight="SemiBold" TextWrapping="Wrap"
+                           Foreground="{StaticResource KcapTextBrush}" Margin="0,0,16,0" />
+                <Button Grid.Column="1" Content="Refresh" Command="{Binding RefreshCommand}" Margin="0,0,8,0" VerticalAlignment="Top" />
+                <Button Grid.Column="2" Content="Open on GitHub" Command="{Binding OpenGitHubCommand}" VerticalAlignment="Top" />
+            </Grid>
+            <TextBlock Text="{Binding Branches}" Foreground="{StaticResource KcapMutedBrush}" FontSize="12" />
+            <TextBlock Text="{Binding AccessLabel}" Foreground="{StaticResource KcapFaintBrush}" FontSize="11" />
+            <TextBlock Text="{Binding Notice}" IsVisible="{Binding HasNotice}" Foreground="{StaticResource KcapWarningBrush}"
+                       TextWrapping="Wrap" FontSize="12" />
+            <TextBlock Text="Read here. Reply, resolve, review, or view the full diff on GitHub."
+                       Foreground="{StaticResource KcapMutedBrush}" FontSize="11.5" TextWrapping="Wrap" />
+        </StackPanel>
+        <WrapPanel Grid.Row="1" Margin="22,0,22,10" IsEnabled="{Binding CanReveal}">
+            <Button Content="Description" Command="{Binding ShowSectionCommand}" CommandParameter="overview" Margin="0,0,6,6" />
+            <Button Content="Checks" Command="{Binding ShowSectionCommand}" CommandParameter="checks" Margin="0,0,6,6" />
+            <Button Content="Reviewers" Command="{Binding ShowSectionCommand}" CommandParameter="reviewers" Margin="0,0,6,6" />
+            <Button Content="Reviews" Command="{Binding ShowSectionCommand}" CommandParameter="reviews" Margin="0,0,6,6" />
+            <Button Content="Threads" Command="{Binding ShowSectionCommand}" CommandParameter="threads" Margin="0,0,6,6" />
+            <Button Content="Conversation" Command="{Binding ShowSectionCommand}" CommandParameter="conversation" Margin="0,0,6,6" />
+        </WrapPanel>
+        <ScrollViewer x:Name="ReaderScroll" Grid.Row="2" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+            <StackPanel Margin="22,0,22,24" Spacing="12">
+                <TextBlock Text="{Binding SectionTitle}" FontSize="15" FontWeight="SemiBold" Foreground="{StaticResource KcapTextBrush}" />
+                <StackPanel IsVisible="{Binding IsOverview}" Spacing="10">
+                    <TextBlock Text="{Binding DescriptionNote}" Foreground="{StaticResource KcapMutedBrush}" TextWrapping="Wrap" />
+                    <views:MarkdownView Text="{Binding Description}" OpenLink="{Binding OpenBodyLinkCommand}" />
+                    <TextBlock Text="Description preview truncated. Open on GitHub for the full text."
+                               IsVisible="{Binding DescriptionTruncated}" Foreground="{StaticResource KcapMutedBrush}" TextWrapping="Wrap" />
+                </StackPanel>
+                <CheckBox Content="Include resolved threads" IsChecked="{Binding IncludeResolved, Mode=TwoWay}"
+                          IsVisible="{Binding IsThreads}" IsEnabled="{Binding CanReveal}" />
+                <Button Content="Back to threads" Command="{Binding ShowSectionCommand}" CommandParameter="threads"
+                        IsVisible="{Binding IsThreadComments}" IsEnabled="{Binding CanReveal}" HorizontalAlignment="Left" />
+                <TextBlock Text="{Binding SnapshotLabel}" Foreground="{StaticResource KcapFaintBrush}" FontSize="11" />
+                <TextBlock Text="{Binding PageNote}" Foreground="{StaticResource KcapMutedBrush}" TextWrapping="Wrap" />
+                <Button Content="Reload earlier" Command="{Binding ReloadEarlierCommand}" IsVisible="{Binding CanReloadEarlier}" HorizontalAlignment="Left" />
+                <ItemsControl ItemsSource="{Binding Rows}">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate x:DataType="vm:PullRequestRow">
+                            <Border Padding="15" Margin="0,0,0,12" CornerRadius="9" BorderThickness="1"
+                                    Background="{StaticResource KcapSurfaceBrush}" BorderBrush="{StaticResource KcapBorderBrush}">
+                                <StackPanel Spacing="9">
+                                    <TextBlock Text="{Binding Title}" FontWeight="SemiBold" Foreground="{StaticResource KcapTextBrush}" TextWrapping="Wrap" />
+                                    <TextBlock Text="{Binding Detail}" FontSize="11.5" Foreground="{StaticResource KcapMutedBrush}" TextWrapping="Wrap" />
+                                    <Border IsVisible="{Binding HasHunk}" Background="{StaticResource KcapSurfaceRaisedBrush}" Padding="10" CornerRadius="5">
+                                        <SelectableTextBlock Text="{Binding Hunk}" FontFamily="Menlo,Monaco,Consolas,monospace"
+                                                             FontSize="11" TextWrapping="Wrap" Foreground="{StaticResource KcapMutedBrush}" />
+                                    </Border>
+                                    <views:MarkdownView Text="{Binding Body}" IsVisible="{Binding HasBody}"
+                                        OpenLink="{Binding $parent[views:PullRequestReader].((vm:PullRequestContextViewModel)DataContext).OpenBodyLinkCommand}" />
+                                    <TextBlock Text="{Binding ItemNote}" FontSize="11.5" TextWrapping="Wrap" Foreground="{StaticResource KcapMutedBrush}" />
+                                    <StackPanel Orientation="Horizontal" Spacing="8">
+                                        <Button Content="Open source" IsVisible="{Binding HasLink}"
+                                                Command="{Binding $parent[views:PullRequestReader].((vm:PullRequestContextViewModel)DataContext).OpenRowCommand}"
+                                                CommandParameter="{Binding}" />
+                                        <Button Content="View replies" IsVisible="{Binding IsThread}"
+                                                IsEnabled="{Binding $parent[views:PullRequestReader].((vm:PullRequestContextViewModel)DataContext).CanReveal}"
+                                                Command="{Binding $parent[views:PullRequestReader].((vm:PullRequestContextViewModel)DataContext).ExpandThreadCommand}"
+                                                CommandParameter="{Binding}" />
+                                    </StackPanel>
+                                </StackPanel>
+                            </Border>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+                <Button Content="Load more" Command="{Binding LoadMoreCommand}" IsVisible="{Binding HasMore}" HorizontalAlignment="Left" />
+            </StackPanel>
+        </ScrollViewer>
+    </Grid>
+</UserControl>

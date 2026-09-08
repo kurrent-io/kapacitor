@@ -54,7 +54,10 @@ static class WorkItemsNudgeEmitter {
             "tracked item, register this session with it using the kcap-workitems MCP tool " +
             "`declare_work_item` — attach by the issue key, PR number, or existing work-item id you are " +
             "working on; create a new item by title ONLY when there is genuinely no tracker item, and " +
-            "never invent an id for an item that already exists. As you discover structure, declare it: " +
+            "never invent an id for an item that already exists. If you created a title-only item and an " +
+            "issue- or PR-keyed item for the same work now exists, merge yours into the keyed one with " +
+            "`merge_work_item`; undo a wrong attach with `detach_work_item`, never by declaring a breakdown. " +
+            "As you discover structure, declare it: " +
             "`declare_work_breakdown` when the work splits into a parent and parts, and " +
             "`declare_work_relation` when you find a dependency (`blocks` = this item blocks the other; " +
             "`blocked_by` = this item is blocked by the other). If a tool cannot resolve the session " +

@@ -4,8 +4,8 @@ using Avalonia;
 using Avalonia.Controls.Notifications;
 using Capacitor.App.Services;
 using Capacitor.App.ViewModels;
-using ReactiveUI;
-using ReactiveUI.Avalonia;
+using ReactiveUI.Reactive;
+using ReactiveUI.Avalonia.Reactive;
 
 namespace Capacitor.App.Views;
 
@@ -26,6 +26,7 @@ public partial class MainWindow : ReactiveWindow<MainWindowViewModel> {
     // Defaults to false — the Activity flyout starts closed (MainWindow.axaml), so Activity is off
     // regardless of the window's own visibility.
     bool _activityOpen;
+    WorkspaceViewModel? _foregroundWorkspace;
 
     /// Assigned by App.BuildAndShowMainWindow (spec §11) — the SAME IAppNotifier instance
     /// AgentActionService pushes into, so the toast overlay and stderr mirroring are always in
@@ -100,14 +101,23 @@ public partial class MainWindow : ReactiveWindow<MainWindowViewModel> {
         // DataContextProperty too — defensive: production always assigns DataContext before the
         // first Show(), but this keeps the check correct even if a caller (a test) does it the
         // other way around.
-        if (change.Property == IsVisibleProperty || change.Property == DataContextProperty) UpdateActivityVisibility();
+        if (change.Property == IsVisibleProperty || change.Property == DataContextProperty
+            || change.Property == IsActiveProperty || change.Property == WindowStateProperty) UpdateActivityVisibility();
     }
 
     // Activity polls only when it is ACTUALLY on screen: window visible AND the launcher pane
     // showing (Sessions surface, no workspace open) AND the flyout open — the same contract the
     // Activity tab's selection used to carry.
     void UpdateActivityVisibility() {
-        if (DataContext is MainWindowViewModel vm)
+        if (DataContext is MainWindowViewModel vm) {
             vm.Activity.OnTabVisibleChanged(_activityOpen && IsVisible && vm.IsSessionsView && vm.CurrentWorkspace is null);
+            var workspace = vm.IsSessionsView ? vm.CurrentWorkspace : null;
+            if (_foregroundWorkspace != workspace) _foregroundWorkspace?.PullRequests?.SetForeground(false);
+            _foregroundWorkspace = workspace;
+            workspace?.PullRequests?.SetForeground(IsVisible && IsActive && WindowState != Avalonia.Controls.WindowState.Minimized);
+        } else {
+            _foregroundWorkspace?.PullRequests?.SetForeground(false);
+            _foregroundWorkspace = null;
+        }
     }
 }

@@ -60,15 +60,17 @@
              family-aware note in their place otherwise (it never names a vendor). -->
         <Border Grid.Row="1" BorderBrush="{StaticResource KcapBorderBrush}" BorderThickness="0,1,0,1">
             <Grid Margin="20,0">
-                <StackPanel Orientation="Horizontal" Spacing="6" IsVisible="{Binding ShowsTerminalTab}"
+                <StackPanel Orientation="Horizontal" Spacing="6"
                             HorizontalAlignment="Left" VerticalAlignment="Center">
                     <Button x:Name="ChatTabButton" Content="Chat" Classes="tab" Classes.active="{Binding IsChatActive}"
-                            Command="{Binding ShowChatCommand}" />
+                            Command="{Binding ShowChatCommand}" IsVisible="{Binding ShowsTerminalTab}" />
                     <Button x:Name="TerminalTabButton" Content="Terminal" Classes="tab" Classes.active="{Binding IsTerminalActive}"
-                            Command="{Binding ShowTerminalCommand}" />
-                </StackPanel>
+                            Command="{Binding ShowTerminalCommand}" IsVisible="{Binding ShowsTerminalTab}" />
                 <TextBlock x:Name="NoTerminalNote" Text="{Binding NoTerminalNote}" IsVisible="{Binding !ShowsTerminalTab}"
                            Foreground="{StaticResource KcapMutedBrush}" FontSize="12.5" VerticalAlignment="Center" />
+                    <Button x:Name="PullRequestTabButton" Content="Pull request" Classes="tab" Classes.active="{Binding IsPullRequestActive}"
+                            Command="{Binding ShowPullRequestCommand}" IsVisible="{Binding ShowsPullRequestTab}" />
+                </StackPanel>
             </Grid>
         </Border>
 
@@ -94,13 +96,7 @@
             <!-- A session with no tabs at all has no Terminal tab to activate, and these banners
                  are the only content its cell ever gets — so they stay up whenever the strip is
                  showing the muted note instead of the tabs. -->
-            <Panel x:Name="TerminalBanners">
-                <Panel.IsVisible>
-                    <MultiBinding Converter="{x:Static BoolConverters.Or}">
-                        <Binding Path="IsTerminalActive" />
-                        <Binding Path="!ShowsTerminalTab" />
-                    </MultiBinding>
-                </Panel.IsVisible>
+            <Panel x:Name="TerminalBanners" IsVisible="{Binding ShowsTerminalBanners}">
 
                 <Border IsVisible="{Binding Terminal.State, Converter={x:Static views:TerminalPhaseIsConverter.Instance}, ConverterParameter=Connecting}"
                         Background="{StaticResource KcapSurfaceBrush}" BorderBrush="{StaticResource KcapBorderBrush}" BorderThickness="1"
@@ -170,6 +166,7 @@
                     </MultiBinding>
                 </views:ChatTabView.IsVisible>
             </views:ChatTabView>
+            <ContentControl x:Name="PullRequestHost" IsVisible="{Binding IsPullRequestActive}" />
         </Grid>
     </Grid>
     <views:WorkContextView x:Name="WorkContextHost" Grid.Column="1" DataContext="{Binding WorkContext}" />

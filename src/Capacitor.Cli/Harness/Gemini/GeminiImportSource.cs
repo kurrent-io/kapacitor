@@ -235,7 +235,8 @@ internal sealed class GeminiImportSource : IImportSource {
                 filePath:   transcriptPath,
                 agentId:    null,
                 startLine:  startLine,
-                vendor:     Vendor);
+                vendor:     Vendor,
+                progress:   ctx.Progress);
         } catch {
             return ImportOutcome.Failed;
         }
@@ -251,7 +252,7 @@ internal sealed class GeminiImportSource : IImportSource {
         // re-run whether or not anything is actually new. Accepted — still strictly better
         // than defaulting false (which would risk hiding genuinely-new subagent content
         // behind the lifecycle-only-replay label).
-        var sentChildContent = await ImportSubagentsAsync(ctx.HttpClient, ctx.BaseUrl, classification.SessionId, transcriptPath, ct);
+        var sentChildContent = await ImportSubagentsAsync(ctx.HttpClient, ctx.BaseUrl, classification.SessionId, transcriptPath, ctx.Progress, ct);
 
         var endOk = await PostSyntheticHookAsync(
             ctx.HttpClient, ctx.BaseUrl, "session-end/gemini",
@@ -322,7 +323,8 @@ internal sealed class GeminiImportSource : IImportSource {
     /// residual).
     /// </summary>
     async Task<bool> ImportSubagentsAsync(
-        HttpClient client, string baseUrl, string parentSessionIdDashless, string transcriptPath, CancellationToken ct
+        HttpClient client, string baseUrl, string parentSessionIdDashless, string transcriptPath,
+        IProgress<ImportProgress>? progress, CancellationToken ct
     ) {
         // Gemini has no completeness-fingerprint ledger (unlike OpenCode), so the omitted ids
         // are unused here — the diagnostic below only needs the count (and, when the below-cap
@@ -373,7 +375,7 @@ internal sealed class GeminiImportSource : IImportSource {
                 subSent = await SessionImporter.SendTranscriptBatches(
                     httpClient: client, baseUrl: baseUrl,
                     sessionId:  parentSessionIdDashless, filePath: d.File,
-                    agentId:    agentId, startLine: 0, vendor: Vendor, failOnError: true);
+                    agentId:    agentId, startLine: 0, vendor: Vendor, failOnError: true, progress: progress);
             } catch {
                 continue; // leave subagent-stop unsent; a re-import retries (idempotent)
             }

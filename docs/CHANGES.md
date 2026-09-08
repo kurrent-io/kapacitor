@@ -26,6 +26,104 @@ relaunch so that restart can land, and offers the dialog only to a daemon that s
 guard and the prerelease rule, and never on an update relaunch — a failed apply relaunches the old
 version with the same package still cached.
 
+## An import batch closes on bytes as well as lines
+
+**#814** closes a transcript batch at 4 MiB of line content as well as at 100 lines, and reports
+what an import leaves behind. A Codex rollout's `compacted` line re-carries every earlier user
+message, so a hundred of them could exceed the 30 MB body Kestrel binds by default; the server
+answered 413 and the importer, which read the status only for a strict caller, counted the batch as
+sent. The budget is measured on raw UTF-8 bytes and sits a third of the limit under the worst JSON
+escaping expansion, so it holds whatever a line contains. A single line over the budget cannot be
+split and is skipped rather than posted in a batch that would be refused. Both the skip and a
+refused batch travel on the import progress channel as warnings carrying their session id: a routed
+source shares one sink across the run, and a stderr line written under the live progress region is
+erased by its next frame. The lines of a dropped batch still count as sent; the figure is what was
+posted, and the warning above it is the record of what was not kept.
+
+## Read a linked pull request inside the workspace
+
+The work-context pane now has a compact PR card and a wide native reader beside
+Chat and Terminal. Description, checks, requested reviewers, published reviews,
+inline threads and conversation are readable without leaving a session. Chat
+drafts, terminal size and the existing hosts survive tab switches; PR context is
+also available on ended sessions and sessions without a terminal.
+
+The tenant server owns GitHub reads and current user/repository admission. The
+desktop negotiates a versioned contract, subtracts network time from short access
+leases and masks protected content when the workspace loses foreground. A transient
+failure can retain the already visible view temporarily; a denial clears it.
+Frozen pages keep stable ordering, expose incomplete coverage and bound retained
+content. Markdown uses native controls with explicit safe links and no remote images.
+
+The compatible server is required for native reading. Older servers retain safe
+external PR links after an independently authorized summary read. See the
+[design](superpowers/specs/2026-09-07-desktop-pr-context-design.md) and
+[credential design](superpowers/specs/2026-09-07-github-app-pr-credentials-design.md).
+
+## Desktop shell: remote daemons
+
+The rail now merges the local daemon's agents with the server's registry of every daemon the
+signed-in user owns, so an agent running on another of the user's machines renders beside the ones
+on this one. Two invariants hold the merge and the launcher honest.
+
+**Twin identity is proven, never assumed, and an unproven twin renders twice.**
+`LocalDaemonTwin.Find` suppresses a server-registry agent only on an exact, server-scoped match — the
+daemon's `MachineId` equals this machine's persisted id and its `Name` equals the local daemon's own
+— and only while the local lane can still see it. A missing machine id, two owners running
+same-named daemons on one machine, or any other uncertainty leaves both the local and the server row
+standing rather than guessing which one to hide: a duplicate row is the cost of a merge that would
+otherwise sometimes have to make an agent disappear.
+
+**The launcher's machine picker offers only the signed-in user's own daemons.**
+`RequestLaunchAgentV2` carries a `daemon_name` and no owner or machine id, so name-based launch
+routing is defined only within one owner — a picker listing another owner's same-named daemon would
+route a launch nowhere the user intended. Ownership is re-verified at launch time rather than trusted
+from the picker's own filtered list: `ReactiveCommand.Execute()` does not gate itself on
+`CanExecute`, so a selection whose daemon was reassigned to another owner between selection and
+launch is refused inside `StartAsync` itself, not left to the affordance alone.
+
+## A vendor update under a running daemon is re-advertised
+
+The vendor CLI version a daemon advertises was a startup probe cached for the process lifetime, and
+reconnects re-sent that cache. When Claude auto-updated under a daemon that had been up for days,
+the next review-flow launch failed the certification's swap arm, and the rejection told the
+operator to restart the daemon: the one action that tears down every hosted agent, on a daemon
+whose idle-gated restart can wait days. The rejection already re-advertised on the live connection
+(a same-connection `DaemonConnect` is an idempotent overwrite that keeps live agents), so the
+remedy was wrong twice over: a retry was enough, and only the first launch after the update was
+ever lost.
+
+**One refresh path, single-flighted.** `AgentOrchestrator.RefreshAdvertisedCapabilities` is the
+only writer of the advertisement while the daemon runs: `VendorCliWatcher` calls it when an
+advertised vendor's binary changes on disk, the certification rejection calls it with a forced
+republish because the server's copy has just proven wrong. The watcher fingerprints the file that
+actually runs — bare command resolved on PATH, symlink chain followed — plus size and mtime,
+because a vendor update is usually a symlink retargeted at a new version directory whose file may
+match the old one's size and land on a coarse clock. Its first baseline is the fingerprint taken
+at startup before the version probe, not the file it finds when the service starts: the probes can
+take the better part of a minute under load, and a vendor updating inside that window would
+otherwise become the baseline while the advertisement still named the old build. A refresh that
+finds nothing changed does not re-register: every registration bumps the slot's connection
+generation, which fails a reviewer launch pinned to the previous one, so a same-version reinstall
+must not cost a launch. The rejection's forced republish is a sticky flag the next pass consumes,
+because a request folded into a running pass reruns that pass's delegate, not its own.
+
+**A failed re-probe keeps the advertised version.** The server reads a null version as the vendor
+being gone, so publishing the probe's null would withdraw a reviewer that was advertised a moment
+ago. `RetainAdvertisedVersions` carries the previous version over a null re-probe; a later launch
+that still disagrees hits the swap arm and forces another refresh. The refresh probes the vendor set
+fixed at startup rather than re-classifying, which is also what `DaemonConnect` sends as the vendor
+list; a vendor withheld at startup for a version floor stays withheld until a restart.
+## A Codex refresh heals the MCP registration
+
+**#807** registers the kcap MCP servers on every Codex refresh, the `plugin install --codex
+--if-installed` that `kcap update` and the npm postinstall run. The hooks version marker gates only
+the hooks write: it says nothing about `~/.codex/config.toml`, so a server that joined the Codex set
+after the last full install stayed unregistered however current the hooks were, and Codex loaded a
+session with the session and review tools but no flow tools. The registration is idempotent and
+leaves every unclaimed or user entry alone, so repeating it is safe; the opt-in gate stays ahead of
+it, so a user who never installed the Codex integration still gets no entries.
+
 ## The desktop app shows a session waiting for input
 
 The web already marked a session whose turn was over; the desktop app lit its needs-you pip only
@@ -1005,3 +1103,36 @@ a run of them.
 **Stopping does not wait for a beat in flight**, and does not cancel it either. Nothing is owed to it:
 the relinquish that follows states the ending, and the browser reads a stated ending ahead of an inferred
 one.
+
+## The desktop app renders through OpenGL on macOS
+
+Avalonia puts Metal first in its macOS renderer order. On macOS 26 that path presents alternate frames
+with different colour matching, so any steady repaint flickers the whole window between two shades — the
+composer caret blinking while the window is focused is enough, and the flicker stops the moment focus
+leaves. Nothing in the app drives it: every surface is a static brush, and the shift covers the rail, the
+panes and the text alike. The renderer order leaves Metal out, OpenGL first with the software renderer
+behind it, and the flicker is gone.
+
+## The tool kind reaches the persisted canonical event
+
+**#794** populates `ToolCallInfo.ToolKind`, the field `Kurrent.Agent.Schema` 0.5.0 carries, in the
+Claude and Codex transcript projections, so the server sees the kind for an imported session and not
+only the chat and the daemon's hosted lane. The kind tables move down into `Capacitor.Models.Transcripts`
+to make that possible: the projections sit below `Capacitor.Cli.Core`, where the tables lived, and one
+copy of each table matters more than which directory holds it — a hosted session, the chat and an
+import of the same rollout must not answer differently for the same call. The schema pin is shared
+with kcap-server, which carries this repo as a submodule, so its pin has to move with the submodule
+pointer or two schema versions share one build graph.
+
+**Absent stays distinguishable from `other`, and these two lanes always answer.** The schema carries
+the field with explicit presence, so an unclassified call omits the key rather than writing `""`.
+Both projections classify every call — an unlisted tool, an MCP tool arriving under its bare name, even
+a nameless call, is a present `other` — and absence is reserved for a lane with no table at all: the
+server's own normalizers, and an ACP agent that sent no kind. A nameless call could have been read as
+absent; it is not, because the chat lane already says `other` for it and the lanes agreeing wins.
+
+**The raw input reaches the shell classifier, not the struct.** A Codex shell call is classified by its
+command, and the projection has turned the arguments into a `Struct` by the time it builds the call, so
+the general path carries the unparsed string alongside. A `custom_tool_call` hands over its body, which
+is not JSON, so a shell-family custom tool would read as `execute`; `apply_patch`, the one that occurs,
+is decided by its name.

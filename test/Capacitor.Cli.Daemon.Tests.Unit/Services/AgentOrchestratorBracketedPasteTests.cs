@@ -5,19 +5,12 @@ using Capacitor.Cli.Daemon.Tests.Unit.Pty;
 namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 
 /// <summary>
-/// a pasted (large, multi-line) message written to a hosted agent's PTY as raw bytes
-/// followed by a carriage return often fails to submit — the CR races the still-ingesting
-/// paste and is folded into it as a literal newline, so the text sits in the composer until a
-/// later, isolated keystroke finishes it (Codex never submits at all; Claude ~50% of the time).
-/// The fix delivers the message as a bracketed paste (ESC[200~ … ESC[201~) so the TUI treats it
-/// as one block, then submits with the escalating carriage-return schedule (GitHub #349 — a
-/// single CR after the paste is unreliably folded into paste-finalization; the extra CRs are
-/// harmless empty-composer no-ops once submitted). This test drives
-/// <c>AgentOrchestrator.HandleSendInput</c> end-to-end through the
-/// <see cref="IHostedAgentRuntime"/> seam (<see cref="PtyHostedAgentRuntime"/> wrapping a fake
-/// PTY) and asserts the wire shape reaching the PTY.
+/// Messages reach the PTY as a bracketed paste followed by separate submit keystrokes,
+/// so a terminal still ingesting the paste can accept a later carriage return.
 /// </summary>
 public class AgentOrchestratorBracketedPasteTests {
+    [TempDir] public required TempDir Worktree { get; init; }
+
     const string PasteStart = "\x1b[200~";
     const string PasteEnd   = "\x1b[201~";
 
@@ -31,8 +24,8 @@ public class AgentOrchestratorBracketedPasteTests {
         await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
 
         var agent = new AgentInstance(
-            "agent-paste", null, "", null, "/tmp", "codex",
-            new PtyHostedAgentRuntime("codex", pty, approvalsDisabled: true), new WorktreeInfo("/tmp", "", "/tmp", IsStandalone: true), new CancellationTokenSource());
+            "agent-paste", null, "", null, Worktree.Path, "codex",
+            new PtyHostedAgentRuntime("codex", pty, approvalsDisabled: true), new WorktreeInfo(Worktree.Path, "", Worktree.Path, IsStandalone: true), new CancellationTokenSource());
         orch.RegisterAgentForTest(agent);
 
         await orch.HandleSendInputForTest(new SendInputCommand("agent-paste", message, null));

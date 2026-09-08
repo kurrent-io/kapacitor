@@ -1,3 +1,5 @@
+using Capacitor.Models.Transcripts.Harness.Codex;
+
 namespace Capacitor.Cli.Core.Harness.Codex;
 
 /// Codex writes its injected preludes as user messages; the chat shows none of them. A tool call

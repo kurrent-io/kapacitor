@@ -1,0 +1,44 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="clr-namespace:Capacitor.App.ViewModels"
+             x:Class="Capacitor.App.Views.PullRequestCard"
+             x:DataType="vm:PullRequestContextViewModel">
+    <Border Margin="0,10,0,0" Padding="13" CornerRadius="10" BorderThickness="1"
+            Background="{StaticResource KcapSurfaceRaisedBrush}" BorderBrush="{StaticResource KcapBorderBrush}">
+        <StackPanel Spacing="8">
+            <Grid ColumnDefinitions="*,Auto">
+                <TextBlock Text="PULL REQUEST" FontSize="10" FontWeight="Bold" LetterSpacing="1"
+                           Foreground="{StaticResource KcapFaintBrush}" VerticalAlignment="Center" />
+                <Button Grid.Column="1" Content="Refresh" Command="{Binding RefreshCommand}" Padding="7,3" FontSize="11"
+                        Background="Transparent" BorderThickness="0" Foreground="{StaticResource KcapMutedBrush}" />
+            </Grid>
+            <ComboBox ItemsSource="{Binding Choices}" SelectedItem="{Binding Selected, Mode=TwoWay}"
+                      IsVisible="{Binding HasChoice}" HorizontalAlignment="Stretch" FontSize="11.5"
+                      AutomationProperties.Name="Linked pull request">
+                <ComboBox.ItemTemplate>
+                    <DataTemplate x:DataType="vm:PullRequestChoice">
+                        <TextBlock Text="{Binding Label}" TextTrimming="CharacterEllipsis" />
+                    </DataTemplate>
+                </ComboBox.ItemTemplate>
+            </ComboBox>
+            <TextBlock Text="{Binding Title}" FontSize="13" FontWeight="SemiBold" TextWrapping="Wrap" MaxLines="2"
+                       Foreground="{StaticResource KcapTextBrush}" />
+            <StackPanel Spacing="5" IsVisible="{Binding CanDisplay}">
+                <TextBlock Text="{Binding Lifecycle}" FontSize="11" FontWeight="Bold" Foreground="{StaticResource KcapPurpleBrush}" />
+                <TextBlock Text="{Binding Branches}" FontSize="11" TextTrimming="CharacterEllipsis" Foreground="{StaticResource KcapMutedBrush}" />
+                <TextBlock Text="{Binding CheckSummary}" FontSize="11.5" TextWrapping="Wrap" Foreground="{StaticResource KcapTextBrush}" />
+                <TextBlock Text="{Binding ReviewSummary}" FontSize="11.5" Foreground="{StaticResource KcapTextBrush}" />
+                <TextBlock Text="{Binding FetchedLabel}" FontSize="10.5" Foreground="{StaticResource KcapFaintBrush}" />
+            </StackPanel>
+            <TextBlock Text="{Binding Notice}" IsVisible="{Binding HasNotice}" FontSize="11.5" TextWrapping="Wrap"
+                       Foreground="{StaticResource KcapMutedBrush}" />
+            <StackPanel Orientation="Horizontal" Spacing="7">
+                <Button Content="Read PR" Command="{Binding OpenReaderCommand}" IsVisible="{Binding HasChoice}"
+                        IsEnabled="{Binding !IsLegacy}" Padding="10,5" FontSize="11.5" />
+                <Button Content="Open pull request" Command="{Binding OpenGitHubCommand}" IsVisible="{Binding HasChoice}" Padding="10,5" FontSize="11.5" />
+            </StackPanel>
+            <Button Content="Sign in" Command="{Binding SignInCommand}" IsVisible="{Binding ShowsSignIn}" HorizontalAlignment="Left" />
+            <Button Content="Link GitHub" Command="{Binding LinkGitHubCommand}" IsVisible="{Binding ShowsLinkGitHub}" HorizontalAlignment="Left" />
+        </StackPanel>
+    </Border>
+</UserControl>

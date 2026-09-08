@@ -1,7 +1,7 @@
 using System.Reactive.Disposables;
 using System.Reactive.Subjects;
 using Capacitor.App.Services;
-using ReactiveUI;
+using ReactiveUI.Reactive;
 
 namespace Capacitor.App.ViewModels;
 

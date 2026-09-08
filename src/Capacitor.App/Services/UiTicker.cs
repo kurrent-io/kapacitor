@@ -1,5 +1,5 @@
 using System.Reactive.Linq;
-using ReactiveUI;
+using ReactiveUI.Reactive;
 
 namespace Capacitor.App.Services;
 

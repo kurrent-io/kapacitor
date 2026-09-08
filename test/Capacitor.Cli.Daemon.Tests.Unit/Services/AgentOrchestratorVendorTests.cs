@@ -59,17 +59,17 @@ public class AgentOrchestratorVendorTests {
 
     // re-registration is awaited inside RegisterDaemon before readiness is restored.
     // A transient per-agent failure must be retried (not swallowed on first try), so the agent's
-    // ownership is restored before the daemon flips ready — narrowing the "ready despite reregister
-    // failure" window qodo flagged.
+    // ownership is restored before the daemon flips ready.
     [Test]
     public async Task ReRegister_retries_a_transient_per_agent_failure_then_succeeds() {
+        using var worktree = new TempDir();
         var server = new CaptureServerConnection { AgentRegisteredFailTimes = 1 };
 
         await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
 
         orch.RegisterAgentForTest(new AgentInstance(
-            "agent-rereg", null, "", null, "/tmp", "claude",
-            new PtyHostedAgentRuntime("claude", new StubPtyProcess()), new WorktreeInfo("/tmp", "", "/tmp", IsStandalone: true), new CancellationTokenSource()
+            "agent-rereg", null, "", null, worktree.Path, "claude",
+            new PtyHostedAgentRuntime("claude", new StubPtyProcess()), new WorktreeInfo(worktree.Path, "", worktree.Path, IsStandalone: true), new CancellationTokenSource()
         ));
 
         // The orchestrator wires ReRegisterAgentsHook in its ctor; invoking it runs the same
@@ -84,13 +84,14 @@ public class AgentOrchestratorVendorTests {
     // not the vendor (a codex agent is not automatically app-server).
     [Test]
     public async Task ReRegister_reports_pty_transport_for_a_pty_codex_runtime() {
+        using var worktree = new TempDir();
         var server = new CaptureServerConnection();
 
         await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
 
         orch.RegisterAgentForTest(new AgentInstance(
-            "agent-codex-pty", null, "", null, "/tmp", "codex",
-            new PtyHostedAgentRuntime("codex", new StubPtyProcess()), new WorktreeInfo("/tmp", "", "/tmp", IsStandalone: true), new CancellationTokenSource()
+            "agent-codex-pty", null, "", null, worktree.Path, "codex",
+            new PtyHostedAgentRuntime("codex", new StubPtyProcess()), new WorktreeInfo(worktree.Path, "", worktree.Path, IsStandalone: true), new CancellationTokenSource()
         ));
 
         await server.ReRegisterAgentsHook!();
@@ -542,6 +543,7 @@ public class AgentOrchestratorVendorTests {
 
     [Test]
     public async Task Reregistration_resends_the_same_applied_posture() {
+        using var worktree = new TempDir();
         // A server restart wipes the in-memory echo; the reconnect path rebuilds it from the
         // AgentInstance, so the pair must survive rather than silently becoming null.
         var server     = new CaptureServerConnection();
@@ -550,9 +552,9 @@ public class AgentOrchestratorVendorTests {
         await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, ptyFactory, new Dictionary<string, IHostedAgentLauncher>());
 
         orch.RegisterAgentForTest(new AgentInstance(
-            "agent-rereg-posture", null, "", null, "/tmp", "codex",
+            "agent-rereg-posture", null, "", null, worktree.Path, "codex",
             new PtyHostedAgentRuntime("codex", new StubPtyProcess()),
-            new WorktreeInfo("/tmp", "", "/tmp", IsStandalone: true), new CancellationTokenSource()
+            new WorktreeInfo(worktree.Path, "", worktree.Path, IsStandalone: true), new CancellationTokenSource()
         ) {
             SandboxPolicy = "danger-full-access", ApprovalPolicy = "never"
         });
@@ -701,6 +703,10 @@ public class AgentOrchestratorVendorTests {
         await Assert.That(server.LaunchFailedCalls[0].Reason).Contains("reviewer_certification_changed");
         await Assert.That(claudeSpy.PrepareCalls).IsEqualTo(0);
         await Assert.That(ptyFactory.SpawnCalls).IsEqualTo(0);
+
+        // The rejection is also the self-heal: the daemon re-advertises so the next attempt passes.
+        await orch.CapabilityRefreshForTest;
+        await Assert.That(server.RegisterDaemonCalls).IsEqualTo(1);
     }
 
     [Test]

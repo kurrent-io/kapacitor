@@ -1,21 +1,16 @@
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Config;
+using Capacitor.Cli.Core.Http;
 
 namespace Capacitor.Cli.Commands;
 
-public sealed class UpdateCommand(ConfigRoot root, ProfileContext profiles, bool? appBundled = null) {
+public sealed class UpdateCommand(ConfigRoot root, ProfileContext profiles, NpmRegistryClient npm, bool? appBundled = null) {
     /// Printed by every `kcap update` invocation of a CLI that lives inside the desktop app.
     internal const string BundledMessage =
         "This kcap is bundled with the Kurrent Capacitor desktop app; updates arrive through the app (\"Check for Updates…\" in the menu bar).";
 
     readonly bool _appBundled = appBundled ?? InstallProvenance.IsAppBundled();
-
-    /// <summary>
-    /// npm registry base URL. Overridable seam so integration tests can point
-    /// the CLI at a fake registry (e.g. WireMock) instead of the real npm registry.
-    /// </summary>
-    internal static string RegistryBaseUrl = "https://registry.npmjs.org";
 
     /// <summary>Valid npm dist-tags for the update channel (Phase 1).</summary>
     static readonly string[] KnownChannels = ["latest", "beta"];
@@ -84,7 +79,7 @@ public sealed class UpdateCommand(ConfigRoot root, ProfileContext profiles, bool
             }
         }
 
-        var checkResult       = await CheckForUpdateAsync(forceCheck: true, channel, root);
+        var checkResult       = await CheckForUpdateAsync(forceCheck: true, channel, root, npm);
         var (latest, current) = (checkResult.Latest, checkResult.Current);
 
         if (checkOnly) {
@@ -160,6 +155,7 @@ public sealed class UpdateCommand(ConfigRoot root, ProfileContext profiles, bool
     internal static async Task<UpdateCheckResult?> CheckForUpdateWithBudgetAsync(
             ConfigRoot root,
             string channel,
+            NpmRegistryClient npm,
             TimeSpan? cacheFreshBudget = null,
             TimeSpan? networkCancelAfter = null,
             TimeSpan? cleanupGrace = null) {
@@ -168,7 +164,7 @@ public sealed class UpdateCommand(ConfigRoot root, ProfileContext profiles, bool
         var cleanupGraceVal       = cleanupGrace ?? TimeSpan.FromMilliseconds(500);
 
         var cts       = new CancellationTokenSource(networkCancelAfterVal);
-        var checkTask = CheckForUpdateAsync(forceCheck: false, channel, root, cts.Token);
+        var checkTask = CheckForUpdateAsync(forceCheck: false, channel, root, npm, cts.Token);
 
         // Dispose only once the task reaches a terminal state — never synchronously here, since
         // an abandoned check (either tier below giving up) may still be running past this method's
@@ -290,7 +286,8 @@ public sealed class UpdateCommand(ConfigRoot root, ProfileContext profiles, bool
     /// <see cref="WriteCacheRecordAsync"/>.
     /// </param>
     internal static async Task<UpdateCheckResult> CheckForUpdateAsync(
-            bool forceCheck, string channel, ConfigRoot root, CancellationToken ct = default) {
+            bool forceCheck, string channel, ConfigRoot root, NpmRegistryClient npm,
+            CancellationToken ct = default) {
         var current   = GetCurrentVersion();
         var cachePath = CachePathFor(channel, root);
         var now       = DateTimeOffset.UtcNow;
@@ -315,22 +312,15 @@ public sealed class UpdateCommand(ConfigRoot root, ProfileContext profiles, bool
             return new UpdateCheckResult(current, cached.LatestVersion, IsNewer(cached.LatestVersion, current), FromCache: true);
         }
 
-        // Query npm registry.
-        using var http = new HttpClient();
-        http.Timeout = TimeSpan.FromSeconds(5);
-        http.DefaultRequestHeaders.Add("User-Agent", "kcap-cli");
-
         try {
-            var resp = await http.GetAsync($"{RegistryBaseUrl}/@kurrent/kcap/{channel}", ct);
+            var lookup = await npm.GetDistTagAsync(channel, ct);
 
-            if (!resp.IsSuccessStatusCode) {
+            if (!lookup.Reached) {
                 await WriteBackoffRecordAsync(cachePath, cached?.LatestVersion, now);
                 return new UpdateCheckResult(current, cached?.LatestVersion, IsNewer(cached?.LatestVersion, current), FromCache: true);
             }
 
-            var body   = await resp.Content.ReadAsStringAsync(ct);
-            var json   = JsonNode.Parse(body);
-            var latest = json?["version"]?.GetValue<string>();
+            var latest = lookup.Version;
 
             if (latest is not null) {
                 await WriteCacheRecordAsync(cachePath, new UpdateCacheRecord(latest, now, AttemptedAt: null, Failed: false));
