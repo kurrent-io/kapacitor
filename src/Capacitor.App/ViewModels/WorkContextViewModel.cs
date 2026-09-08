@@ -7,6 +7,7 @@ using System.Reactive.Subjects;
 using Avalonia.Threading;
 using Capacitor.App.Services;
 using Capacitor.Cli.Core.LocalIpc;
+using Capacitor.Cli.Core.PullRequests.Readers;
 using Capacitor.Cli.Core.WorkItems;
 using ReactiveUI;
 
@@ -24,7 +25,7 @@ public sealed partial class WorkContextViewModel : ReactiveObject {
     public PullRequestContextViewModel? PullRequests { get; internal set; }
     public bool HasPullRequestContext => PullRequests is not null;
     public bool ShowsLegacyLinks => PullRequests is null;
-    public string? PrimaryRepositoryHash { get; private set; }
+    public PullRequestRepository? PrimaryRepository { get; private set; }
     internal static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(30);
     static readonly IReadOnlyList<HarnessOption> DefaultHarnessOptions = HostedHarnessCatalog.Build(null);
 
@@ -204,7 +205,7 @@ public sealed partial class WorkContextViewModel : ReactiveObject {
         old?.Cts.Cancel();
         HasSession = true;
         SessionIdText = id;
-        PrimaryRepositoryHash = null;
+        PrimaryRepository = null;
         ClearServerProjections();
         IsStale = false;
         Phase = WorkContextPhase.Loading;

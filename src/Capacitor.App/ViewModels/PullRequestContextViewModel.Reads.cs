@@ -22,7 +22,10 @@ public sealed partial class PullRequestContextViewModel {
         _refreshing = true;
         _lastRefresh = _time.GetTimestamp();
         Notify();
+        var repository = _primaryRepo?.Invoke();
+        var branch = _branch;
         Start(async ct => {
+            _readers?.DescribeSession(session, repository, branch);
             var capability = await _source.DiscoverAsync(refresh, ct).ConfigureAwait(false);
             var links = capability.Kind switch {
                 PullRequestCapabilityKind.Supported => await _source.ListAsync(session, ct).ConfigureAwait(false),
@@ -58,7 +61,7 @@ public sealed partial class PullRequestContextViewModel {
                     incoming.Insert(0, selected);
                 }
                 if (selected is null) {
-                    var primary = _primaryRepo?.Invoke();
+                    var primary = _primaryRepo?.Invoke()?.RepoHash;
                     var matching = primary is null ? [] : incoming.Where(choice => choice.Link.RepoHash == primary && choice.Link.HeadRef == _branch && _branch is not null).ToArray();
                     selected = matching.Length == 1 ? matching[0] : incoming.FirstOrDefault();
                 }
@@ -82,7 +85,6 @@ public sealed partial class PullRequestContextViewModel {
     void RequestOverview() {
         if (_disposed || !_foreground || _legacy || _stopped || _overviewPending || _session is not { } session || _selected is not { IsAvailable: true } choice
             || _retryAt > _time.GetUtcNow().UtcDateTime || _lastOverview is { } last && _time.GetElapsedTime(last).TotalSeconds < 15) return;
-        if (!PullRequestWire.IsGitHub(choice.Subject)) { ClearProtected(); SetNotice("Native reading is unavailable for this provider. Open the linked pull request in your browser."); return; }
         _overviewPending = true;
         _lastOverview = _time.GetTimestamp();
         Notify();

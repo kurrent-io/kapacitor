@@ -253,7 +253,9 @@ public sealed partial class WorkContextViewModel {
         if (read.SummaryFailed) return;
         if (read.Summary is not { } summary) return;
         var primaryRepositories = summary.Repositories.Where(repository => repository.IsPrimary).ToArray();
-        PrimaryRepositoryHash = primaryRepositories.Length == 1 ? primaryRepositories[0].RepoHash : null;
+        // The summary names no host, so a session repository is assumed to be github.com until a link says otherwise.
+        PrimaryRepository = primaryRepositories.Length == 1
+            ? new("github", "github.com", primaryRepositories[0].Owner, primaryRepositories[0].RepoName, primaryRepositories[0].RepoHash) : null;
 
         var cards = summary.PullRequests
             .Select(pr => Link(pr.Number, pr.Title, pr.Url))

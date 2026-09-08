@@ -90,6 +90,11 @@ public sealed partial class PullRequestContextViewModel {
             "integration_capability_unavailable" => "The GitHub integration cannot read this PR. An operator can check its permissions.",
             "rate_limited" or "budget_exhausted" => "GitHub reads are paused temporarily. Retry after the cooldown.",
             "identity_changed" or "integration_changed" => "Access changed. Refresh to reload this pull request.",
+            "no_reader" => "No reader is available for this pull request's host.",
+            "not_found" => "This pull request could not be found.",
+            "tool_signed_out" => "The local CLI is not signed in for this host. Sign in and refresh.",
+            "tool_denied" => "Your account cannot read this pull request.",
+            "tool_failed" => "The local CLI could not read this pull request. Refresh to try again.",
             _ => "Couldn't load pull request context. Retry when the server is reachable."
         }
     };
@@ -104,26 +109,26 @@ public sealed partial class PullRequestContextViewModel {
         "commented" => "Commented", "dismissed" => "Dismissed", _ => "Unknown review state" };
     static PullRequestRow Unavailable(string id, string title, string? url, string? availability) => new(id, title, "", null, null, url,
         availability == "redacted" ? "redacted" : "unavailable");
-    static PullRequestRow ToRow(PullRequestCommentDto item, PullRequestSubjectDto subject) => item.Availability == "available"
-        ? new(item.Id, Author(item.Author), Dated(item.CreatedAt), item.Body, null, PullRequestWire.PrLink(item.Url, subject), "available", item.BodyTruncated)
-        : Unavailable(item.Id, "Comment", PullRequestWire.PrLink(item.Url, subject), item.Availability);
-    static PullRequestRow ToRow(PullRequestReviewDto item, PullRequestSubjectDto subject) => item.Availability == "available" && item.State is not ("pending" or "PENDING")
-        ? new(item.Id, Author(item.Author), ReviewState(item.State) + " · " + Dated(item.SubmittedAt), item.Body, null, PullRequestWire.PrLink(item.Url, subject), "available", item.BodyTruncated)
-        : Unavailable(item.Id, "Review", PullRequestWire.PrLink(item.Url, subject), item.Availability);
-    static PullRequestRow ToRow(PullRequestReviewerDto item, PullRequestSubjectDto subject) => item.Availability == "available"
+    PullRequestRow ToRow(PullRequestCommentDto item, PullRequestSubjectDto subject) => item.Availability == "available"
+        ? new(item.Id, Author(item.Author), Dated(item.CreatedAt), item.Body, null, PrLink(item.Url, subject), "available", item.BodyTruncated)
+        : Unavailable(item.Id, "Comment", PrLink(item.Url, subject), item.Availability);
+    PullRequestRow ToRow(PullRequestReviewDto item, PullRequestSubjectDto subject) => item.Availability == "available" && item.State is not ("pending" or "PENDING")
+        ? new(item.Id, Author(item.Author), ReviewState(item.State) + " · " + Dated(item.SubmittedAt), item.Body, null, PrLink(item.Url, subject), "available", item.BodyTruncated)
+        : Unavailable(item.Id, "Review", PrLink(item.Url, subject), item.Availability);
+    PullRequestRow ToRow(PullRequestReviewerDto item, PullRequestSubjectDto subject) => item.Availability == "available"
         ? new(item.Id, Author(item.Actor), (item.Requested == true ? "Review requested · " : "") + ReviewState(item.ReviewState),
-            null, null, PullRequestWire.PrLink(item.Url, subject), "available")
+            null, null, PrLink(item.Url, subject), "available")
         : Unavailable(item.Id, "Reviewer", null, item.Availability);
-    static PullRequestRow ToRow(PullRequestCheckDto item, PullRequestSubjectDto subject) => item.Availability == "available"
+    PullRequestRow ToRow(PullRequestCheckDto item, PullRequestSubjectDto subject) => item.Availability == "available"
         ? new(item.Id, item.Name ?? "Unnamed check", Outcome(item.Outcome) + " · " + (item.AppName ?? item.Source ?? "Unknown source")
             + (PullRequestWire.CheckLink(item.Url) is { } url ? " · " + new Uri(url).Host : ""),
             null, null, PullRequestWire.CheckLink(item.Url), "available", IsCheck: true, Outcome: item.Outcome ?? "unknown")
         : Unavailable(item.Id, "Check", PullRequestWire.CheckLink(item.Url), item.Availability) with { IsCheck = true, Outcome = "unknown" };
-    static PullRequestRow ToRow(PullRequestThreadDto item, PullRequestSubjectDto subject) => item.Availability == "available"
+    PullRequestRow ToRow(PullRequestThreadDto item, PullRequestSubjectDto subject) => item.Availability == "available"
         ? new(item.Id, (item.Path ?? "Unknown file") + (item.Line is { } line ? ":" + line.ToString(CultureInfo.InvariantCulture) : ""),
             (item.IsResolved == true ? "Resolved" : item.IsResolved == false ? "Unresolved" : "Resolution unknown")
             + (item.IsOutdated == true ? " · Outdated" : "") + " · " + Author(item.RootComment?.Availability == "available" ? item.RootComment.Author : null),
-            item.RootComment?.Availability == "available" ? item.RootComment.Body : null, item.DiffHunk, PullRequestWire.PrLink(item.Url, subject),
+            item.RootComment?.Availability == "available" ? item.RootComment.Body : null, item.DiffHunk, PrLink(item.Url, subject),
             "available", item.HunkTruncated || item.RootComment?.BodyTruncated == true, IsThread: true)
-        : Unavailable(item.Id, "Thread", PullRequestWire.PrLink(item.Url, subject), item.Availability);
+        : Unavailable(item.Id, "Thread", PrLink(item.Url, subject), item.Availability);
 }
