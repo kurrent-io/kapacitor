@@ -89,9 +89,14 @@ public sealed class GitHubCliReaderProvider(GitHubCliRunner cli, TimeProvider? t
         if (Refuse<PullRequestPageDto<T>>(subject) is { } refused) return refused;
         var valid = section switch {
             "checks" => typeof(T) == typeof(PullRequestCheckDto), "reviewers" => typeof(T) == typeof(PullRequestReviewerDto),
-            "reviews" => typeof(T) == typeof(PullRequestReviewDto), "conversation" => typeof(T) == typeof(PullRequestCommentDto), _ => false
+            "reviews" => typeof(T) == typeof(PullRequestReviewDto), "conversation" => typeof(T) == typeof(PullRequestCommentDto),
+            "threads" => typeof(T) == typeof(PullRequestThreadDto), "thread_comments" => typeof(T) == typeof(PullRequestCommentDto), _ => false
         };
         if (!valid || cursor is not null && !PullRequestWire.ValidHandle(cursor)) return Invalid<PullRequestPageDto<T>>(subject);
+        if (resolved is not null && (section != "threads" || resolved is not ("unresolved" or "all"))) return Invalid<PullRequestPageDto<T>>(subject);
+        if (section == "thread_comments" && !GitHubCliRunner.ValidNodeId(threadId)) return Invalid<PullRequestPageDto<T>>(subject);
+        if (section == "threads") return (PullRequestRead<PullRequestPageDto<T>>)(object)await ThreadsAsync(subject, cursor, resolved ?? "unresolved", ct).ConfigureAwait(false);
+        if (section == "thread_comments") return (PullRequestRead<PullRequestPageDto<T>>)(object)await ThreadCommentsAsync(subject, cursor, threadId!, ct).ConfigureAwait(false);
         var key = Key(subject) + "|" + section;
         var started = _time.GetTimestamp();
         if (cursor is not null) return Slice<T>(cursor, key, null, subject, started);
@@ -119,6 +124,65 @@ public sealed class GitHubCliReaderProvider(GitHubCliRunner cli, TimeProvider? t
             Items = slice, PageCursor = handle, HasMore = hasMore, NextCursor = hasMore ? _cursors.Mint(entry with { Offset = entry.Offset + 50 }) : null,
         };
         return Ready(page, subject, entry.StartedAt, started);
+    }
+
+    async Task<PullRequestRead<PullRequestPageDto<PullRequestThreadDto>>> ThreadsAsync(PullRequestSubjectDto subject, string? cursor, string resolved, CancellationToken ct) {
+        var key = Key(subject) + "|threads|" + resolved;
+        var started = _time.GetTimestamp();
+        var entry = cursor is null ? new GitHubCliCursorEntry(GitHubCliCursors.NewHandle(), key, Now, null) : _cursors.Get(cursor);
+        if (entry is null || entry.Key != key) return new(PullRequestReadKind.Restart, Subject: subject, Reason: "snapshot_expired");
+        var after = entry.After;
+        var items = new List<PullRequestThreadDto>();
+        var excluded = 0; var total = 0; var hasNext = false; string? endCursor = null; string? head = entry.HeadSha;
+        for (var fetches = 0; fetches < 10; fetches++) {
+            string[] args = ["api", "graphql", "--hostname", subject.Host, "-f", "query=" + GitHubCliMapping.ThreadsQuery, "-f", "owner=" + subject.Owner,
+                "-f", "repo=" + subject.RepoName, "-F", "number=" + subject.Number.ToString(CultureInfo.InvariantCulture)];
+            if (after is not null) args = [.. args, "-f", "after=" + after];
+            var result = await cli.RunAsync(args, ct).ConfigureAwait(false);
+            if (result.Outcome != GitHubCliOutcome.Ok) return GitHubCliMapping.Failure<PullRequestPageDto<PullRequestThreadDto>>(result, subject, Now);
+            var page = GitHubCliMapping.Threads(result.Stdout);
+            if (page is null) return Invalid<PullRequestPageDto<PullRequestThreadDto>>(subject);
+            if (!page.Found) return new(PullRequestReadKind.Unavailable, Subject: subject, Reason: "not_found", AccessFailure: "invalid");
+            if (head is not null && page.HeadSha != head) return new(PullRequestReadKind.Restart, Subject: subject, Reason: "head_changed");
+            head ??= page.HeadSha;
+            total = page.Total; hasNext = page.HasNext; endCursor = page.EndCursor;
+            foreach (var thread in page.Threads) {
+                if (resolved == "unresolved" && thread.IsResolved == true) excluded++;
+                else items.Add(thread);
+            }
+            if (items.Count > 0 || !hasNext || endCursor is null) break;
+            after = endCursor;
+        }
+        if (cursor is null) { entry = entry with { HeadSha = head }; cursor = _cursors.Mint(entry); }
+        var more = hasNext && endCursor is not null;
+        var data = new PullRequestPageDto<PullRequestThreadDto> {
+            SnapshotId = entry.SnapshotId, SnapshotStartedAt = entry.StartedAt, SnapshotCompletedAt = Now, Coverage = "complete", HeadSha = head,
+            Total = resolved == "all" ? new() { Kind = "exact", Value = total } : new() { Kind = "unknown" }, ExcludedByFilter = new() { Kind = "exact", Value = excluded },
+            Items = [.. items.Take(50)], PageCursor = cursor, HasMore = more, NextCursor = more ? _cursors.Mint(entry with { After = endCursor, HeadSha = head }) : null,
+        };
+        return Ready(data, subject, data.SnapshotCompletedAt, started);
+    }
+
+    async Task<PullRequestRead<PullRequestPageDto<PullRequestCommentDto>>> ThreadCommentsAsync(PullRequestSubjectDto subject, string? cursor, string threadId, CancellationToken ct) {
+        var key = Key(subject) + "|thread_comments|" + threadId;
+        var started = _time.GetTimestamp();
+        var entry = cursor is null ? new GitHubCliCursorEntry(GitHubCliCursors.NewHandle(), key, Now, null) : _cursors.Get(cursor);
+        if (entry is null || entry.Key != key) return new(PullRequestReadKind.Restart, Subject: subject, Reason: "snapshot_expired");
+        string[] args = ["api", "graphql", "--hostname", subject.Host, "-f", "query=" + GitHubCliMapping.ThreadCommentsQuery, "-f", "id=" + threadId];
+        if (entry.After is not null) args = [.. args, "-f", "after=" + entry.After];
+        var result = await cli.RunAsync(args, ct).ConfigureAwait(false);
+        if (result.Outcome != GitHubCliOutcome.Ok) return GitHubCliMapping.Failure<PullRequestPageDto<PullRequestCommentDto>>(result, subject, Now);
+        var page = GitHubCliMapping.ThreadComments(result.Stdout);
+        if (page is null) return Invalid<PullRequestPageDto<PullRequestCommentDto>>(subject);
+        if (!page.Found) return new(PullRequestReadKind.Unavailable, Subject: subject, Reason: "not_found", AccessFailure: "invalid");
+        cursor ??= _cursors.Mint(entry);
+        var more = page.HasNext && page.EndCursor is not null && page.Comments.Length > 0;
+        var data = new PullRequestPageDto<PullRequestCommentDto> {
+            SnapshotId = entry.SnapshotId, SnapshotStartedAt = entry.StartedAt, SnapshotCompletedAt = Now, Coverage = "complete",
+            Total = new() { Kind = "exact", Value = page.Total }, ExcludedByFilter = new() { Kind = "exact", Value = 0 },
+            Items = [.. page.Comments.Take(50)], PageCursor = cursor, HasMore = more, NextCursor = more ? _cursors.Mint(entry with { After = page.EndCursor }) : null,
+        };
+        return Ready(data, subject, data.SnapshotCompletedAt, started);
     }
 
     Task<(GitHubCliView? View, GitHubCliResult Result)> ViewAsync(PullRequestSubjectDto subject, CancellationToken ct) {

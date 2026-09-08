@@ -175,6 +175,53 @@ public static class GitHubCliMapping {
             Body = body, BodyTruncated = truncated, CreatedAt = Time(comment, "createdAt"), UpdatedAt = Time(comment, "updatedAt"), PublishedAt = Time(comment, "publishedAt"), ReplyToId = replyTo };
     }
 
+    public const string ThreadsQuery = "query($owner:String!,$repo:String!,$number:Int!,$after:String){repository(owner:$owner,name:$repo){pullRequest(number:$number){headRefOid reviewThreads(first:50,after:$after){totalCount pageInfo{hasNextPage endCursor} nodes{id isResolved isOutdated path line startLine originalLine originalStartLine diffSide startDiffSide subjectType comments(first:1){totalCount nodes{id url body createdAt updatedAt publishedAt diffHunk author{login}}}}}}}}";
+    public const string ThreadCommentsQuery = "query($id:ID!,$after:String){node(id:$id){... on PullRequestReviewThread{comments(first:50,after:$after){totalCount pageInfo{hasNextPage endCursor} nodes{id url body createdAt updatedAt publishedAt replyTo{id} author{login}}}}}}";
+
+    public static GitHubCliThreadsPage? Threads(string json) {
+        using var document = Parse(json);
+        if (document is null || !document.RootElement.IsObject || document.RootElement.Prop("data") is not { } data || !data.IsObject) return null;
+        var pull = data.Prop("repository") is { } repository && repository.IsObject ? repository.Prop("pullRequest") : null;
+        if (pull is null || pull.Value.IsNull) return new(false, null, 0, false, null, []);
+        if (!pull.Value.IsObject || pull.Value.Prop("reviewThreads") is not { } connection || !connection.IsObject
+            || connection.Prop("nodes") is not { } nodes || !nodes.IsArray) return null;
+        var threads = new List<PullRequestThreadDto>();
+        foreach (var node in nodes.EnumerateArray()) {
+            if (!node.IsObject || Text(node, "id") is not { Length: > 0 } id || !GitHubCliRunner.ValidNodeId(id)) continue;
+            var first = node.Prop("comments") is { } comments && comments.IsObject && comments.Prop("nodes") is { } list && list.IsArray
+                ? list.EnumerateArray().FirstOrDefault(comment => comment.IsObject) : default;
+            var root = first.IsObject && Text(first, "id") is { Length: > 0 } commentId ? Comment(first, commentId, null) : null;
+            var (hunk, hunkTruncated) = Truncate(first.IsObject ? Text(first, "diffHunk") : null);
+            threads.Add(new() { Id = id, Availability = "available", Url = root?.Url, IsResolved = node.Bool("isResolved"), IsOutdated = node.Bool("isOutdated"),
+                Path = Text(node, "path"), DiffSide = Text(node, "diffSide")?.ToLowerInvariant(), StartDiffSide = Text(node, "startDiffSide")?.ToLowerInvariant(),
+                Line = Number(node, "line"), StartLine = Number(node, "startLine"), OriginalLine = Number(node, "originalLine"), OriginalStartLine = Number(node, "originalStartLine"),
+                SubjectType = Text(node, "subjectType")?.ToLowerInvariant(), DiffHunk = hunk, HunkTruncated = hunkTruncated, RootComment = root,
+                Comments = node.Prop("comments") is { } count && count.IsObject && Number(count, "totalCount") is { } total ? new() { Kind = "exact", Value = total } : null });
+        }
+        return new(true, Text(pull.Value, "headRefOid"), Number(connection, "totalCount") ?? threads.Count, HasNext(connection), EndCursor(connection), [.. threads]);
+    }
+
+    public static GitHubCliCommentsPage? ThreadComments(string json) {
+        using var document = Parse(json);
+        if (document is null || !document.RootElement.IsObject || document.RootElement.Prop("data") is not { } data || !data.IsObject) return null;
+        var node = data.Prop("node");
+        if (node is null || node.Value.IsNull) return new(false, 0, false, null, []);
+        if (!node.Value.IsObject || node.Value.Prop("comments") is not { } connection || !connection.IsObject
+            || connection.Prop("nodes") is not { } nodes || !nodes.IsArray) return null;
+        var comments = new List<PullRequestCommentDto>();
+        foreach (var comment in nodes.EnumerateArray()) {
+            if (!comment.IsObject || Text(comment, "id") is not { Length: > 0 } id) continue;
+            var replyTo = comment.Prop("replyTo") is { } parent && parent.IsObject ? Text(parent, "id") : null;
+            comments.Add(Comment(comment, id, replyTo));
+        }
+        return new(true, Number(connection, "totalCount") ?? comments.Count, HasNext(connection), EndCursor(connection), [.. comments]);
+    }
+
+    static int? Number(JsonElement element, string name) => element.Prop(name) is { } value && value.IsNumber && value.TryGetInt32(out var number) ? number : null;
+    static bool HasNext(JsonElement connection) => connection.Prop("pageInfo") is { } info && info.IsObject && info.Bool("hasNextPage") == true;
+    static string? EndCursor(JsonElement connection) => connection.Prop("pageInfo") is { } info && info.IsObject && Text(info, "endCursor") is { } cursor
+        && GitHubCliRunner.ValidNodeId(cursor) ? cursor : null;
+
     public static PullRequestRead<T> Failure<T>(GitHubCliResult result, PullRequestSubjectDto subject, DateTime now) where T : class {
         switch (result.Outcome) {
             case GitHubCliOutcome.NotStarted: return new(PullRequestReadKind.Unavailable, Subject: subject, Reason: "tool_failed", AccessFailure: "transient");
