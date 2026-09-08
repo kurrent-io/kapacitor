@@ -69,13 +69,17 @@ public sealed partial class PullRequestContextViewModel {
         "threads" => "Inline threads", "thread_comments" => "Thread replies", "conversation" => "Conversation", _ => "Description" };
 
     void Notify() {
+        _readerNote = _readers is null ? null
+            : _selected?.Subject is { } subject ? _readers.NoteFor(subject.Provider, subject.Host)
+            : _primaryRepo?.Invoke() is { } repository ? _readers.NoteFor(repository.Provider, repository.Host) : null;
         var rows = CanDisplayReader ? CurrentSection?.Pages.SelectMany(page => page.Rows).ToArray() ?? [] : [];
         if (!_visibleRows.SequenceEqual(rows)) _visibleRows = rows;
         foreach (var property in new[] { nameof(Notice), nameof(IsReading), nameof(HasChoice), nameof(IsLegacy), nameof(Section), nameof(CanReveal), nameof(CanDisplay),
             nameof(Title), nameof(Lifecycle), nameof(Branches), nameof(FetchedLabel), nameof(AccessLabel), nameof(ReviewSummary), nameof(CheckSummary),
             nameof(Description), nameof(DescriptionTruncated), nameof(DescriptionNote), nameof(IsOverview), nameof(IsThreads), nameof(IsThreadComments), nameof(IncludeResolved),
             nameof(HasNotice), nameof(ShowsSignIn), nameof(ShowsLinkGitHub), nameof(ShowReaderContent), nameof(Rows), nameof(HasMore),
-            nameof(CanReloadEarlier), nameof(PageNote), nameof(SnapshotLabel), nameof(SectionTitle) }) this.RaisePropertyChanged(property);
+            nameof(CanReloadEarlier), nameof(PageNote), nameof(SnapshotLabel), nameof(SectionTitle),
+            nameof(ReaderNote), nameof(HasReaderNote), nameof(ShowsInstallTool), nameof(InstallToolLabel) }) this.RaisePropertyChanged(property);
     }
     static string Reason<T>(PullRequestRead<T> read) where T : class => read.Kind switch {
         PullRequestReadKind.SignedOut => "Sign in to see pull requests.",

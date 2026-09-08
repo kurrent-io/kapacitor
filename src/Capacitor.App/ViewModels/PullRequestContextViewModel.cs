@@ -59,6 +59,7 @@ public sealed partial class PullRequestContextViewModel : ReactiveObject {
     string _section = "overview";
     string? _thread;
     string _notice = "Waiting for the session to register…";
+    PullRequestReaderNote? _readerNote;
 
     public IAvaloniaReadOnlyList<PullRequestChoice> Choices => _choices;
     public PullRequestChoice? Selected {
@@ -66,6 +67,10 @@ public sealed partial class PullRequestContextViewModel : ReactiveObject {
         set { if (!_updatingChoices) Select(value, explicitSelection: true); }
     }
     public string Notice => _notice;
+    public string ReaderNote => _readerNote?.Text ?? "";
+    public bool HasReaderNote => _readerNote is not null;
+    public bool ShowsInstallTool => _readerNote?.InstallUrl is not null;
+    public string InstallToolLabel => _readerNote is null ? "" : "Install " + _readerNote.ToolName;
     public bool IsReading => _refreshing || _overviewPending || _pageRequests.Count > 0;
     public bool HasChoice => _selected is not null;
     public bool IsLegacy => _legacy;
@@ -97,6 +102,7 @@ public sealed partial class PullRequestContextViewModel : ReactiveObject {
     public ReactiveCommand<string, Unit> OpenBodyLinkCommand { get; }
     public ReactiveCommand<Unit, Unit> SignInCommand { get; }
     public ReactiveCommand<Unit, Unit> LinkGitHubCommand { get; }
+    public ReactiveCommand<Unit, Unit> InstallToolCommand { get; }
 
     public PullRequestContextViewModel(IObservable<AgentStatusDto?> presence, IPullRequestSource source, TimeProvider time, IUrlOpener opener,
         Action openReader, Action? signIn = null, Action? linkGitHub = null, IObservable<Unit>? signInCompleted = null, Func<PullRequestRepository?>? primaryRepo = null) {
@@ -125,6 +131,8 @@ public sealed partial class PullRequestContextViewModel : ReactiveObject {
         OpenBodyLinkCommand = ReactiveCommand.Create<string>(url => { if (CanDisplayReader) LinkPolicy.Open(_opener, PullRequestWire.BodyLink(url)); });
         SignInCommand = ReactiveCommand.Create(() => signIn?.Invoke());
         LinkGitHubCommand = ReactiveCommand.Create(() => linkGitHub?.Invoke());
+        InstallToolCommand = ReactiveCommand.Create(() => LinkPolicy.Open(_opener, _readerNote?.InstallUrl));
+        _subscriptions.Add(InstallToolCommand);
         _subscriptions.Add(RefreshCommand); _subscriptions.Add(OpenReaderCommand); _subscriptions.Add(ShowSectionCommand);
         _subscriptions.Add(LoadMoreCommand); _subscriptions.Add(ReloadEarlierCommand); _subscriptions.Add(ExpandThreadCommand);
         _subscriptions.Add(OpenRowCommand); _subscriptions.Add(OpenGitHubCommand); _subscriptions.Add(OpenBodyLinkCommand);

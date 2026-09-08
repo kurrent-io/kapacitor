@@ -52,6 +52,60 @@ public class PullRequestContextViewModelRegistryTests {
         await h.Dispose();
     });
 
+    static readonly PullRequestRepository Primary = new("github", "github.com", "example", "repo", "hash");
+
+    [Test]
+    public Task A_missing_tool_shows_the_install_note_before_any_pr_is_linked() => RunOnUiAsync(async () => {
+        var h = new Harness("github.com", Primary);
+        h.Provider.Status = PullRequestReaderStatusKind.ToolMissing;
+        h.Links.Links = [];
+        h.Push(); h.Vm.SetForeground(true);
+        await WaitUntilAsync(() => !h.Vm.IsReading && h.Vm.HasReaderNote, what: "note shown");
+        await Assert.That(h.Vm.ReaderNote).IsEqualTo("Install GitHub CLI to read pull requests here.");
+        await Assert.That(h.Vm.ShowsInstallTool).IsTrue();
+        await Assert.That(h.Vm.InstallToolLabel).IsEqualTo("Install GitHub CLI");
+        await Assert.That(h.Vm.ShowsSignIn).IsFalse();
+        await Assert.That(h.Vm.ShowsLinkGitHub).IsFalse();
+        await h.Vm.InstallToolCommand.Execute();
+        await Assert.That(h.Opener.Opened).IsEquivalentTo(new[] { "https://cli.github.com" });
+        await h.Dispose();
+    });
+
+    [Test]
+    public Task A_signed_out_tool_names_the_sign_in_command_and_recheck_clears_the_note_once_ready() => RunOnUiAsync(async () => {
+        var h = new Harness("github.com", Primary);
+        h.Provider.Status = PullRequestReaderStatusKind.SignedOut;
+        h.Push(); h.Vm.SetForeground(true);
+        await WaitUntilAsync(() => !h.Vm.IsReading && h.Vm.HasReaderNote, what: "note shown");
+        await Assert.That(h.Vm.ReaderNote).IsEqualTo("GitHub CLI is not signed in. Run gh auth login to read pull requests here.");
+        await Assert.That(h.Vm.ShowsInstallTool).IsFalse();
+        h.Provider.Status = PullRequestReaderStatusKind.Ready;
+        h.Time.Advance(TimeSpan.FromSeconds(16));
+        await h.Vm.RefreshCommand.Execute();
+        await WaitUntilAsync(() => h.Vm.CanReveal, what: "rechecked and reading");
+        await Assert.That(h.Vm.HasReaderNote).IsFalse();
+        await h.Dispose();
+    });
+
+    [Test]
+    public Task A_selected_pr_on_a_host_the_tool_is_not_signed_in_to_names_that_host() => RunOnUiAsync(async () => {
+        var h = new Harness("github.com", Primary);
+        h.Links.Links = [Link("ghe.example", 4)];
+        h.Push(); h.Vm.SetForeground(true);
+        await WaitUntilAsync(() => !h.Vm.IsReading && h.Vm.HasChoice, what: "list applied");
+        await Assert.That(h.Vm.ReaderNote).IsEqualTo("GitHub CLI is not signed in for ghe.example. Run gh auth login --hostname ghe.example to read it here.");
+        await Assert.That(h.Vm.ShowsInstallTool).IsFalse();
+        await h.Dispose();
+    });
+
+    [Test]
+    public Task No_note_shows_while_a_provider_serves_the_session_host() => RunOnUiAsync(async () => {
+        var h = new Harness("github.com", Primary);
+        h.Push(); await h.Show();
+        await Assert.That(h.Vm.HasReaderNote).IsFalse();
+        await h.Dispose();
+    });
+
     sealed class Harness {
         internal BehaviorSubject<AgentStatusDto?> Presence { get; } = new(null);
         internal FakeTimeProvider Time { get; } = new();
