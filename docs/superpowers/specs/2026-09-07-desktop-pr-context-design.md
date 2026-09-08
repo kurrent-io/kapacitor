@@ -197,8 +197,9 @@ usable; it does not fabricate a GitHub identity.
 
 Existing linking is identity-only: the proxy requests `read:user`, sends signed
 identity fields, and the tenant records the association, not reusable OAuth tokens.
-Use `IGitHubLinkService.GetStateAsync` for the canonical caller: require `Linked`
-and a positive `GitHubId`, not the pending `LinkedGitHubId` claim marker, a cached
+Read the canonical caller's positive `users.github_id` directly, matching the holder
+state reported by `GitHubLinkService.GetStateAsync` without requiring WorkOS's link
+service registration. Do not use the pending `linked_github_id` claim marker, a cached
 login string, or a generic display name. This includes GitHub-native human accounts;
 do not resurrect a missing holder association by parsing an old `github:` user ID.
 Unlinked WorkOS users see **Link GitHub to read PR details**, opening the configured tenant's
