@@ -285,7 +285,8 @@ internal sealed class KiroImportSource : IImportSource {
                 filePath:   sendPath,
                 agentId:    null,
                 startLine:  startLine,
-                vendor:     Vendor);
+                vendor:     Vendor,
+                progress:   ctx.Progress);
         } catch {
             return ImportOutcome.Failed;
         } finally {

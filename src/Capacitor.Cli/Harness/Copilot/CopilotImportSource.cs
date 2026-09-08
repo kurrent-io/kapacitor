@@ -300,7 +300,8 @@ internal sealed class CopilotImportSource : IImportSource {
                 filePath:   transcriptPath,
                 agentId:    null,
                 startLine:  startLine,
-                vendor:     Vendor);
+                vendor:     Vendor,
+                progress:   ctx.Progress);
         } catch {
             return ImportOutcome.Failed;
         }
