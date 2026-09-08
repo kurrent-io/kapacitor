@@ -46,6 +46,10 @@ public interface ICapacitorHttpClient {
     /// </summary>
     Task<AuthAttempt> ForWaitAsync(CancellationToken ct = default);
 
+    /// <summary>For protected reads: report auth status and recover a 401, but refuse redirects
+    /// that could substitute content from another origin.</summary>
+    Task<AuthAttempt> ForProtectedReadAsync(CancellationToken ct = default);
+
     /// <summary>
     /// For the session-start memory index: authenticated and recovering like a background client,
     /// but a 3xx ends the fetch rather than being followed. This body becomes the agent's injected

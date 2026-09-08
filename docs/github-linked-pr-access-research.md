@@ -89,9 +89,45 @@ tracker enrichment.
 - The [deployment preflight](github-pr-context-preflight.md) verified numeric-ID
   lookup and the permission endpoint for the current operator on both approved
   repositories, using the existing fine-grained PAT inside the server container.
-  No credential left that environment. Team-only and denied-user controls remain
-  untested. Private check-suite/status/commit endpoints returned scope-related
-  403s; the full preflight is blocked pending compatible read permissions.
+  No credential left that environment. That PAT run tested only the operator;
+  later App controls below cover a non-admin reader and denied user. Private
+  check-suite/status/commit endpoints returned scope-related
+  403s. GitHub also explicitly lists Checks API access as a fine-grained PAT
+  limitation, not a missing toggle; see the preflight report's primary-source
+  links. The role gate works for the tested user, but full checks need a compatible
+  credential path or an approved scope change, not Actions/Code quality permissions.
+- The operator selected the existing `kurrent-capacitor` GitHub App. Protected
+  metadata reads confirm the App and its `kurrent-io` installation now have all six
+  required read-only grants. That does not upgrade the server's PAT. The App key
+  and token exchange live in `Capacitor.AuthProxy/GitHubApiClient.cs`, with a
+  50-minute authentication-use cache in `TenantMatching.cs`; the tracker provider
+  only reads its configured token. There is no tenant-scoped PR-read/token-broker
+  bridge to reuse as-is. WorkOS discovery deliberately does not use GitHub-auth
+  tenant registration, so adding such a row is not a valid credential workaround.
+  No installation token was issued or exported by that metadata-only probe.
+- The operator then authorized one temporary, repo-restricted App token. It was
+  issued and used inside the proxy, proved to have exactly the six read-only grants
+  and two approved repositories, and revoked with HTTP 204 afterward. Numeric-ID
+  lookup and permission checks returned 200/admin for the operator on both repos;
+  complete private overview, commit metadata, suite-scoped checks and status reads
+  succeeded. Populated discussion cursor samples succeeded, including a public
+  nested thread. REST/GraphQL reported 12,500 limits and every sampled GraphQL query
+  cost 1. No token or body was exported. That operator-only run supplied capability
+  evidence, not non-admin or denied-user coverage.
+- A further protected control used a token restricted to Metadata read and the
+  private fixture. The designated account's username and numeric-ID lookups and
+  permission response succeeded, with matching IDs, but GitHub reported `admin`
+  rather than the operator-described team `write` grant. That does not isolate the
+  team's grant or validate a non-admin control. No private content was fetched;
+  the token was revoked with HTTP 204. Grant provenance was not independently audited.
+- A subsequent operator-designated pair passed the private permission controls:
+  the non-admin team-member fixture returned `write`, and the external fixture
+  returned `none`. Username/numeric lookups and both permission responses matched
+  the intended numeric IDs. A metadata-only, single-repository App token sufficed;
+  no content was fetched and the token was revoked with HTTP 204. Team membership
+  and grant provenance were operator-supplied, not independently audited; the
+  positive role is Write, not least-privileged Read. These are GitHub API controls,
+  not end-to-end Capacitor session/link admission tests.
 - This introduces permission-query traffic; it belongs in the interactive request
   budget and must not starve background enrichment.
 
@@ -117,6 +153,12 @@ repository-role gate. The design specifies the public-repository case, proof
 lifetime and cache/page admission. Server fetches remain fail-closed; the draft gives
 already visible client content a bounded, labelled transient-outage display grace,
 never a grant to fetch or reveal more content. Deployment validation is partial:
-the tested user's permission gate works, but missing private CI/commit-read
-capabilities and remaining identity controls still block implementation planning.
+the App's required grants and operator read-capability probes now pass, including
+private checks and populated pagination samples. The operator-designated non-admin
+Write and denied-user controls now pass with matching identities. The
+[credential addition](superpowers/specs/2026-09-07-github-app-pr-credentials-design.md)
+consolidates the qualifications and proposes a tenant-scoped broker with managed
+renewal. It awaits approval before implementation planning. The existing tracker
+provider accepts an opaque configured token but does not obtain or renew App
+tokens; it is not inherently PAT-only.
 Use delegated user tokens if exact user-to-server authorization is required.

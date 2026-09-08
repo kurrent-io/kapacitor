@@ -11,9 +11,15 @@ public sealed class ServerClients : IAsyncDisposable {
     readonly Subject<Unit> _signIn = new();
     readonly Lazy<Task> _cleanup;
     volatile bool _cleanupRequested;
+    readonly Action _invalidateAuthentication;
 
-    public ServerClients(IAsyncDisposable? launch, IAsyncDisposable? workContext) =>
-        _cleanup = new Lazy<Task>(() => CleanupAsync(launch, workContext, _signIn), LazyThreadSafetyMode.ExecutionAndPublication);
+    public ServerClients(IAsyncDisposable? launch, IAsyncDisposable? workContext, IAsyncDisposable? pullRequests = null) {
+        _cleanup = new Lazy<Task>(() => CleanupAsync(launch, workContext, _signIn, pullRequests), LazyThreadSafetyMode.ExecutionAndPublication);
+        _invalidateAuthentication = () => {
+            (workContext as ServerWorkContextSource)?.InvalidateAuthentication();
+            (pullRequests as ServerPullRequestSource)?.InvalidateAuthentication();
+        };
+    }
 
     public IObservable<Unit> SignInCompleted => _signIn;
 
@@ -25,6 +31,7 @@ public sealed class ServerClients : IAsyncDisposable {
     /// subject is completed and disposed in the sequence, and a disposed subject throws on OnNext.
     public void NotifySignInCompleted() {
         if (CleanupStarted) return;
+        _invalidateAuthentication();
         _signIn.OnNext(Unit.Default);
     }
 
@@ -35,9 +42,10 @@ public sealed class ServerClients : IAsyncDisposable {
 
     /// Launch client, then the work-context source, then the subject completed and disposed —
     /// each step guarded so a throwing disposal never skips the next.
-    internal static async Task CleanupAsync(IAsyncDisposable? launch, IAsyncDisposable? workContext, Subject<Unit> signIn) {
+    internal static async Task CleanupAsync(IAsyncDisposable? launch, IAsyncDisposable? workContext, Subject<Unit> signIn, IAsyncDisposable? pullRequests = null) {
         await DisposeGuarded(launch, "launch client").ConfigureAwait(false);
         await DisposeGuarded(workContext, "work-context source").ConfigureAwait(false);
+        await DisposeGuarded(pullRequests, "pull-request source").ConfigureAwait(false);
         try {
             signIn.OnCompleted();
             signIn.Dispose();

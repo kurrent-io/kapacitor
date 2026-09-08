@@ -16,8 +16,14 @@ Conversation in the card selects the PR and opens that reader section.
 
 No posting, replying, resolving, requesting/submitting reviews, rerunning checks,
 changing draft state, closing, or merging. No local `gh` prerequisite, new desktop
-credential store, or new per-user GitHub OAuth grant. The written design and its
-independent review must be approved before implementation planning.
+credential store, or new per-user GitHub OAuth grant.
+
+The reader design was approved in the preceding session. The subsequent App
+preflight passed the tested capabilities and allowed/denied role controls. The
+[App credential addition](2026-09-07-github-app-pr-credentials-design.md) defines
+tenant-scoped acquisition and renewal. The user accepted that addition and the
+qualified preflight evidence, and explicitly waived its independent review.
+Its credential sourcing, generation and budget identities apply to implementation.
 
 ## Experience
 
@@ -302,17 +308,25 @@ images/attachments are not fetched. Only explicit absolute HTTP/HTTPS body links
 pass through LinkPolicy. Relative links, mentions and issue-reference shorthand
 remain text in v1; no repository-relative URL inference. Disallowed schemes are inert.
 
-## Preflight gate before implementation planning
+## Preflight evidence and remaining rollout checks
 
 [Deployment probe results](../../github-pr-context-preflight.md) record partial
-verification and outstanding permission/identity controls; the gate is not passed.
+verification. Repo-restricted App tokens passed operator identity/permission,
+private overview/check/status and populated paging probes, plus an operator-designated
+non-admin Write/denied-user pair with matching numeric IDs. All tokens were revoked.
+Team grant provenance is operator-attested, not independently audited; least-privileged
+Read was not observed. The
+[credential addition](2026-09-07-github-app-pr-credentials-design.md) consolidates
+the evidence and accepts these API controls for implementation, retaining
+their qualifications and requiring integration/load checks before rollout.
+The user approved proceeding on that basis and waived the addition's independent review.
 
-Before planning or building either part, the implementation driver and operator
-must run a read-only probe using the intended deployment's actual integration
+The completed preflight used a read-only probe in the intended deployment's
+protected environment. Remaining rollout probes must use the actual integration
 credential **in its existing protected environment**. The agent must not retrieve,
 copy or log the token, or substitute its local GitHub login. Operator approval and
 designated public/private repositories plus reader/denied identities are required.
-No safe probe environment means planning is blocked.
+No safe probe environment means live rollout verification remains incomplete.
 
 Verify identity lookup, public metadata, private permission for an allowed user
 (including team-only read) and a denied user, matching IDs, content/check read
@@ -320,10 +334,10 @@ permissions, primary limits and actual bounded GraphQL cost. Record only credent
 type, sanitized outcomes, candidate environment and budget measurements, never
 token/body data. Documentation and stub tests are not a passing deployment probe.
 
-If it fails, stop and ask the operator to configure a compatible scoped credential,
-then repeat. Do not weaken the linked-user gate into an allowlist/shared-token-only
+If a rollout probe fails, correct the integration before rollout and repeat it.
+Do not weaken the linked-user gate into an allowlist/shared-token-only
 policy. Credential replacement/renewal is separate operator work, not automatic.
-Design review may finish before the probe; implementation planning cannot.
+The accepted capability evidence permits implementation; it does not certify rollout.
 Record the initial sanitized outcome and renewal procedure in the shared design
 record. Re-run the protected probe before adopting a rotated credential or changed
 credential type/grants. Routine installation-token renewal may automate it; record
@@ -339,6 +353,16 @@ support the permission endpoint plus repository metadata, PRs/reviews, issue
 comments, checks, and commit-status reads. Insufficient provider permissions are a
 supported unavailable result, never a reason to discover another credential. The
 daemon and desktop never receive the integration token.
+
+The existing tracker credential provider reads an opaque configured token, currently
+a PAT, without App-token acquisition or renewal. The selected App's signing key and
+authentication token exchange live in the shared auth proxy.
+Its authentication cache is not a tenant PR-read bridge. The accepted
+[credential addition](2026-09-07-github-app-pr-credentials-design.md) supplies a
+separate tenant-scoped broker and asynchronous PR credential source; it preserves
+the existing configured credential for background consumers. Do not change a
+WorkOS tenant's auth registration to obtain an
+installation token.
 
 Register `GitHubPullRequestReads` with fixed GitHub origins, a 15-second upstream
 headers-and-body deadline, explicit cancellation, no automatic retries and no
@@ -403,11 +427,15 @@ floor, about 1,920 REST and 960 GraphQL requests/hour. Multiply GraphQL requests
 measured query cost, not one assumed point. Sixty starts/minute leaves section
 capacity at the faster cadence. Excess workloads yield rather than promise freshness.
 
-Documented profiles are fine-grained PAT or App installation with Metadata read
-plus PR/issue/check/status read permissions and Contents read for the specified
-GraphQL commit-connection overview. An existing classic PAT needs private-
-repo `repo` scope and the same live admission probes; enrichment success alone
-never certifies it. Do not add scopes or change credential type automatically. Preflight must
+Full check-run support requires a credential supporting the Checks API, such as a
+GitHub App installation with Metadata/PR/issue/check/status read and Contents read
+for the specified GraphQL commit-connection overview. Fine-grained PATs can serve
+parts of this reader but GitHub lists Checks API access as unsupported; neither
+Actions nor Code quality is a substitute. A classic PAT with `repo` scope supports
+private check reads but has broader permissions and still requires live admission
+probes. Selecting an App/renewal path, changing credentials, or reducing v1 check
+coverage needs an explicit operator/product decision. Do not certify a fine-grained
+PAT for full checks or automatically broaden credentials. Preflight must
 verify at least 5,000/hour REST and GraphQL primary limits and measured headroom
 alongside background work. Installation tokens are not automatically 15,000/hour:
 GitHub documents 5,000 minimum, scaling to 12,500, or 15,000 for qualifying Enterprise
@@ -880,6 +908,10 @@ integration/release, not parallel fixture-based development.
   fine-grained token types.
 - [List check runs in a check suite](https://docs.github.com/en/rest/checks/runs#list-check-runs-in-a-check-suite):
   suite-scoped latest avoids guessing commit-wide cross-suite deduplication.
+- [Fine-grained PAT limitations](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#fine-grained-personal-access-tokens-limitations):
+  Checks API access is unsupported; an endpoint's `checks=read` requirement is not
+  evidence of a permission the PAT editor can grant.
+- [GitHub App Checks permission](https://docs.github.com/en/rest/authentication/permissions-required-for-github-apps#repository-permissions-for-checks).
 - [GitHub REST rate limits](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api):
   installation alone does not imply the 15,000/hour Enterprise Cloud limit.
 - [GitHub's published GraphQL schema](https://docs.github.com/public/fpt/schema.docs.graphql):

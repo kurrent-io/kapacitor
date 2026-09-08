@@ -7,6 +7,9 @@ public record AuthDiscoveryResponse {
     [JsonPropertyName("provider")]
     public string Provider { get; init; } = "";
 
+    [JsonPropertyName("pull_request_reads_versions")]
+    public int[]? PullRequestReadsVersions { get; init; }
+
     [JsonPropertyName("authkit_domain")]
     public string? AuthKitDomain { get; init; }
 

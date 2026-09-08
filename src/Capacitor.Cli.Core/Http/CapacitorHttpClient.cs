@@ -30,6 +30,9 @@ internal sealed class CapacitorHttpClient(
     public Task<AuthAttempt> ForWaitAsync(CancellationToken ct = default) =>
         AttemptAsync(CapacitorClients.Default, ct);
 
+    public Task<AuthAttempt> ForProtectedReadAsync(CancellationToken ct = default) =>
+        AttemptAsync(CapacitorClients.Memory, ct);
+
     async Task<AuthAttempt> AttemptAsync(string lane, CancellationToken ct) {
         // Answered before anything is spent: an unusable URL reaches no token store, no discovery and
         // no socket, and the caller's not-usable branch already knows what to do with it.

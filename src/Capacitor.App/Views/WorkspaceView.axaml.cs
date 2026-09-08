@@ -9,15 +9,8 @@ using ReactiveUI;
 
 namespace Capacitor.App.Views;
 
-/// The session workspace: DataContext is supplied externally (a plainly-constructed
-/// WorkspaceViewModel) -- same contract as HomeView/MainWindow, this view never builds its own VM.
-///
-/// TerminalHost is SvcSystems.UI.Terminal's own TerminalControl, unwrapped: it already calls its
-/// Model's Resize(width, height, textWidth, textHeight) itself, from BOTH its ModelProperty change
-/// handler (a reattach's fresh Model gets sized to the control's CURRENT bounds immediately) and
-/// its inner surface's own OnSizeChanged (an actual window/pane resize). A bounds-changed handler
-/// here would only double-invoke Resize with worse (font-metric-unaware) width/height than the
-/// control's own _consoleTextSize-based computation.
+/// Receives a workspace model from navigation and retains each tab's native control.
+/// TerminalControl owns terminal resizing, including font metrics and reattachment.
 public partial class WorkspaceView : UserControl {
     IDisposable? _tabFocus;
 
@@ -36,17 +29,20 @@ public partial class WorkspaceView : UserControl {
                 && DataContext is WorkspaceViewModel { IsTerminalActive: true })
                 TerminalHost.Focus();
         };
-        // A session with no PTY has neither surface to focus, so nothing is posted until the chat
-        // tab exists — which is also the moment a workspace opened on Chat gets its composer
-        // focused, since the tab is already active by then.
+        // The PR reader is created on first use, including for sessions without a PTY.
         DataContextChanged += (_, _) => {
             _tabFocus?.Dispose();
-            _tabFocus = (DataContext as WorkspaceViewModel)?
+            PullRequestHost.Content = null;
+            var model = DataContext as WorkspaceViewModel;
+            _tabFocus = model?
                 .WhenAnyValue(vm => vm.ActiveTab, vm => vm.Chat)
-                .Where(pair => pair.Item2 is not null)
                 .Subscribe(pair => Dispatcher.UIThread.Post(() => {
-                    if (pair.Item1 == WorkspaceTab.Chat) ChatHost.FocusComposer();
-                    else TerminalHost.Focus();
+                    if (!ReferenceEquals(model, DataContext) || model?.ActiveTab != pair.Item1) return;
+                    if (pair.Item1 == WorkspaceTab.PullRequest && PullRequestHost.Content is null && model?.PullRequests is { } pullRequests)
+                        PullRequestHost.Content = new PullRequestReader { DataContext = pullRequests };
+                    if (PullRequestHost.Content is PullRequestReader reader) reader.IsVisible = pair.Item1 == WorkspaceTab.PullRequest;
+                    if (pair.Item1 == WorkspaceTab.Chat && pair.Item2 is not null) ChatHost.FocusComposer();
+                    else if (pair.Item1 == WorkspaceTab.Terminal) TerminalHost.Focus();
                 }, DispatcherPriority.Loaded));
         };
     }

@@ -21,6 +21,10 @@ public enum WorkContextPhase { WaitingForSession, Loading, Ready, NoWorkItem, Si
 /// read; a result applies only for the current lease, every lease is kept until its read settles
 /// so teardown can await them all, and every lease transition happens on the UI thread.
 public sealed partial class WorkContextViewModel : ReactiveObject {
+    public PullRequestContextViewModel? PullRequests { get; internal set; }
+    public bool HasPullRequestContext => PullRequests is not null;
+    public bool ShowsLegacyLinks => PullRequests is null;
+    public string? PrimaryRepositoryHash { get; private set; }
     internal static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(30);
     static readonly IReadOnlyList<HarnessOption> DefaultHarnessOptions = HostedHarnessCatalog.Build(null);
 
@@ -200,6 +204,7 @@ public sealed partial class WorkContextViewModel : ReactiveObject {
         old?.Cts.Cancel();
         HasSession = true;
         SessionIdText = id;
+        PrimaryRepositoryHash = null;
         ClearServerProjections();
         IsStale = false;
         Phase = WorkContextPhase.Loading;

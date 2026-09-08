@@ -30,6 +30,9 @@ public sealed class RecordingCapacitorHttpClient(
     public Task<AuthAttempt> ForWaitAsync(CancellationToken ct = default) =>
         Task.FromResult(new AuthAttempt(Take(nameof(ForWaitAsync)), status, null, null));
 
+    public Task<AuthAttempt> ForProtectedReadAsync(CancellationToken ct = default) =>
+        Task.FromResult(new AuthAttempt(Take(nameof(ForProtectedReadAsync)), status, null, null));
+
     public Task<HttpClient> ForMemoryAsync(CancellationToken ct = default) =>
         Task.FromResult(Take(nameof(ForMemoryAsync)));
 

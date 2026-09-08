@@ -252,6 +252,8 @@ public sealed partial class WorkContextViewModel {
     void ApplyLinks(WorkContextRead read) {
         if (read.SummaryFailed) return;
         if (read.Summary is not { } summary) return;
+        var primaryRepositories = summary.Repositories.Where(repository => repository.IsPrimary).ToArray();
+        PrimaryRepositoryHash = primaryRepositories.Length == 1 ? primaryRepositories[0].RepoHash : null;
 
         var cards = summary.PullRequests
             .Select(pr => Link(pr.Number, pr.Title, pr.Url))

@@ -1,0 +1,948 @@
+{
+  "format": "pull-request-reads-v1",
+  "subject": {
+    "provider": "github",
+    "host": "github.com",
+    "repo_hash": "0123456789abcdef",
+    "owner": "example",
+    "repo_name": "repo",
+    "number": 42
+  },
+  "requests": [
+    {
+      "method": "GET",
+      "path": "/api/sessions/session/pull-requests",
+      "status": 400,
+      "error": "protocol_version_required"
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/session/pull-requests?version=",
+      "status": 400,
+      "error": "protocol_version_invalid"
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/session/pull-requests?version=1&version=1",
+      "status": 400,
+      "error": "protocol_version_invalid"
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/session/pull-requests?version=0",
+      "status": 400,
+      "error": "protocol_version_invalid"
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/session/pull-requests?version=-1",
+      "status": 400,
+      "error": "protocol_version_invalid"
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/session/pull-requests?version=2147483648",
+      "status": 400,
+      "error": "protocol_version_invalid"
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/session/pull-requests?version=1.0",
+      "status": 400,
+      "error": "protocol_version_invalid"
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/session/pull-requests?version=2",
+      "status": 400,
+      "error": "protocol_version_unsupported"
+    }
+  ],
+  "responses": [
+    {
+      "name": "links",
+      "route": "links",
+      "expected": "Ready",
+      "body": {
+        "status": "ready",
+        "data": {
+          "items": [
+            {
+              "provider": "github",
+              "host": "github.com",
+              "repo_hash": "0123456789abcdef",
+              "owner": "example",
+              "repo_name": "repo",
+              "number": 42,
+              "url": "https://github.com/example/repo/pull/42",
+              "title": "A linked PR",
+              "head_ref": "feature"
+            }
+          ]
+        },
+        "fetched_at": "2026-09-07T10:00:00Z",
+        "reason": null,
+        "retry_at": null,
+        "poll_after_seconds": 30,
+        "access_valid_for_seconds": 0,
+        "access_failure": null
+      }
+    },
+    {
+      "name": "overview",
+      "route": "overview",
+      "expected": "Ready",
+      "body": {
+        "status": "ready",
+        "data": {
+          "title": "A linked PR",
+          "url": "https://github.com/example/repo/pull/42",
+          "lifecycle": "open",
+          "is_draft": false,
+          "head_ref": "feature",
+          "base_ref": "main",
+          "head_sha": "cccccccccccccccccccccccccccccccccccccccc",
+          "description": "Published description",
+          "description_truncated": false,
+          "updated_at": "2026-09-07T10:00:00Z",
+          "review_decision": "review_required",
+          "access_checked_for": "reader",
+          "checks": {
+            "availability": {
+              "status": "ready",
+              "reason": null,
+              "fetched_at": "2026-09-07T10:00:00Z"
+            },
+            "rollup": "failure",
+            "head_sha": "cccccccccccccccccccccccccccccccccccccccc",
+            "counts": {
+              "failure": {
+                "value": 1,
+                "kind": "lower_bound"
+              },
+              "future_outcome": {
+                "value": null,
+                "kind": "unknown"
+              }
+            }
+          },
+          "reviews": null,
+          "conversation": null
+        },
+        "fetched_at": "2026-09-07T10:00:00Z",
+        "reason": null,
+        "retry_at": null,
+        "poll_after_seconds": 30,
+        "access_valid_for_seconds": 20,
+        "access_failure": null,
+        "subject": {
+          "provider": "github",
+          "host": "github.com",
+          "repo_hash": "0123456789abcdef",
+          "owner": "example",
+          "repo_name": "repo",
+          "number": 42
+        }
+      }
+    },
+    {
+      "name": "checks",
+      "route": "checks",
+      "expected": "Ready",
+      "body": {
+        "status": "ready",
+        "data": {
+          "snapshot_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "snapshot_started_at": "2026-09-07T10:00:00Z",
+          "snapshot_completed_at": "2026-09-07T10:00:00Z",
+          "coverage": "complete",
+          "coverage_reason": null,
+          "head_sha": "cccccccccccccccccccccccccccccccccccccccc",
+          "total": {
+            "kind": "exact",
+            "value": 1
+          },
+          "excluded_by_filter": {
+            "kind": "exact",
+            "value": 0
+          },
+          "items": [
+            {
+              "id": "check_run:1",
+              "availability": "available",
+              "reason": null,
+              "url": "https://ci.example/build/1",
+              "name": "test",
+              "app_name": "Actions",
+              "app_id": "1",
+              "suite_id": "2",
+              "source": "check_run",
+              "outcome": "failure",
+              "status": "completed",
+              "conclusion": "failure",
+              "started_at": "2026-09-07T10:00:00Z",
+              "completed_at": "2026-09-07T10:00:00Z",
+              "head_sha": "cccccccccccccccccccccccccccccccccccccccc"
+            }
+          ],
+          "page_cursor": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "has_more": false,
+          "next_cursor": null
+        },
+        "fetched_at": "2026-09-07T10:00:00Z",
+        "reason": null,
+        "retry_at": null,
+        "poll_after_seconds": 30,
+        "access_valid_for_seconds": 20,
+        "access_failure": null,
+        "subject": {
+          "provider": "github",
+          "host": "github.com",
+          "repo_hash": "0123456789abcdef",
+          "owner": "example",
+          "repo_name": "repo",
+          "number": 42
+        }
+      }
+    },
+    {
+      "name": "reviewers",
+      "route": "reviewers",
+      "expected": "Ready",
+      "body": {
+        "status": "ready",
+        "data": {
+          "snapshot_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "snapshot_started_at": "2026-09-07T10:00:00Z",
+          "snapshot_completed_at": "2026-09-07T10:00:00Z",
+          "coverage": "complete",
+          "coverage_reason": null,
+          "head_sha": null,
+          "total": {
+            "kind": "exact",
+            "value": 1
+          },
+          "excluded_by_filter": {
+            "kind": "exact",
+            "value": 0
+          },
+          "items": [
+            {
+              "id": "U_reader",
+              "availability": "available",
+              "reason": null,
+              "url": null,
+              "actor": {
+                "id": "U_reader",
+                "kind": "user",
+                "login": "reader",
+                "name": null
+              },
+              "requested": true,
+              "review_state": "changes_requested",
+              "submitted_at": "2026-09-07T10:00:00Z"
+            }
+          ],
+          "page_cursor": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "has_more": false,
+          "next_cursor": null
+        },
+        "fetched_at": "2026-09-07T10:00:00Z",
+        "reason": null,
+        "retry_at": null,
+        "poll_after_seconds": 30,
+        "access_valid_for_seconds": 20,
+        "access_failure": null,
+        "subject": {
+          "provider": "github",
+          "host": "github.com",
+          "repo_hash": "0123456789abcdef",
+          "owner": "example",
+          "repo_name": "repo",
+          "number": 42
+        }
+      }
+    },
+    {
+      "name": "reviews",
+      "route": "reviews",
+      "expected": "Ready",
+      "body": {
+        "status": "ready",
+        "data": {
+          "snapshot_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "snapshot_started_at": "2026-09-07T10:00:00Z",
+          "snapshot_completed_at": "2026-09-07T10:00:00Z",
+          "coverage": "complete",
+          "coverage_reason": null,
+          "head_sha": null,
+          "total": {
+            "kind": "exact",
+            "value": 1
+          },
+          "excluded_by_filter": {
+            "kind": "exact",
+            "value": 0
+          },
+          "items": [
+            {
+              "id": "PRR_published",
+              "availability": "available",
+              "reason": null,
+              "url": "https://github.com/example/repo/pull/42#pullrequestreview-1",
+              "author": {
+                "id": "U_reader",
+                "kind": "user",
+                "login": "reader",
+                "name": null
+              },
+              "body": "Please adjust this.",
+              "body_truncated": false,
+              "state": "changes_requested",
+              "created_at": "2026-09-07T10:00:00Z",
+              "updated_at": "2026-09-07T10:00:00Z",
+              "submitted_at": "2026-09-07T10:00:00Z"
+            }
+          ],
+          "page_cursor": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "has_more": false,
+          "next_cursor": null
+        },
+        "fetched_at": "2026-09-07T10:00:00Z",
+        "reason": null,
+        "retry_at": null,
+        "poll_after_seconds": 30,
+        "access_valid_for_seconds": 20,
+        "access_failure": null,
+        "subject": {
+          "provider": "github",
+          "host": "github.com",
+          "repo_hash": "0123456789abcdef",
+          "owner": "example",
+          "repo_name": "repo",
+          "number": 42
+        }
+      }
+    },
+    {
+      "name": "threads",
+      "route": "threads",
+      "expected": "Ready",
+      "body": {
+        "status": "ready",
+        "data": {
+          "snapshot_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "snapshot_started_at": "2026-09-07T10:00:00Z",
+          "snapshot_completed_at": "2026-09-07T10:00:00Z",
+          "coverage": "complete",
+          "coverage_reason": null,
+          "head_sha": null,
+          "total": {
+            "kind": "exact",
+            "value": 1
+          },
+          "excluded_by_filter": {
+            "kind": "exact",
+            "value": 0
+          },
+          "items": [
+            {
+              "id": "PRRT_thread",
+              "availability": "available",
+              "reason": null,
+              "url": "https://github.com/example/repo/pull/42#discussion_r1",
+              "is_resolved": false,
+              "is_outdated": true,
+              "path": "src/sample.cs",
+              "diff_side": "right",
+              "start_diff_side": null,
+              "line": 5,
+              "start_line": null,
+              "original_line": 5,
+              "original_start_line": null,
+              "subject_type": "line",
+              "diff_hunk": "@@ -1 +1 @@\n+line",
+              "hunk_truncated": false,
+              "root_comment": {
+                "id": "IC_published",
+                "availability": "available",
+                "reason": null,
+                "url": "https://github.com/example/repo/pull/42#issuecomment-1",
+                "author": {
+                  "id": "U_reader",
+                  "kind": "user",
+                  "login": "reader",
+                  "name": null
+                },
+                "body": "Published **Markdown**. ![image](https://tracker.invalid/image)",
+                "body_truncated": false,
+                "created_at": "2026-09-07T10:00:00Z",
+                "updated_at": "2026-09-07T10:00:00Z",
+                "published_at": "2026-09-07T10:00:00Z",
+                "reply_to_id": null
+              },
+              "comments": {
+                "value": null,
+                "kind": "unknown"
+              }
+            }
+          ],
+          "page_cursor": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "has_more": false,
+          "next_cursor": null
+        },
+        "fetched_at": "2026-09-07T10:00:00Z",
+        "reason": null,
+        "retry_at": null,
+        "poll_after_seconds": 30,
+        "access_valid_for_seconds": 20,
+        "access_failure": null,
+        "subject": {
+          "provider": "github",
+          "host": "github.com",
+          "repo_hash": "0123456789abcdef",
+          "owner": "example",
+          "repo_name": "repo",
+          "number": 42
+        }
+      }
+    },
+    {
+      "name": "conversation",
+      "route": "conversation",
+      "expected": "Ready",
+      "body": {
+        "status": "ready",
+        "data": {
+          "snapshot_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "snapshot_started_at": "2026-09-07T10:00:00Z",
+          "snapshot_completed_at": "2026-09-07T10:00:00Z",
+          "coverage": "complete",
+          "coverage_reason": null,
+          "head_sha": null,
+          "total": {
+            "kind": "exact",
+            "value": 1
+          },
+          "excluded_by_filter": {
+            "kind": "exact",
+            "value": 0
+          },
+          "items": [
+            {
+              "id": "IC_published",
+              "availability": "available",
+              "reason": null,
+              "url": "https://github.com/example/repo/pull/42#issuecomment-1",
+              "author": {
+                "id": "U_reader",
+                "kind": "user",
+                "login": "reader",
+                "name": null
+              },
+              "body": "Published **Markdown**. ![image](https://tracker.invalid/image)",
+              "body_truncated": false,
+              "created_at": "2026-09-07T10:00:00Z",
+              "updated_at": "2026-09-07T10:00:00Z",
+              "published_at": "2026-09-07T10:00:00Z",
+              "reply_to_id": null
+            }
+          ],
+          "page_cursor": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "has_more": false,
+          "next_cursor": null
+        },
+        "fetched_at": "2026-09-07T10:00:00Z",
+        "reason": null,
+        "retry_at": null,
+        "poll_after_seconds": 30,
+        "access_valid_for_seconds": 20,
+        "access_failure": null,
+        "subject": {
+          "provider": "github",
+          "host": "github.com",
+          "repo_hash": "0123456789abcdef",
+          "owner": "example",
+          "repo_name": "repo",
+          "number": 42
+        }
+      }
+    },
+    {
+      "name": "thread_comments",
+      "route": "thread_comments",
+      "expected": "Ready",
+      "body": {
+        "status": "ready",
+        "data": {
+          "snapshot_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "snapshot_started_at": "2026-09-07T10:00:00Z",
+          "snapshot_completed_at": "2026-09-07T10:00:00Z",
+          "coverage": "complete",
+          "coverage_reason": null,
+          "head_sha": null,
+          "total": {
+            "kind": "exact",
+            "value": 1
+          },
+          "excluded_by_filter": {
+            "kind": "exact",
+            "value": 0
+          },
+          "items": [
+            {
+              "id": "IC_published",
+              "availability": "available",
+              "reason": null,
+              "url": "https://github.com/example/repo/pull/42#issuecomment-1",
+              "author": {
+                "id": "U_reader",
+                "kind": "user",
+                "login": "reader",
+                "name": null
+              },
+              "body": "Published **Markdown**. ![image](https://tracker.invalid/image)",
+              "body_truncated": false,
+              "created_at": "2026-09-07T10:00:00Z",
+              "updated_at": "2026-09-07T10:00:00Z",
+              "published_at": "2026-09-07T10:00:00Z",
+              "reply_to_id": null
+            }
+          ],
+          "page_cursor": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "has_more": false,
+          "next_cursor": null
+        },
+        "fetched_at": "2026-09-07T10:00:00Z",
+        "reason": null,
+        "retry_at": null,
+        "poll_after_seconds": 30,
+        "access_valid_for_seconds": 20,
+        "access_failure": null,
+        "subject": {
+          "provider": "github",
+          "host": "github.com",
+          "repo_hash": "0123456789abcdef",
+          "owner": "example",
+          "repo_name": "repo",
+          "number": 42
+        }
+      }
+    },
+    {
+      "name": "unknown status",
+      "route": "overview",
+      "expected": "InvalidProtocol",
+      "body": {
+        "status": "future",
+        "data": {
+          "title": "A linked PR",
+          "url": "https://github.com/example/repo/pull/42",
+          "lifecycle": "open",
+          "is_draft": false,
+          "head_ref": "feature",
+          "base_ref": "main",
+          "head_sha": "cccccccccccccccccccccccccccccccccccccccc",
+          "description": "Published description",
+          "description_truncated": false,
+          "updated_at": "2026-09-07T10:00:00Z",
+          "review_decision": "review_required",
+          "access_checked_for": "reader",
+          "checks": {
+            "availability": {
+              "status": "ready",
+              "reason": null,
+              "fetched_at": "2026-09-07T10:00:00Z"
+            },
+            "rollup": "failure",
+            "head_sha": "cccccccccccccccccccccccccccccccccccccccc",
+            "counts": {
+              "failure": {
+                "value": 1,
+                "kind": "lower_bound"
+              },
+              "future_outcome": {
+                "value": null,
+                "kind": "unknown"
+              }
+            }
+          },
+          "reviews": null,
+          "conversation": null
+        },
+        "fetched_at": "2026-09-07T10:00:00Z",
+        "reason": null,
+        "retry_at": null,
+        "poll_after_seconds": 30,
+        "access_valid_for_seconds": 20,
+        "access_failure": null,
+        "subject": {
+          "provider": "github",
+          "host": "github.com",
+          "repo_hash": "0123456789abcdef",
+          "owner": "example",
+          "repo_name": "repo",
+          "number": 42
+        }
+      }
+    },
+    {
+      "name": "unknown extension",
+      "route": "overview",
+      "expected": "Ready",
+      "body": {
+        "status": "ready",
+        "data": {
+          "title": "A linked PR",
+          "url": "https://github.com/example/repo/pull/42",
+          "lifecycle": "open",
+          "is_draft": false,
+          "head_ref": "feature",
+          "base_ref": "main",
+          "head_sha": "cccccccccccccccccccccccccccccccccccccccc",
+          "description": "Published description",
+          "description_truncated": false,
+          "updated_at": "2026-09-07T10:00:00Z",
+          "review_decision": "review_required",
+          "access_checked_for": "reader",
+          "checks": {
+            "availability": {
+              "status": "ready",
+              "reason": null,
+              "fetched_at": "2026-09-07T10:00:00Z"
+            },
+            "rollup": "failure",
+            "head_sha": "cccccccccccccccccccccccccccccccccccccccc",
+            "counts": {
+              "failure": {
+                "value": 1,
+                "kind": "lower_bound"
+              },
+              "future_outcome": {
+                "value": null,
+                "kind": "unknown"
+              }
+            }
+          },
+          "reviews": null,
+          "conversation": null
+        },
+        "fetched_at": "2026-09-07T10:00:00Z",
+        "reason": null,
+        "retry_at": null,
+        "poll_after_seconds": 30,
+        "access_valid_for_seconds": 20,
+        "access_failure": null,
+        "subject": {
+          "provider": "github",
+          "host": "github.com",
+          "repo_hash": "0123456789abcdef",
+          "owner": "example",
+          "repo_name": "repo",
+          "number": 42
+        },
+        "future_extension": {
+          "created_at": "not a date"
+        }
+      }
+    },
+    {
+      "name": "unknown lifecycle",
+      "route": "overview",
+      "expected": "Ready",
+      "body": {
+        "status": "ready",
+        "data": {
+          "title": "A linked PR",
+          "url": "https://github.com/example/repo/pull/42",
+          "lifecycle": "future",
+          "is_draft": false,
+          "head_ref": "feature",
+          "base_ref": "main",
+          "head_sha": "cccccccccccccccccccccccccccccccccccccccc",
+          "description": "Published description",
+          "description_truncated": false,
+          "updated_at": "2026-09-07T10:00:00Z",
+          "review_decision": "review_required",
+          "access_checked_for": "reader",
+          "checks": {
+            "availability": {
+              "status": "ready",
+              "reason": null,
+              "fetched_at": "2026-09-07T10:00:00Z"
+            },
+            "rollup": "failure",
+            "head_sha": "cccccccccccccccccccccccccccccccccccccccc",
+            "counts": {
+              "failure": {
+                "value": 1,
+                "kind": "lower_bound"
+              },
+              "future_outcome": {
+                "value": null,
+                "kind": "unknown"
+              }
+            }
+          },
+          "reviews": null,
+          "conversation": null
+        },
+        "fetched_at": "2026-09-07T10:00:00Z",
+        "reason": null,
+        "retry_at": null,
+        "poll_after_seconds": 30,
+        "access_valid_for_seconds": 20,
+        "access_failure": null,
+        "subject": {
+          "provider": "github",
+          "host": "github.com",
+          "repo_hash": "0123456789abcdef",
+          "owner": "example",
+          "repo_name": "repo",
+          "number": 42
+        }
+      }
+    },
+    {
+      "name": "negative count",
+      "route": "overview",
+      "expected": "InvalidProtocol",
+      "body": {
+        "status": "ready",
+        "data": {
+          "title": "A linked PR",
+          "url": "https://github.com/example/repo/pull/42",
+          "lifecycle": "open",
+          "is_draft": false,
+          "head_ref": "feature",
+          "base_ref": "main",
+          "head_sha": "cccccccccccccccccccccccccccccccccccccccc",
+          "description": "Published description",
+          "description_truncated": false,
+          "updated_at": "2026-09-07T10:00:00Z",
+          "review_decision": "review_required",
+          "access_checked_for": "reader",
+          "checks": {
+            "availability": {
+              "status": "ready",
+              "reason": null,
+              "fetched_at": "2026-09-07T10:00:00Z"
+            },
+            "rollup": "failure",
+            "head_sha": "cccccccccccccccccccccccccccccccccccccccc",
+            "counts": {
+              "failure": {
+                "value": -1,
+                "kind": "lower_bound"
+              },
+              "future_outcome": {
+                "value": null,
+                "kind": "unknown"
+              }
+            }
+          },
+          "reviews": null,
+          "conversation": null
+        },
+        "fetched_at": "2026-09-07T10:00:00Z",
+        "reason": null,
+        "retry_at": null,
+        "poll_after_seconds": 30,
+        "access_valid_for_seconds": 20,
+        "access_failure": null,
+        "subject": {
+          "provider": "github",
+          "host": "github.com",
+          "repo_hash": "0123456789abcdef",
+          "owner": "example",
+          "repo_name": "repo",
+          "number": 42
+        }
+      }
+    },
+    {
+      "name": "inconsistent continuation",
+      "route": "thread_comments",
+      "expected": "InvalidProtocol",
+      "body": {
+        "status": "ready",
+        "data": {
+          "snapshot_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "snapshot_started_at": "2026-09-07T10:00:00Z",
+          "snapshot_completed_at": "2026-09-07T10:00:00Z",
+          "coverage": "complete",
+          "coverage_reason": null,
+          "head_sha": null,
+          "total": {
+            "kind": "exact",
+            "value": 1
+          },
+          "excluded_by_filter": {
+            "kind": "exact",
+            "value": 0
+          },
+          "items": [
+            {
+              "id": "IC_published",
+              "availability": "available",
+              "reason": null,
+              "url": "https://github.com/example/repo/pull/42#issuecomment-1",
+              "author": {
+                "id": "U_reader",
+                "kind": "user",
+                "login": "reader",
+                "name": null
+              },
+              "body": "Published **Markdown**. ![image](https://tracker.invalid/image)",
+              "body_truncated": false,
+              "created_at": "2026-09-07T10:00:00Z",
+              "updated_at": "2026-09-07T10:00:00Z",
+              "published_at": "2026-09-07T10:00:00Z",
+              "reply_to_id": null
+            }
+          ],
+          "page_cursor": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "has_more": true,
+          "next_cursor": null
+        },
+        "fetched_at": "2026-09-07T10:00:00Z",
+        "reason": null,
+        "retry_at": null,
+        "poll_after_seconds": 30,
+        "access_valid_for_seconds": 20,
+        "access_failure": null,
+        "subject": {
+          "provider": "github",
+          "host": "github.com",
+          "repo_hash": "0123456789abcdef",
+          "owner": "example",
+          "repo_name": "repo",
+          "number": 42
+        }
+      }
+    },
+    {
+      "name": "non UTC timestamp",
+      "route": "overview",
+      "expected": "InvalidProtocol",
+      "body": {
+        "status": "ready",
+        "data": {
+          "title": "A linked PR",
+          "url": "https://github.com/example/repo/pull/42",
+          "lifecycle": "open",
+          "is_draft": false,
+          "head_ref": "feature",
+          "base_ref": "main",
+          "head_sha": "cccccccccccccccccccccccccccccccccccccccc",
+          "description": "Published description",
+          "description_truncated": false,
+          "updated_at": "2026-09-07T10:00:00Z",
+          "review_decision": "review_required",
+          "access_checked_for": "reader",
+          "checks": {
+            "availability": {
+              "status": "ready",
+              "reason": null,
+              "fetched_at": "2026-09-07T10:00:00Z"
+            },
+            "rollup": "failure",
+            "head_sha": "cccccccccccccccccccccccccccccccccccccccc",
+            "counts": {
+              "failure": {
+                "value": 1,
+                "kind": "lower_bound"
+              },
+              "future_outcome": {
+                "value": null,
+                "kind": "unknown"
+              }
+            }
+          },
+          "reviews": null,
+          "conversation": null
+        },
+        "fetched_at": "2026-09-07T12:00:00+02:00",
+        "reason": null,
+        "retry_at": null,
+        "poll_after_seconds": 30,
+        "access_valid_for_seconds": 20,
+        "access_failure": null,
+        "subject": {
+          "provider": "github",
+          "host": "github.com",
+          "repo_hash": "0123456789abcdef",
+          "owner": "example",
+          "repo_name": "repo",
+          "number": 42
+        }
+      }
+    },
+    {
+      "name": "denied",
+      "route": "overview",
+      "expected": "Unavailable",
+      "body": {
+        "status": "unavailable",
+        "data": null,
+        "fetched_at": "2026-09-07T10:00:00Z",
+        "reason": "github_access_denied",
+        "retry_at": null,
+        "poll_after_seconds": 30,
+        "access_valid_for_seconds": 0,
+        "access_failure": "denied",
+        "subject": {
+          "provider": "github",
+          "host": "github.com",
+          "repo_hash": "0123456789abcdef",
+          "owner": "example",
+          "repo_name": "repo",
+          "number": 42
+        }
+      }
+    }
+  ],
+  "discovery": [
+    {
+      "body": {
+        "provider": "None",
+        "pull_request_reads_versions": [
+          1,
+          2
+        ]
+      },
+      "kind": "Supported"
+    },
+    {
+      "body": {
+        "provider": "workos"
+      },
+      "kind": "Legacy"
+    },
+    {
+      "body": {
+        "provider": "GitHubApp",
+        "pull_request_reads_versions": [
+          2
+        ]
+      },
+      "kind": "Unsupported"
+    },
+    {
+      "body": {
+        "provider": "workos",
+        "pull_request_reads_versions": [
+          "1"
+        ]
+      },
+      "kind": "InvalidProtocol"
+    },
+    {
+      "body": {
+        "provider": "workos",
+        "pull_request_reads_versions": null
+      },
+      "kind": "InvalidProtocol"
+    }
+  ]
+}
