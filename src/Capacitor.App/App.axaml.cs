@@ -19,6 +19,8 @@ using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.Http;
 using Capacitor.Cli.Core.LocalIpc;
+using Capacitor.Cli.Core.PullRequests.Readers;
+using Capacitor.Cli.Core.PullRequests.Readers.GitHubCli;
 using Capacitor.Cli.Core.Setup;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -364,6 +366,10 @@ public partial class App : Application {
         serverLane.Start();
         var workContext = new ServerWorkContextSource(_config, profiles);
         var pullRequests = new ServerPullRequestSource(_config, profiles);
+        var ghRunner = new ProcessRunner();
+        var gh = new GitHubCliRunner(ghRunner, OperatingSystem.IsWindows() ? null : new LoginShellProbe(ghRunner, Environment.GetEnvironmentVariable), Environment.GetEnvironmentVariable);
+        // Registration order is precedence: local CLI readers before the server.
+        var readers = new PullRequestReaderRegistry(pullRequests, [new GitHubCliReaderProvider(gh), new ServerReaderProvider(pullRequests)]);
         var serverClients = new ServerClients(serverLane, workContext, pullRequests);
         _serverLane = serverLane;
 
@@ -401,7 +407,7 @@ public partial class App : Application {
         Action requestSignIn = () => OpenSignInDialog(profiles, notifier);
         WorkspaceViewModel BuildWorkspace(string agentId) => new(
             agentId, service, actions, attachFactory, () => new XtermTerminalSurface(80, 24, PtyDumpPath), TimeProvider.System, opener, permissions,
-            workContext, requestSignIn: requestSignIn, signInCompleted: serverClients.SignInCompleted, pullRequests: pullRequests,
+            workContext, requestSignIn: requestSignIn, signInCompleted: serverClients.SignInCompleted, pullRequests: readers,
             linkGitHub: () => {
                 if (profiles?.Resolution.ServerUrl is { Length: > 0 } url) LinkPolicy.Open(opener, url.TrimEnd('/') + "/auth/github-link/start");
             });
