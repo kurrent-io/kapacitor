@@ -56,6 +56,11 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
 
     internal static readonly TimeSpan TxnActiveRequeryDelay = TimeSpan.FromSeconds(2);
 
+    /// After an app update relaunch, the daemon's own restart coordinator replaces its binary
+    /// within a poll interval once idle — a skew offer inside this window would ask for
+    /// something already under way.
+    internal static readonly TimeSpan SkewHoldAfterUpdate = TimeSpan.FromSeconds(45);
+
     readonly IDaemonClientService _client;
     readonly IKcapCli _cli;
     readonly ILoginShellProbe _probe;
@@ -86,12 +91,15 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
     string? _latestSnapshotVersion;
     bool _skewDialogShownThisRun;
     Task _versionCached = Task.CompletedTask;
+    DateTimeOffset? _skewHoldUntil;
+    string? _heldSkewVersion;
+    bool _holdRecheckScheduled;
 
     public DaemonLifecycleController(
             IDaemonClientService client, IKcapCli cli, ILoginShellProbe probe, IAppStateStore store,
             ILifecycleSurface surface, Func<Task<string?>> resolveProfileName, TimeProvider time,
             string? canonicalServer, Func<MutationRequest, CancellationToken, Task<MutationOutcome>> runMutation,
-            bool autoActionsPermanentlyClosed = false) {
+            bool autoActionsPermanentlyClosed = false, bool holdSkewForUpdate = false) {
         _client                        = client;
         _cli                           = cli;
         _probe                         = probe;
@@ -102,6 +110,7 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
         _canonicalServer               = canonicalServer;
         _runMutation                   = runMutation;
         _autoActionsPermanentlyClosed  = autoActionsPermanentlyClosed;
+        _skewHoldUntil = holdSkewForUpdate ? time.GetUtcNow() + SkewHoldAfterUpdate : null;
     }
 
     /// Completes permanently on the first terminal attach outcome (Connected /
@@ -412,6 +421,7 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
     async Task RunSkewCheckAsync(string? daemonVersion) {
         if (daemonVersion is null) return; // nothing to compare regardless of the cached CLI version
         if (_cli.CliPath is null) return;
+        if (TryHoldSkew(daemonVersion)) return;
 
         lock (_lock) {
             if (_skewDialogShownThisRun) return;
@@ -457,7 +467,7 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
             // cancellation) would skip a post-mutation retract entirely and leave an accepted pair
             // mislabeled "declined" on disk. "Declined" must mean the user declined, full stop.
             var (outcome, succeeded) = await ConfirmAndTakeoverAsync(
-                prompt, revalidate: fresh => ClassifyTakeover(fresh) == kind,
+                prompt, revalidate: fresh => ClassifyTakeover(fresh) == kind && !VersionsNowEqual(),
                 onAcceptedNotStale: () => RetractDeclineAsync(pairKey), _lifetime.Token).ConfigureAwait(false);
 
             switch (outcome) {
@@ -479,6 +489,39 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
         } finally {
             _gate.Release();
         }
+    }
+
+    /// During the post-update hold every trigger is retained rather than dropped — an incompatible
+    /// daemon never produces a snapshot, and the attach client will not repeat an identical event.
+    bool TryHoldSkew(string? daemonVersion) {
+        lock (_lock) {
+            if (_skewHoldUntil is not { } until || _time.GetUtcNow() >= until) return false;
+
+            _heldSkewVersion = daemonVersion;
+            if (_holdRecheckScheduled) return true;
+
+            _holdRecheckScheduled = true;
+            _ = RunHeldSkewRecheckAsync(until - _time.GetUtcNow());
+            return true;
+        }
+    }
+
+    async Task RunHeldSkewRecheckAsync(TimeSpan delay) {
+        try {
+            await Task.Delay(delay, _time, _lifetime.Token).ConfigureAwait(false);
+        } catch (OperationCanceledException) {
+            return;
+        }
+
+        string? held;
+        lock (_lock) {
+            _skewHoldUntil = null;
+            held = _heldSkewVersion;
+        }
+
+        // A snapshot that arrived during the hold is fresher than the held evidence: an idle
+        // daemon has restarted by now and its new version ends the matter without a dialog.
+        await RunSkewCheckAsync(LatestSnapshotVersion() ?? held).ConfigureAwait(false);
     }
 
     enum ConfirmOutcome { Declined, Stale, Attempted }
@@ -566,6 +609,10 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
             return path; // empty/invalid path, missing file, permission error, etc. — raw string compare
         }
     }
+
+    // The daemon may have restarted itself onto the new binary while the dialog was open — an
+    // accept then has nothing to do, and must not replace a unit that is already current.
+    bool VersionsNowEqual() => LatestSnapshotVersion() is { } current && current == CliVersion;
 
     /// Reconciliation (spec §3.2): surfaces every inconsistent combination found in one
     /// ServiceStatusAsync snapshot — never mutates. The attached-only checks only make sense (or

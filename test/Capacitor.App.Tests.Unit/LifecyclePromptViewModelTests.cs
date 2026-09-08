@@ -131,4 +131,30 @@ public class LifecyclePromptViewModelTests {
             await Assert.That(tcs.Task.Result).IsFalse(); // TrySetResult on Accept is a no-op
         });
     }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Update_ready_offers_restart_now_and_not_now() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var vm = new LifecyclePromptViewModel(
+                new LifecyclePrompt(LifecyclePrompt.KindUpdateReady, "0.12.0-beta.3", "0.12.0-beta.2", false, "ready"), new TaskCompletionSource<bool>());
+
+            await Assert.That(vm.Title).IsEqualTo("Update ready");
+            await Assert.That(vm.AcceptButtonText).IsEqualTo("Restart now");
+            await Assert.That(vm.ShowDeclineButton).IsTrue();
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Update_info_is_acknowledge_only() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var vm = new LifecyclePromptViewModel(
+                new LifecyclePrompt(LifecyclePrompt.KindUpdateInfo, null, "0.12.0-beta.2", false, "up to date"), new TaskCompletionSource<bool>());
+
+            await Assert.That(vm.Title).IsEqualTo("Software update");
+            await Assert.That(vm.AcceptButtonText).IsEqualTo("OK");
+            await Assert.That(vm.ShowDeclineButton).IsFalse();
+        });
+    }
 }

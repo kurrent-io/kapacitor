@@ -8,19 +8,20 @@ public sealed record CliInfo(string? Path, string? Version);
 /// CLI). Pure given its env/filesystem seams, so the lifecycle graph, the wizard and every later
 /// feature resolve through the same logic.
 public static class CliResolver {
-    /// KCAP_APP_CLI_PATH (dev seam, app-shell design decision 6) → *(future: bundle-relative
-    /// path arm lands here)* → "kcap" on PATH.
+    /// KCAP_APP_CLI_PATH → the `kcap` beside this executable (the app bundle's Contents/MacOS) →
+    /// "kcap" on PATH.
     ///
     /// Returns null ONLY when the override is set but the path it names does not exist — a broken
-    /// override must not silently fall back to PATH resolution, since that would make the dev seam
-    /// lie about which binary actually ran. Every other case (no override set, or an empty one)
-    /// returns bare "kcap" unconditionally: PATH resolution, and "no CLI at all", are the OS's job
-    /// at spawn time, surfaced by the caller's own RunAsync failure/timeout handling.
-    public static string? ResolvePath(Func<string, string?> getEnv, Func<string, bool> fileExists) {
+    /// override must not silently fall back, since that would make the dev seam lie about which
+    /// binary actually ran. The sibling arm returns an absolute path, which is what lets the shim
+    /// offer link to it. Every other case returns bare "kcap": PATH resolution, and "no CLI at
+    /// all", are the OS's job at spawn time, surfaced by the caller's own RunAsync handling.
+    public static string? ResolvePath(Func<string, string?> getEnv, Func<string, bool> fileExists, string baseDirectory) {
         var overridePath = getEnv("KCAP_APP_CLI_PATH");
-        if (string.IsNullOrEmpty(overridePath)) return "kcap";
+        if (!string.IsNullOrEmpty(overridePath)) return fileExists(overridePath) ? overridePath : null;
 
-        return fileExists(overridePath) ? overridePath : null;
+        var sibling = Path.Combine(baseDirectory, "kcap");
+        return fileExists(sibling) ? sibling : "kcap";
     }
 
     /// Strict: stdout must be exactly one non-empty line "kcap &lt;version&gt;"; multiline, a

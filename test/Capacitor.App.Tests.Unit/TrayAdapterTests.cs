@@ -19,9 +19,9 @@ public class TrayAdapterTests {
     static TrayMenuModel Model(
             TrayState state = TrayState.Idle, int count = 0, string header = "hdr",
             IReadOnlyList<TrayAgentEntry>? agents = null, TrayPauseItem? pause = null, int pendingConsent = 0,
-            bool shimInstallVisible = false) =>
+            bool shimInstallVisible = false, string? updateItemLabel = null) =>
         new(state, count, header, agents ?? [], pause ?? new TrayPauseItem(Enabled: true, Checked: false), pendingConsent,
-            shimInstallVisible);
+            shimInstallVisible, updateItemLabel);
 
     // ---- CountBadge (pure) ----
 
@@ -398,6 +398,44 @@ public class TrayAdapterTests {
             await Assert.That(shimIndex).IsEqualTo(openIndex + 1); // immediately after "Open Kurrent Capacitor"
             await Assert.That(shimIndex).IsLessThan(quitIndex); // still before the trailing separator + Quit
             await Assert.That(commandMatches).IsTrue();
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Rebuild_omits_the_update_item_without_a_label() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var hasItem = await AvaloniaSession.DispatchAsync(() => {
+                var service = new FakeDaemonClientService();
+                using var vm = new TrayViewModel(service, new FakePauseController(), NewActions(service), new FakeConsentService());
+                var menu = new NativeMenu();
+
+                new TrayMenuBuilder(vm).Rebuild(menu, Model(agents: [], updateItemLabel: null));
+
+                return menu.Items.OfType<NativeMenuItem>().Any(i => i.Header == "Check for Updates…");
+            });
+
+            await Assert.That(hasItem).IsFalse();
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Rebuild_adds_the_update_item_with_its_label_and_command() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var (header, matches) = await AvaloniaSession.DispatchAsync(() => {
+                var service = new FakeDaemonClientService();
+                using var vm = new TrayViewModel(service, new FakePauseController(), NewActions(service), new FakeConsentService());
+                var menu = new NativeMenu();
+
+                new TrayMenuBuilder(vm).Rebuild(menu, Model(agents: [], updateItemLabel: "Restart to update to 0.12.0-beta.3"));
+
+                var item = menu.Items.OfType<NativeMenuItem>().First(i => i.Header == "Restart to update to 0.12.0-beta.3");
+                return (item.Header, ReferenceEquals(item.Command, vm.UpdateActionCommand));
+            });
+
+            await Assert.That(header).IsEqualTo("Restart to update to 0.12.0-beta.3");
+            await Assert.That(matches).IsTrue();
         });
     }
 

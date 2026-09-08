@@ -71,6 +71,9 @@ public sealed record TrayPauseItem(bool Enabled, bool Checked);
 public readonly record struct RemoteTraySummary(int RemoteLiveAgents, bool LaneConnected);
 // ShimInstallVisible (spec §5): "Install command-line tool…" tray-item visibility — trailing
 // with a default so every existing positional/object-initializer call site stays valid.
+// UpdateItemLabel: the coordinator's current label for the tray's single update item, or null
+// while it should not show at all.
 public sealed record TrayMenuModel(
     TrayState State, int RunningCount, string Header,
-    IReadOnlyList<TrayAgentEntry> Agents, TrayPauseItem Pause, int PendingConsent, bool ShimInstallVisible = false);
+    IReadOnlyList<TrayAgentEntry> Agents, TrayPauseItem Pause, int PendingConsent, bool ShimInstallVisible = false,
+    string? UpdateItemLabel = null);

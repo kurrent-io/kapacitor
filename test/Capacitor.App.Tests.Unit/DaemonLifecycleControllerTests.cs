@@ -1301,6 +1301,96 @@ public class DaemonLifecycleControllerTests {
         await Assert.That(h.Surface.Prompts).IsEmpty();
     }
 
+    [Test]
+    public async Task Skew_hold_after_update_defers_the_prompt_until_the_window_closes() {
+        await using var h = new Harness(holdSkewForUpdate: true);
+        h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(
+            unitPresent: true, state: "installed", installBinaryPath: "/opt/kcap/kcapd", binaryPath: "/opt/kcap/kcapd"));
+        h.Start();
+        await WaitUntilAsync(() => h.Cli.VersionCallCount == 1, what: "the version cache");
+
+        h.PushSnapshot("0.9.0");
+        h.PushConnected();
+        await Task.Delay(50);
+        await Assert.That(h.Surface.Prompts).IsEmpty();
+
+        h.Clock.Advance(DaemonLifecycleController.SkewHoldAfterUpdate);
+
+        await WaitUntilAsync(() => h.Surface.Prompts.Count == 1, what: "the deferred skew prompt");
+        await Assert.That(h.Surface.Prompts[0].DaemonVersion).IsEqualTo("0.9.0");
+    }
+
+    [Test]
+    public async Task Skew_hold_ends_quietly_when_the_daemon_restarted_itself() {
+        await using var h = new Harness(holdSkewForUpdate: true);
+        h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(unitPresent: true, state: "installed"));
+        h.Start();
+        await WaitUntilAsync(() => h.Cli.VersionCallCount == 1, what: "the version cache");
+
+        h.PushSnapshot("0.9.0");
+        h.PushConnected();
+        h.PushSnapshot("1.0.0"); // the daemon's own restart-after-update landed during the hold
+        h.Clock.Advance(DaemonLifecycleController.SkewHoldAfterUpdate);
+        await Task.Delay(50);
+
+        await Assert.That(h.Surface.Prompts).IsEmpty();
+    }
+
+    [Test]
+    public async Task Skew_hold_keeps_incompatible_hello_evidence_and_prompts_once() {
+        await using var h = new Harness(holdSkewForUpdate: true);
+        h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(unitPresent: true, state: "installed"));
+        h.Start();
+        await WaitUntilAsync(() => h.Cli.VersionCallCount == 1, what: "the version cache");
+
+        h.PushUnreachable(reason: "daemon_incompatible", daemonVersion: "0.9");
+        await Task.Delay(50);
+        await Assert.That(h.Surface.Prompts).IsEmpty();
+
+        h.Clock.Advance(DaemonLifecycleController.SkewHoldAfterUpdate);
+
+        await WaitUntilAsync(() => h.Surface.Prompts.Count == 1, what: "the deferred incompatible prompt");
+        await Assert.That(h.Surface.Prompts[0].DaemonVersion).IsEqualTo("0.9");
+        await Task.Delay(50);
+        await Assert.That(h.Surface.Prompts.Count).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task Skew_without_hold_prompts_immediately() {
+        await using var h = new Harness(holdSkewForUpdate: false);
+        h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(unitPresent: true, state: "installed"));
+        h.Start();
+        await WaitUntilAsync(() => h.Cli.VersionCallCount == 1, what: "the version cache");
+
+        h.PushSnapshot("2.0.0");
+        h.PushConnected();
+
+        await WaitUntilAsync(() => h.Surface.Prompts.Count == 1, what: "the immediate skew prompt");
+    }
+
+    [Test]
+    public async Task Skew_accept_after_the_daemon_caught_up_is_stale_and_retracts_the_claim() {
+        await using var h = new Harness();
+        h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(
+            unitPresent: true, state: "installed", installBinaryPath: "/opt/kcap/kcapd", binaryPath: "/opt/kcap/kcapd"));
+        var answer = new TaskCompletionSource<bool>();
+        h.Surface.ConfirmBehavior = (_, _) => answer.Task;
+        h.Start();
+        await WaitUntilAsync(() => h.Cli.VersionCallCount == 1, what: "the version cache");
+
+        h.PushSnapshot("2.0.0");
+        h.PushConnected();
+        await WaitUntilAsync(() => h.Surface.Prompts.Count == 1, what: "the skew prompt");
+
+        h.PushSnapshot("1.0.0"); // the daemon restarted itself while the dialog was open
+        answer.SetResult(true);
+        await WaitUntilAsync(() => h.Surface.StatusMessages.Count == 1, what: "the stale-consent status");
+
+        await Assert.That(h.Lane.Requests).IsEmpty();
+        var state = await h.Store.LoadAsync();
+        await Assert.That(state.DeclinedTakeoverPairs ?? []).IsEmpty();
+    }
+
     // ---- harness ----
 
     /// Records every MutationRequest the controller hands to `_runMutation` and lets a test
@@ -1335,13 +1425,15 @@ public class DaemonLifecycleControllerTests {
 
         public string? ProfileName = "default";
 
-        public Harness(string? canonicalServer = "https://kcap.example.com:443", bool autoActionsPermanentlyClosed = false) {
+        public Harness(
+                string? canonicalServer = "https://kcap.example.com:443", bool autoActionsPermanentlyClosed = false,
+                bool holdSkewForUpdate = false) {
             CanonicalServer = canonicalServer;
             Time  = new TimerCountingTimeProvider(Clock);
             Store = new AppStateStore(Path.Combine(TempDir, "app-state.json"));
             Controller = new DaemonLifecycleController(
                 Client, Cli, Probe, Store, Surface, () => Task.FromResult<string?>(ProfileName), Time,
-                CanonicalServer, Lane.RunAsync, autoActionsPermanentlyClosed);
+                CanonicalServer, Lane.RunAsync, autoActionsPermanentlyClosed, holdSkewForUpdate);
         }
 
         public void Start() => Controller.Start();

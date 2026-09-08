@@ -5,7 +5,13 @@ using Capacitor.Cli.Core.Http;
 
 namespace Capacitor.Cli.Commands;
 
-public sealed class UpdateCommand(ConfigRoot root, ProfileContext profiles, NpmRegistryClient npm) {
+public sealed class UpdateCommand(ConfigRoot root, ProfileContext profiles, NpmRegistryClient npm, bool? appBundled = null) {
+    /// Printed by every `kcap update` invocation of a CLI that lives inside the desktop app.
+    internal const string BundledMessage =
+        "This kcap is bundled with the Kurrent Capacitor desktop app; updates arrive through the app (\"Check for Updates…\" in the menu bar).";
+
+    readonly bool _appBundled = appBundled ?? InstallProvenance.IsAppBundled();
+
     /// <summary>Valid npm dist-tags for the update channel (Phase 1).</summary>
     static readonly string[] KnownChannels = ["latest", "beta"];
 
@@ -40,6 +46,12 @@ public sealed class UpdateCommand(ConfigRoot root, ProfileContext profiles, NpmR
         var profile   = profiles.Effective;
         var channel   = ResolveChannel(args, profile?.UpdateChannel);
         var checkOnly = args.Contains("--check");
+
+        if (_appBundled) {
+            await Console.Out.WriteLineAsync(checkOnly ? BundledCheckJson(GetCurrentVersion(), channel) : BundledMessage);
+
+            return 0;
+        }
 
         // Persist an explicit channel switch onto the active profile so future
         // auto-updates track it. Update the profile inside ProfileConfig and save
@@ -351,6 +363,19 @@ public sealed class UpdateCommand(ConfigRoot root, ProfileContext profiles, NpmR
     }
 
     static bool IsNewer(string? latest, string? current) => PrereleaseSemver.IsNewer(latest, current);
+
+    /// <summary>
+    /// The `--check` contract for a bundled CLI: the launcher must see "confidently up to date",
+    /// and `install_tag` names the channel that owns the install.
+    /// </summary>
+    internal static string BundledCheckJson(string? current, string channel) =>
+        new JsonObject {
+            ["current"]     = current,
+            ["latest"]      = current,
+            ["newer"]       = false,
+            ["channel"]     = channel,
+            ["install_tag"] = "app",
+        }.ToJsonString();
 
     static string? GetCurrentVersion() {
         var v = CapacitorVersion.CurrentDisplay();

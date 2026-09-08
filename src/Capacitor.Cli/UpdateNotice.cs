@@ -35,7 +35,13 @@ internal static class UpdateNotice {
     /// race the command's own config-dir deletion); and an explicit <c>--no-update-check</c> flag.
     /// Everything else is human-facing and returns true.
     /// </summary>
-    public static bool IsHumanFacing(string command, string[] args) {
+    public static bool IsHumanFacing(string command, string[] args) =>
+        IsHumanFacing(command, args, InstallProvenance.IsAppBundled());
+
+    /// <paramref name="appBundled"/> short-circuits everything: the app owns updates for a bundled
+    /// CLI and its channel may lag npm, so an npm nudge would be wrong on both counts.
+    internal static bool IsHumanFacing(string command, string[] args, bool appBundled) {
+        if (appBundled) return false;
         if (CrashReporter.FailOpenCommands.Contains(command)) return false;
         if (command is "mcp" or "watch" or "daemon") return false;
         if (command is "update" or "uninstall") return false;
@@ -66,7 +72,7 @@ internal static class UpdateNotice {
     /// <summary>
     /// The single exit-path helper: awaited from <c>Program.cs</c>'s outer <c>finally</c> for every
     /// invocation. Does nothing (and touches neither disk nor network) unless
-    /// <see cref="IsHumanFacing"/> says the command is human-facing, the active profile's
+    /// <see cref="IsHumanFacing(string, string[])"/> says the command is human-facing, the active profile's
     /// <c>update_check</c> setting hasn't opted out, and nobody has already
     /// <see cref="MarkReported"/> this invocation. Never throws — an update notice must never break
     /// the command it's attached to.

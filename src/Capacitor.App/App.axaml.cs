@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Reactive.Subjects;
 using Avalonia;
 using Avalonia.Controls;
@@ -10,6 +11,7 @@ using Avalonia.Threading;
 using Capacitor.App.Services;
 using Capacitor.App.Services.Mutation;
 using Capacitor.App.Services.Onboarding;
+using Capacitor.App.Services.Update;
 using Capacitor.App.ViewModels;
 using Capacitor.App.ViewModels.Onboarding;
 using Capacitor.App.Views;
@@ -97,6 +99,12 @@ public partial class App : Application {
     ShimOfferCoordinator? _shimOffer;
     // No disposal needed — its Status subscription dies with _service's own subject disposal below.
     ConsentFlipCoordinator? _consentFlip;
+    // Inert outside a packed bundle (CreateUpdater degrades a construction failure the same way);
+    // replaced by CreateUpdater in StartAsync before any graph exists.
+    IAppUpdater _updater = InertAppUpdater.Instance;
+    // No disposal needed — its schedule loop exits on _shutdown; ApplyPendingOnExit is called
+    // explicitly at shutdown rather than through Dispose.
+    UpdateCoordinator? _updates;
     // Assigned by StartAsync's success path only; every one is still null on a startup failure
     // (and cleared again by the catch, which disposes whatever had been built). Teardown —
     // shutdown and startup-failure alike — disposes them in reverse creation order, tray icon
@@ -161,6 +169,17 @@ public partial class App : Application {
     // default of 0 silently overwriting it.
     int _exitCode;
 
+    // Outside a packed bundle Velopack reports not-installed and the coordinator stays inert; a
+    // constructor failure degrades the same way rather than taking startup down.
+    static IAppUpdater CreateUpdater() {
+        try {
+            return new VelopackAppUpdater(Environment.GetEnvironmentVariable);
+        } catch (Exception ex) {
+            Console.Error.WriteLine($"kcap app: updater unavailable: {ex.Message}");
+            return InertAppUpdater.Instance;
+        }
+    }
+
     public override void Initialize() => AvaloniaXamlLoader.Load(this);
 
     public override void OnFrameworkInitializationCompleted() {
@@ -184,6 +203,10 @@ public partial class App : Application {
     // surface (stderr is invisible for a GUI-launched WinExe) — it must fail loudly instead.
     async Task StartAsync(IClassicDesktopStyleApplicationLifetime desktop) {
         try {
+            if (RunInstallLocationGuard(desktop)) return; // the guard window owns the rest of this run
+            _updater = CreateUpdater();
+            if (UpdateCoordinator.TryApplyPendingAtStartup(_updater, Program.UpdateRelaunch)) return; // the process is being replaced
+
             // The lane is constructed first — every daemon mutation routes through this one instance, and its dependencies need neither a resolved profile nor a live service.
             var laneRunner = new ProcessRunner();
             var laneProbe  = new LoginShellProbe(laneRunner, Environment.GetEnvironmentVariable);
@@ -261,6 +284,90 @@ public partial class App : Application {
         }
     }
 
+    // macOS only: elsewhere there is no bundle. Returns true when a window was shown and startup
+    // must stop here; the window's buttons end the process.
+    bool RunInstallLocationGuard(IClassicDesktopStyleApplicationLifetime desktop) {
+        if (!OperatingSystem.IsMacOS()) return false;
+        var root = InstallLocation.BundleRoot(Environment.ProcessPath);
+        var kind = InstallLocation.Classify(root, _userHome.Path);
+        if (InstallLocation.Passes(kind)) return false;
+
+        var mover = new ApplicationsMover(new ProcessRunner(), ApplicationsMover.PromoteExclusive);
+        // Shutdown(0) closes this window as a side effect, which the window's own Closed handler
+        // below turns back into a Quit call — this flag is what keeps that reentry from calling
+        // Shutdown twice, whichever of the three paths (Quit, a successful move, or the titlebar
+        // close) got there first.
+        var quitting = false;
+        void Quit() {
+            if (quitting) return;
+            quitting = true;
+            desktop.Shutdown(0);
+        }
+        var window = BuildInstallLocationWindow(
+            kind,
+            move: async () => {
+                var outcome = await mover.MoveAsync(root!, _shutdown.Token);
+                if (outcome.Moved) {
+                    Process.Start(new ProcessStartInfo("open") { ArgumentList = { "-n", outcome.InstalledPath! }, UseShellExecute = false });
+                    Quit();
+                }
+                return outcome;
+            },
+            quit: Quit);
+        desktop.MainWindow = window;
+        window.Show();
+        return true;
+    }
+
+    internal static Window BuildInstallLocationWindow(InstallLocationKind kind, Func<Task<MoveOutcome>> move, Action quit) {
+        var where = kind switch {
+            InstallLocationKind.DmgVolume   => "It is running from the disk image.",
+            InstallLocationKind.Translocated => "It is running from a temporary location.",
+            _                                => "It is not in the Applications folder.",
+        };
+        var error = new TextBlock { TextWrapping = TextWrapping.Wrap, Foreground = Brushes.OrangeRed, IsVisible = false };
+        var moveButton = new Button { Content = "Move to Applications", IsDefault = true };
+        var quitButton = new Button { Content = "Quit", IsCancel = true };
+        moveButton.Click += async (_, _) => {
+            moveButton.IsEnabled = false;
+            try {
+                var outcome = await move();
+                if (!outcome.Moved) {
+                    error.Text = outcome.Error;
+                    error.IsVisible = true;
+                    moveButton.IsEnabled = true;
+                }
+            } catch (Exception ex) {
+                error.Text = ex.Message;
+                error.IsVisible = true;
+                moveButton.IsEnabled = true;
+            }
+        };
+        quitButton.Click += (_, _) => quit();
+
+        var window = new Window {
+            Title = "Kurrent Capacitor",
+            Icon = ProductIcon.WindowIcon,
+            Width = 460,
+            Height = 220,
+            CanResize = false,
+            Content = new StackPanel {
+                Margin = new Thickness(24),
+                Spacing = 12,
+                Children = {
+                    new TextBlock { Text = "Move Kurrent Capacitor to your Applications folder to continue.", FontWeight = FontWeight.Bold, TextWrapping = TextWrapping.Wrap },
+                    new TextBlock { Text = $"{where} The command-line tool and the background service need a permanent location.", TextWrapping = TextWrapping.Wrap },
+                    error,
+                    new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right, Children = { quitButton, moveButton } },
+                },
+            },
+        };
+        // The titlebar close / Cmd+W leaves no other path to shutdown — OnExplicitShutdown means
+        // Avalonia never ends the process on its own just because the last window closed.
+        window.Closed += (_, _) => quit();
+        return window;
+    }
+
     // The ONE resolve+evaluate composition (OnboardingGate.EvaluateAsync), wrapped in the
     // never-brick degrade: the verdict and the resolution come back together, so the daemon identity
     // cannot be read off a second one, and the post-wizard build re-runs this rather than reusing a
@@ -309,6 +416,13 @@ public partial class App : Application {
 
         consentFlip.Start();
         _consentFlip = consentFlip;
+
+        // After the graph, never during the wizard: the first check waits its own delay, and every
+        // dialog goes through the same serialized surface as the skew and shim dialogs.
+        // The ready dialog's TCS resolves on the thread pool, so its accept continuation (and
+        // therefore this quit) can run off the UI thread — post it back before shutting down.
+        _updates = new UpdateCoordinator(_updater, lifecycleSurface, TimeProvider.System, quit: () => Dispatcher.UIThread.Post(() => desktop.TryShutdown()), _shutdown.Token);
+        _updates.Start();
 
         // Said once, here, because nothing else in the app would: the graph is up but deliberately degraded.
         AnnounceUnquiescedLane(lifecycleSurface, laneQuiesced);
@@ -440,7 +554,8 @@ public partial class App : Application {
             quit: () => desktop.TryShutdown(), openReviewPrompts: _promptCoordinator.ShowPromptWindow,
             lifecycleAttention: lifecycleAttention, shimOfferable: shimOffer.Offerable,
             installShim: shimOffer.RunManualInstallAsync, permissions: permissions,
-            remote: TrayViewModel.SummaryFrom(directory));
+            remote: TrayViewModel.SummaryFrom(directory),
+            updateMenu: _updates.MenuItem, updateAction: _updates.RunMenuActionAsync);
         _tray = new TrayIconManager(this, _trayVm);
     }
 
@@ -539,7 +654,7 @@ public partial class App : Application {
     async Task<bool> RunWizardModeAsync(
             IClassicDesktopStyleApplicationLifetime desktop, DaemonMutationLane lane, OutcomeChannel channel,
             IProcessRunner runner, ILoginShellProbe probe, ProfileContext? profiles) {
-        var cliPath = CliResolver.ResolvePath(Environment.GetEnvironmentVariable, File.Exists);
+        var cliPath = CliResolver.ResolvePath(Environment.GetEnvironmentVariable, File.Exists, AppContext.BaseDirectory);
         // Same rule as the shim coordinator's: only a resolved ABSOLUTE path is linkable.
         var shimTarget = cliPath is not null && Path.IsPathRooted(cliPath) ? cliPath : null;
         var shimApplicable = await ResolveShimApplicableAsync(
@@ -889,7 +1004,7 @@ public partial class App : Application {
             Action<string> setLifecycleStatus, Action<string> setLifecycleAttention,
             Func<MutationRequest, CancellationToken, Task<MutationOutcome>> runMutation,
             ResolvedProfile? profile) {
-        var cliPath = CliResolver.ResolvePath(Environment.GetEnvironmentVariable, File.Exists);
+        var cliPath = CliResolver.ResolvePath(Environment.GetEnvironmentVariable, File.Exists, AppContext.BaseDirectory);
         var runner  = new ProcessRunner();
         var probe   = new LoginShellProbe(runner, Environment.GetEnvironmentVariable);
         var canonicalServer = ServerIdentity.Canonicalize(profile?.ServerUrl);
@@ -902,11 +1017,11 @@ public partial class App : Application {
 
         var lifecycle = new DaemonLifecycleController(
             service, cli, probe, store, surface, () => Task.FromResult(ValidProfileName(profile)), TimeProvider.System,
-            canonicalServer, runMutation, autoActionsPermanentlyClosed);
+            canonicalServer, runMutation, autoActionsPermanentlyClosed, holdSkewForUpdate: Program.UpdateRelaunch);
 
-        // The shim links to the RESOLVED ABSOLUTE path only — CliResolver's bare "kcap" fallback
-        // (no override set, or the not-yet-landed bundle-relative arm) means there is
-        // nothing to link, so the offer and the menu item both stay off for the whole run.
+        // The shim links to the RESOLVED ABSOLUTE path only — CliResolver's bare "kcap" PATH
+        // fallback means there is nothing to link, so the offer and the menu item both stay off
+        // for the whole run.
         var shimTarget = cliPath is not null && Path.IsPathRooted(cliPath) ? cliPath : null;
         // autoOfferSuppressed: Start() always runs — Offerable/manual install must keep working in Incomplete mode; only the once-ever auto-offer dialog is skipped.
         var shimOffer = new ShimOfferCoordinator(
@@ -1379,7 +1494,8 @@ public partial class App : Application {
             // OnShutdownRequested and settles on the ViewModel's silent-abort path.
             await DisposeUiThenConfirmShutdownAsync(
                 [_tray, _trayVm, _promptCoordinator, _consent, _permissions, _activity, _home, _rail, _pause],
-                DisposeLifecycleAndServiceAsync, () => _shutdownConfirmed = true, desktop, _exitCode);
+                DisposeLifecycleAndServiceAsync, () => _shutdownConfirmed = true, desktop, _exitCode,
+                applyOnExit: () => _updates?.ApplyPendingOnExit());
         } else {
             await DisposeLifecycleAndServiceAsync();
             _shutdownConfirmed = true;
@@ -1454,9 +1570,9 @@ public partial class App : Application {
     // the deferred pass below proceeds exactly as it did before the tray existed.
     internal static Task DisposeUiThenConfirmShutdownAsync(
             IReadOnlyList<IDisposable?> uiDisposables, Func<ValueTask>? disposeAsync, Action markConfirmed,
-            IClassicDesktopStyleApplicationLifetime desktop, int exitCode) {
+            IClassicDesktopStyleApplicationLifetime desktop, int exitCode, Action? applyOnExit = null) {
         DisposeAll(uiDisposables, "shutdown");
-        return DisposeAndConfirmShutdownAsync(disposeAsync, markConfirmed, desktop, exitCode);
+        return DisposeAndConfirmShutdownAsync(disposeAsync, markConfirmed, desktop, exitCode, applyOnExit);
     }
 
     // Per-entry guard for the same reason DisposeAndConfirmShutdownAsync wraps its disposeAsync: a
@@ -1487,7 +1603,7 @@ public partial class App : Application {
     // that happening first.
     internal static async Task DisposeAndConfirmShutdownAsync(
             Func<ValueTask>? disposeAsync, Action markConfirmed, IClassicDesktopStyleApplicationLifetime desktop,
-            int exitCode) {
+            int exitCode, Action? applyOnExit = null) {
         // A throwing disposeAsync must never skip markConfirmed/TryShutdown — otherwise
         // _shutdownConfirmed is never set while _shutdownStarted stays true, and every later
         // quit is cancelled forever.
@@ -1497,6 +1613,13 @@ public partial class App : Application {
             Console.Error.WriteLine($"kcap app failed to dispose the daemon client service during shutdown: {ex}");
         } finally {
             markConfirmed();
+            // Last, after every disposal: the updater waits at most 60 s for this process to exit,
+            // and the quiesce above can use all of that on its own.
+            try {
+                applyOnExit?.Invoke();
+            } catch (Exception ex) {
+                Console.Error.WriteLine($"kcap app failed to hand the pending update to the updater: {ex}");
+            }
             desktop.TryShutdown(exitCode);
         }
     }

@@ -8,7 +8,9 @@ namespace Capacitor.Cli.Commands;
 
 public sealed class StatusCommand(
         DaemonStore store, ProfileContext profiles, ConfigRoot config, TokenStore tokenStore, HarnessRegistry harnesses,
-        ICapacitorHttpClient http, NpmRegistryClient npm) {
+        ICapacitorHttpClient http, NpmRegistryClient npm, bool? appBundled = null) {
+
+    readonly bool _appBundled = appBundled ?? InstallProvenance.IsAppBundled();
 
     public async Task<int> HandleAsync(string[] args) {
         var baseUrl = profiles.Resolution.ServerUrl;
@@ -106,6 +108,12 @@ public sealed class StatusCommand(
 
         var current = CapacitorVersion.CurrentDisplay();
 
+        if (_appBundled) {
+            await Console.Out.WriteLineAsync(FormatBundledVersionLine(current));
+
+            return;
+        }
+
         // Opt-out: an explicit --no-update-check flag or a disabled profile setting means no
         // check is performed at all (never force one the user turned off) — the line still
         // prints the bare version.
@@ -151,6 +159,8 @@ public sealed class StatusCommand(
                 ? $"kcap {current} (update available: {target}, server version)"
                 : $"kcap {current} (update available: {target})"
             : $"kcap {current}";
+
+    internal static string FormatBundledVersionLine(string current) => $"kcap {current} (bundled with Kurrent Capacitor)";
 
     static async Task WriteAgentStatusAsync(DaemonStore store) {
         if (!Directory.Exists(store.Directory)) {

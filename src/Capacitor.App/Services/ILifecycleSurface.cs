@@ -25,4 +25,6 @@ public sealed record LifecyclePrompt(
     public const string KindRepair        = "repair";
     public const string KindShim          = "shim";
     public const string KindQuarantine    = "quarantine";
+    public const string KindUpdateReady   = "update-ready";
+    public const string KindUpdateInfo    = "update-info";
 }

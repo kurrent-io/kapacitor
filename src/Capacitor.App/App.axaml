@@ -1,6 +1,7 @@
 <Application xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              x:Class="Capacitor.App.App"
+             Name="Kurrent Capacitor"
              RequestedThemeVariant="Dark">
     <Application.Resources>
         <!-- The Home surface's design palette. Kcap-prefixed keys so these never

@@ -62,6 +62,10 @@ jobs:
           node npm/kcap/bin/resolve.test.js
           node npm/kcap/bin/refresh.test.js
 
+      - name: Run shell script tests
+        if: runner.os == 'Linux'
+        run: bash scripts/run-shell-tests.sh
+
       - name: Run tests
         # --max-parallel-test-modules 1 runs one assembly at a time. Two things block lifting it,
         # both measured with it off: five concurrent assemblies starve the tests that assert a
@@ -123,3 +127,101 @@ jobs:
             echo "$OUTPUT" | grep -E 'IL[23][01][0-9]{2}'
             exit 1
           fi
+
+  app-bundle:
+    name: App bundle (osx-arm64)
+    runs-on: macos-latest
+    env:
+      # vpk and minver-cli are framework-dependent global tools built for an older runtime
+      # than the .NET 10 SDK global.json pins and setup-dotnet installs.
+      DOTNET_ROLL_FORWARD: Major
+    steps:
+      # Full history and tags: MinVer derives the version from the nearest tag, and the app
+      # refuses a bundled CLI below its floor — a shallow checkout would compute a below-floor
+      # default version and fail the assertion below on every PR.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6
+
+      - name: Install tools
+        run: |
+          dotnet tool install -g minver-cli --version 8.0.0
+          dotnet tool install -g vpk --version 1.2.0
+
+      # One version for the daemon, the CLI, the app and the package, so the floor assertion and
+      # Velopack's SemVer check see the same value. The standalone tool does not read
+      # MinVerTagPrefix from Directory.Build.props, hence the explicit prefix.
+      - name: Compute version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          FULL="$(minver --tag-prefix v)"
+          echo "VERSION=${FULL%%+*}" >> "$GITHUB_OUTPUT"
+          echo "computed $FULL"
+
+      - name: Publish daemon
+        run: >
+          dotnet publish src/Capacitor.Cli.Daemon/Capacitor.Cli.Daemon.csproj -c Release -r osx-arm64
+          -p:MinVerVersionOverride=${{ steps.version.outputs.VERSION }} -o publish/daemon/
+
+      - name: Compute daemon digest
+        id: daemon-digest
+        shell: bash
+        run: |
+          set -euo pipefail
+          source scripts/lib/hash.sh
+          DIGEST="$(sha256_of publish/daemon/kcap-daemon)"
+          echo "DIGEST=$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "$DIGEST" > publish/daemon.sha256
+
+      - name: Publish CLI
+        run: >
+          dotnet publish src/Capacitor.Cli/Capacitor.Cli.csproj -c Release -r osx-arm64
+          -p:MinVerVersionOverride=${{ steps.version.outputs.VERSION }}
+          -p:KcapDaemonDigest=${{ steps.daemon-digest.outputs.DIGEST }} -o publish/cli/
+
+      - name: Publish app
+        run: >
+          dotnet publish src/Capacitor.App/Capacitor.App.csproj -c Release -r osx-arm64 --self-contained
+          -p:MinVerVersionOverride=${{ steps.version.outputs.VERSION }} -o publish/app/
+
+      - name: Assemble pack directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp publish/cli/kcap publish/daemon/kcap-daemon publish/daemon/libpty_shim.dylib publish/app/
+          chmod +x publish/app/kcap publish/app/kcap-daemon "publish/app/Kurrent Capacitor"
+          bash scripts/render-info-plist.sh "${{ steps.version.outputs.VERSION }}" publish/Info.plist
+
+      - name: Pack (unsigned)
+        shell: bash
+        run: >
+          vpk pack --packId KurrentCapacitor --packVersion "${{ steps.version.outputs.VERSION }}"
+          --packTitle "Kurrent Capacitor" --packAuthors Kurrent --mainExe "Kurrent Capacitor"
+          --packDir publish/app --plist publish/Info.plist --icon src/Capacitor.App/Assets/kcap-icon.icns
+          --channel osx-arm64 --noInst --outputDir releases
+
+      - name: Assert the bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p extracted
+          ditto -x -k releases/KurrentCapacitor-osx-arm64-Portable.zip extracted
+          APP="extracted/Kurrent Capacitor.app"
+          bash scripts/assert-app-cli-version.sh "$APP/Contents/MacOS/kcap" "${{ steps.version.outputs.VERSION }}"
+          bash scripts/assert-bundle-digest.sh "$APP" publish/daemon.sha256
+          "$APP/Contents/MacOS/kcap" --version --no-update-check
+          "$APP/Contents/MacOS/kcap-daemon" --version
+          # Pins the manifest field names the alias-promotion script depends on.
+          bash scripts/promote-desktop-aliases.sh releases/releases.osx-arm64.json "${{ steps.version.outputs.VERSION }}" | grep -qx beta
+
+      - name: Upload unsigned bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: app-osx-arm64-unsigned
+          path: releases/KurrentCapacitor-osx-arm64-Portable.zip

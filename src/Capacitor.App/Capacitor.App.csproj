@@ -22,6 +22,7 @@
         <PackageReference Include="Markdig" />
         <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" />
         <PackageReference Include="SvcSystems.UI.Terminal" />
+        <PackageReference Include="Velopack" />
         <PackageReference Include="XTerm.NET" />
     </ItemGroup>
     <ItemGroup>

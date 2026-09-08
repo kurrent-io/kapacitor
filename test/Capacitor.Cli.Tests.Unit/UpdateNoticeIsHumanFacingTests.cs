@@ -1,7 +1,7 @@
 namespace Capacitor.Cli.Tests.Unit;
 
 /// <summary>
-/// Unit coverage for <see cref="UpdateNotice.IsHumanFacing"/> — the sync, I/O-free half of the
+/// Unit coverage for <see cref="UpdateNotice.IsHumanFacing(string, string[])"/> — the sync, I/O-free half of the
 /// suppression predicate (the async half, <c>profile.UpdateCheck == false</c>, is covered by
 /// <c>UpdateNoticeDeliveryTests</c> in the integration suite since it needs a real profile
 /// config file on disk). Asserts both directions of the matrix non-vacuously: every suppressed
@@ -104,5 +104,18 @@ public class UpdateNoticeIsHumanFacingTests {
         // args always contains at least the command itself in production (args[0] == command),
         // but the predicate must not blow up on a caller that passes an empty array.
         await Assert.That(UpdateNotice.IsHumanFacing("status", NoArgs)).IsTrue();
+    }
+
+    // --- Suppressed: a CLI bundled inside the desktop app (updates arrive through the app) ---
+
+    [Test]
+    public async Task AppBundled_IsSuppressed_ForOtherwiseHumanFacingCommands() {
+        await Assert.That(UpdateNotice.IsHumanFacing("status", ["status"], appBundled: true)).IsFalse();
+        await Assert.That(UpdateNotice.IsHumanFacing("setup", ["setup"], appBundled: true)).IsFalse();
+    }
+
+    [Test]
+    public async Task NotBundled_KeepsTheOrdinaryVerdict() {
+        await Assert.That(UpdateNotice.IsHumanFacing("status", ["status"], appBundled: false)).IsTrue();
     }
 }
