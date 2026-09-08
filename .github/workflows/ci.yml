@@ -149,7 +149,7 @@ jobs:
 
       - name: Install tools
         run: |
-          dotnet tool install -g minver-cli --version 7.0.0
+          dotnet tool install -g minver-cli --version 8.0.0
           dotnet tool install -g vpk --version 1.2.0
 
       # One version for the daemon, the CLI, the app and the package, so the floor assertion and
