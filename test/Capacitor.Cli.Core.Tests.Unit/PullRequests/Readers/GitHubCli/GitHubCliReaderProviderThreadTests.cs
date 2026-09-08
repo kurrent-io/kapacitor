@@ -59,7 +59,8 @@ public class GitHubCliReaderProviderThreadTests {
         using var h = await Ready(Tmp);
         var first = (await h.Provider.PageAsync<PullRequestThreadDto>("session", Subject, "threads", null, null, null, default)).Data!;
         var second = (await h.Provider.PageAsync<PullRequestThreadDto>("session", Subject, "threads", first.NextCursor, null, null, default)).Data!;
-        await Assert.That(h.LastArgs).Contains("after=" + Cursor1);
+        var afterIndex = Array.IndexOf(h.LastArgs, "after=" + Cursor1);
+        await Assert.That(h.LastArgs[afterIndex - 1]).IsEqualTo("-f");
         await Assert.That(second.SnapshotId).IsEqualTo(first.SnapshotId);
         await Assert.That(second.Items.Single().Id).IsEqualTo("PRRT_3");
         await Assert.That(second.HasMore).IsFalse();

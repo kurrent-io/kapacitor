@@ -1,5 +1,6 @@
 using Capacitor.Cli.Core.PullRequests;
 using Capacitor.Cli.Core.PullRequests.Readers;
+using TUnit.Assertions.Enums;
 
 namespace Capacitor.Cli.Core.Tests.Unit.PullRequests.Readers;
 
@@ -65,7 +66,7 @@ public class PullRequestReaderRegistryTests {
         await registry.DiscoverAsync(false, default);
         registry.DescribeSession("session", new("github", "github.com", "example", "repo", "hash"), "feature");
         var list = await registry.ListAsync("session", default);
-        await Assert.That(list.Data!.Items.Select(item => item.Number).ToArray()).IsEquivalentTo(new[] { 2, 5 });
+        await Assert.That(list.Data!.Items.Select(item => item.Number).ToArray()).IsEquivalentTo(new[] { 2, 5 }, CollectionOrdering.Matching);
         await Assert.That(gh.DiscoverCalls).IsEqualTo(1);
         registry.ResetSession("session");
         await registry.ListAsync("session", default);
