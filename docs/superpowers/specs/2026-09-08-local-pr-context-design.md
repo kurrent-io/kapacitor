@@ -83,8 +83,8 @@ the first ordered link, with an explicit user selection preserved across polls.
 The primary-repository hint the view model receives grows from a repository hash
 to provider kind, host, owner, name and hash. The work-context session summary
 already carries owner and name for its `is_primary` repository but no host, so
-a session repository is assumed to be on `github.com`; a later change may infer
-the host from a linked PR sharing the repository hash.
+the host comes from a linked pull request sharing the repository hash when one
+exists, else github.com is assumed.
 
 ## Provider registry and routing
 
