@@ -772,6 +772,62 @@ public class WorkContextViewModelTests {
 
     [Test]
     [NotInParallel("AvaloniaSession")]
+    public async Task The_primary_repository_host_comes_from_a_linked_pull_request() {
+        await RunOnUiAsync(async () => {
+            var h = new Harness();
+            var summary = new SessionSummaryDto {
+                SessionId = SessionA,
+                Repositories = [new SessionRepositoryDto { RepoHash = "hash1", Owner = "owner", RepoName = "repo", IsPrimary = true }],
+                PullRequests = [Pr("owner", "repo", 3, "https://ghe.example/owner/repo/pull/3", "Fix") with { RepoHash = "hash1" }],
+            };
+            h.Source.Enqueue(ReadyWith(null, summary: summary));
+            await h.PushAsync(Dto());
+
+            await Assert.That(h.Vm.PrimaryRepository!.Host).IsEqualTo("ghe.example");
+            await Assert.That(h.Vm.PrimaryRepository.Provider).IsEqualTo("github");
+            await h.Vm.TeardownAsync();
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task A_merge_request_link_yields_the_gitlab_provider() {
+        await RunOnUiAsync(async () => {
+            var h = new Harness();
+            var summary = new SessionSummaryDto {
+                SessionId = SessionA,
+                Repositories = [new SessionRepositoryDto { RepoHash = "hash1", Owner = "owner", RepoName = "repo", IsPrimary = true }],
+                PullRequests = [Pr("owner", "repo", 3, "https://gitlab.example/owner/repo/-/merge_requests/3", "Fix") with { RepoHash = "hash1" }],
+            };
+            h.Source.Enqueue(ReadyWith(null, summary: summary));
+            await h.PushAsync(Dto());
+
+            await Assert.That(h.Vm.PrimaryRepository!.Provider).IsEqualTo("gitlab");
+            await Assert.That(h.Vm.PrimaryRepository.Host).IsEqualTo("gitlab.example");
+            await h.Vm.TeardownAsync();
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task No_linked_pull_request_falls_back_to_github_com() {
+        await RunOnUiAsync(async () => {
+            var h = new Harness();
+            var summary = new SessionSummaryDto {
+                SessionId = SessionA,
+                Repositories = [new SessionRepositoryDto { RepoHash = "hash1", Owner = "owner", RepoName = "repo", IsPrimary = true }],
+            };
+            h.Source.Enqueue(ReadyWith(null, summary: summary));
+            await h.PushAsync(Dto());
+
+            await Assert.That(h.Vm.PrimaryRepository!.Provider).IsEqualTo("github");
+            await Assert.That(h.Vm.PrimaryRepository.Host).IsEqualTo("github.com");
+            await h.Vm.TeardownAsync();
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
     public async Task Links_open_through_the_policy_and_a_throwing_opener_is_caught() {
         await RunOnUiAsync(async () => {
             var h = new Harness();

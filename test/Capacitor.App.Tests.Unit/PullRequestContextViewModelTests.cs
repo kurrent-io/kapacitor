@@ -4,6 +4,7 @@ using Avalonia.Threading;
 using Capacitor.App.ViewModels;
 using Capacitor.Cli.Core.LocalIpc;
 using Capacitor.Cli.Core.PullRequests;
+using Capacitor.Cli.Core.PullRequests.Readers;
 using Microsoft.Extensions.Time.Testing;
 using static Capacitor.App.Tests.Unit.AvaloniaSession;
 using static Capacitor.App.Tests.Unit.WorkspaceFixtures;
@@ -152,12 +153,12 @@ public class PullRequestContextViewModelTests {
 
     [Test]
     public Task A_late_primary_repository_hint_corrects_the_default_without_changing_an_explicit_choice() => RunOnUiAsync(async () => {
-        string? primary = null;
+        PullRequestRepository? primary = null;
         var h = new Harness(() => primary);
         h.Source.Links[1] = h.Source.Links[1] with { RepoHash = "primary" };
         h.Push(); await h.Show();
         await Assert.That(h.Vm.Selected!.Subject.Number).IsEqualTo(1);
-        primary = "primary";
+        primary = new("github", "github.com", "example", "repo", "primary");
         h.Time.Advance(TimeSpan.FromSeconds(16)); await h.Vm.RefreshCommand.Execute();
         await WaitUntilAsync(() => !h.Vm.IsReading, what: "primary repository selected");
         await Assert.That(h.Vm.Selected!.Subject.Number).IsEqualTo(2);
@@ -223,7 +224,7 @@ public class PullRequestContextViewModelTests {
         internal FakePullRequestSource Source { get; }
         internal RecordingOpener Opener { get; } = new();
         internal PullRequestContextViewModel Vm { get; }
-        internal Harness(Func<string?>? primary = null) {
+        internal Harness(Func<PullRequestRepository?>? primary = null) {
             Source = new(Time);
             Vm = new(Presence, Source, Time, Opener, () => { }, primaryRepo: primary);
         }

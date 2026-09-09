@@ -7,6 +7,7 @@ using Avalonia.Threading;
 using Capacitor.App.Services;
 using Capacitor.Cli.Core.LocalIpc;
 using Capacitor.Cli.Core.PullRequests;
+using Capacitor.Cli.Core.PullRequests.Readers;
 using ReactiveUI.Reactive;
 
 namespace Capacitor.App.ViewModels;
@@ -17,7 +18,8 @@ public sealed partial class PullRequestContextViewModel : ReactiveObject {
     readonly TimeProvider _time;
     readonly IUrlOpener _opener;
     readonly Action _openReader;
-    readonly Func<string?>? _primaryRepo;
+    readonly Func<PullRequestRepository?>? _primaryRepo;
+    readonly IPullRequestReaders? _readers;
     readonly CompositeDisposable _subscriptions = new();
     readonly HashSet<Task> _tasks = [];
     readonly List<CancellationTokenSource> _retired = [];
@@ -57,6 +59,7 @@ public sealed partial class PullRequestContextViewModel : ReactiveObject {
     string _section = "overview";
     string? _thread;
     string _notice = "Waiting for the session to register…";
+    PullRequestReaderNote? _readerNote;
 
     public IAvaloniaReadOnlyList<PullRequestChoice> Choices => _choices;
     public PullRequestChoice? Selected {
@@ -64,6 +67,10 @@ public sealed partial class PullRequestContextViewModel : ReactiveObject {
         set { if (!_updatingChoices) Select(value, explicitSelection: true); }
     }
     public string Notice => _notice;
+    public string ReaderNote => _readerNote?.Text ?? "";
+    public bool HasReaderNote => _readerNote is not null;
+    public bool ShowsInstallTool => _readerNote?.InstallUrl is not null;
+    public string InstallToolLabel => _readerNote is null ? "" : "Install " + _readerNote.ToolName;
     public bool IsReading => _refreshing || _overviewPending || _pageRequests.Count > 0;
     public bool HasChoice => _selected is not null;
     public bool IsLegacy => _legacy;
@@ -95,14 +102,16 @@ public sealed partial class PullRequestContextViewModel : ReactiveObject {
     public ReactiveCommand<string, Unit> OpenBodyLinkCommand { get; }
     public ReactiveCommand<Unit, Unit> SignInCommand { get; }
     public ReactiveCommand<Unit, Unit> LinkGitHubCommand { get; }
+    public ReactiveCommand<Unit, Unit> InstallToolCommand { get; }
 
     public PullRequestContextViewModel(IObservable<AgentStatusDto?> presence, IPullRequestSource source, TimeProvider time, IUrlOpener opener,
-        Action openReader, Action? signIn = null, Action? linkGitHub = null, IObservable<Unit>? signInCompleted = null, Func<string?>? primaryRepo = null) {
+        Action openReader, Action? signIn = null, Action? linkGitHub = null, IObservable<Unit>? signInCompleted = null, Func<PullRequestRepository?>? primaryRepo = null) {
         _source = source;
         _time = time;
         _opener = opener;
         _openReader = openReader;
         _primaryRepo = primaryRepo;
+        _readers = source as IPullRequestReaders;
         RefreshCommand = ReactiveCommand.Create(() => RequestRefresh(manual: true));
         OpenReaderCommand = ReactiveCommand.Create(() => { _openReader(); SetReaderVisible(true); });
         ShowSectionCommand = ReactiveCommand.Create<string>(ShowSection);
@@ -114,16 +123,16 @@ public sealed partial class PullRequestContextViewModel : ReactiveObject {
             ShowSection("thread_comments");
         });
         OpenRowCommand = ReactiveCommand.Create<PullRequestRow>(row => {
-            if (CanDisplayReader) LinkPolicy.Open(_opener, row.IsCheck ? PullRequestWire.CheckLink(row.Url) : _selected is null ? null : PullRequestWire.PrLink(row.Url, _selected.Subject));
+            if (CanDisplayReader) LinkPolicy.Open(_opener, row.IsCheck ? PullRequestWire.CheckLink(row.Url) : _selected is null ? null : PrLink(row.Url, _selected.Subject));
         });
         OpenGitHubCommand = ReactiveCommand.Create(() => {
-            if (_selected is { IsAvailable: true } choice)
-                LinkPolicy.Open(_opener, PullRequestWire.IsGitHub(choice.Subject)
-                    ? PullRequestWire.PrLink(choice.Link.Url, choice.Subject) : PullRequestWire.SafeLink(choice.Link.Url));
+            if (_selected is { IsAvailable: true } choice) LinkPolicy.Open(_opener, PrLink(choice.Link.Url, choice.Subject));
         });
         OpenBodyLinkCommand = ReactiveCommand.Create<string>(url => { if (CanDisplayReader) LinkPolicy.Open(_opener, PullRequestWire.BodyLink(url)); });
         SignInCommand = ReactiveCommand.Create(() => signIn?.Invoke());
         LinkGitHubCommand = ReactiveCommand.Create(() => linkGitHub?.Invoke());
+        InstallToolCommand = ReactiveCommand.Create(() => LinkPolicy.Open(_opener, _readerNote?.InstallUrl));
+        _subscriptions.Add(InstallToolCommand);
         _subscriptions.Add(RefreshCommand); _subscriptions.Add(OpenReaderCommand); _subscriptions.Add(ShowSectionCommand);
         _subscriptions.Add(LoadMoreCommand); _subscriptions.Add(ReloadEarlierCommand); _subscriptions.Add(ExpandThreadCommand);
         _subscriptions.Add(OpenRowCommand); _subscriptions.Add(OpenGitHubCommand); _subscriptions.Add(OpenBodyLinkCommand);
@@ -266,6 +275,8 @@ public sealed partial class PullRequestContextViewModel : ReactiveObject {
         }
     }
     void SetNotice(string value) { _notice = value; Notify(); }
+    string? PrLink(string? url, PullRequestSubjectDto subject) => _readers is not null ? _readers.PrLink(url, subject)
+        : PullRequestWire.IsGitHub(subject) ? PullRequestWire.PrLink(url, subject) : PullRequestWire.SafeLink(url);
     public async Task TeardownAsync() {
         if (_disposed) return;
         _disposed = true;

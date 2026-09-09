@@ -1,6 +1,7 @@
 using System.Reactive;
 using Avalonia.Collections;
 using Capacitor.Cli.Core.LocalIpc;
+using Capacitor.Cli.Core.PullRequests;
 using Capacitor.Cli.Core.WorkItems;
 using ReactiveUI.Reactive;
 
@@ -253,7 +254,12 @@ public sealed partial class WorkContextViewModel {
         if (read.SummaryFailed) return;
         if (read.Summary is not { } summary) return;
         var primaryRepositories = summary.Repositories.Where(repository => repository.IsPrimary).ToArray();
-        PrimaryRepositoryHash = primaryRepositories.Length == 1 ? primaryRepositories[0].RepoHash : null;
+        if (primaryRepositories.Length == 1) {
+            var repo = primaryRepositories[0];
+            // The host is inferred from a linked pull request sharing the repository hash, else github.com is assumed.
+            var (provider, host) = RepositoryIdentity(summary, repo.RepoHash);
+            PrimaryRepository = new(provider, host, repo.Owner, repo.RepoName, repo.RepoHash);
+        } else PrimaryRepository = null;
 
         var cards = summary.PullRequests
             .Select(pr => Link(pr.Number, pr.Title, pr.Url))
@@ -274,6 +280,13 @@ public sealed partial class WorkContextViewModel {
 
     WorkContextLinkViewModel Link(int number, string? title, string? url) =>
         new("PULL REQUEST", $"#{number}", title ?? $"Pull request #{number}", url, _opener);
+
+    static (string Provider, string Host) RepositoryIdentity(SessionSummaryDto summary, string repoHash) {
+        var link = summary.PullRequests.FirstOrDefault(pr => pr.RepoHash == repoHash && PullRequestWire.SafeLink(pr.Url) is not null);
+        if (link is null) return ("github", "github.com");
+        var uri = new Uri(PullRequestWire.SafeLink(link.Url)!);
+        return (uri.AbsolutePath.Contains("/-/merge_requests/", StringComparison.Ordinal) ? "gitlab" : "github", uri.IdnHost);
+    }
 
     /// PR numbers are repository-local; without a repository identity on the summary the number
     /// alone decides, which never shows one PR twice.

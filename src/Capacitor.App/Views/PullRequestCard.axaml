@@ -32,6 +32,12 @@
             </StackPanel>
             <TextBlock Text="{Binding Notice}" IsVisible="{Binding HasNotice}" FontSize="11.5" TextWrapping="Wrap"
                        Foreground="{StaticResource KcapMutedBrush}" />
+            <TextBlock Text="{Binding ReaderNote}" IsVisible="{Binding HasReaderNote}" FontSize="11.5" TextWrapping="Wrap"
+                       Foreground="{StaticResource KcapMutedBrush}" />
+            <StackPanel Orientation="Horizontal" Spacing="7" IsVisible="{Binding HasReaderNote}">
+                <Button Content="{Binding InstallToolLabel}" Command="{Binding InstallToolCommand}" IsVisible="{Binding ShowsInstallTool}" Padding="10,5" FontSize="11.5" />
+                <Button Content="Recheck" Command="{Binding RefreshCommand}" Padding="10,5" FontSize="11.5" />
+            </StackPanel>
             <StackPanel Orientation="Horizontal" Spacing="7">
                 <Button Content="Read PR" Command="{Binding OpenReaderCommand}" IsVisible="{Binding HasChoice}"
                         IsEnabled="{Binding !IsLegacy}" Padding="10,5" FontSize="11.5" />
