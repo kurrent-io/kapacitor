@@ -74,6 +74,29 @@ public class PullRequestReaderRegistryTests {
     }
 
     [Test]
+    public async Task Local_discovery_serves_the_list_when_the_server_links_are_unavailable() {
+        var links = new StubLinks { ListKind = PullRequestReadKind.Unavailable };
+        var gh = new StubProvider("gh", ready: true, hosts: ["github.com"]) { Discovered = [Link("github.com", 9)] };
+        var registry = new PullRequestReaderRegistry(links, [gh]);
+        await registry.DiscoverAsync(false, default);
+        registry.DescribeSession("session", new("github", "github.com", "example", "repo", "hash"), "feature");
+        var list = await registry.ListAsync("session", default);
+        await Assert.That(list.Kind).IsEqualTo(PullRequestReadKind.Ready);
+        await Assert.That(list.Data!.Items.Select(item => item.Number).ToArray()).IsEquivalentTo(new[] { 9 });
+    }
+
+    [Test]
+    public async Task A_server_failure_stands_when_local_discovery_finds_nothing() {
+        var links = new StubLinks { ListKind = PullRequestReadKind.Unavailable };
+        var gh = new StubProvider("gh", ready: true, hosts: ["github.com"]);
+        var registry = new PullRequestReaderRegistry(links, [gh]);
+        await registry.DiscoverAsync(false, default);
+        registry.DescribeSession("session", new("github", "github.com", "example", "repo", "hash"), "feature");
+        var list = await registry.ListAsync("session", default);
+        await Assert.That(list.Kind).IsEqualTo(PullRequestReadKind.Unavailable);
+    }
+
+    [Test]
     public async Task A_provider_change_on_rediscovery_restarts_the_next_read_once() {
         var provider = new StubProvider("gh", ready: false, hosts: ["github.com"]);
         var server = new StubProvider("server", ready: true, hosts: ["github.com"]);
@@ -152,10 +175,11 @@ public class PullRequestReaderRegistryTests {
         public PullRequestCapability Capability = new(PullRequestCapabilityKind.Supported, 1);
         public PullRequestLinkDto[] Links = [];
         public PullRequestLinkDto[] Legacy = [];
+        public PullRequestReadKind ListKind = PullRequestReadKind.Ready;
         public Task<PullRequestCapability> DiscoverAsync(bool refresh, CancellationToken ct) => Task.FromResult(Capability);
         public void ResetSession(string sessionId) { }
         public Task<PullRequestRead<PullRequestLinkListDto>> ListAsync(string sessionId, CancellationToken ct)
-            => Task.FromResult(new PullRequestRead<PullRequestLinkListDto>(PullRequestReadKind.Ready, new() { Items = Links }, FetchedAt: DateTime.UtcNow));
+            => Task.FromResult(new PullRequestRead<PullRequestLinkListDto>(ListKind, ListKind == PullRequestReadKind.Ready ? new() { Items = Links } : null, FetchedAt: DateTime.UtcNow));
         public Task<PullRequestRead<PullRequestLinkListDto>> LegacyLinksAsync(string sessionId, CancellationToken ct)
             => Task.FromResult(new PullRequestRead<PullRequestLinkListDto>(PullRequestReadKind.Ready, new() { Items = Legacy }, FetchedAt: DateTime.UtcNow));
         public Task<PullRequestRead<PullRequestOverviewDto>> OverviewAsync(string sessionId, PullRequestSubjectDto subject, CancellationToken ct) => throw new NotSupportedException();

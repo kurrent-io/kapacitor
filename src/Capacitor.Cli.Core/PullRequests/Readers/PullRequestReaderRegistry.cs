@@ -4,9 +4,10 @@ namespace Capacitor.Cli.Core.PullRequests.Readers;
 /// Session links always come from <paramref name="sessionLinks"/>; reading routes to the first
 /// ready provider serving the subject's kind and host. Nothing here names a provider.
 /// </summary>
-public sealed class PullRequestReaderRegistry(IPullRequestSource sessionLinks, IReadOnlyList<IPullRequestReaderProvider> providers)
+public sealed class PullRequestReaderRegistry(IPullRequestSource sessionLinks, IReadOnlyList<IPullRequestReaderProvider> providers, TimeProvider? time = null)
         : IPullRequestSource, IPullRequestReaders {
     readonly Lock _lock = new();
+    readonly TimeProvider _time = time ?? TimeProvider.System;
     readonly Dictionary<string, (PullRequestRepository? Repository, string? Branch, string? SubjectKey, string? ProviderName)> _sessions = new(StringComparer.Ordinal);
     PullRequestReaderStatus[] _statuses = [.. providers.Select(_ => new PullRequestReaderStatus(PullRequestReaderStatusKind.Failed, "not_probed"))];
 
@@ -41,16 +42,29 @@ public sealed class PullRequestReaderRegistry(IPullRequestSource sessionLinks, I
             PullRequestCapabilityKind.SignedOut => new(PullRequestReadKind.SignedOut, AccessFailure: "invalid"),
             _ => new PullRequestRead<PullRequestLinkListDto>(PullRequestReadKind.Unavailable, Reason: capability.Reason ?? "discovery_unavailable", AccessFailure: "transient", RetryAt: capability.RetryAt)
         };
-        if (links.Kind != PullRequestReadKind.Ready || links.Data is null) return links;
-        var items = links.Data.Items.Select(Resolve).ToList();
         (PullRequestRepository? Repository, string? Branch, string? SubjectKey, string? ProviderName) context;
         lock (_lock) context = _sessions.GetValueOrDefault(sessionId);
+
+        if (links.Kind != PullRequestReadKind.Ready || links.Data is null) {
+            if (context is { Repository: { } fallbackRepository, Branch: { Length: > 0 } fallbackBranch }
+                    && Ready().FirstOrDefault(provider => provider.Serves(fallbackRepository.Provider, fallbackRepository.Host)) is { } fallbackProvider) {
+                var discovered = await fallbackProvider.DiscoverAsync(fallbackRepository, fallbackBranch, ct).ConfigureAwait(false);
+                if (discovered.Count > 0) return new(PullRequestReadKind.Ready, MergeAndOrder(discovered), FetchedAt: _time.GetUtcNow().UtcDateTime);
+            }
+            return links;
+        }
+
+        var items = links.Data.Items.Select(Resolve).ToList();
         if (context is { Repository: { } repository, Branch: { Length: > 0 } branch })
             foreach (var provider in Ready().Where(provider => provider.Serves(repository.Provider, repository.Host)))
                 items.AddRange(await provider.DiscoverAsync(repository, branch, ct).ConfigureAwait(false));
+        return links with { Data = MergeAndOrder(items) };
+    }
+
+    static PullRequestLinkListDto MergeAndOrder(IEnumerable<PullRequestLinkDto> items) {
         var merged = items.DistinctBy(item => (item.Provider, item.Host, item.Owner.ToLowerInvariant(), item.RepoName.ToLowerInvariant(), item.Number))
             .OrderBy(item => item.Owner.ToLowerInvariant(), StringComparer.Ordinal).ThenBy(item => item.RepoName.ToLowerInvariant(), StringComparer.Ordinal).ThenBy(item => item.Number).ToArray();
-        return links with { Data = new() { Items = merged } };
+        return new() { Items = merged };
     }
 
     public Task<PullRequestRead<PullRequestLinkListDto>> LegacyLinksAsync(string sessionId, CancellationToken ct) => sessionLinks.LegacyLinksAsync(sessionId, ct);

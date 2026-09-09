@@ -369,7 +369,7 @@ public partial class App : Application {
         var ghRunner = new ProcessRunner();
         var gh = new GitHubCliRunner(ghRunner, OperatingSystem.IsWindows() ? null : new LoginShellProbe(ghRunner, Environment.GetEnvironmentVariable), Environment.GetEnvironmentVariable);
         // Registration order is precedence: local CLI readers before the server.
-        var readers = new PullRequestReaderRegistry(pullRequests, [new GitHubCliReaderProvider(gh), new ServerReaderProvider(pullRequests)]);
+        var readers = new PullRequestReaderRegistry(pullRequests, [new GitHubCliReaderProvider(gh), new ServerReaderProvider(pullRequests)], TimeProvider.System);
         var serverClients = new ServerClients(serverLane, workContext, pullRequests);
         _serverLane = serverLane;
 

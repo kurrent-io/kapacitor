@@ -92,6 +92,9 @@ Two concerns are kept apart. **Session links**, which PRs a recorded session is
 linked to, are a Capacitor concept and always come from the server: the v1
 link-list route when supported, the independently admitted session summary
 otherwise. **Reading** a PR is provider-specific and goes through the registry.
+When the session-link read fails, a ready provider's live discovery still runs
+for the session's repository and branch, and a non-empty result is served alone,
+so a signed-out or unreachable server does not hide the branch's pull request.
 
 Providers are registered in precedence order, local CLI providers before the
 server, in one place in the desktop app. Discovery runs once per profile
