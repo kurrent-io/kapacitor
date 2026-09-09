@@ -4,6 +4,7 @@ using Capacitor.Cli.Core.PullRequests.Readers.GitHubCli;
 namespace Capacitor.Cli.Core.Tests.Unit.PullRequests.Readers.GitHubCli;
 
 /// <summary>Runs the real <c>gh</c> against a public PR when it is installed and signed in; skipped otherwise, so CI without a sign-in stays green.</summary>
+[ParallelLimiter<SubprocessLimit>]
 public class GitHubCliLiveTests {
     [Test]
     public async Task The_installed_gh_reads_a_public_pull_request_end_to_end() {
