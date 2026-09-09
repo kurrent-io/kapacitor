@@ -10,7 +10,7 @@ using Capacitor.Cli.Core.Harness.Claude;
 using Capacitor.Remote.Models;
 using DynamicData;
 using DynamicData.Binding;
-using ReactiveUI;
+using ReactiveUI.Reactive;
 
 namespace Capacitor.App.ViewModels;
 

@@ -1,7 +1,7 @@
 using System.ComponentModel;
 using System.Reactive;
 using Avalonia.Collections;
-using ReactiveUI;
+using ReactiveUI.Reactive;
 
 namespace Capacitor.App.ViewModels;
 

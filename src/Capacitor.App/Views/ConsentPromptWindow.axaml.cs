@@ -3,8 +3,8 @@ using System.Reactive.Linq;
 using Avalonia.Controls.Notifications;
 using Capacitor.App.Services;
 using Capacitor.App.ViewModels;
-using ReactiveUI;
-using ReactiveUI.Avalonia;
+using ReactiveUI.Reactive;
+using ReactiveUI.Avalonia.Reactive;
 
 namespace Capacitor.App.Views;
 

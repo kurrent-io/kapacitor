@@ -209,7 +209,7 @@ internal sealed class OpenCodeImportSource : IImportSource {
             sent = await SessionImporter.SendTranscriptBatches(
                 httpClient: ctx.HttpClient, baseUrl: ctx.BaseUrl, sessionId: c.SessionId,
                 filePath: tmpFile, agentId: null, startLine: 0, vendor: Vendor,
-                lineNumberOffset: lineOffset, failOnError: true);
+                lineNumberOffset: lineOffset, failOnError: true, progress: ctx.Progress);
         } catch (OperationCanceledException) {
             throw; // cancellation is not an import failure — let it propagate
         } catch {
@@ -237,7 +237,7 @@ internal sealed class OpenCodeImportSource : IImportSource {
         var descendantsOk           = true;
         OperationCanceledException? cancellation = null;
         try {
-            await ImportDescendantsAsync(ctx.HttpClient, ctx.BaseUrl, c.SessionId, ct);
+            await ImportDescendantsAsync(ctx.HttpClient, ctx.BaseUrl, c.SessionId, ctx.Progress, ct);
         } catch (OperationCanceledException oce) {
             cancellation = oce;
         } catch {
@@ -295,7 +295,7 @@ internal sealed class OpenCodeImportSource : IImportSource {
     /// silent) via a stderr diagnostic. Throws on the first descendant whose lifecycle can't be
     /// posted (caller wraps this in a finally-style re-close).
     /// </summary>
-    async Task ImportDescendantsAsync(HttpClient client, string baseUrl, string rootId, CancellationToken ct) {
+    async Task ImportDescendantsAsync(HttpClient client, string baseUrl, string rootId, IProgress<ImportProgress>? progress, CancellationToken ct) {
         using var db = new OpenCodeDb(_dbPath);
         var (descendants, omitted, _, countTruncated) = db.QueryDescendants(rootId); // BFS, per-level ordered like QueryChildren
 
@@ -335,7 +335,7 @@ internal sealed class OpenCodeImportSource : IImportSource {
                 await SessionImporter.SendTranscriptBatches(
                     httpClient: client, baseUrl: baseUrl, sessionId: rootId,
                     filePath: tmp, agentId: agentId, startLine: 0, vendor: Vendor,
-                    lineNumberOffset: childOffset, failOnError: true);
+                    lineNumberOffset: childOffset, failOnError: true, progress: progress);
 
                 if (!await PostHookAsync(client, baseUrl, "subagent-stop",
                         OpenCodeSubagentDiscovery.BuildStopPayload(rootId, agentId, agentType, tmp), ct))

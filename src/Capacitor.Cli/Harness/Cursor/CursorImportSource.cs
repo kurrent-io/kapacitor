@@ -580,6 +580,7 @@ internal sealed class CursorImportSource : IImportSource {
                 agentId:       null,
                 startLine:     startLine,
                 vendor:        Vendor,
+                progress:      ctx.Progress,
                 abortDelivery: () => _markers.IsQuarantined(quarantineIdentity));
         } catch (SessionImporter.TranscriptDeliveryAbortedException) {
             // Quarantine tripped mid-delivery — no children/remaining batches (we return before
@@ -856,6 +857,7 @@ internal sealed class CursorImportSource : IImportSource {
                 agentId:       agentId,
                 startLine:     startLine,
                 vendor:        Vendor,
+                progress:      ctx.Progress,
                 failOnError:   true,
                 abortDelivery: () => _markers.IsQuarantined(quarantineIdentity));
         } catch (SessionImporter.TranscriptDeliveryAbortedException) {

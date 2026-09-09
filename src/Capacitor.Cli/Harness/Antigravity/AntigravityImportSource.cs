@@ -246,7 +246,7 @@ internal sealed class AntigravityImportSource : IImportSource {
             // lifecycle-only repair path (subagent-start+stop, no content resend) contributes
             // false. This outcome stays hardcoded Skipped — only SentChildContent is threaded
             // through below.
-            var sentChildContent = await ImportChildrenAsync(ctx.HttpClient, ctx.BaseUrl, c.SessionId, c.SourceMeta!, ct);
+            var sentChildContent = await ImportChildrenAsync(ctx.HttpClient, ctx.BaseUrl, c.SessionId, c.SourceMeta!, ctx.Progress, ct);
 
             // Explicit gen_metadata usage pass — even though AlreadyLoaded sends zero real
             // transcript lines (the content watermark is already at the tip), a session
@@ -279,7 +279,7 @@ internal sealed class AntigravityImportSource : IImportSource {
         try {
             sent = await SessionImporter.SendTranscriptBatches(
                 httpClient: ctx.HttpClient, baseUrl: ctx.BaseUrl, sessionId: c.SessionId,
-                filePath: transcriptPath, agentId: null, startLine: startLine, vendor: Vendor);
+                filePath: transcriptPath, agentId: null, startLine: startLine, vendor: Vendor, progress: ctx.Progress);
         } catch (OperationCanceledException) {
             throw;
         } catch {
@@ -294,7 +294,7 @@ internal sealed class AntigravityImportSource : IImportSource {
 
         // Children as subagents — BEFORE session-end so SubagentCompleted precedes SessionEnded.
         // Subagent failures don't fail the (already-imported) parent; a re-import retries.
-        await ImportChildrenAsync(ctx.HttpClient, ctx.BaseUrl, c.SessionId, c.SourceMeta!, ct);
+        await ImportChildrenAsync(ctx.HttpClient, ctx.BaseUrl, c.SessionId, c.SourceMeta!, ctx.Progress, ct);
 
         if (!await PostHookAsync(ctx.HttpClient, ctx.BaseUrl, "session-end/antigravity",
                 BuildSessionEndPayload(c.SessionId, c.Meta.Cwd, c.Meta.LastTimestamp), ct))
@@ -313,7 +313,7 @@ internal sealed class AntigravityImportSource : IImportSource {
     /// </summary>
     async Task<bool> ImportChildrenAsync(
             HttpClient client, string baseUrl, string rootId,
-            IReadOnlyDictionary<string, object?> sourceMeta, CancellationToken ct) {
+            IReadOnlyDictionary<string, object?> sourceMeta, IProgress<ImportProgress>? progress, CancellationToken ct) {
         if (!sourceMeta.TryGetValue("Children", out var kidsObj) || kidsObj is not List<string> { Count: > 0 } children)
             return false;
 
@@ -405,7 +405,7 @@ internal sealed class AntigravityImportSource : IImportSource {
                 childSent = await SessionImporter.SendTranscriptBatches(
                     httpClient: client, baseUrl: baseUrl, sessionId: rootId,
                     filePath: childTranscript, agentId: childAgentId, startLine: childStartLine, vendor: Vendor,
-                    failOnError: true);
+                    failOnError: true, progress: progress);
             } catch (OperationCanceledException) {
                 throw;
             } catch {

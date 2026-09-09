@@ -59,6 +59,7 @@ public class ImportEndReassertTests : IDisposable {
         OnSubagentFinished    = (_, _, _, _) => { },
         OnSessionProgress     = (_, _, _) => { },
         OnSessionErrored      = (_, _, _) => { },
+        OnSessionWarning      = (_, _, _) => { },
         OnSessionEnded        = (_, _, _, _) => { },
         OnTitleTaskReady      = _ => { },
         OnBackgroundWorkReady = _ => { },

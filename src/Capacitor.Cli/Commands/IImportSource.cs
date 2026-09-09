@@ -49,12 +49,16 @@ internal sealed record ClassifyContext(
 /// effective --private flag from the orchestrator; DefaultVisibility carries
 /// the Step 3 setup visibility choice, or null for standalone `kcap import`.
 /// Neither is read directly by a source — <see cref="VisibilityStampFor"/> is.
+/// Progress is the sink a source hands to every <see cref="SessionImporter.SendTranscriptBatches"/>
+/// call so an <see cref="ImportWarning"/> reaches the user; it is shared by every session of the
+/// run, which is why a warning carries its own session id.
 /// </summary>
 internal sealed record ImportContext(
-    HttpClient HttpClient,
-    string     BaseUrl,
-    bool       ForcePrivate,
-    string?    DefaultVisibility = null) {
+    HttpClient                 HttpClient,
+    string                     BaseUrl,
+    bool                       ForcePrivate,
+    string?                    DefaultVisibility = null,
+    IProgress<ImportProgress>? Progress          = null) {
     /// <summary>
     /// The <c>default_visibility</c> to stamp on a session-start, or null to leave the field off.
     /// <b>An omitted stamp is not "no default"</b> — the server coalesces an absent one to

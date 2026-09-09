@@ -9,7 +9,7 @@ using Capacitor.App.Services;
 using Capacitor.Cli.Core.LocalIpc;
 using Capacitor.Cli.Core.PullRequests.Readers;
 using Capacitor.Cli.Core.WorkItems;
-using ReactiveUI;
+using ReactiveUI.Reactive;
 
 namespace Capacitor.App.ViewModels;
 

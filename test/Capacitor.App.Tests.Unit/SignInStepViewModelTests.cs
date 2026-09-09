@@ -9,7 +9,7 @@ using Capacitor.App.ViewModels.Onboarding;
 using Capacitor.App.Views.Onboarding;
 using Capacitor.Cli.Core.Auth;
 using Microsoft.Extensions.Time.Testing;
-using ReactiveUI;
+using ReactiveUI.Reactive;
 
 namespace Capacitor.App.Tests.Unit;
 

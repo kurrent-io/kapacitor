@@ -4,7 +4,7 @@ using Capacitor.App.Services;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Harness;
 using Capacitor.Cli.Core.Setup;
-using ReactiveUI;
+using ReactiveUI.Reactive;
 
 namespace Capacitor.App.ViewModels.Onboarding;
 

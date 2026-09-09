@@ -29,26 +29,26 @@ internal static class SqliteNativeResolver {
 
     /// <summary>
     /// Version of the native package that <c>SQLitePCLRaw.bundle_e_sqlite3</c> (see
-    /// <c>Directory.Packages.props</c>) actually restores — currently <c>SourceGear.sqlite3</c>
+    /// <c>Directory.Packages.props</c>) actually restores — the <c>SQLite</c> package
     /// (NOT <c>SQLitePCLRaw.lib.e_sqlite3</c>). These hashes are the exact bytes the AOT build
     /// links against, so they also match the per-RID library in the publish output. Doubles as
     /// the cache-bucket key so bumping the engine re-fetches instead of loading a stale lib.
     /// If you bump the bundle, regenerate <see cref="Assets"/> — the <c>SqliteNativeResolverTests</c>
     /// pin guard fails until you do.
     /// </summary>
-    internal const string EngineVersion = "3.50.4.5";
+    internal const string EngineVersion = "3.53.4";
 
     internal sealed record NativeAsset(string FileName, string AssetName, string Sha256);
 
-    /// <summary>RID → the pristine native library shipped by SourceGear.sqlite3, by SHA-256.</summary>
+    /// <summary>RID → the pristine native library shipped by the SQLite package, by SHA-256.</summary>
     internal static readonly IReadOnlyDictionary<string, NativeAsset> Assets =
         new Dictionary<string, NativeAsset>(StringComparer.Ordinal) {
-            ["osx-arm64"]        = new("libe_sqlite3.dylib", "libe_sqlite3-osx-arm64.dylib",      "7b319cd32435ab28c97041fad74b892be218e6f0f74790802105309c1ec515a9"),
-            ["linux-x64"]        = new("libe_sqlite3.so",    "libe_sqlite3-linux-x64.so",         "a5e8aed525023e6c209d37d3e762e2e76ed3a830464569a419abfc3cf12d7a6c"),
-            ["linux-arm64"]      = new("libe_sqlite3.so",    "libe_sqlite3-linux-arm64.so",       "1e3d72f01195cd8fc1e9f17a7d1e9a8fa589b390c08f81b4d3a7af721effe0eb"),
-            ["linux-musl-x64"]   = new("libe_sqlite3.so",    "libe_sqlite3-linux-musl-x64.so",    "73b683c168b3cdc68f1fd005645da7fdedf17895378c2b41903172e296a990c2"),
-            ["linux-musl-arm64"] = new("libe_sqlite3.so",    "libe_sqlite3-linux-musl-arm64.so",  "d881b6b8a258f5e3fe1419b46366fc1afd90e941818d30aa2d2cec650449fed0"),
-            ["win-x64"]          = new("e_sqlite3.dll",      "e_sqlite3-win-x64.dll",             "aabf85d7a8b416fb15203cb754fcfc9858c8f1dd3bbc7eab82335f6c362ba0d6"),
+            ["osx-arm64"]        = new("libe_sqlite3.dylib", "libe_sqlite3-osx-arm64.dylib",      "2b27f45233818ae11d97016ca2a16dffcf63a53c46f60bcd52b342fc187b0c83"),
+            ["linux-x64"]        = new("libe_sqlite3.so",    "libe_sqlite3-linux-x64.so",         "eddcd4aa561d5b8f252db77e8272e7d1aed96bcab9fda3f177ca542f916290bf"),
+            ["linux-arm64"]      = new("libe_sqlite3.so",    "libe_sqlite3-linux-arm64.so",       "66436d4bd02b1b1c25b964a744b5230122bca6a5d006aa80add129ef892c273a"),
+            ["linux-musl-x64"]   = new("libe_sqlite3.so",    "libe_sqlite3-linux-musl-x64.so",    "7d275542af8aac5a19f5a873da7cdadcc20c453fb52b7df57bd747e2f02ab92b"),
+            ["linux-musl-arm64"] = new("libe_sqlite3.so",    "libe_sqlite3-linux-musl-arm64.so",  "91e5ff240be8cdc24068c149754d3506dd3f7098cb0fd3d6606c4f0ce3b5fd42"),
+            ["win-x64"]          = new("e_sqlite3.dll",      "e_sqlite3-win-x64.dll",             "6ad8e149f8ce3ed3716402b4b3a2268ebbdc7b64391b5fafed747e03bb1b9418"),
         };
 
     static int _registered;

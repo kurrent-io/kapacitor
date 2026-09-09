@@ -8,7 +8,7 @@ using Avalonia.Media;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
 using Capacitor.App.Views;
-using ReactiveUI;
+using ReactiveUI.Reactive;
 using TUnit.Assertions.Enums;
 using static Capacitor.App.Tests.Unit.AvaloniaSession;
 
