@@ -93,6 +93,35 @@ public class PullRequestReaderRegistryTests {
     }
 
     [Test]
+    public async Task A_host_sign_in_that_reroutes_the_same_subject_restarts_once() {
+        var gh = new StubProvider("gh", ready: true, hosts: []);
+        var server = new StubProvider("server", ready: true, hosts: ["github.com"]);
+        var registry = new PullRequestReaderRegistry(new StubLinks(), [gh, server]);
+        await registry.DiscoverAsync(false, default);
+        await registry.OverviewAsync("session", Subject(), default);
+        gh.Hosts = ["github.com"];
+        await registry.DiscoverAsync(true, default);
+        var restart = await registry.OverviewAsync("session", Subject(), default);
+        await Assert.That(restart.Kind).IsEqualTo(PullRequestReadKind.Restart);
+        await Assert.That(restart.Reason).IsEqualTo("integration_changed");
+        var ready = await registry.OverviewAsync("session", Subject(), default);
+        await Assert.That(ready.Kind).IsEqualTo(PullRequestReadKind.Ready);
+        await Assert.That(ready.Data!.Title).IsEqualTo("gh");
+    }
+
+    [Test]
+    public async Task Switching_subjects_within_a_session_does_not_restart() {
+        var gh = new StubProvider("gh", ready: true, hosts: ["github.com"]);
+        var server = new StubProvider("server", ready: true, hosts: ["ghe.example"]);
+        var registry = new PullRequestReaderRegistry(new StubLinks(), [gh, server]);
+        await registry.DiscoverAsync(false, default);
+        var first = await registry.OverviewAsync("session", Subject(), default);
+        await Assert.That(first.Kind).IsEqualTo(PullRequestReadKind.Ready);
+        var second = await registry.OverviewAsync("session", Subject("ghe.example"), default);
+        await Assert.That(second.Kind).IsEqualTo(PullRequestReadKind.Ready);
+    }
+
+    [Test]
     public async Task Notes_describe_the_missing_or_signed_out_tool_for_a_host_and_nothing_when_served() {
         var gh = new StubProvider("gh", ready: false, hosts: [], status: PullRequestReaderStatusKind.ToolMissing);
         var registry = new PullRequestReaderRegistry(new StubLinks(), [gh]);

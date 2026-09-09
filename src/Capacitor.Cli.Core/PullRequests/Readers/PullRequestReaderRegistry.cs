@@ -7,17 +7,15 @@ namespace Capacitor.Cli.Core.PullRequests.Readers;
 public sealed class PullRequestReaderRegistry(IPullRequestSource sessionLinks, IReadOnlyList<IPullRequestReaderProvider> providers)
         : IPullRequestSource, IPullRequestReaders {
     readonly Lock _lock = new();
-    readonly Dictionary<string, (PullRequestRepository? Repository, string? Branch, string? ReadyKey)> _sessions = new(StringComparer.Ordinal);
+    readonly Dictionary<string, (PullRequestRepository? Repository, string? Branch, string? SubjectKey, string? ProviderName)> _sessions = new(StringComparer.Ordinal);
     PullRequestReaderStatus[] _statuses = [.. providers.Select(_ => new PullRequestReaderStatus(PullRequestReaderStatusKind.Failed, "not_probed"))];
-    string _readyKey = "";
 
     public async Task<PullRequestCapability> DiscoverAsync(bool refresh, CancellationToken ct) {
         var probes = providers.Select(provider => provider.ProbeAsync(refresh, ct)).ToArray();
         var links = sessionLinks.DiscoverAsync(refresh, ct);
         var statuses = await Task.WhenAll(probes).ConfigureAwait(false);
         var capability = await links.ConfigureAwait(false);
-        var key = string.Join(",", providers.Where((_, i) => statuses[i].IsReady).Select(provider => provider.Name));
-        lock (_lock) { _statuses = statuses; _readyKey = key; }
+        lock (_lock) _statuses = statuses;
         return statuses.Any(status => status.IsReady) ? new(PullRequestCapabilityKind.Supported, 1) : capability;
     }
 
@@ -30,8 +28,8 @@ public sealed class PullRequestReaderRegistry(IPullRequestSource sessionLinks, I
     public void DescribeSession(string sessionId, PullRequestRepository? repository, string? branch) {
         lock (_lock) {
             if (_sessions.Count >= 1024 && !_sessions.ContainsKey(sessionId)) _sessions.Remove(_sessions.Keys.First());
-            var readyKey = _sessions.TryGetValue(sessionId, out var existing) ? existing.ReadyKey : null;
-            _sessions[sessionId] = (repository, branch, readyKey);
+            _sessions.TryGetValue(sessionId, out var existing);
+            _sessions[sessionId] = (repository, branch, existing.SubjectKey, existing.ProviderName);
         }
     }
 
@@ -45,7 +43,7 @@ public sealed class PullRequestReaderRegistry(IPullRequestSource sessionLinks, I
         };
         if (links.Kind != PullRequestReadKind.Ready || links.Data is null) return links;
         var items = links.Data.Items.Select(Resolve).ToList();
-        (PullRequestRepository? Repository, string? Branch, string? ReadyKey) context;
+        (PullRequestRepository? Repository, string? Branch, string? SubjectKey, string? ProviderName) context;
         lock (_lock) context = _sessions.GetValueOrDefault(sessionId);
         if (context is { Repository: { } repository, Branch: { Length: > 0 } branch })
             foreach (var provider in Ready().Where(provider => provider.Serves(repository.Provider, repository.Host)))
@@ -59,14 +57,14 @@ public sealed class PullRequestReaderRegistry(IPullRequestSource sessionLinks, I
 
     public Task<PullRequestRead<PullRequestOverviewDto>> OverviewAsync(string sessionId, PullRequestSubjectDto subject, CancellationToken ct) {
         if (Route(subject) is not { } provider) return Task.FromResult(NoReader<PullRequestOverviewDto>(subject));
-        if (TakeChange(sessionId)) return Task.FromResult(new PullRequestRead<PullRequestOverviewDto>(PullRequestReadKind.Restart, Subject: subject, Reason: "integration_changed"));
+        if (TakeChange(sessionId, subject, provider.Name)) return Task.FromResult(new PullRequestRead<PullRequestOverviewDto>(PullRequestReadKind.Restart, Subject: subject, Reason: "integration_changed"));
         return provider.OverviewAsync(sessionId, subject, ct);
     }
 
     public Task<PullRequestRead<PullRequestPageDto<T>>> PageAsync<T>(string sessionId, PullRequestSubjectDto subject, string section,
             string? cursor, string? resolved, string? threadId, CancellationToken ct) where T : class {
         if (Route(subject) is not { } provider) return Task.FromResult(NoReader<PullRequestPageDto<T>>(subject));
-        if (TakeChange(sessionId)) return Task.FromResult(new PullRequestRead<PullRequestPageDto<T>>(PullRequestReadKind.Restart, Subject: subject, Reason: "integration_changed"));
+        if (TakeChange(sessionId, subject, provider.Name)) return Task.FromResult(new PullRequestRead<PullRequestPageDto<T>>(PullRequestReadKind.Restart, Subject: subject, Reason: "integration_changed"));
         return provider.PageAsync<T>(sessionId, subject, section, cursor, resolved, threadId, ct);
     }
 
@@ -102,12 +100,15 @@ public sealed class PullRequestReaderRegistry(IPullRequestSource sessionLinks, I
         return providers.Where((_, i) => statuses[i].IsReady);
     }
     IPullRequestReaderProvider? Route(PullRequestSubjectDto subject) => Ready().FirstOrDefault(provider => provider.Serves(subject.Provider, subject.Host));
-    bool TakeChange(string sessionId) {
+    static string SubjectKey(PullRequestSubjectDto s) => $"{s.Provider}|{s.Host}|{s.Owner}|{s.RepoName}|{s.Number}".ToLowerInvariant();
+    bool TakeChange(string sessionId, PullRequestSubjectDto subject, string providerName) {
         lock (_lock) {
+            if (_sessions.Count >= 1024 && !_sessions.ContainsKey(sessionId)) _sessions.Remove(_sessions.Keys.First());
             _sessions.TryGetValue(sessionId, out var entry);
-            if (entry.ReadyKey == _readyKey) return false;
-            _sessions[sessionId] = (entry.Repository, entry.Branch, _readyKey);
-            return entry.ReadyKey is not null;
+            var subjectKey = SubjectKey(subject);
+            var changed = entry.SubjectKey == subjectKey && entry.ProviderName != providerName;
+            _sessions[sessionId] = (entry.Repository, entry.Branch, subjectKey, providerName);
+            return changed;
         }
     }
     PullRequestLinkDto Resolve(PullRequestLinkDto link) {
